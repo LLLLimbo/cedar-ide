@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第九阶段 C 工程（**0.8.4**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第九阶段 C 修正版工程（**0.8.5**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -38,7 +38,7 @@ cargo run -p cedar-app --bin cedar -- examples/demo
 
 Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`，本地连接还要求同目录的 `cedar-agent.exe`；不要只复制前端。缺失或损坏的 agent 会报错，不搜索 PATH 或回退到进程内执行。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.8.0 提交 [`5927b6c51d6bc4d4b88f676f4d5c27a3a314ce0f`](https://github.com/LLLLimbo/cedar-ide/commit/5927b6c51d6bc4d4b88f676f4d5c27a3a314ce0f) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37685061425)，包括新增磁盘审阅/Undo/Redo 回归和全部 13 + 7 项 Windows 生命周期/agent 测试。第九阶段 B 在可取消 stdin 基础层之上增加独占 Job、可加入工作线程、有界增量帧解析及 12 项原生 Windows 传输验收；0.8.3已通过同提交双平台CI，Windows21项进程、12项传输及7项原有agent验收全部通过；9C增加固定版本真实Java三次会话与独立非分发agent夹具验收，新的实际Windows结果仍待验证，完整agent/真实Java验收前不开放能力；**Windows Git、同步 Run 和 LSP 仍不启用**。Windows GUI、真实 SSH 与历史 Linux 超时原根因仍保留原有限制，当前证据见[测试报告](docs/TEST_REPORT.md)。
+公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.8.0 提交 [`5927b6c51d6bc4d4b88f676f4d5c27a3a314ce0f`](https://github.com/LLLLimbo/cedar-ide/commit/5927b6c51d6bc4d4b88f676f4d5c27a3a314ce0f) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37685061425)，包括新增磁盘审阅/Undo/Redo 回归和全部 13 + 7 项 Windows 生命周期/agent 测试。第九阶段 B 在可取消 stdin 基础层之上增加独占 Job、可加入工作线程、有界增量帧解析及 12 项原生 Windows 传输验收；0.8.3已通过同提交双平台CI，Windows21项进程、12项传输及7项原有agent验收全部通过；9C增加固定版本真实Java三次会话与独立非分发agent夹具验收，0.8.4实际Windows已通过既有门槛，但Java在tar路径准备阶段失败；0.8.5修正ASCII解包后Unicode运行路径及环境变量删除，新的实际Windows结果待验证，完整agent/真实Java验收前不开放能力；**Windows Git、同步 Run 和 LSP 仍不启用**。Windows GUI、真实 SSH 与历史 Linux 超时原根因仍保留原有限制，当前证据见[测试报告](docs/TEST_REPORT.md)。
 
 ## 磁盘对比与重载
 

@@ -34,11 +34,21 @@ if ($releaseText -notmatch '(?m)^JAVA_VERSION="(?<major>[0-9]+)[^"]*"' -or [int]
 # Prepare this standalone test process before Cargo starts any worker threads.
 # Never mutate a running multithreaded agent's process-global environment.
 foreach ($name in @('CLIENT_PORT', 'CLIENT_HOST', 'socket.stream.debug', 'JDK_JAVA_OPTIONS', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS')) {
-    [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    $environmentPath = 'Env:' + $name
+    # PowerShell/.NET can preserve an empty environment value when a null string
+    # argument is coerced. Remove via the provider and verify actual absence.
+    if (Test-Path -LiteralPath $environmentPath) {
+        Remove-Item -LiteralPath $environmentPath
+    }
+    if (Test-Path -LiteralPath $environmentPath) { throw "Failed to remove $name from the test parent." }
 }
 $env:JAVA_HOME = $jdkRoot
 $env:CEDAR_JAVA = $Java
-$scratch = Join-Path $ScratchRoot ('cedar windows Java 雪 ' + [Guid]::NewGuid().ToString('N'))
+$scratch = [IO.Path]::GetFullPath((Join-Path $ScratchRoot ('cedar-windows-java-' + [Guid]::NewGuid().ToString('N'))))
+# The runner's native tar has an ANSI command-line boundary. Only extraction
+# staging is ASCII; the installed distribution and all runtime fixtures retain
+# their Unicode/spaces paths. Do not change machine locale or weaken the probe.
+if ($scratch -match '[^\x00-\x7F]') { throw 'Use an ASCII ScratchRoot for native tar staging; runtime Unicode acceptance stays enabled.' }
 if ([string]::IsNullOrWhiteSpace($EvidencePath)) { $EvidencePath = Join-Path $ScratchRoot 'cedar-windows-java-acceptance.txt' }
 $EvidencePath = [IO.Path]::GetFullPath($EvidencePath)
 Set-Content -LiteralPath $EvidencePath -Value 'Cedar Windows Java acceptance; missing dependencies or any failed stage fail this run.'
@@ -90,17 +100,34 @@ try {
     $actualSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualSha256 -cne $expectedSha256) { throw 'JDT archive checksum mismatch; refusing extraction or execution.' }
     Record ("jdt_archive=$archiveUrl; sha256=$actualSha256")
-    $distribution = Join-Path $scratch 'JDT distribution 雪'
-    New-Item -ItemType Directory -Path $distribution | Out-Null
-    $stage = 'verified archive extraction'
-    & tar.exe -xzf $archive -C $distribution
+    $staging = Join-Path $scratch 'distribution-staging'
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    $stage = 'verified archive extraction in ASCII staging'
+    & tar.exe -xzf $archive -C $staging
     if ($LASTEXITCODE -ne 0) { throw 'Verified JDT archive extraction failed.' }
+    $stagedLaunchers = @(Get-ChildItem -LiteralPath (Join-Path $staging 'plugins') -Filter 'org.eclipse.equinox.launcher_*.jar' -File)
+    if ($stagedLaunchers.Count -ne 1) { throw 'Expected one Equinox launcher in verified extraction.' }
+    $stagedLauncherName = $stagedLaunchers[0].Name
+    $stagedLauncherHash = (Get-FileHash -LiteralPath $stagedLaunchers[0].FullName -Algorithm SHA256).Hash
+    $stage = 'move verified extraction to Unicode runtime directory'
+    $distribution = Join-Path $scratch 'JDT distribution 雪'
+    # PowerShell's filesystem provider uses Unicode-safe APIs. The native tar
+    # never receives the Unicode destination; Java and Cedar still must handle it.
+    Move-Item -LiteralPath $staging -Destination $distribution
+    if ((Test-Path -LiteralPath $staging) -or -not (Test-Path -LiteralPath $distribution -PathType Container)) {
+        throw 'Unicode distribution move did not establish the expected directory.'
+    }
+    Record ("runtime_distribution=" + $distribution + '; extraction_staging_ascii=true')
     if (-not (Test-Path -LiteralPath (Join-Path $distribution 'config_win') -PathType Container)) {
         throw 'Verified distribution lacks config_win.'
     }
     $launchers = @(Get-ChildItem -LiteralPath (Join-Path $distribution 'plugins') -Filter 'org.eclipse.equinox.launcher_*.jar' -File)
     if ($launchers.Count -ne 1) { throw 'Expected exactly one Equinox launcher JAR.' }
-    Record ("equinox_launcher=" + $launchers[0].Name)
+    $launcherHash = (Get-FileHash -LiteralPath $launchers[0].FullName -Algorithm SHA256).Hash
+    if ($launchers[0].Name -cne $stagedLauncherName -or $launcherHash -cne $stagedLauncherHash) {
+        throw 'Unicode move changed the verified launcher.'
+    }
+    Record ("equinox_launcher=" + $launchers[0].Name + '; sha256=' + $launcherHash.ToLowerInvariant())
     # Preserve all upstream notices in the extraction. No JDK/JDT binary is
     # copied into source, release artifacts or the repository's product bundle.
     $stage = 'real Java semantic and lifecycle assertions'

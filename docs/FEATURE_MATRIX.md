@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 9C / 0.8.4
+# 功能矩阵与后续验收 · checkpoint 9C setup fix / 0.8.5
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 

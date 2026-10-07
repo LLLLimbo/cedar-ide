@@ -123,7 +123,9 @@ $Java = (Resolve-Path 'C:\acceptance with spaces 雪\jdk\bin\java.exe').Path
 $env:JAVA_HOME = Split-Path (Split-Path $Java -Parent) -Parent
 foreach ($Name in @('CLIENT_PORT', 'CLIENT_HOST', 'socket.stream.debug',
     'JDK_JAVA_OPTIONS', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS')) {
-    [Environment]::SetEnvironmentVariable($Name, $null, 'Process')
+    $Entry = 'Env:' + $Name
+    if (Test-Path -LiteralPath $Entry) { Remove-Item -LiteralPath $Entry }
+    if (Test-Path -LiteralPath $Entry) { throw "Failed to remove $Name" }
 }
 & $Java -version
 if ($LASTEXITCODE -ne 0) { throw 'Java metadata command failed' }
@@ -236,3 +238,23 @@ includes the finalized helper call sites; Windows-only path normalization still
 requires its native unit/runtime checks. The differing elapsed time is not a
 performance comparison: concurrent build activity and one synthetic run do not
 establish benchmark results.
+
+
+## Windows setup correction after the first native attempt
+
+The 0.8.4 Windows run verified the archive hash but the runner's `tar.exe` could
+not open the archive under a Unicode staging path (its error rendered `雪` as
+`?`). JDT was not started, and the later agent-language tests were skipped.
+The setup now uses an ASCII extraction staging directory, then PowerShell's
+Unicode-safe filesystem move places the unchanged distribution in `JDT
+distribution 雪`. It verifies staging disappearance, destination/configuration,
+one launcher, and identical launcher digest before/after the move. The Java,
+project and data-directory Unicode assertions are unchanged. A direct caller
+must give an ASCII ScratchRoot for this native tar boundary; no machine locale
+or encoding setting is changed.
+
+The same log showed empty Java option variables. PowerShell 7.5 can retain empty
+values when `SetEnvironmentVariable` receives `$null`; this is not absence, which
+the Rust probe requires. The script and example instructions now remove entries
+with the Environment provider and verify that each entry is absent. These are
+process-local test-parent changes, not persistent user/machine settings.
