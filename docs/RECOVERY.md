@@ -227,12 +227,15 @@ an OS account/sandbox boundary and stronger platform-specific directory-handle
 operations; this crate does not claim that protection.
 
 Local checks include Windows MSVC-target compilation and strict Clippy. The
-first published phase-3 Windows CI ran the storage tests and exposed the legacy
-open-reader replacement failure described above; the fixed checkpoint must pass
-its own Windows runtime CI before being called runtime-validated. Windows ACL
-behavior, antivirus interference, and hardware power-loss semantics remain
-unverified. macOS runtime is also unverified. A cross-compile alone is not runtime
-validation.
+first published phase-3 Windows CI exposed the legacy open-reader replacement
+failure described above. The 0.3.1 hotfix subsequently passed complete Ubuntu and
+Windows CI at the same commit, `9f9a72608d7ea944d5946656f8fdf259a950891d`:
+[verified CI run](https://github.com/LLLLimbo/cedar-ide/actions/runs/37627832872).
+All 29 Windows recovery tests passed, including strict concurrent replacement,
+held-reader replacement, and restrictive-sharing failure/preservation/retry;
+release builds and stdio process integration passed too. Windows ACL behavior,
+antivirus interference, and hardware power-loss semantics remain unverified.
+macOS runtime is also unverified. A cross-compile alone is not runtime validation.
 
 ## Focused verification
 

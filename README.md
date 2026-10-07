@@ -1,9 +1,7 @@
 # Cedar IDE · Rust 原生远程开发底座
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第三阶段工程（**0.3.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第四阶段工程（**0.4.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
-
-0.3.1 是恢复可靠性热修复：修正 Unix 子进程短暂继承文件锁导致的假锁定，以及 Windows 并发读取时恢复记录替换失败。没有增加语言功能，协议仍为 3。真实 Windows CI 结果以公开仓库的该提交检查为准；Windows GUI 尚未验收。
 ## 已能实际使用
 
 - 原生 egui/Glow 桌面界面，无 WebView、Electron 或前端 JVM
@@ -17,6 +15,9 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - 项目文本搜索与跳转；Git、命令和语言服务均要求显式工作区信任
 - agent 侧真实 LSP：启动、初始化、文件同步、补全/定义/悬浮请求、诊断事件、停止与重启
 - 350ms 防抖自动同步、自动诊断列表、F12 定义跳转、类型悬浮、Ctrl+Space 补全
+- **安全格式化预览**：只读 Before / After，显式 Apply / Cancel；校验精确草稿版本后单次撤销事务，不自动保存
+- **引用查找**：同步所有匹配语言的打开草稿，可选择包含声明；显示无版本结果的时效边界，跳转由 agent 校验工作区
+- **文档大纲**：显式刷新，保留层级或平面符号结果，按声明选择范围导航；编辑后失效
 - 补全可延迟解析 import，校验所有编辑后一次性改动草稿；一次撤销/重做覆盖整个操作；不执行服务器返回的任意命令
 - 中文注释/字符串可按需加载现有系统 CJK 字体，无静默下载或打包系统字体
 - 独立 DAP 子进程传输已在第二阶段用真实 Python 调试器验证断点/栈/变量；尚未接入 IDE 调试界面或远程代理
@@ -32,7 +33,19 @@ cargo run -p cedar-app --bin cedar -- examples/demo
 
 Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-第三阶段已做 Linux 全工作区 release 构建、测试和实际窗口交互，以及 Windows MSVC 目标的全工作区、全 targets/features 编译检查。**未在 Windows 运行或完成 Windows 最终链接，也没有交付经过 Windows 运行验证的 exe**。仓库附带 Linux/Windows CI 配置，但它尚未在外部服务运行。
+第三阶段的 Linux release 构建与原生窗口、Windows MSVC 全目标编译检查保留为历史证据。公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 已有分阶段源码提交；[phase-3.1 外部 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37627832872) 已在同一提交通过 Linux/Windows 作业，含 Windows 恢复核心测试、release 构建及独立 agent 进程测试。第四阶段也已通过 Linux release 构建、Windows MSVC 全目标编译检查，以及最终 release 窗口的格式化取消和导航后单步撤销/重做复验。这些不代表 Windows 原生 GUI、交互恢复或语言服务验收，详见 [测试报告](docs/TEST_REPORT.md)。
+
+## 格式化、引用与大纲
+
+可信工作区中启动已安装的语言服务器，选择匹配当前文件的语言配置；相应按钮只在服务器声明支持时可用。
+
+- **Format preview**：选择缩进宽度（1–16）和空格/Tab，先同步当前草稿，再请求格式化。预览不改动文字；**Apply** 再次校验来源后只修改内存草稿，保存仍需 Ctrl/Cmd+S。Cancel、Escape 或关闭预览会放弃提案
+- **Find references**：先同步所有匹配语言的已打开草稿，再按 **Include declaration** 查找。结果标为无版本服务器快照；不能保证未打开文件或查询后变动的目标仍然新鲜。跳转复用已有脏标签，不覆盖其文字
+- **Refresh outline**：一次性刷新当前文档大纲。层级结果保留类/方法嵌套，平面结果保持平面；点击使用 selectionRange，平面结果的 URI 仍须通过 agent 边界检查
+
+输入、标签切换、关闭重开、重连、语言服务重启或更新请求都会使旧提案失效。单纯移动光标不使格式化过期，Apply 会重新映射最新光标。畸形、重叠、越界、无效 UTF-16/CRLF 或超限编辑整体拒绝；空或等效结果不制造撤销记录。不执行服务器命令、WorkspaceEdit 或文件重命名。
+
+真实 JDT 已通过双未保存文档引用、类/方法大纲、中文格式化、旧版本拒绝、幂等性和磁盘源码不变检查。原生候选窗口已操作预览、Apply/Cancel、立即撤销/重做和导航；最终 release 窗口又验证 Escape 取消、移动光标/切换文件后的单步撤销与重做，两份项目源码磁盘逐字不变。详见 [交互与边界](crates/app/PHASE4_LANGUAGE.md)、[文本编辑校验](docs/TEXT_EDITS.md) 和 [重构安全路线](docs/REFACTORING_ROADMAP.md)。
 
 ## 草稿恢复
 
@@ -60,7 +73,7 @@ Linux 已有真实子进程、独立 agent 和原生界面验证；macOS 未运�
 4. 启动 Cedar，选择 **Remote over SSH**，填写 `user@host` 或 SSH 配置别名、端口、远程绝对目录、agent 可执行路径
 5. 如需 Git、构建命令或语言服务，只对可信工作区启用工具执行
 
-前端与 agent 必须同版本：**0.3.1 使用协议版本 3**，会拒绝不兼容的旧版 agent。此次协议增加 `RunStart` / `RunPoll` / `RunCancel`。
+前端与 agent 必须同版本：**0.4.0 使用协议版本 4**，会拒绝不兼容的旧版 agent。此次增加 `LanguageFormat` / `LanguageReferences` / `LanguageDocumentSymbols`；异步命令协议保留。
 
 连接通过 `ssh -T` 的标准输入/输出传输有界 JSON，不开启服务端 TCP 监听。开启严格主机密钥检查，禁用 agent/X11/端口转发，不自动信任主机、不生成密钥、不保存密码。
 
@@ -81,7 +94,7 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端连接 Linux 远程工作区
 
 按需重绘，无常驻全项目索引；I/O 与工具执行不阻塞 UI；单文件后端上限 1 MiB、编辑标签上限 32、协议帧上限 8 MiB；搜索、进程输出、语言事件和恢复队列有界。大文本降级为无高亮显示。项目代码不发送到云模型或分析服务；恢复副本留在前端本地，用户自选同步目录等外部分享行为不在此保证内。
 
-这些是架构措施，不等于“比 IDEA 节省 X%”。目前没有在同一机器、项目与功能集下完成 IDEA 对照基准。第三阶段新增一次 112.597 秒 release 前端小样例：CJK、默认恢复开启、信任关闭且无 JVM，前端观察到的 HWM 为 117.97 MiB。它与第二阶段交互不同，不能证明恢复开销、内存改善或 IDEA 相对优势。前端与 Java/Kotlin JVM 读数分别报告，不能拼成同时测得的总占用。详见 [资源说明](docs/PERFORMANCE.md) 与 [测试报告](docs/TEST_REPORT.md)。
+这些是架构措施，不等于“比 IDEA 节省 X%”。目前没有在同一机器、项目与功能集下完成 IDEA 对照基准。第三阶段历史记录包含一次 112.597 秒 release 前端小样例：CJK、默认恢复开启、信任关闭且无 JVM，前端观察到的 HWM 为 117.97 MiB。它与第二阶段交互不同，不能证明恢复开销、内存改善或 IDEA 相对优势。前端与 Java/Kotlin JVM 读数分别报告，不能拼成同时测得的总占用。详见 [资源说明](docs/PERFORMANCE.md) 与 [测试报告](docs/TEST_REPORT.md)。
 
 ## 验证
 
@@ -89,9 +102,9 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端连接 Linux 远程工作区
 bash scripts/verify.sh
 ```
 
-第三阶段完整通过：格式检查、严格全 targets/features Clippy、249 个普通 Rust 测试、额外 1 个独立 agent 进程测试，以及文件、LSP、异步任务三条 Python 黑盒闭环。聚合套件有 4 个显式 opt-in 测试被忽略，其中 agent 测试由脚本随后单独执行；真实 JDT、系统字体和 debugpy 验证属于第二阶段历史证据，未冒充本轮重测。Windows 可按 CI 的 PowerShell 示例运行对应 Cargo 与进程测试。
+第四阶段最终本地聚合已通过：格式检查、严格 Clippy、**336 个普通 Rust 测试 + 1 个显式独立 agent 测试**，以及文件、LSP、异步任务三条 Python 黑盒链。聚合另有 4 个 opt-in 忽略，其中 agent 测试随后单独执行。首次发现的恢复锁问题、导航后撤销及混合输入顺序已修复并纳入回归；最终 Linux release 窗口的 Escape、格式化应用及导航后单步撤销/重做也已复验通过。公开第三阶段 Windows CI 暴露的恢复替换 AccessDenied 已单独修复发布，[phase-3.1 同提交 Linux/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37627832872) 已全部通过；第四阶段的精确提交 CI 将单独记录。真实 JDT 专项、历史失败与验收边界见 [第四阶段测试报告](docs/TEST_REPORT.md)。
 
-原生 Linux 窗口的崩溃恢复、恢复后的外部变动冲突，以及长命令运行中继续编辑保存另有人工验收。通过范围、截图及未覆盖项见 [第三阶段测试报告](docs/TEST_REPORT.md)；历史报告保存在 [第二阶段](docs/TEST_REPORT_PHASE2.md) 和 [第一阶段](docs/TEST_REPORT_PHASE1.md)。
+历史验收与资源读数按阶段保存：[0.3.1 恢复修复](docs/TEST_REPORT_HOTFIX_0_3_1.md)、[第三阶段](docs/TEST_REPORT_PHASE3.md)、[第二阶段](docs/TEST_REPORT_PHASE2.md)、[第一阶段](docs/TEST_REPORT_PHASE1.md)。真实 SSH、Windows/macOS GUI 与大型项目使用尚未验收；外部 Windows CI 的核心测试不是原生窗口验收。
 
 ## 工程结构
 
@@ -107,7 +120,7 @@ bash scripts/verify.sh
 | cedar-language | LSP 客户端/生命周期/有界 JSON-RPC；DAP 基础封包 |
 | cedar-debugger | 有界异步 DAP 进程传输，尚未接入 UI 或远程 agent |
 
-更多：[功能矩阵](docs/FEATURE_MATRIX.md)、[架构](docs/ARCHITECTURE.md)、[语言服务](docs/LANGUAGE_SERVICES.md)、[Kotlin 验证](docs/KOTLIN_VALIDATION.md)、[调试](docs/DEBUGGING.md)、[前端恢复与命令交互](crates/app/RECOVERY_AND_COMMANDS.md)。下一阶段优先考虑有预览、版本校验和撤销保障的格式化，以及引用查找、文档大纲；多文件重命名暂缓，先解决无版本跨文件结果与文件资源操作遗漏的安全问题。完整重构、项目模型和大量 IDEA 功能仍待实现。
+更多：[功能矩阵](docs/FEATURE_MATRIX.md)、[架构](docs/ARCHITECTURE.md)、[语言服务](docs/LANGUAGE_SERVICES.md)、[Kotlin 验证](docs/KOTLIN_VALIDATION.md)、[调试](docs/DEBUGGING.md)、[前端恢复与命令交互](crates/app/RECOVERY_AND_COMMANDS.md)。第四阶段增加格式化预览、引用查找和文档大纲，具体安全边界见 [重构路线](docs/REFACTORING_ROADMAP.md)。多文件重命名仍暂缓，先解决无版本跨文件结果、跨文档撤销与文件资源操作遗漏的安全问题。完整重构、项目模型和大量 IDEA 功能仍待实现。
 
 ## 打包已验证检查点
 

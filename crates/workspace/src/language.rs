@@ -8,12 +8,49 @@ use std::time::Duration;
 
 pub(super) struct LanguageSession {
     client: LspClient,
-    opened: HashMap<String, usize>,
+    opened: HashMap<String, OpenLanguageDocument>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OpenLanguageDocument {
+    version: i32,
+    bytes: usize,
+}
+
+impl OpenLanguageDocument {
+    fn require_version(&self, expected: i32) -> Result<(), RemoteError> {
+        if self.version != expected {
+            return Err(error(
+                "language_stale_version",
+                "Document changed since the formatting request; synchronize and try again",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl LanguageSession {
+    fn open_document(&self, uri: &str) -> Result<&OpenLanguageDocument, RemoteError> {
+        self.opened.get(uri).ok_or_else(|| {
+            error(
+                "language_document_closed",
+                "Synchronize this document before querying",
+            )
+        })
+    }
 }
 impl std::fmt::Debug for LanguageSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LanguageSession")
             .field("open_documents", &self.opened.len())
+            .field(
+                "open_document_bytes",
+                &self
+                    .opened
+                    .values()
+                    .map(|document| document.bytes)
+                    .sum::<usize>(),
+            )
             .finish()
     }
 }
@@ -23,7 +60,7 @@ fn lsp_error(e: cedar_language::Error) -> RemoteError {
 impl Workspace {
     fn language_uri(&self, path: &str) -> Result<String, RemoteError> {
         let full = self.resolve(path, true)?;
-        if full == self.root {
+        if full == self.root || full.exists() && !full.is_file() {
             return Err(error(
                 "invalid_path",
                 "Language document requires a file path",
@@ -102,7 +139,13 @@ impl Workspace {
                     .client
                     .did_open(&uri, &language_id, version, &text)
                     .map_err(lsp_error)?;
-                session.opened.insert(uri.clone(), text.len());
+                session.opened.insert(
+                    uri.clone(),
+                    OpenLanguageDocument {
+                        version,
+                        bytes: text.len(),
+                    },
+                );
                 Ok(Payload::Language {
                     value: json!({"opened":uri,"version":version}),
                 })
@@ -121,7 +164,13 @@ impl Workspace {
                     .client
                     .did_change(&uri, version, &text)
                     .map_err(lsp_error)?;
-                session.opened.insert(uri.clone(), text.len());
+                session.opened.insert(
+                    uri.clone(),
+                    OpenLanguageDocument {
+                        version,
+                        bytes: text.len(),
+                    },
+                );
                 Ok(Payload::Language {
                     value: json!({"changed":uri,"version":version}),
                 })
@@ -147,12 +196,7 @@ impl Workspace {
                 let session = self.language.as_ref().ok_or_else(|| {
                     error("language_not_running", "Start a language server first")
                 })?;
-                if !session.opened.contains_key(&uri) {
-                    return Err(error(
-                        "language_document_closed",
-                        "Synchronize this document before querying",
-                    ));
-                }
+                session.open_document(&uri)?;
                 let position = Position { line, character };
                 let value = match kind {
                     LanguageQueryKind::Completion => session.client.completion(&uri, position),
@@ -160,6 +204,51 @@ impl Workspace {
                     LanguageQueryKind::Hover => session.client.hover(&uri, position),
                 }
                 .map_err(lsp_error)?;
+                Ok(Payload::Language { value })
+            }
+            Operation::LanguageFormat {
+                path,
+                version,
+                tab_size,
+                insert_spaces,
+            } => {
+                let uri = self.language_uri(&path)?;
+                let session = self.language.as_ref().ok_or_else(|| {
+                    error("language_not_running", "Start a language server first")
+                })?;
+                // LSP formatting has no version field. Reject both older and
+                // unsynchronized future drafts before anything reaches the peer.
+                session.open_document(&uri)?.require_version(version)?;
+                let value = session
+                    .client
+                    .formatting(&uri, tab_size, insert_spaces)
+                    .map_err(lsp_error)?;
+                Ok(Payload::Language { value })
+            }
+            Operation::LanguageReferences {
+                path,
+                line,
+                character,
+                include_declaration,
+            } => {
+                let uri = self.language_uri(&path)?;
+                let session = self.language.as_ref().ok_or_else(|| {
+                    error("language_not_running", "Start a language server first")
+                })?;
+                session.open_document(&uri)?;
+                let value = session
+                    .client
+                    .references(&uri, Position { line, character }, include_declaration)
+                    .map_err(lsp_error)?;
+                Ok(Payload::Language { value })
+            }
+            Operation::LanguageDocumentSymbols { path } => {
+                let uri = self.language_uri(&path)?;
+                let session = self.language.as_ref().ok_or_else(|| {
+                    error("language_not_running", "Start a language server first")
+                })?;
+                session.open_document(&uri)?;
+                let value = session.client.document_symbols(&uri).map_err(lsp_error)?;
                 Ok(Payload::Language { value })
             }
             Operation::LanguageResolveUri { uri } => {
@@ -317,6 +406,87 @@ mod tests {
         assert!(uri.starts_with("file:///"));
         assert!(uri.contains("%20%23.java"));
         assert!(!uri.contains("你好"));
+    }
+    fn navigation_operations(path: &str) -> [Operation; 3] {
+        [
+            Operation::LanguageFormat {
+                path: path.into(),
+                version: 1,
+                tab_size: 4,
+                insert_spaces: true,
+            },
+            Operation::LanguageReferences {
+                path: path.into(),
+                line: 0,
+                character: 0,
+                include_declaration: true,
+            },
+            Operation::LanguageDocumentSymbols { path: path.into() },
+        ]
+    }
+    #[test]
+    fn new_language_operations_require_execution_trust_and_running_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::open(dir.path()).unwrap();
+        for operation in navigation_operations("Hello.java") {
+            assert_eq!(ws.handle(operation).unwrap_err().code, "run_disabled");
+        }
+        ws.set_allow_run(true);
+        for operation in navigation_operations("Hello.java") {
+            assert_eq!(
+                ws.handle(operation).unwrap_err().code,
+                "language_not_running"
+            );
+        }
+    }
+    #[test]
+    fn new_language_paths_are_confined_before_accessing_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::open(dir.path()).unwrap();
+        ws.set_allow_run(true);
+        std::fs::create_dir(dir.path().join("directory")).unwrap();
+        for path in [
+            "../outside.java",
+            "/absolute.java",
+            "",
+            ".",
+            "directory",
+            "a\\b.java",
+            "nul\0.java",
+        ] {
+            for operation in navigation_operations(path) {
+                assert_eq!(
+                    ws.handle(operation).unwrap_err().code,
+                    "invalid_path",
+                    "{path:?}"
+                );
+            }
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn new_language_queries_reject_symlinks_before_accessing_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Hello.java"), "class Hello {}").unwrap();
+        std::os::unix::fs::symlink("Hello.java", dir.path().join("alias.java")).unwrap();
+        let mut ws = Workspace::open(dir.path()).unwrap();
+        ws.set_allow_run(true);
+        for operation in navigation_operations("alias.java") {
+            assert_eq!(ws.handle(operation).unwrap_err().code, "invalid_path");
+        }
+    }
+    #[test]
+    fn formatting_requires_exact_synced_version_including_signed_boundaries() {
+        for version in [i32::MIN, -1, 0, 1, i32::MAX] {
+            let document = OpenLanguageDocument { version, bytes: 42 };
+            document.require_version(version).unwrap();
+            for stale in [version.wrapping_sub(1), version.wrapping_add(1)] {
+                assert_eq!(
+                    document.require_version(stale).unwrap_err().code,
+                    "language_stale_version"
+                );
+            }
+        }
     }
 }
 

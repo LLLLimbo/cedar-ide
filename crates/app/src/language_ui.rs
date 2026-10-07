@@ -1,4 +1,7 @@
 //! Native language UI. Remote payloads remain inert; edits are snapshot-checked transactions.
+#[path = "language_features.rs"]
+mod features;
+
 use crate::{
     completion::{self, Candidate, Position, Range},
     language_results::{self, Diagnostics, Location},
@@ -48,6 +51,9 @@ pub(super) enum ActionKind {
         kind: LanguageQueryKind,
     },
     Events,
+    Feature {
+        request: features::FeatureRequest,
+    },
     ResolveUri {
         sequence: u64,
         navigation: u64,
@@ -69,6 +75,9 @@ enum View {
     Problems,
     Completion,
     Definitions,
+    Format,
+    References,
+    Outline,
     Hover,
     Activity,
 }
@@ -91,6 +100,7 @@ pub(super) struct LanguagePanel {
     pub cjk_seen: bool,
     pub session: u64,
     pub sync: SyncTracker,
+    features: features::FeatureState,
     next_version: i32,
     closed_uris: HashSet<String>,
     program: String,
@@ -115,7 +125,7 @@ pub(super) struct LanguagePanel {
 impl Default for LanguagePanel {
     fn default() -> Self {
         Self {
-            running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), next_version: 1, closed_uris: HashSet::new(),
+            running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), next_version: 1, closed_uris: HashSet::new(),
             program: String::new(), args: "[]".into(), language_id: "rust".into(), capabilities: Value::Null,
             diagnostics: Diagnostics::default(), definitions: Vec::new(), hover: String::new(),
             output: "Start an installed stdio language server. Java/Kotlin servers and their JDK must be installed on the workspace host.".into(),
@@ -126,6 +136,7 @@ impl Default for LanguagePanel {
 }
 impl LanguagePanel {
     pub fn reset(&mut self) {
+        self.features.reset();
         self.session = self.session.wrapping_add(1);
         self.running = false;
         self.sync.clear();
@@ -145,6 +156,10 @@ impl LanguagePanel {
         self.output = "Language session stopped. Start a server when needed.".into();
     }
     pub(super) fn cancel_navigation(&mut self) {
+        self.features.cancel_pending();
+        self.cancel_deferred_navigation();
+    }
+    fn cancel_deferred_navigation(&mut self) {
         self.navigation_sequence = self.navigation_sequence.wrapping_add(1);
         self.deferred_navigation.clear();
     }
@@ -223,6 +238,7 @@ impl CedarApp {
         );
     }
     pub(super) fn stop_language(&mut self) {
+        self.language.features.reset();
         self.language.intent = None;
         self.language.automatic = false;
         self.language_request(Operation::LanguageStop, ActionKind::Stop);
@@ -283,6 +299,7 @@ impl CedarApp {
         }
     }
     pub(super) fn close_language_document(&mut self, document: u64) {
+        self.language.features.cancel_pending();
         let opening = self.pending.values().any(|job| matches!(job, Job::Language(Action { kind: ActionKind::Sync { document: id, .. }, .. }) if *id == document));
         if self.ready()
             && self.language.running
@@ -334,6 +351,7 @@ impl CedarApp {
                 ..
             } => {
                 self.language.sync.fail(document, edit_version);
+                self.language.features.cancel_pending();
                 self.language.intent = None;
                 self.language.paused_reason = Some(error.into());
             }
@@ -387,11 +405,13 @@ impl CedarApp {
             },
         };
         let document = doc.id;
+        self.language.features.cancel_pending();
         self.language.intent = Some(QueryIntent { context, kind });
         self.language.sync.retry(document);
         self.language.paused_reason = None;
     }
     pub(super) fn language_tick(&mut self, ctx: &egui::Context) {
+        self.invalidate_language_features();
         if !self.ready() || !self.language.running || self.close_after_language_stop {
             return;
         }
@@ -420,6 +440,9 @@ impl CedarApp {
             self.notice = "Code changed while language work was pending; request it again".into();
         }
         if !self.pending.is_empty() {
+            return;
+        }
+        if self.language_feature_tick() {
             return;
         }
         if let Some(intent) = self.language.intent.clone() {
@@ -546,8 +569,11 @@ impl CedarApp {
                 }
             }
             ActionKind::Events => self.apply_language_events(&value),
+            ActionKind::Feature { request } => self.apply_language_feature(request, value),
             ActionKind::Query { context, kind } => {
-                if !self.query_is_current(&context) {
+                if self.language.features.has_request_or_preview()
+                    || !self.query_is_current(&context)
+                {
                     self.notice = "Stale language result ignored; your draft changed".into();
                     return;
                 }
@@ -676,6 +702,7 @@ impl CedarApp {
                     }
                 }
                 Some("closed") => {
+                    self.language.features.reset();
                     self.language.automatic = false;
                     self.language.intent = None;
                     self.language.completions = None;
@@ -687,9 +714,12 @@ impl CedarApp {
             }
         }
     }
-    fn query_is_current(&self, context: &QueryContext) -> bool {
+    fn document_query_is_current(&self, context: &QueryContext) -> bool {
         self.active_document == Some(context.document)
             && self.language.valid(context, &self.documents)
+    }
+    fn query_is_current(&self, context: &QueryContext) -> bool {
+        self.document_query_is_current(context)
             && self
                 .documents
                 .iter()
@@ -910,6 +940,7 @@ impl CedarApp {
                 }
             });
         }
+        self.language_feature_controls(ui);
         if let Some(reason) = &self.language.paused_reason {
             ui.colored_label(AMBER, reason);
         }
@@ -922,6 +953,9 @@ impl CedarApp {
             ui.selectable_value(&mut self.language.view, View::Completion, "Completion");
             ui.selectable_value(&mut self.language.view, View::Definitions, "Definitions");
             ui.selectable_value(&mut self.language.view, View::Hover, "Hover");
+            ui.selectable_value(&mut self.language.view, View::Format, "Format");
+            ui.selectable_value(&mut self.language.view, View::References, "References");
+            ui.selectable_value(&mut self.language.view, View::Outline, "Outline");
             ui.selectable_value(&mut self.language.view, View::Activity, "Protocol details");
             if busy {
                 ui.spinner();
@@ -930,6 +964,9 @@ impl CedarApp {
         ui.separator();
         match self.language.view {
             View::Problems => self.problems_view(ui),
+            View::Format => self.format_view(ui),
+            View::References => self.references_view(ui),
+            View::Outline => self.outline_view(ui),
             View::Definitions => {
                 let mut selected = None;
                 egui::ScrollArea::vertical()
@@ -1080,6 +1117,7 @@ impl CedarApp {
         }
     }
     pub(super) fn language_popups(&mut self, ctx: &egui::Context) {
+        self.format_preview_window(ctx);
         if !self.language.completion_popup {
             return;
         }
@@ -1121,6 +1159,10 @@ impl CedarApp {
         }
     }
     pub(super) fn language_shortcuts(&mut self, ctx: &egui::Context) {
+        // Consume modal Escape before the app-wide Escape handler.
+        if self.format_preview_shortcut(ctx) {
+            return;
+        }
         if self.language.completion_popup {
             if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.language.completion_popup = false;

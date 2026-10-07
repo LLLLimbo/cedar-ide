@@ -1,7 +1,7 @@
 //! Bounded newline-delimited JSON protocol between native UI and workspace agent.
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_FILE_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +52,23 @@ pub enum Operation {
         line: u32,
         character: u32,
         kind: LanguageQueryKind,
+    },
+    /// Request formatting for exactly the synchronized document version.
+    /// The version is checked by the workspace agent, not sent as an LSP field.
+    LanguageFormat {
+        path: String,
+        version: i32,
+        tab_size: u32,
+        insert_spaces: bool,
+    },
+    LanguageReferences {
+        path: String,
+        line: u32,
+        character: u32,
+        include_declaration: bool,
+    },
+    LanguageDocumentSymbols {
+        path: String,
     },
     LanguageResolveUri {
         uri: String,
@@ -218,6 +235,55 @@ mod tests {
         write_frame(&mut bytes, &req).unwrap();
         let decoded: Request = read_frame(&mut &bytes[..]).unwrap().unwrap();
         assert_eq!(decoded.id, 3);
+    }
+    #[test]
+    fn language_navigation_requests_preserve_exact_wire_fields() {
+        for op in [
+            serde_json::json!({"type":"language_format","path":"src/你好.java","version":7,"tab_size":4,"insert_spaces":true}),
+            serde_json::json!({"type":"language_references","path":"src/你好.java","line":2,"character":3,"include_declaration":false}),
+            serde_json::json!({"type":"language_document_symbols","path":"src/你好.java"}),
+        ] {
+            let request = serde_json::json!({"id":42,"op":op});
+            let decoded: Request = serde_json::from_value(request.clone()).unwrap();
+            let mut bytes = Vec::new();
+            write_frame(&mut bytes, &decoded).unwrap();
+            let round_trip: serde_json::Value = read_frame(&mut &bytes[..]).unwrap().unwrap();
+            assert_eq!(round_trip, request);
+        }
+        assert_eq!(PROTOCOL_VERSION, 4);
+    }
+    #[test]
+    fn formatting_requires_version_and_typed_options() {
+        for op in [
+            serde_json::json!({"type":"language_format","path":"a.java","tab_size":4,"insert_spaces":true}),
+            serde_json::json!({"type":"language_format","path":"a.java","version":1,"tab_size":-1,"insert_spaces":true}),
+            serde_json::json!({"type":"language_format","path":"a.java","version":1,"tab_size":4,"insert_spaces":"true"}),
+            serde_json::json!({"type":"language_references","path":"a.java","line":-1,"character":0,"include_declaration":true}),
+            serde_json::json!({"type":"language_references","path":"a.java","line":0,"character":0}),
+        ] {
+            assert!(serde_json::from_value::<Operation>(op).is_err());
+        }
+    }
+    #[test]
+    fn language_payload_preserves_raw_feature_results() {
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!([{"name":"类","children":[]}]),
+        ] {
+            let response = Response {
+                id: 42,
+                result: Ok(Payload::Language {
+                    value: value.clone(),
+                }),
+            };
+            let mut bytes = Vec::new();
+            write_frame(&mut bytes, &response).unwrap();
+            let decoded: Response = read_frame(&mut &bytes[..]).unwrap().unwrap();
+            assert!(
+                matches!(decoded.result, Ok(Payload::Language { value: actual }) if actual == value)
+            );
+        }
     }
     #[test]
     fn rejects_truncated_frame() {

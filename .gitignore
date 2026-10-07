@@ -3,3 +3,8 @@
 *.log
 .DS_Store
 /examples/java-language-demo/bin/
+
+/examples/java-navigation-demo/bin/
+
+__pycache__/
+*.pyc

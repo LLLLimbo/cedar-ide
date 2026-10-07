@@ -1,7 +1,7 @@
-# Architecture · phase 3 / 0.3.1
+# Architecture · phase 4 / 0.4.0
 
 Cedar is a native Rust frontend plus a workspace backend. The current wire
-protocol is **3**; incompatible frontend/agent versions fail the handshake.
+protocol is **4**; incompatible frontend/agent versions fail the handshake.
 The frontend has no embedded browser or JVM. Language servers and build tools
 can still need a JVM or other runtime on the workspace machine.
 
@@ -41,7 +41,10 @@ revision, workspace identity, path and timestamp. The versioned format checks
 metadata and payload digests. Startup listing reads bounded metadata only;
 explicit review reads and validates the selected payload. A locked single
 writer uses monotonic, per-key operation ordering and removal tombstones so a
-late queued write cannot resurrect a discarded copy.
+late queued write cannot resurrect a discarded copy. The creator process owns
+the store; inherited use fails closed and only that process explicitly unlocks
+on drop. This avoids a transient Unix fork/exec descriptor retaining a dropped
+owner's lock without unlocking a still-live parent or a later independent owner.
 
 Writes use a private same-directory temporary, file flush and atomic replace;
 Unix additionally synchronizes the containing directory and accepted ancestors.
@@ -65,13 +68,19 @@ command history and process handles. Unix private permissions and no-follow
 checks are defense in depth; Windows inherits ACLs without equivalent privacy
 verification. Neither path is a hostile same-account filesystem sandbox.
 Unacknowledged input can be lost on process exit. Linux process-kill recovery is
-tested; power loss is not. Windows has no equivalent directory-flush guarantee
-and neither Windows nor macOS recovery runtime is validated. See
+tested; power loss is not. Windows has no equivalent directory-flush guarantee.
+Windows core recovery tests have run in external CI and exposed a concurrent-
+reader replacement failure. The fix uses Rust 1.99 standard-library rename for
+compatible readers; restrictive sharing remains an explicit error with the old
+record preserved. The corrected phase-3.1 public commit passed both Linux and
+Windows CI, including real Windows recovery tests; exact scope is recorded in
+[TEST_REPORT.md](TEST_REPORT.md).
+Windows native recovery/privacy acceptance and macOS runtime remain unvalidated. See
 [RECOVERY.md](RECOVERY.md) and the [frontend contract](../crates/app/RECOVERY_AND_COMMANDS.md).
 
 ## Asynchronous command tasks
 
-Protocol 3 adds `RunStart`, `RunPoll` and `RunCancel`. `RunStart` accepts work and
+Protocol 3 introduced `RunStart`, `RunPoll` and `RunCancel`. `RunStart` accepts work and
 returns a task snapshot; it does not mean spawn succeeded. `cedar-tasks` owns a
 single supervisor with one active task and eight bounded terminal records. IDs
 are process-wide monotonic counters, not child PIDs, and are scoped to their
@@ -157,13 +166,67 @@ are historical evidence, not GUI/agent integration. Listener security and
 general descendant cleanup remain blockers; DAP does not reuse JSON-RPC routing.
 See [DEBUGGING.md](DEBUGGING.md).
 
-The next proposed language work is previewed single-document formatting,
-references and document outline, with URI/range/version validation, explicit
-application and documented undo/failure boundaries. It is not implemented yet.
-Multi-file rename is deferred: unversioned cross-file responses need trustworthy
-source snapshots, and a server may omit required file resource renames when the
-client does not advertise those operations. A text-only result alone therefore
-cannot establish that a rename is complete or safe. A future plugin host should
+## Formatting and language-navigation transactions
+
+Protocol 4 adds `LanguageFormat`, `LanguageReferences` and
+`LanguageDocumentSymbols`. The agent keeps the version and byte count of each
+synchronized document. Formatting carries the expected version in Cedar's
+protocol; the agent rejects a mismatch before contacting the server. That
+version is not an invented field on the LSP formatting request. Static provider
+capabilities, open-document state, trust and workspace-relative paths gate all
+three operations. Results remain inert JSON until the frontend validates them.
+
+Formatting synchronizes the current draft, captures connection generation,
+server session, request sequence, document identity/path, edit version and source
+text, and builds a complete plain-TextEdit plan. Before/After is read-only.
+Apply rechecks the snapshot and changes only draft text through one native undo
+transaction; it neither writes the project nor changes the saved baseline or
+revision. Recovery observes the resulting draft through its ordinary ownership
+rules, without gaining authority over an older unowned copy. Null, empty or
+text-identical results are no-ops. Cancel, Escape and closing the preview discard
+the proposal. A shared planner rejects unsupported shapes, overlaps, ambiguous
+insertions, invalid UTF-16/CRLF positions and count/byte excess before mutation.
+
+Changing text, switching tabs (even away and back), close/reopen, reconnect,
+server restart or newer feature requests invalidate old proposals. Cursor-only
+movement is permitted for document formatting and outline; Apply maps the latest
+cursor through the validated edits. Outline selection supersedes older pending
+URI resolutions and file opens, so a late reference response cannot steal focus.
+Editor Undo/Redo skips same-text cursor checkpoints for shortcut-only batches,
+while mixed text/paste/navigation batches pass unchanged to egui to preserve input
+order. History is bounded and cloned only for deliberate edits/history actions.
+Full-frame regressions cover navigation and mixed input; native release acceptance
+status is separate in [TEST_REPORT.md](TEST_REPORT.md).
+
+References synchronize every matching open draft before dispatch and capture
+each participating document's identity, text, edit and acknowledged LSP version.
+A changed participant set, draft or source query position invalidates the pending
+result. Returned locations have no target versions: the UI labels retained
+results an **unversioned server snapshot**, with no freshness promise for unopened
+files or targets changed afterward. Reference and flat-outline URIs are resolved
+by `LanguageResolveUri` on the agent before opening. Existing dirty target tabs
+are reused unchanged, and each selected range is validated against current text.
+
+Outline is an explicit refresh, not a live index. Homogeneous `DocumentSymbol[]`
+keeps hierarchy and navigates with `selectionRange`; `SymbolInformation[]` stays
+flat and displays its container as context. Hierarchical ranges require valid
+UTF-16 boundaries, selection containment and child/parent containment. Edits
+invalidate the outline. Mixed/hybrid shapes are rejected and unknown numeric
+symbol kinds use a generic label.
+
+Limits include 1,024 plain edits and independently 1 MiB source/result/inserted
+text, 1,024 reference locations with 16 KiB per URI and 512 KiB aggregate URI text,
+and 2,000 outline nodes with depth 32 and 512 KiB retained text. See the
+[edit planner](TEXT_EDITS.md) and
+[frontend contract](../crates/app/PHASE4_LANGUAGE.md) for exact inclusivity and
+failure behavior. These do not authorize commands, server-originated edits,
+WorkspaceEdit or resource operations.
+
+Multi-file rename remains deferred: unversioned cross-file responses need
+trustworthy source snapshots, cross-document atomic undo and explicit resource
+semantics. A server may omit required file renames when the client does not
+advertise them, so valid text edits alone cannot establish a complete rename.
+See [REFACTORING_ROADMAP.md](REFACTORING_ROADMAP.md). A future plugin host should
 use capability-scoped out-of-process RPC, not arbitrary native libraries in
 the UI. Project models, build tools and adapters should remain off the UI thread
 and preferably agent-side. No IntelliJ plugin or complete-feature compatibility

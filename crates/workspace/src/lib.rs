@@ -96,6 +96,9 @@ impl Workspace {
             | Operation::LanguageChange { .. }
             | Operation::LanguageClose { .. }
             | Operation::LanguageQuery { .. }
+            | Operation::LanguageFormat { .. }
+            | Operation::LanguageReferences { .. }
+            | Operation::LanguageDocumentSymbols { .. }
             | Operation::LanguageResolveUri { .. }
             | Operation::LanguageResolveCompletion { .. }
             | Operation::LanguageEvents

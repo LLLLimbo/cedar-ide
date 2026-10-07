@@ -79,8 +79,25 @@ fn main() {
                 let mut capabilities = if mode == "no-capabilities" {
                     json!({})
                 } else {
-                    json!({"textDocumentSync":{"openClose":true,"change":if mode == "incremental" {2} else {1}}, "completionProvider":{"resolveProvider":true}, "definitionProvider":true,"hoverProvider":true})
+                    json!({"textDocumentSync":{"openClose":true,"change":if mode == "incremental" {2} else {1}}, "completionProvider":{"resolveProvider":true}, "definitionProvider":true,"hoverProvider":true,"documentFormattingProvider":true,"referencesProvider":true,"documentSymbolProvider":true})
                 };
+                for capability in [
+                    "documentFormattingProvider",
+                    "referencesProvider",
+                    "documentSymbolProvider",
+                ] {
+                    match mode {
+                        "navigation-no-provider" => {
+                            capabilities.as_object_mut().unwrap().remove(capability);
+                        }
+                        "navigation-false-provider" => capabilities[capability] = json!(false),
+                        "navigation-invalid-provider" => capabilities[capability] = json!("true"),
+                        "navigation-object-provider" => {
+                            capabilities[capability] = json!({"workDoneProgress":false})
+                        }
+                        _ => {}
+                    }
+                }
                 if mode == "resolve-no-provider" {
                     capabilities["completionProvider"] = json!({});
                 }
@@ -140,6 +157,40 @@ fn main() {
                 json!({"uri":message["params"]["textDocument"]["uri"],"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}})
             }
             "textDocument/hover" => json!({"contents":{"kind":"plaintext","value":"mock hover"}}),
+            "textDocument/formatting"
+            | "textDocument/references"
+            | "textDocument/documentSymbol" => {
+                assert!(initialized && !shutdown);
+                if mode == "navigation-error" {
+                    send(
+                        &mut output,
+                        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":"mock feature error","data":{"method":method}}}),
+                    );
+                    continue;
+                }
+                if mode == "navigation-null" {
+                    Value::Null
+                } else if mode == "navigation-empty" {
+                    json!([])
+                } else {
+                    let range =
+                        json!({"start":{"line":0,"character":0},"end":{"line":0,"character":1}});
+                    match method {
+                        "textDocument/formatting" => {
+                            json!([{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":"// mock formatted\n"}])
+                        }
+                        "textDocument/references" => {
+                            json!([{"uri":message["params"]["textDocument"]["uri"],"range":range}])
+                        }
+                        _ if mode == "symbols-flat" => {
+                            json!([{"name":"Hello","kind":5,"containerName":"demo","location":{"uri":message["params"]["textDocument"]["uri"],"range":range}}])
+                        }
+                        _ => {
+                            json!([{"name":"Hello","kind":5,"range":range,"selectionRange":range,"children":[{"name":"count","kind":8,"range":range,"selectionRange":range}]}])
+                        }
+                    }
+                }
+            }
             "mock/error" => {
                 send(
                     &mut output,

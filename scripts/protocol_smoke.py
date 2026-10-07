@@ -12,7 +12,7 @@ with tempfile.TemporaryDirectory(prefix="cedar-smoke-") as tmp:
         p.stdin.write(json.dumps({"id":counter,"op":{"type":kind,**kwargs}})+"\n");p.stdin.flush()
         result=json.loads(p.stdout.readline());assert result["id"]==counter
         return result["result"]
-    assert call("hello")["Ok"]["protocol"]==3
+    assert call("hello")["Ok"]["protocol"]==4
     content="class Hello { String greeting = \"你好\"; }\n"
     rev=call("write",path="src/Hello.java",text=content,expected_revision=None)["Ok"]["revision"]
     assert rev==hashlib.sha256(content.encode()).hexdigest()

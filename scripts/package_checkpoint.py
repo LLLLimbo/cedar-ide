@@ -40,7 +40,7 @@ def main():
             for path in binaries
         },
         "binary_platform": "Linux x86_64, cloud runtime tested; unsigned",
-        "windows": "Compilation checked only; no executable or runtime validation",
+        "windows": "No Windows executable in this package; GUI unverified. See the report and public CI for compiler/CLI checks",
         "remote_ssh": "Protocol chain tested; authenticated SSH not runtime tested",
         "reproducible_build_claim": False,
     }

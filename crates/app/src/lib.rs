@@ -1,6 +1,7 @@
 //! Cedar IDE — a native Rust frontend for a local or SSH workspace agent.
 pub mod completion;
 mod editor_state;
+mod language_navigation_results;
 mod language_results;
 mod language_sync;
 mod language_ui;
@@ -13,6 +14,7 @@ mod recovery_ui;
 mod run_ui;
 mod syntax;
 mod system_fonts;
+pub mod text_edits;
 mod worker;
 
 use cedar_client::ConnectionSpec;
@@ -1426,6 +1428,7 @@ impl CedarApp {
         {
             let editor_id = egui::Id::new(("editor", doc.id));
             editor_state::load(ui.ctx(), doc);
+            editor_state::history_shortcut(ui.ctx(), doc);
             let jump_to = doc.jump_to.take();
             let scroll_to = jump_to.or(doc.scroll_to.take());
             if let Some(index) = jump_to {

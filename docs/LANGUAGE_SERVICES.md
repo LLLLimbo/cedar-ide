@@ -1,12 +1,19 @@
-# Language services: implemented foundation and integration contract
+# Language services · phase 4 / 0.4.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-`cedar-language` is a Rust stdio LSP client library. It has deterministic tests
-against a separate Rust mock-server process and a successful real Eclipse JDT LS
-Java smoke test described below. Kotlin interoperability remains untested. Server
-installation, editor completion widgets and an interactive debugger are not
-provided by this crate. Check the main README for the current desktop/agent wiring.
+`cedar-language` is a Rust stdio LSP client library, integrated with the native
+editor through the workspace agent. Phase 4 adds formatting, references and
+document symbols using frontend/agent protocol **4**. Deterministic mock-process
+tests and a real JDT navigation/formatting probe exercise these paths. The
+[verification report](TEST_REPORT.md) separates candidate checks from final
+aggregate and native-window acceptance.
+
+Java/JDT and an older, deprecated community Kotlin server have historical real
+semantic checks; the inspected official Kotlin package remains blocked on its
+license/setup requirements. Server installation is explicit and external. The
+separate `cedar-debugger` crate has DAP transport but no integrated debugger UI.
+No general refactoring or complete Java/Kotlin IDE compatibility is claimed.
 
 ## Working APIs
 
@@ -30,6 +37,16 @@ provided by this crate. Check the main README for the current desktop/agent wiri
   remove its `data` in the result; retain client-side document/version context
   separately. This call uses the normal request deadline and frame limits and
   never executes an attached command or applies edits.
+- `formatting(uri, tab_size, insert_spaces)` requests plain document edits after
+  checking static `documentFormattingProvider`, open-document state and indentation
+  width 1–16. It returns JSON without applying it. The workspace operation also
+  requires an exact synchronized version; LSP itself has no formatting version field.
+- `references(uri, position, include_declaration)` checks `referencesProvider`
+  and returns the raw unversioned `Location[]`/null result. The frontend synchronizes
+  all matching open drafts and confines every navigation target through the agent.
+- `document_symbols(uri)` checks `documentSymbolProvider` and requests hierarchical
+  `DocumentSymbol[]` or flat `SymbolInformation[]`. Initialization advertises
+  hierarchical support; the frontend preserves whichever shape is returned.
 - `next_event(timeout)` returns typed `PublishDiagnostics`, other notifications,
   unsupported server requests, overflow notices, or closure. This is independent
   of waiting requests. A poll timeout is `None`, not an EOF indication.
@@ -107,6 +124,56 @@ limiter. Drop terminates the direct child, not every descendant. Reader/writer
 threads are not synchronously joined, since an unrelated descendant could retain
 a pipe. A production remote agent should add process-group supervision.
 
+## Phase-4 editing and navigation contract
+
+Start a trusted server from **Language** and select the matching language profile.
+**Format preview** first synchronizes the active draft, then opens read-only
+Before/After text. **Apply** revalidates its captured connection, server session,
+request, document identity, source text and edit version before one draft-only
+undo transaction. **Cancel**, Escape or closing the window discards the proposal.
+Tab switches, edits, close/reopen, reconnect, restart and newer requests invalidate
+it; cursor-only movement is allowed, and Apply maps the latest cursor. Shortcut-only Undo/Redo batches skip cursor-only history states; mixed input
+keeps native event order. The saved baseline/revision and project disk remain
+unchanged until a separate save.
+
+The shared [plain edit planner](TEXT_EDITS.md) accepts only `TextEdit[]`/null,
+up to 1,024 edits and independently 1 MiB source/result/inserted text. It rejects
+unsupported fields, annotated/resource edits, commands, overlap, ambiguous
+insertions, invalid UTF-16 positions, surrogate splits and CRLF interiors before
+any mutation. Null, empty and text-identical results do not add undo history.
+Formatting does not grant recovery ownership over an older unreviewed backup.
+
+**Find references** has an explicit **Include declaration** option. All matching
+open drafts must finish synchronization before dispatch; participant identity,
+text, edit version and acknowledged LSP version are captured and checked. A
+changed participant set or query position invalidates the pending response.
+Results remain labeled an **unversioned server snapshot**: synchronization is
+not proof of unopened-target freshness, and targets can change after the query.
+Only `Location[]`/null is accepted, with at most 1,024 locations, 16 KiB per URI
+and 512 KiB aggregate retained URI text. Locations are never applied as edits.
+
+**Refresh outline** is explicit, with no automatic symbol index. Hierarchical
+`DocumentSymbol[]` preserves nesting and navigates with `selectionRange`; flat
+`SymbolInformation[]` stays flat and retains its container as display context.
+Mixed/hybrid results fail. Up to 2,000 nodes, depth 32 (root depth 0) and 512 KiB
+retained text are accepted. Hierarchical source ranges, selection containment
+and child/parent containment are checked. Unknown numeric kinds get a generic
+label. Editing invalidates the outline.
+
+References and flat outline navigation use `LanguageResolveUri` on the agent;
+no frontend assumption converts a remote server URI into a local file. Navigation
+reuses dirty open targets unchanged and validates ranges against their current
+text. Selecting a local outline item supersedes older pending URI resolutions or
+file opens so a late reference result cannot override a newer navigation choice.
+See [frontend details](../crates/app/PHASE4_LANGUAGE.md) and
+[rename safety boundaries](REFACTORING_ROADMAP.md).
+
+The workspace agent uses a 60-second initialization deadline and normal
+10-second LSP request deadlines. These differ from any enclosing transport/test
+deadline. A timeout is shown; normal UI requests are not retried automatically.
+A successful didOpen/didChange transmission acknowledges the client's tracked
+version, not completion of the server's indexing work.
+
 ## Native UI and remote-agent integration
 
 1. Keep the process/client on the machine that owns the workspace. Put remote
@@ -114,7 +181,7 @@ a pipe. A production remote agent should add process-group supervision.
 2. Initialize off the render/event thread and show errors plus negotiated features.
 3. Open/change/close documents through these APIs. Debounce changes and preserve
    strictly increasing versions. Keep unsaved text on the owning editor side.
-4. Schedule completion/hover/definition requests asynchronously. Resolve a selected
+4. Schedule completion/hover/definition and explicit formatting/navigation requests asynchronously. Resolve a selected
    completion before acceptance if the server advertises a resolve provider, so
    lazy import edits are available. Preserve the original item for the resolve
    call. Reject stale UI results if the document/caret changed while a request
@@ -188,7 +255,7 @@ with the chosen release. The older fwcd server is
 [marked deprecated upstream](https://github.com/fwcd/kotlin-language-server), so it
 is not the default example.
 
-## Verified real Java smoke (2026-10-07)
+## Historical phase-2 Java smoke (2026-10-07)
 
 A Linux cloud test used the official Eclipse JDT LS **1.61.0** milestone archive
 `jdt-language-server-1.61.0-202609031315.tar.gz`, verified against Eclipse's published
@@ -237,10 +304,11 @@ cargo run -p cedar-language --example java_smoke -- /absolute/path/to/jdtls /abs
 The example creates and removes its own temporary fixture and server data. It
 exits nonzero unless actual semantic diagnostics, hover, expected completion,
 definition and corrected diagnostics all succeed. No server archive is bundled
-in this repository. Kotlin, large workspaces, Gradle/Maven imports and debugger
-adapters still need independent real-world validation.
+in this repository. Large workspaces and Gradle/Maven imports still need independent real-world
+validation. Separate historical Kotlin and debugpy checks are described in
+[KOTLIN_VALIDATION.md](KOTLIN_VALIDATION.md) and [DEBUGGING.md](DEBUGGING.md).
 
-### Independent JVM memory sample
+### Historical independent JVM memory sample
 
 The same official archive, OpenJDK runtime, `-Xmx512m` setting and seven-line
 synthetic Java fixture were run again on 2026-10-07. This repeated run used a new
@@ -283,7 +351,7 @@ cargo test -p cedar-language --example java_smoke
 ```
 
 
-### Verified lazy completion-import resolution
+### Historical lazy completion-import resolution
 
 The optional `--resolve-imports` mode reran the same official JDT LS 1.61.0
 milestone and synthetic project on 2026-10-07, with the same JVM options. All
@@ -321,17 +389,60 @@ process regressions cover negotiation, absent/false providers, input/output shap
 opaque-field preservation, error responses, deadlines, notifications during a
 pending resolve, frame-size bounds and absence of command execution.
 
+## Phase-4 real JDT agent probe (2026-10-07)
+
+`scripts/jdt_navigation_smoke.py` runs the actual stdio workspace agent against
+installed JDT LS 1.61.0 (reported `1.61.0-SNAPSHOT`) and a fresh synthetic Eclipse
+project. The captured run passed **10 checks** in **13.236 seconds**:
+
+- Synchronized two unsaved Java drafts; references included one declaration and
+  two calls from the second unsaved buffer
+- Returned a real class with two method outline entries
+- Returned 12 plain formatting edits, interpreted in UTF-16, preserving Chinese
+  text; a synchronized formatted draft was idempotent
+- Rejected a stale expected formatting version before contacting the server
+- Rejected an outside-workspace navigation URI
+- Closed documents and stopped the service; original Java source disk bytes were
+  unchanged and the temporary fixture was removed
+
+Evidence: [jdt-navigation-phase4.json](../PUBLICATION.md#verification-evidence). This agent
+probe does not exercise the native preview, Apply or editor undo implementation;
+the independent native checks are recorded in [TEST_REPORT.md](TEST_REPORT.md).
+The final Linux release window separately passed real JDT preview/Escape/Apply
+and single-step Undo/Redo after cursor and tab navigation, with unchanged Java
+source disk bytes. That session used warmed server data; it is not another cold-
+start or memory benchmark.
+
+The first cold attempt failed on the normal **10-second LSP references deadline**;
+a clean rerun produced the passing capture. The capture contains no readiness
+retry entry. The smoke script now permits explicit retries of read-only references
+within a **40-second semantic-readiness window**. Its outer agent response limits
+are normally **20 seconds**, or **75 seconds for language startup**, and do not
+extend the inner LSP deadlines. This test-only readiness behavior is not automatic
+UI retry or a performance/stability claim.
+
+```sh
+python3 scripts/jdt_navigation_smoke.py \
+  target/debug/cedar-agent /absolute/path/to/jdtls \
+  /absolute/path/to/jdt-navigation.json /absolute/path/to/java
+```
+
+No JDK/server is bundled or downloaded by this script. It does not execute
+returned commands or `workspace/applyEdit`. This small fixture is not acceptance
+of production Maven/Gradle projects or semantic rename.
+
 ## DAP: honest current boundary
 
-`cedar_language::dap` provides typed request/response/event envelopes, bounded
-read/write framing and a minimal initialize-request constructor. Unit tests prove
-its envelope differs from LSP and that initialization, responses and events round
-trip. There is no DAP process router or integrated debugging session yet: no launch,
-attach, breakpoints, configurationDone ordering, stepping, stack inspection,
-variables, watch expressions or debug console. Those require adapter-specific
-configuration, request multiplexing and native UI work. The
-[official DAP overview](https://microsoft.github.io/debug-adapter-protocol/overview)
-describes that lifecycle; the shared Content-Length header alone is insufficient.
+`cedar_language::dap` supplies typed envelopes and bounded framing.
+`cedar-debugger` separately provides asynchronous process transport, response/event
+routing and launch handles. Phase 2 used real debugpy for a Python breakpoint,
+stack/scope/variables, continue/output and termination; these are retained
+historical transport checks, not an integrated native or remote debugger.
+Java debugging, debugger UI, adapter/project configuration, reliable general
+process-tree cleanup and listener security remain outside the implemented
+end-to-end path. See [DEBUGGING.md](DEBUGGING.md) and the
+[official DAP overview](https://microsoft.github.io/debug-adapter-protocol/overview).
+The shared Content-Length header alone does not make DAP interchangeable with LSP.
 
 ## Verification and protocol references
 

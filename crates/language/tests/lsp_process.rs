@@ -551,3 +551,252 @@ fn completion_resolve_enforces_frame_limit_without_poisoning_connection() {
     assert_eq!(resolved["detail"], "demo.Hello");
     client.shutdown().unwrap();
 }
+
+#[test]
+fn formatting_references_and_symbols_use_exact_static_lsp_contracts() {
+    let temp = tempfile::tempdir().unwrap();
+    let audit_path = temp.path().join("navigation.jsonl");
+    let client = ready("navigation-object-provider", Some(&audit_path));
+    let uri = "file:///mock/space%20%23%20%E4%BD%A0.java";
+    client.did_open(uri, "java", 7, "class Hello {}").unwrap();
+    let formatted = client.formatting(uri, 1, true).unwrap();
+    assert_eq!(formatted[0]["newText"], "// mock formatted\n");
+    client.formatting(uri, 16, false).unwrap();
+    let position = Position {
+        line: 2,
+        character: 3,
+    };
+    let references = client.references(uri, position, false).unwrap();
+    assert_eq!(references[0]["uri"], uri);
+    client
+        .references(
+            uri,
+            Position {
+                line: i32::MAX as u32,
+                character: i32::MAX as u32,
+            },
+            true,
+        )
+        .unwrap();
+    let symbols = client.document_symbols(uri).unwrap();
+    assert_eq!(symbols[0]["name"], "Hello");
+    assert_eq!(symbols[0]["children"][0]["name"], "count");
+    client.shutdown().unwrap();
+    let audit: Vec<Value> = std::fs::read_to_string(audit_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let capabilities = &audit[0]["params"]["capabilities"];
+    assert_eq!(capabilities["workspace"]["applyEdit"], false);
+    assert!(capabilities["workspace"].get("workspaceEdit").is_none());
+    assert_eq!(
+        capabilities["textDocument"]["formatting"],
+        json!({"dynamicRegistration":false})
+    );
+    assert_eq!(
+        capabilities["textDocument"]["references"],
+        json!({"dynamicRegistration":false})
+    );
+    assert_eq!(
+        capabilities["textDocument"]["documentSymbol"],
+        json!({"dynamicRegistration":false,"hierarchicalDocumentSymbolSupport":true})
+    );
+    let formatting: Vec<_> = audit
+        .iter()
+        .filter(|v| v["method"] == "textDocument/formatting")
+        .collect();
+    assert_eq!(
+        formatting[0]["params"],
+        json!({"textDocument":{"uri":uri},"options":{"tabSize":1,"insertSpaces":true}})
+    );
+    assert_eq!(
+        formatting[1]["params"],
+        json!({"textDocument":{"uri":uri},"options":{"tabSize":16,"insertSpaces":false}})
+    );
+    let references: Vec<_> = audit
+        .iter()
+        .filter(|v| v["method"] == "textDocument/references")
+        .collect();
+    assert_eq!(
+        references[0]["params"],
+        json!({"textDocument":{"uri":uri},"position":position,"context":{"includeDeclaration":false}})
+    );
+    assert_eq!(
+        references[1]["params"]["context"],
+        json!({"includeDeclaration":true})
+    );
+    let symbols = audit
+        .iter()
+        .find(|v| v["method"] == "textDocument/documentSymbol")
+        .unwrap();
+    assert_eq!(symbols["params"], json!({"textDocument":{"uri":uri}}));
+    assert!(!audit
+        .iter()
+        .any(|v| v["method"] == "workspace/executeCommand"
+            || v["method"] == "workspace/applyEdit"
+            || v["method"] == "textDocument/rename"));
+}
+
+#[test]
+fn new_document_features_require_initialization_open_document_and_live_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let audit_path = temp.path().join("lifecycle.jsonl");
+    let client = LspClient::spawn(config("normal", Some(&audit_path)), options()).unwrap();
+    let uri = "file:///mock/Hello.java";
+    let require_invalid_state = || {
+        assert!(matches!(
+            client.formatting(uri, 4, true),
+            Err(Error::InvalidState(_))
+        ));
+        assert!(matches!(
+            client.references(uri, Position::default(), true),
+            Err(Error::InvalidState(_))
+        ));
+        assert!(matches!(
+            client.document_symbols(uri),
+            Err(Error::InvalidState(_))
+        ));
+    };
+    require_invalid_state();
+    client.initialize(None, Value::Null).unwrap();
+    require_invalid_state();
+    client.did_open(uri, "java", 1, "class Hello {}").unwrap();
+    client.did_close(uri).unwrap();
+    require_invalid_state();
+    client.shutdown().unwrap();
+    require_invalid_state();
+    let audit = std::fs::read_to_string(audit_path).unwrap();
+    for method in [
+        "textDocument/formatting",
+        "textDocument/references",
+        "textDocument/documentSymbol",
+    ] {
+        assert!(
+            !audit.contains(method),
+            "rejected {method} must never reach the server"
+        );
+    }
+}
+
+#[test]
+fn new_document_features_reject_absent_false_and_invalid_static_capabilities() {
+    for mode in [
+        "no-capabilities",
+        "navigation-no-provider",
+        "navigation-false-provider",
+        "navigation-invalid-provider",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let audit_path = temp.path().join("unsupported.jsonl");
+        let client = ready(mode, Some(&audit_path));
+        let uri = "file:///mock/Hello.java";
+        if mode != "no-capabilities" {
+            client.did_open(uri, "java", 1, "class Hello {}").unwrap();
+        }
+        assert!(matches!(
+            client.formatting(uri, 4, true),
+            Err(Error::Unsupported(_))
+        ));
+        assert!(matches!(
+            client.references(uri, Position::default(), true),
+            Err(Error::Unsupported(_))
+        ));
+        assert!(matches!(
+            client.document_symbols(uri),
+            Err(Error::Unsupported(_))
+        ));
+        client.shutdown().unwrap();
+        let audit = std::fs::read_to_string(audit_path).unwrap();
+        for method in [
+            "textDocument/formatting",
+            "textDocument/references",
+            "textDocument/documentSymbol",
+        ] {
+            assert!(!audit.contains(method));
+        }
+    }
+}
+
+#[test]
+fn invalid_formatting_options_and_unsigned31_positions_never_reach_server() {
+    let temp = tempfile::tempdir().unwrap();
+    let audit_path = temp.path().join("bounds.jsonl");
+    let client = ready("normal", Some(&audit_path));
+    let uri = "file:///mock/Hello.java";
+    client.did_open(uri, "java", 1, "class Hello {}").unwrap();
+    for tab_size in [0, 17, i32::MAX as u32, u32::MAX] {
+        assert!(matches!(
+            client.formatting(uri, tab_size, true),
+            Err(Error::InvalidState(_))
+        ));
+    }
+    for position in [
+        Position {
+            line: i32::MAX as u32 + 1,
+            character: 0,
+        },
+        Position {
+            line: 0,
+            character: i32::MAX as u32 + 1,
+        },
+        Position {
+            line: u32::MAX,
+            character: u32::MAX,
+        },
+    ] {
+        assert!(matches!(
+            client.references(uri, position, true),
+            Err(Error::InvalidState(_))
+        ));
+    }
+    client.shutdown().unwrap();
+    let audit = std::fs::read_to_string(audit_path).unwrap();
+    assert!(!audit.contains("textDocument/formatting"));
+    assert!(!audit.contains("textDocument/references"));
+}
+
+#[test]
+fn new_features_preserve_null_empty_flat_and_server_error_results() {
+    let uri = "file:///mock/Hello.java";
+    for (mode, expected) in [
+        ("navigation-null", Value::Null),
+        ("navigation-empty", json!([])),
+    ] {
+        let client = ready(mode, None);
+        client.did_open(uri, "java", 1, "class Hello {}").unwrap();
+        assert_eq!(client.formatting(uri, 4, true).unwrap(), expected);
+        assert_eq!(
+            client.references(uri, Position::default(), true).unwrap(),
+            expected
+        );
+        assert_eq!(client.document_symbols(uri).unwrap(), expected);
+        client.shutdown().unwrap();
+    }
+    let client = ready("symbols-flat", None);
+    client.did_open(uri, "java", 1, "class Hello {}").unwrap();
+    let symbols = client.document_symbols(uri).unwrap();
+    assert_eq!(symbols[0]["location"]["uri"], uri);
+    assert_eq!(symbols[0]["containerName"], "demo");
+    assert!(symbols[0].get("children").is_none());
+    client.shutdown().unwrap();
+    let client = ready("navigation-error", None);
+    client.did_open(uri, "java", 1, "class Hello {}").unwrap();
+    for (result, method) in [
+        (client.formatting(uri, 4, true), "textDocument/formatting"),
+        (
+            client.references(uri, Position::default(), true),
+            "textDocument/references",
+        ),
+        (client.document_symbols(uri), "textDocument/documentSymbol"),
+    ] {
+        assert!(
+            matches!(result, Err(Error::Remote { code: -32602, data: Some(data), .. }) if data["method"] == method)
+        );
+    }
+    assert_eq!(
+        client.request("mock/echo", json!({"alive":true})).unwrap()["alive"],
+        true
+    );
+    client.shutdown().unwrap();
+}

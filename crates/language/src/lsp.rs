@@ -180,6 +180,9 @@ impl LspClient {
                         "completion": {"dynamicRegistration":false,"completionItem":{"snippetSupport":false,"documentationFormat":["plaintext","markdown"],"resolveSupport":{"properties":["documentation","detail","additionalTextEdits"]}}},
                         "hover": {"dynamicRegistration":false,"contentFormat":["plaintext","markdown"]},
                         "definition": {"dynamicRegistration":false,"linkSupport":true},
+                        "formatting": {"dynamicRegistration":false},
+                        "references": {"dynamicRegistration":false},
+                        "documentSymbol": {"dynamicRegistration":false,"hierarchicalDocumentSymbolSupport":true},
                         "publishDiagnostics": {"relatedInformation":true,"versionSupport":true,"codeDescriptionSupport":true,"dataSupport":true}
                     }
                 }
@@ -364,6 +367,58 @@ impl LspClient {
         self.feature("hoverProvider", "textDocument/hover", uri, position)
     }
 
+    /// Return plain TextEdit[] or null unchanged. The caller must validate the
+    /// entire result against its captured document version before applying it.
+    /// This never applies edits or executes server commands. Cedar limits tab
+    /// size to 1..=16 rather than accepting arbitrary LSP unsigned integers.
+    pub fn formatting(
+        &self,
+        uri: &str,
+        tab_size: u32,
+        insert_spaces: bool,
+    ) -> Result<Value, Error> {
+        let _gate = self.gate.read().unwrap();
+        self.ready_document("documentFormattingProvider", "textDocument/formatting", uri)?;
+        if !(1..=16).contains(&tab_size) {
+            return Err(Error::InvalidState(
+                "formatting tab size must be between 1 and 16".into(),
+            ));
+        }
+        self.rpc.request(
+            "textDocument/formatting",
+            json!({"textDocument":{"uri":uri},"options":{"tabSize":tab_size,"insertSpaces":insert_spaces}}),
+        )
+    }
+
+    /// Return Location[] or null unchanged. References do not use LocationLink
+    /// or carry target document versions; callers must confine navigation URIs.
+    pub fn references(
+        &self,
+        uri: &str,
+        position: Position,
+        include_declaration: bool,
+    ) -> Result<Value, Error> {
+        let _gate = self.gate.read().unwrap();
+        self.ready_document("referencesProvider", "textDocument/references", uri)?;
+        validate_position(position)?;
+        self.rpc.request(
+            "textDocument/references",
+            json!({"textDocument":{"uri":uri},"position":position,"context":{"includeDeclaration":include_declaration}}),
+        )
+    }
+
+    /// Return DocumentSymbol[], SymbolInformation[], or null unchanged.
+    /// Hierarchical results refer to this document; flat results still require
+    /// URI confinement. Consumers must not infer a hierarchy from flat results.
+    pub fn document_symbols(&self, uri: &str) -> Result<Value, Error> {
+        let _gate = self.gate.read().unwrap();
+        self.ready_document("documentSymbolProvider", "textDocument/documentSymbol", uri)?;
+        self.rpc.request(
+            "textDocument/documentSymbol",
+            json!({"textDocument":{"uri":uri}}),
+        )
+    }
+
     /// Escape hatch for extensions after initialization. Caller owns capability
     /// checks and decoding. Do not use this to bypass the lifecycle/document APIs.
     pub fn request(&self, method: &str, params: Value) -> Result<Value, Error> {
@@ -478,6 +533,16 @@ impl LspClient {
         position: Position,
     ) -> Result<Value, Error> {
         let _gate = self.gate.read().unwrap();
+        self.ready_document(capability, method, uri)?;
+        validate_position(position)?;
+        self.rpc.request(
+            method,
+            json!({"textDocument":{"uri":uri},"position":position}),
+        )
+    }
+
+    /// The caller holds the lifecycle gate for the entire operation.
+    fn ready_document(&self, capability: &str, method: &str, uri: &str) -> Result<(), Error> {
         let (capabilities, _) = self.ready()?;
         if !capabilities
             .get(capability)
@@ -485,19 +550,20 @@ impl LspClient {
         {
             return Err(Error::Unsupported(method.into()));
         }
-        if position.line > i32::MAX as u32 || position.character > i32::MAX as u32 {
-            return Err(Error::InvalidState(
-                "LSP positions must fit unsigned 31-bit integers".into(),
-            ));
-        }
         if !self.documents.lock().unwrap().contains_key(uri) {
             return Err(Error::InvalidState("document is not open".into()));
         }
-        self.rpc.request(
-            method,
-            json!({"textDocument":{"uri":uri},"position":position}),
-        )
+        Ok(())
     }
+}
+
+fn validate_position(position: Position) -> Result<(), Error> {
+    if position.line > i32::MAX as u32 || position.character > i32::MAX as u32 {
+        return Err(Error::InvalidState(
+            "LSP positions must fit unsigned 31-bit integers".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn synchronization(capabilities: &Value) -> Result<SyncCapabilities, Error> {
