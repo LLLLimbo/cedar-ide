@@ -7,7 +7,10 @@
 //! capability is involved. Every fixture has a five-second internal cap.
 #![cfg(windows)]
 
-use cedar_winprocess::{CaptureProgress, LaunchSpec, ProcessExit, Stream, WindowsCommand};
+use cedar_winprocess::{
+    CaptureProgress, LaunchSpec, ProcessExit, StdinCancelOutcome, StdinWriteProgress, Stream,
+    WindowsCommand, MAX_STDIN_WRITE_BYTES,
+};
 use std::fs;
 use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -22,8 +25,8 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, GetCurrentProcess, GetExitCodeProcess, GetProcessHandleCount, OpenProcess,
-    WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    CreateEventW, GetCurrentProcess, GetExitCodeProcess, GetProcessHandleCount, GetProcessId,
+    OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
 };
 
 const WAIT: Duration = Duration::from_secs(3);
@@ -687,5 +690,390 @@ fn cleanup_cycle(dir: &Path) {
     command.terminate_tree().unwrap();
     command.cancel_capture_and_complete().unwrap();
     command.cancel_capture_and_complete().unwrap();
+    wait_empty_job(&command);
+}
+
+fn launch_piped(dir: &Path, arguments: Vec<String>) -> WindowsCommand {
+    WindowsCommand::spawn_suspended_with_piped_stdin(&spec(dir, arguments))
+        .expect("spawn suspended fixture with piped stdin")
+}
+
+fn finish_write(command: &mut WindowsCommand, mut progress: StdinWriteProgress) -> usize {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        match progress {
+            StdinWriteProgress::Written(n) => return n,
+            StdinWriteProgress::Pending => {}
+            other => panic!("write lost its completion: {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "stdin write did not complete");
+        thread::sleep(Duration::from_millis(1));
+        progress = command.poll_stdin_write().unwrap();
+    }
+}
+
+fn send_input(command: &mut WindowsCommand, input: &[u8]) {
+    let mut remaining = input;
+    while !remaining.is_empty() {
+        let chunk = &remaining[..remaining.len().min(MAX_STDIN_WRITE_BYTES)];
+        let progress = command.begin_stdin_write(chunk).unwrap();
+        let written = finish_write(command, progress);
+        assert!(written > 0 && written <= chunk.len());
+        remaining = &remaining[written..];
+    }
+    assert_eq!(
+        command.poll_stdin_write().unwrap(),
+        StdinWriteProgress::Idle
+    );
+}
+
+fn fill_stdin(command: &mut WindowsCommand) {
+    let bytes = vec![b'x'; MAX_STDIN_WRITE_BYTES];
+    for _ in 0..16 {
+        match command.begin_stdin_write(&bytes).unwrap() {
+            StdinWriteProgress::Written(n) => assert!(n > 0 && n <= bytes.len()),
+            StdinWriteProgress::Pending => {
+                assert_eq!(
+                    command.poll_stdin_write().unwrap(),
+                    StdinWriteProgress::Pending
+                );
+                return;
+            }
+            other => panic!("unexpected fill state: {other:?}"),
+        }
+    }
+    panic!("nonreading fixture did not block stdin within 1 MiB");
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn piped_stdin_round_trips_multiple_chunks_binary_bytes_and_eof_exactly() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    let mut command = launch_piped(dir.path(), vec!["stdin-echo".into()]);
+    // Job membership still precedes resume in the new constructor.
+    assert_eq!(command.active_processes().unwrap(), 1);
+    assert_eq!(
+        command.poll_stdin_write().unwrap(),
+        StdinWriteProgress::Idle
+    );
+    assert_eq!(
+        command
+            .begin_stdin_write(&vec![0; MAX_STDIN_WRITE_BYTES + 1])
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        command.begin_stdin_write(&[]).unwrap(),
+        StdinWriteProgress::Written(0)
+    );
+    command.resume().unwrap();
+    let input: Vec<u8> = (0..MAX_STDIN_WRITE_BYTES * 3 + 17)
+        .map(|index| (index % 256) as u8)
+        .collect();
+    send_input(&mut command, &input);
+    command.close_stdin().unwrap();
+    command.close_stdin().unwrap();
+    assert_eq!(
+        command.poll_stdin_write().unwrap(),
+        StdinWriteProgress::Closed
+    );
+    assert_eq!(
+        command.begin_stdin_write(b"closed").unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    let mut output = Output::default();
+    assert_eq!(output.complete(&mut command).code, 0);
+    assert_eq!(output.stdout, [input.as_slice(), b"\nstdin-eof\n"].concat());
+    assert_eq!(
+        output.stderr,
+        format!("stdin-bytes:{}\n", input.len()).as_bytes()
+    );
+    wait_empty_job(&command);
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn piped_stdin_empty_close_and_default_nul_both_deliver_eof() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    let mut piped = launch_piped(dir.path(), vec!["null-stdin".into()]);
+    piped.close_stdin().unwrap(); // EOF is valid even before resume
+    piped.close_stdin().unwrap();
+    piped.resume().unwrap();
+    let mut output = Output::default();
+    assert_eq!(output.complete(&mut piped).code, 0);
+    assert_eq!(output.stdout, b"stdin-eof\n");
+    wait_empty_job(&piped);
+    let mut nul = launch(dir.path(), vec!["null-stdin".into()]);
+    assert_eq!(nul.poll_stdin_write().unwrap(), StdinWriteProgress::Closed);
+    assert_eq!(
+        nul.begin_stdin_write(b"not piped").unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    nul.close_stdin().unwrap();
+    assert_eq!(
+        nul.cancel_stdin_and_complete().unwrap(),
+        StdinCancelOutcome::Idle
+    );
+    nul.resume().unwrap();
+    let mut output = Output::default();
+    assert_eq!(output.complete(&mut nul).code, 0);
+    assert_eq!(output.stdout, b"stdin-eof\n");
+    wait_empty_job(&nul);
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn piped_stdin_full_pipe_cancels_while_child_lives_and_close_is_repeatable() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    let ready = dir.path().join("idle.pid");
+    let mut command = launch_piped(dir.path(), vec!["idle".into(), text_path(&ready)]);
+    command.resume().unwrap();
+    let root = ObservedProcess::from_file(&ready);
+    let original_pid = command.process_id();
+    assert_eq!(
+        original_pid,
+        fs::read_to_string(&ready).unwrap().parse::<u32>().unwrap()
+    );
+    // SAFETY: this held observation handle has query rights and identifies the
+    // already-observed fixture. The diagnostic PID is never used for cleanup.
+    // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessid
+    let observed_pid = unsafe { GetProcessId(root.0.as_raw_handle()) };
+    assert_ne!(observed_pid, 0, "{}", io::Error::last_os_error());
+    assert_eq!(original_pid, observed_pid);
+    fill_stdin(&mut command);
+    assert_eq!(
+        command
+            .begin_stdin_write(b"no replacement")
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        command.close_stdin().unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    let started = Instant::now();
+    assert_eq!(
+        command.cancel_stdin_and_complete().unwrap(),
+        StdinCancelOutcome::Cancelled
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(root.alive(), "cancelling stdin terminated the live reader");
+    command.close_stdin().unwrap();
+    assert_eq!(
+        command.cancel_stdin_and_complete().unwrap(),
+        StdinCancelOutcome::Idle
+    );
+    assert_eq!(
+        command.poll_stdin_write().unwrap(),
+        StdinWriteProgress::Closed
+    );
+    command.terminate_tree().unwrap();
+    let mut output = Output::default();
+    assert_ne!(output.complete(&mut command).code, LIFETIME_CAP_EXIT);
+    assert_eq!(output.stdout, b"idle-stdout-ready\n");
+    assert_eq!(output.stderr, b"idle-stderr-ready\n");
+    root.assert_terminated();
+    wait_empty_job(&command);
+    assert_eq!(command.process_id(), original_pid); // identity survives exit
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn piped_stdin_early_exit_reports_pending_write_failure_without_replay() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    let mut command = launch_piped(dir.path(), vec!["exit".into(), "23".into()]);
+    fill_stdin(&mut command); // pending before any fixture code runs
+    command.resume().unwrap();
+    let deadline = Instant::now() + WAIT;
+    let error = loop {
+        match command.poll_stdin_write() {
+            Ok(StdinWriteProgress::Pending) => {}
+            Err(error) => break error,
+            other => panic!("nonreading exited child incorrectly completed input: {other:?}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pending write survived child exit"
+        );
+        thread::sleep(Duration::from_millis(1));
+    };
+    use windows_sys::Win32::Foundation::{
+        ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED,
+    };
+    assert!(
+        matches!(
+            error.raw_os_error().map(|n| n as u32),
+            Some(ERROR_BROKEN_PIPE | ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED)
+        ),
+        "unexpected write failure: {error}"
+    );
+    assert_eq!(
+        command.poll_stdin_write().unwrap(),
+        StdinWriteProgress::Closed
+    );
+    assert_eq!(
+        command.begin_stdin_write(b"no replay").unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    command.close_stdin().unwrap();
+    assert_eq!(Output::default().complete(&mut command).code, 23);
+    wait_empty_job(&command);
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn piped_stdin_drop_joins_pending_input_and_output_and_terminates_owned_tree() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    let mut command = launch_piped(dir.path(), vec!["tree-live".into(), text_path(dir.path())]);
+    command.resume().unwrap();
+    wait_file(&dir.path().join("tree.ready"));
+    let root = ObservedProcess::from_file(&dir.path().join("root.pid"));
+    let child = ObservedProcess::from_file(&dir.path().join("branch.pid"));
+    let grandchild = ObservedProcess::from_file(&dir.path().join("leaf.pid"));
+    assert_job_accounts_for_live_fixtures(&command, 3);
+    fill_stdin(&mut command);
+    let mut output = Output::default();
+    output.round(&mut command);
+    let progress = output.round(&mut command);
+    assert!(!progress.stdout_eof && !progress.stderr_eof);
+    let started = Instant::now();
+    drop(command);
+    assert!(
+        started.elapsed() < WAIT,
+        "pending stdin delayed tree cleanup"
+    );
+    root.assert_terminated();
+    child.assert_terminated();
+    grandchild.assert_terminated();
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn piped_stdin_exact_handles_exclude_sentinel_and_allow_independent_eof() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    let sentinel = Sentinel::inheritable();
+    let mut first = launch_piped(
+        dir.path(),
+        vec!["stdin-echo".into(), (sentinel.0 as usize).to_string()],
+    );
+    let ready = dir.path().join("second.pid");
+    let mut second = launch_piped(dir.path(), vec!["idle".into(), text_path(&ready)]);
+    first.resume().unwrap();
+    second.resume().unwrap();
+    let second_root = ObservedProcess::from_file(&ready);
+    send_input(&mut first, b"first input only");
+    first.close_stdin().unwrap();
+    let mut output = Output::default();
+    assert_eq!(output.complete(&mut first).code, 0);
+    let newline = output
+        .stdout
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap();
+    assert!(output.stdout[..newline]
+        .starts_with(format!("sentinel-probed:{}:", sentinel.0 as usize).as_bytes()));
+    assert_eq!(
+        &output.stdout[newline + 1..],
+        b"first input only\nstdin-eof\n"
+    );
+    assert_eq!(output.stderr, b"stdin-bytes:16\n");
+    // SAFETY: the held event is queried only; signaling this exact parent's
+    // object would prove a leaked handle even if the child reuses the number.
+    assert_eq!(unsafe { WaitForSingleObject(sentinel.0, 0) }, WAIT_TIMEOUT);
+    assert!(second_root.alive(), "closing first job affected the second");
+    fill_stdin(&mut second);
+    assert_eq!(
+        second.cancel_stdin_and_complete().unwrap(),
+        StdinCancelOutcome::Cancelled
+    );
+    second.terminate_tree().unwrap();
+    let mut second_output = Output::default();
+    assert_ne!(second_output.complete(&mut second).code, LIFETIME_CAP_EXIT);
+    assert_eq!(second_output.stdout, b"idle-stdout-ready\n");
+    assert_eq!(second_output.stderr, b"idle-stderr-ready\n");
+    second_root.assert_terminated();
+    wait_empty_job(&first);
+    wait_empty_job(&second);
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn piped_stdin_owner_crash_with_pending_io_kills_child_without_outer_cleanup() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    // As in the NUL-stdin crash test, no driver job can mask inner ownership.
+    let mut owner = OwnerGuard(
+        Command::new(fixture())
+            .arg("crash-owner-piped")
+            .arg(dir.path())
+            .current_dir(dir.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("start independent owner with pending stdio"),
+    );
+    wait_file(&dir.path().join("owner.ready"));
+    assert!(owner.0.try_wait().unwrap().is_none());
+    let child = ObservedProcess::from_file(&dir.path().join("owned-child.pid"));
+    assert!(child.alive());
+    fs::write(dir.path().join("owner.crash"), b"crash with pending input").unwrap();
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Some(exit) = owner.0.try_wait().unwrap() {
+            assert_eq!(exit.code(), Some(79), "owner did not take crash path");
+            break;
+        }
+        assert!(Instant::now() < deadline, "piped owner did not exit");
+        thread::sleep(Duration::from_millis(5));
+    }
+    child.assert_terminated(); // before any OwnerGuard cleanup
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn piped_stdin_repeated_failed_suspended_and_completed_cleanup_does_not_leak_handles() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    piped_cleanup_cycle(dir.path());
+    let baseline = handle_count();
+    for _ in 0..12 {
+        piped_cleanup_cycle(dir.path());
+    }
+    let first_batch = handle_count();
+    for _ in 0..12 {
+        piped_cleanup_cycle(dir.path());
+    }
+    let final_count = handle_count();
+    assert!(first_batch <= baseline + 2 && final_count <= baseline + 2,
+        "piped-stdin handle growth: baseline={baseline}, batch1={first_batch}, batch2={final_count}");
+}
+
+fn piped_cleanup_cycle(dir: &Path) {
+    let mut invalid = spec(dir, vec![]);
+    invalid.executable = dir.join("missing.exe");
+    assert!(WindowsCommand::spawn_suspended_with_piped_stdin(&invalid).is_err());
+    let mut suspended = launch_piped(dir, vec!["exit".into(), "0".into()]);
+    fill_stdin(&mut suspended);
+    let root = ObservedProcess(suspended.observation_handle().unwrap());
+    drop(suspended);
+    root.assert_terminated();
+    let mut command = launch_piped(dir, vec!["stdin-echo".into()]);
+    command.resume().unwrap();
+    send_input(&mut command, b"one completed write");
+    command.close_stdin().unwrap();
+    assert_eq!(Output::default().complete(&mut command).code, 0);
+    assert_eq!(
+        command.cancel_stdin_and_complete().unwrap(),
+        StdinCancelOutcome::Idle
+    );
     wait_empty_job(&command);
 }

@@ -47,6 +47,9 @@ pub(crate) struct ProcessOwner {
     // (KILL_ON_JOB_CLOSE) before RootHandles performs its final root wait.
     job: OwnedHandle,
     child: RootHandles,
+    // Creation-time diagnostic identity only. Every operation uses owned
+    // handles, never PID lookup; Windows can eventually recycle this number.
+    process_id: u32,
     resumed: bool,
     termination_requested: bool,
     exit: Option<ProcessExit>,
@@ -120,6 +123,7 @@ impl ProcessOwner {
         let mut owner = Self {
             job,
             child,
+            process_id: info.dwProcessId,
             resumed: false,
             termination_requested: false,
             exit: None,
@@ -127,6 +131,10 @@ impl ProcessOwner {
         before_validation(&mut owner)?;
         owner.verify_membership()?;
         Ok(owner)
+    }
+
+    pub(crate) fn process_id(&self) -> u32 {
+        self.process_id
     }
 
     /// A non-inheritable duplicate for independently observing this exact root.

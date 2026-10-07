@@ -1,4 +1,4 @@
-# Windows process ownership · checkpoints 7A / 7B
+# Windows process ownership · checkpoints 7A / 7B / 9A
 
 ## Scope and staged activation
 
@@ -34,7 +34,11 @@ fixture. Microsoft's [console design](https://github.com/microsoft/terminal/blob
 permits a console host even without a visible window; its actual identity was
 not queried. Revision 0.7.1 therefore treats known live fixtures as a lower bound
 while retaining exact zero-member Job cleanup and each held process observation.
-The new agent-task suite still requires a complete exact-commit run.
+Both suites subsequently passed at 0.7.1 and again at
+[0.8.0](https://github.com/LLLLimbo/cedar-ide/actions/runs/37685061425):
+all thirteen primitive lifecycle and seven isolated-agent/bundle cases executed.
+Checkpoint 9A adds optional cancellable stdin and requires a new exact-commit
+run, including its eight additional lifecycle and nine additional Windows units.
 
 Git, legacy synchronous Run, persistent LSP and DAP remain outside this Windows
 activation. Their direct backend rejections stay in place, not merely hidden
@@ -136,6 +140,63 @@ wait, then handle release. Failed launch explicitly closes parent writer copies
 before capture cleanup. Components separately handle partial initialization and
 unwind. Kernel stalls may delay cleanup; freeing live I/O storage is never a
 valid deadline workaround. The primitive is not an OS-enforced hard-time sandbox.
+
+## Piped stdin prerequisite (not an LSP activation)
+
+The explicit `WindowsCommand::spawn_suspended_with_piped_stdin` constructor
+retains the atomic job and exact three-stdio-handle launch. Ordinary
+`spawn_suspended` tasks keep NUL input. An outbound byte pipe gives the parent
+an overlapped write endpoint and the child a synchronous reader. Both directions
+share the existing current-logon DACL, first-instance exclusivity, local-only
+mode, parent-client PID verification and delayed child-end inheritance.
+
+The writer owns one event and one pinned 64-KiB buffer/OVERLAPPED allocation.
+It copies the bounded caller chunk before submission and holds no Rust buffer
+reference while Windows owns the operation. There is at most one outstanding
+write and no queue or thread. Begin and poll return the actual byte count once;
+short completion is observable, and zero progress for nonempty input fails with
+`WriteZero`. Large frames remain a higher-level responsibility. The 64-KiB pipe
+reservation is advisory, as documented by
+[CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew).
+
+An idle close releases the writer for child EOF. A close with outstanding
+completion returns `WouldBlock`, leaving ownership intact. Explicit cancellation
+requests `CancelIoEx`, waits for completion even after `ERROR_NOT_FOUND`, and
+closes the pipe. It distinguishes no pending I/O, completion winning with an
+actual byte count, and `ERROR_OPERATION_ABORTED`. The latter does not prove that
+zero bytes reached the child. Every write error is terminal for this pipe;
+future LSP framing must poison the connection after partial timeout/error rather
+than resend a possibly transmitted frame. Argument-bound and already-pending
+rejections occur before submitting new bytes.
+[WriteFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-writefile)
+and [GetOverlappedResult](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-getoverlappedresult)
+define submission and completion; caller buffers are never lifetime-dependent.
+
+No `FlushFileBuffers` is used: on a pipe server it waits for client consumption.
+No `DisconnectNamedPipe` is used, because it discards unread pipe data.
+Write completion is transport acceptance, not language-server acknowledgment.
+See [FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
+and [DisconnectNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-disconnectnamedpipe).
+Drop requests job termination, joins input I/O, joins both captures even when
+input cleanup fails, waits for the root, and finally releases handles. Kernel
+completion can delay cleanup; the implementation does not promise a hard bound.
+
+New Windows units exercise real blocked writes, completion/cancel races,
+bounded submission, copied-buffer lifetime, immediate rejection after reader
+closure, inherited endpoint flags, collision/early-client rejection and partial
+connect cleanup. The pending-write round trip mutates and drops the caller's
+source while a real write remains pending, then verifies the originally submitted
+bytes exactly. It does not control Windows' internal data-copy timing.
+The short-count branch has a synthetic completion-count test:
+native byte pipes in `PIPE_WAIT` do not provide a deterministic short-success
+trigger, so no actual short OS write is claimed. New ignored lifecycle cases
+exercise multichunk binary round trips, exact stdout/stderr and EOF, unchanged
+NUL behavior, cancellation while a nonreading child is alive, early root exit,
+pending-I/O tree Drop, independent owners, sentinel exclusion, owner crash and
+repeated failed/suspended/completed handle counts. The existing Windows CI
+command selects them with `--ignored --test-threads=1`; Linux excludes the
+Windows target entirely. Cross-target clippy proves compilation only. New
+same-commit native results are required before any integration or activation.
 
 ## Inheritance is a host-wide constraint
 

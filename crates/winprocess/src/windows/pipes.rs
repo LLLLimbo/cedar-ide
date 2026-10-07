@@ -6,6 +6,7 @@
 
 use super::handles::{adopt, raw, ChildStdio};
 use super::security::PipeSecurity;
+use super::stdin::PendingWrite;
 use crate::{CaptureProgress, Stream};
 use std::cell::UnsafeCell;
 use std::io;
@@ -26,6 +27,7 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE,
     FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_INBOUND,
+    PIPE_ACCESS_OUTBOUND,
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE,
@@ -41,17 +43,31 @@ const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 pub(crate) struct PreparedStdio {
     pub(crate) child: ChildStdio,
     pub(crate) capture: CapturePipes,
+    pub(crate) stdin: Option<PendingWrite>,
 }
 
 impl PreparedStdio {
     pub(crate) fn new() -> io::Result<Self> {
+        Self::prepare(false)
+    }
+
+    pub(crate) fn with_piped_stdin() -> io::Result<Self> {
+        Self::prepare(true)
+    }
+
+    fn prepare(piped: bool) -> io::Result<Self> {
         let security = PipeSecurity::for_current_logon()?;
-        let stdin = nul_stdin()?;
+        let (stdin, child_stdin) = if piped {
+            let (writer, reader) = PendingWrite::connect(&random_pipe_name()?, &security)?;
+            (Some(writer), reader)
+        } else {
+            (None, nul_stdin()?)
+        };
         let (stdout_read, stdout) = capture_pipe(&random_pipe_name()?, &security)?;
         let (stderr_read, stderr) = capture_pipe(&random_pipe_name()?, &security)?;
         Ok(Self {
             child: ChildStdio {
-                stdin,
+                stdin: child_stdin,
                 stdout,
                 stderr,
             },
@@ -59,6 +75,7 @@ impl PreparedStdio {
                 stdout: stdout_read,
                 stderr: stderr_read,
             },
+            stdin,
         })
     }
 }
@@ -372,14 +389,14 @@ impl Drop for PendingRead {
     }
 }
 
-fn unexpected_client() -> io::Error {
+pub(super) fn unexpected_client() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
-        "unexpected client occupied the private capture pipe",
+        "unexpected client occupied the private stdio pipe",
     )
 }
 
-fn random_pipe_name() -> io::Result<Vec<u16>> {
+pub(super) fn random_pipe_name() -> io::Result<Vec<u16>> {
     let mut nonce = [0u8; 16];
     // SAFETY: nonce is writable, and system-preferred RNG accepts a null
     // algorithm handle. This produces no saved key, token or credential.
@@ -412,39 +429,58 @@ fn capture_pipe(name: &[u16], security: &PipeSecurity) -> io::Result<(PendingRea
     // SAFETY: opens only this just-created name. No retry/wait can attach to an
     // unexpectedly occupied pipe. Null attributes keep writer non-inheritable
     // until the server has verified that this process connected it.
-    let write = unsafe {
+    let write = open_child_endpoint(name, GENERIC_WRITE)?;
+    match read.poll(true)? {
+        Poll::Data(_) => {}
+        _ => return Err(io::Error::other("capture pipe connection did not complete")),
+    }
+    verify_child_endpoint(&read.pipe, &write)?;
+    Ok((read, write))
+}
+
+pub(super) fn open_child_endpoint(name: &[u16], access: u32) -> io::Result<OwnedHandle> {
+    // SAFETY: callers supply our terminated server name. The synchronous child
+    // endpoint stays non-inheritable until its server verifies the client PID.
+    unsafe {
         adopt(CreateFileW(
             name.as_ptr(),
-            GENERIC_WRITE,
+            access,
             0,
             null(),
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
             null_mut(),
-        ))?
-    };
-    match read.poll(true)? {
-        Poll::Data(_) => {}
-        _ => return Err(io::Error::other("capture pipe connection did not complete")),
+        ))
     }
+}
+
+pub(super) fn verify_child_endpoint(server: &OwnedHandle, child: &OwnedHandle) -> io::Result<()> {
     let mut client_pid = 0;
-    // SAFETY: read owns the connected server; pid output is writable.
-    if unsafe { GetNamedPipeClientProcessId(raw(&read.pipe), &mut client_pid) } == 0 {
+    // SAFETY: server owns the connected instance; pid output is writable.
+    if unsafe { GetNamedPipeClientProcessId(raw(server), &mut client_pid) } == 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: GetCurrentProcessId has no pointer arguments or ownership effect.
     if client_pid != unsafe { GetCurrentProcessId() } {
         return Err(unexpected_client());
     }
-    // SAFETY: only our verified writer becomes inheritable. The process worker
+    // SAFETY: only our verified child endpoint becomes inheritable. The worker
     // must still name it explicitly in its exact three-handle HANDLE_LIST.
-    if unsafe { SetHandleInformation(raw(&write), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
+    if unsafe { SetHandleInformation(raw(child), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((read, write))
+    Ok(())
 }
 
 fn create_server(name: &[u16], security: &PipeSecurity) -> io::Result<PendingRead> {
+    PendingRead::new(create_server_pipe(name, security, false)?)
+}
+
+pub(super) fn create_server_pipe(
+    name: &[u16],
+    security: &PipeSecurity,
+    outbound: bool,
+) -> io::Result<OwnedHandle> {
     if name.last() != Some(&0) || name[..name.len() - 1].contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -454,19 +490,23 @@ fn create_server(name: &[u16], security: &PipeSecurity) -> io::Result<PendingRea
     let attributes = security.attributes();
     // SAFETY: internal name is terminated and security is alive during create.
     // One first instance only: reject collisions, never connect an old server.
-    let pipe = unsafe {
+    let access = if outbound {
+        PIPE_ACCESS_OUTBOUND
+    } else {
+        PIPE_ACCESS_INBOUND
+    };
+    unsafe {
         adopt(CreateNamedPipeW(
             name.as_ptr(),
-            PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            access | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
-            0,
-            PIPE_BUFFER_BYTES,
+            if outbound { PIPE_BUFFER_BYTES } else { 0 },
+            if outbound { 0 } else { PIPE_BUFFER_BYTES },
             0,
             &attributes,
-        ))?
-    };
-    PendingRead::new(pipe)
+        ))
+    }
 }
 
 fn nul_stdin() -> io::Result<OwnedHandle> {
@@ -562,7 +602,9 @@ mod tests {
 
     #[test]
     fn each_round_bounds_both_streams_and_preserves_tail_and_eof() {
-        let PreparedStdio { child, mut capture } = PreparedStdio::new().unwrap();
+        let PreparedStdio {
+            child, mut capture, ..
+        } = PreparedStdio::new().unwrap();
         let expected_stdout = vec![b'o'; READ_BYTES * 5];
         let expected_stderr = vec![b'e'; READ_BYTES * 5];
         write_pipe(&child.stdout, &expected_stdout);
@@ -618,7 +660,9 @@ mod tests {
 
     #[test]
     fn pending_read_cancellation_is_prompt_and_is_not_transport_eof() {
-        let PreparedStdio { child, mut capture } = PreparedStdio::new().unwrap();
+        let PreparedStdio {
+            child, mut capture, ..
+        } = PreparedStdio::new().unwrap();
         let progress = capture
             .capture_round(&mut |_, _| panic!("unexpected data"))
             .unwrap();
@@ -643,7 +687,9 @@ mod tests {
 
     #[test]
     fn completion_winning_cancel_race_is_joined_and_not_reported_as_eof() {
-        let PreparedStdio { child, mut capture } = PreparedStdio::new().unwrap();
+        let PreparedStdio {
+            child, mut capture, ..
+        } = PreparedStdio::new().unwrap();
         capture
             .capture_round(&mut |_, _| panic!("unexpected data"))
             .unwrap();
@@ -663,7 +709,9 @@ mod tests {
 
     #[test]
     fn pending_capture_can_move_to_a_joined_cancellation_thread() {
-        let PreparedStdio { child, mut capture } = PreparedStdio::new().unwrap();
+        let PreparedStdio {
+            child, mut capture, ..
+        } = PreparedStdio::new().unwrap();
         capture.capture_round(&mut |_, _| {}).unwrap();
         assert_eq!(capture.stdout.state, State::Pending(Operation::Read));
         assert_eq!(capture.stderr.state, State::Pending(Operation::Read));
@@ -813,7 +861,9 @@ mod tests {
 
     #[test]
     fn panicking_output_sink_joins_other_stream_without_detached_threads() {
-        let PreparedStdio { child, mut capture } = PreparedStdio::new().unwrap();
+        let PreparedStdio {
+            child, mut capture, ..
+        } = PreparedStdio::new().unwrap();
         capture.capture_round(&mut |_, _| {}).unwrap();
         write_pipe(&child.stdout, b"panic in sink");
         await_read_event(&capture.stdout);

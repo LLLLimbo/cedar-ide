@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第八阶段工程（**0.8.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第九阶段 A 工程（**0.8.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -38,7 +38,7 @@ cargo run -p cedar-app --bin cedar -- examples/demo
 
 Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`，本地连接还要求同目录的 `cedar-agent.exe`；不要只复制前端。缺失或损坏的 agent 会报错，不搜索 PATH 或回退到进程内执行。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.7.1 提交 [`093cd664e1d89c05ebca11da5b44bf3f2a6c2a5f`](https://github.com/LLLLimbo/cedar-ide/commit/093cd664e1d89c05ebca11da5b44bf3f2a6c2a5f) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37673873489)，Windows 实际运行并通过全部 13 项进程生命周期与 7 项隔离 agent/bundle 测试。此前 Linux 生命周期超时未再出现，原根因仍未确认。**Windows Git、同步 Run 和 LSP 仍不启用**；Windows GUI 尚未验收。第八阶段新增磁盘审阅，不增加执行能力，当前验收范围见[测试报告](docs/TEST_REPORT.md)。
+公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.8.0 提交 [`5927b6c51d6bc4d4b88f676f4d5c27a3a314ce0f`](https://github.com/LLLLimbo/cedar-ide/commit/5927b6c51d6bc4d4b88f676f4d5c27a3a314ce0f) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37685061425)，包括新增磁盘审阅/Undo/Redo 回归和全部 13 + 7 项 Windows 生命周期/agent 测试。第九阶段 A 增加语言服务所需的可取消 Windows stdin 基础层，须通过其独立的真实 Windows CI 才可接入；**Windows Git、同步 Run 和 LSP 仍不启用**。Windows GUI、真实 SSH 与历史 Linux 超时原根因仍保留原有限制，当前证据见[测试报告](docs/TEST_REPORT.md)。
 
 ## 磁盘对比与重载
 
@@ -114,7 +114,9 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端可连接 Linux 远程工作
 
 ## 验证
 
-第八阶段最终通过 **521 项 Rust 测试（515 + 6 显式）**、五条 agent 黑盒链、两项导出回归、严格 Linux/MSVC Clippy、Linux release 与 release-agent 集成。最终原生 Trust 关闭窗口已复验磁盘比较、二次读取竞态、重载后反复移动光标的 Undo/Redo 与脏稿恢复；范围和待验证项见[当前报告](docs/TEST_REPORT.md)。0.7.1 的精确公开提交已通过 Ubuntu/Windows CI，包括全部 13 + 7 项 Windows 生命周期/agent 测试；本阶段须独立验证其公开提交，不能继承旧二进制的验收结果。
+第九阶段 A 的基础层变更与本地检查见[当前报告](docs/TEST_REPORT.md)，新增 Windows 行为仍需精确提交 CI 实际运行。
+
+第八阶段最终通过 **521 项 Rust 测试（515 + 6 显式）**、五条 agent 黑盒链、两项导出回归、严格 Linux/MSVC Clippy、Linux release 与 release-agent 集成。最终原生 Trust 关闭窗口已复验磁盘比较、二次读取竞态、重载后反复移动光标的 Undo/Redo 与脏稿恢复；范围见[第八阶段报告](docs/TEST_REPORT_PHASE8.md)。0.8.0 的精确公开提交也已通过 Ubuntu/Windows CI，包括全部 13 + 7 项 Windows 生命周期/agent 测试；第九阶段不能继承旧二进制的验收结果。
 ```sh
 bash scripts/verify.sh
 ```
@@ -140,7 +142,7 @@ bash scripts/verify.sh
 | cedar-tasks | 有界异步命令监督、输出捕获、取消和普通子进程组清理 |
 | cedar-language | LSP 客户端/生命周期/有界 JSON-RPC；DAP 基础封包 |
 | cedar-debugger | 有界异步 DAP 进程传输，尚未接入 UI 或远程 agent |
-| cedar-winprocess | Windows Job/句柄/异步管道基础库；7A独立验收，7B起由隔离agent任务监督器使用 |
+| cedar-winprocess | Windows Job/句柄/异步管道基础库；7A独立验收，7B起由隔离agent任务监督器使用；9A增加可取消stdin基础层 |
 
 更多：[功能矩阵](docs/FEATURE_MATRIX.md)、[架构](docs/ARCHITECTURE.md)、[语言服务](docs/LANGUAGE_SERVICES.md)、[Kotlin 验证](docs/KOTLIN_VALIDATION.md)、[调试](docs/DEBUGGING.md)、[前端恢复与命令交互](crates/app/RECOVERY_AND_COMMANDS.md)。第五阶段增加显式命令配置、普通文件 Windows 替换修复与远程故障边界验证；第六阶段增加协议 4 内的后端能力发现与单次握手快照；7A 已完成 Windows 进程基础库的真实 CI 验收；7B 接入隔离 agent 的异步任务，并为这层接入单独验证传输故障、后代清理与本地 bundle。第八阶段新增显式磁盘双栏审阅和只对干净标签的二次读取重载，保留撤销、草稿恢复与语言同步边界。格式化、引用与大纲的安全边界见 [重构路线](docs/REFACTORING_ROADMAP.md)。多文件重命名仍暂缓，先解决无版本跨文件结果、跨文档撤销与文件资源操作遗漏的安全问题。完整重构、项目模型和大量 IDEA 功能仍待实现。
 

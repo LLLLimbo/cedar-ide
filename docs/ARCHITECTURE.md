@@ -1,4 +1,4 @@
-# Architecture · checkpoint 8 / 0.8.0
+# Architecture · checkpoint 9A / 0.8.1
 
 Cedar is a native Rust frontend plus a workspace backend. The current wire
 protocol remains **4**. The handshake requires an exact protocol match, not an
@@ -6,6 +6,8 @@ application-version match. Bounded operation capabilities are discovered within
 that protocol; unsupported protocol versions are still rejected. Checkpoint 7B
 reuses the existing asynchronous-task operations for an isolated Windows agent.
 Checkpoint 8 adds frontend disk review using the existing bounded Read operation.
+Checkpoint 9A adds an optional owned Windows stdin writer as a language-transport
+prerequisite; it does not activate Windows language capabilities.
 The frontend has no embedded browser or JVM. Language servers and build tools
 can still need a JVM or other runtime on the workspace machine.
 

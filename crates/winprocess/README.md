@@ -5,8 +5,10 @@ literal-argv encoder; revision 0.6.2 passed actual Windows primitive CI, includi
 all 13 lifecycle tests. Checkpoint **7B / 0.7.0** adopts it for asynchronous tasks
 in the isolated agent only, and adds CREATE_NO_WINDOW for non-interactive console
 children. Git, legacy synchronous Run and language execution remain disabled on
-Windows. Nothing in this crate grants workspace trust. The new integration and
-creation-flag change require their own exact-commit runtime acceptance.
+Windows. Nothing in this crate grants workspace trust. Task integration passed
+all thirteen primitive lifecycle and seven agent/bundle cases at 0.7.1 and 0.8.0.
+Checkpoint 9A adds optional piped stdin; its new behavior requires independent
+exact-commit Windows runtime acceptance before LSP integration.
 
 ## Supported host and launch policy
 
@@ -14,7 +16,8 @@ The host must be an isolated process with controlled subprocess creation.
 HANDLE_LIST restricts this child; it cannot prevent an unrelated concurrent
 broad-inheritance spawn from taking temporary inheritable stdio handles.
 Do not embed this launcher in the GUI process or claim a task-only mutex solves
-third-party spawning. The intended next integration uses the bundled agent.
+third-party spawning. The existing task integration uses the bundled agent; future language execution
+must preserve the same host constraint.
 
 Windows 10 / Server 2016 or newer is required for atomic JOB_LIST assignment.
 There is no unconfined fallback or breakaway request. Native executable and cwd
@@ -48,6 +51,44 @@ Drop terminates the job, cancels and completes capture, waits for the root, then
 releases ownership. Components also clean up partial failures and unwinding.
 Exceptional stuck OS operations can delay cleanup. Memory still referenced by
 kernel I/O is never freed to meet a timer. No detached reader threads are used.
+
+### Piped stdin prerequisite (native acceptance pending)
+
+`spawn_suspended` continues to use NUL stdin. The explicit
+`spawn_suspended_with_piped_stdin` variant adds a private outbound overlapped
+pipe and a synchronous child reader, with the same job-before-resume and exact
+three-handle inheritance contract. This primitive does not enable Windows LSP
+or change agent capabilities. Its new code requires real Windows CI before use
+in an enabled service; the earlier capture/task checkpoints do not cover it.
+
+- `begin_stdin_write` copies up to `MAX_STDIN_WRITE_BYTES` (64 KiB) into one
+  pinned allocation; it never retains the caller's slice. A second operation
+  returns `WouldBlock` until the first completion has been observed
+- `begin_stdin_write` or `poll_stdin_write` returns `Written(n)` exactly once.
+  Short counts retain a caller-owned suffix; zero-byte completion of nonempty
+  input is `WriteZero`. Empty input completes locally without an OS null write
+- `close_stdin` is idempotent but returns `WouldBlock` while completion remains
+  outstanding. It closes the writer for EOF after polling; it never flushes or
+  disconnects the pipe. Transport completion is not child acknowledgment
+- `cancel_stdin_and_complete` always closes the input after joining I/O. It
+  returns `Written(n)` if completion won the race, `Cancelled` if cancellation
+  completed, or `Idle` if there was no pending operation. Cancellation and any
+  write error may follow partial transmission; abandon a framed connection
+  instead of replaying its message. `Cancelled` has no reliable delivered count
+- NUL/closed stdin polls as `Closed` and rejects writes with `BrokenPipe`
+
+One fixed 64-KiB user buffer, one event and one parent pipe handle are added per
+piped owner. There is no write queue, `std::io::Write`, implicit frame buffering
+or detached thread. The kernel's pipe buffer request is also 64 KiB, but Windows
+documents that reservation as advisory; it is not an exact kernel-memory cap.
+The caller owns protocol frame bounds, short-write continuation, read/write
+fairness, deadlines and connection poisoning after partial transmission.
+
+Drop still requests job termination first, then cancels/completes stdin and
+both captures, waits for the root, and releases the owned handles. An unexpected
+stdin cleanup error does not skip capture cleanup. OS cancellation completion
+can delay teardown without a fixed worst-case deadline; live OVERLAPPED or
+buffer storage is never released to satisfy a timer.
 
 ## Safety boundaries
 

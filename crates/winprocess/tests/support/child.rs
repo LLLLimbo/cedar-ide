@@ -123,6 +123,23 @@ fn run() -> io::Result<()> {
             }
             println!("stdin-eof");
         }
+        "stdin-echo" => {
+            #[cfg(windows)]
+            if let Some(sentinel) = args.get(1) {
+                probe_sentinel(sentinel)?;
+            }
+            // Deliberately require EOF before emitting the payload. This proves
+            // close_stdin closes the sole parent writer without a blocking flush.
+            // Bound fixture memory even when the primitive under test misbehaves.
+            let mut input = Vec::new();
+            io::stdin().take(1024 * 1024 + 1).read_to_end(&mut input)?;
+            if input.len() > 1024 * 1024 {
+                return Err(invalid_argument("stdin fixture input limit exceeded"));
+            }
+            io::stdout().write_all(&input)?;
+            println!("\nstdin-eof");
+            eprintln!("stdin-bytes:{}", input.len());
+        }
         #[cfg(windows)]
         "no-console" => {
             // SAFETY: GetConsoleWindow takes no pointers or ownership and only
@@ -169,7 +186,9 @@ fn run() -> io::Result<()> {
         #[cfg(windows)]
         "probe-sentinel" => probe_sentinel(argument(&args, 1)?)?,
         #[cfg(windows)]
-        "crash-owner" => crash_owner(Path::new(argument(&args, 1)?))?,
+        "crash-owner" => crash_owner(Path::new(argument(&args, 1)?), false)?,
+        #[cfg(windows)]
+        "crash-owner-piped" => crash_owner(Path::new(argument(&args, 1)?), true)?,
         _ => return Err(invalid_argument("unknown fixture mode")),
     }
     Ok(())
@@ -286,8 +305,8 @@ fn probe_sentinel(value: &str) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn crash_owner(dir: &Path) -> io::Result<()> {
-    use cedar_winprocess::{LaunchSpec, WindowsCommand};
+fn crash_owner(dir: &Path, piped: bool) -> io::Result<()> {
+    use cedar_winprocess::{LaunchSpec, StdinWriteProgress, WindowsCommand, MAX_STDIN_WRITE_BYTES};
 
     let child_ready = dir.join("owned-child.pid");
     let spec = LaunchSpec {
@@ -295,9 +314,29 @@ fn crash_owner(dir: &Path) -> io::Result<()> {
         arguments: vec!["idle".into(), utf8_path(&child_ready)?],
         cwd: env::current_dir()?,
     };
-    let mut child = WindowsCommand::spawn_suspended(&spec)?;
+    let mut child = if piped {
+        WindowsCommand::spawn_suspended_with_piped_stdin(&spec)?
+    } else {
+        WindowsCommand::spawn_suspended(&spec)?
+    };
     child.resume()?;
     wait_for_file(&child_ready)?;
+    if piped {
+        let bytes = vec![b'x'; MAX_STDIN_WRITE_BYTES];
+        let mut pending = false;
+        for _ in 0..16 {
+            if child.begin_stdin_write(&bytes)? == StdinWriteProgress::Pending {
+                pending = true;
+                break;
+            }
+        }
+        if !pending || child.poll_stdin_write()? != StdinWriteProgress::Pending {
+            return Err(io::Error::other("crash-owner fixture did not block stdin"));
+        }
+        // Consume the two tiny readiness lines and arm both pending reads.
+        child.capture_round(|_, _| {})?;
+        child.capture_round(|_, _| {})?;
+    }
     fs::write(dir.join("owner.ready"), b"ready")?;
     wait_for_file(&dir.join("owner.crash"))?;
     // No Rust destructors run. Only OS handle closure can destroy the inner
