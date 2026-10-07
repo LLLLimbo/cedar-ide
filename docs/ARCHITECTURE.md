@@ -346,3 +346,14 @@ use capability-scoped out-of-process RPC, not arbitrary native libraries in
 the UI. Project models, build tools and adapters should remain off the UI thread
 and preferably agent-side. No IntelliJ plugin or complete-feature compatibility
 is promised.
+
+## Windows ownership foundation (7A, not activated)
+
+The independent cedar-winprocess crate adds atomic suspended Job creation,
+owned stdio capture, joined overlapped cancellation and literal UTF-16 argv
+encoding. It is not a TaskManager backend and changes no Windows capability
+advertisement. Its supported host is an isolated, controlled-spawning process;
+exact HANDLE_LIST does not constrain unrelated broad-inheritance spawns.
+Same-commit Windows lifecycle CI must pass before a separate isolated-agent
+integration checkpoint. Git/legacy Run/LSP/DAP need independent adoption. See
+[WINDOWS_PROCESSES.md](WINDOWS_PROCESSES.md).

@@ -7,6 +7,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -16,6 +17,7 @@ jobs:
       - run: python scripts/test_public_export.py
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-targets --all-features --locked
+        timeout-minutes: 15
       - run: cargo build --release --workspace --all-features --locked
       - name: Process integration (Unix)
         if: runner.os != 'Windows'
@@ -26,6 +28,13 @@ jobs:
         run: |
           $env:CEDAR_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
           cargo test -p cedar-client --test stdio_roundtrip --locked -- --ignored
+      - name: Windows owned-process primitives (isolated fixtures)
+        timeout-minutes: 5
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:CEDAR_WINPROCESS_FIXTURE_BIN = "$PWD/target/release/cedar-winprocess-fixture.exe"
+          cargo test -p cedar-winprocess --features fixtures --test windows_lifecycle --locked -- --ignored --test-threads=1
       - name: Agent and tool protocol chains (Unix)
         if: runner.os != 'Windows'
         run: |

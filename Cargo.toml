@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/protocol", "crates/workspace", "crates/agent", "crates/client", "crates/app", "crates/language", "crates/debugger", "crates/recovery", "crates/tasks"]
+members = ["crates/protocol", "crates/workspace", "crates/agent", "crates/client", "crates/app", "crates/language", "crates/debugger", "crates/recovery", "crates/tasks", "crates/winprocess"]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 rust-version = "1.99"

@@ -1,8 +1,8 @@
-# 功能矩阵与后续验收 · phase 6 / 0.6.0
+# 功能矩阵与后续验收 · checkpoint 7A / 0.6.1
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。第六阶段保留精确协议 4，新增产品版本/后端平台/操作支持发现；不支持跨协议版本协商，能力声明不授予执行信任。当前最终本地验证已通过，同提交双平台 CI 待发布后核验；第五阶段已通过同提交双平台 CI。
+“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。第六阶段保留精确协议 4，新增产品版本/后端平台/操作支持发现；不支持跨协议版本协商，能力声明不授予执行信任。第六阶段同提交双平台CI已通过；7A新增独立Windows进程基础库，本地473项Rust、五条agent链、两项导出回归通过，真实Windows新测试待CI，未接入任务。
 
 | 领域 | 当前实现 | 尚缺 / 下一阶段验收 |
 |---|---|---|
@@ -17,6 +17,7 @@
 | 调试 | 独立异步 DAP 传输；第二阶段真实 Python 断点/栈/变量/继续/停止验证 | IDE 调试 UI/远程桥接、可靠后代进程回收、监听安全、Java/JVM 调试 |
 | 命令运行 | 明确 executable + 字面量 argv；RunStart/Poll/Cancel、实时有界输出、终态区分、运行中继续编辑保存、关闭/重连保护 | 本阶段原生显式 Run/Cancel/重连复核待批准启用信任；交互式 PTY、测试结果树、并行任务、Windows Job Objects；macOS 运行未验收 |
 | 保存的命令配置 | 显式 Load/选择/新建/Save；`cedar.tasks.json` 严格有界格式；字面量参数行与预览；普通编辑器版本检查、单次撤销和恢复；重连显式复核 | 不是完整运行/调试配置系统；无自动发现、预设、环境变量、目录覆盖、变量展开或 autorun；未序列化表单只在当前会话 |
+| Windows进程基础 | 独立cedar-winprocess：原子Job绑定、私有本机管道、完成后才回收的异步I/O、严格argv编码；Windows交叉编译通过 | 实际Windows单元/隔离生命周期CI；之后才考虑隔离agent任务接入；当前Windows执行仍禁用 |
 | 任务安全 | 配置操作零自动执行；每连接一个异步任务、1–300 秒、每流 256 KiB、8 个历史记录；Linux 普通进程组清理；不自动重试不明结果 | 非 OS 沙箱，恶意逃逸后代可能存活；强杀 agent 不保证任务清理；遗留同步 Run/Git/LSP/DAP 不计入异步任务限额 |
 | 搜索 | 有界文本搜索、结果跳转；语言服务引用查找与工作区边界导航 | 正则、替换、全工作区符号索引 |
 | Git | 可信工作区状态 | diff/hunks/stage/commit/blame/merge、分支/远端管理 |
@@ -29,7 +30,7 @@
 
 - 第五阶段公开提交 [`119d5c30ddba51cbfa9f04d5ae6e281103a3803f`](https://github.com/LLLLimbo/cedar-ide/commit/119d5c30ddba51cbfa9f04d5ae6e281103a3803f) 的 [Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37643452204) 均通过，包括 Windows 保存、传输故障与独立 agent 回归；不是 Windows GUI 验收
 - 环境更换后，第五阶段经 Git tree SHA 精确恢复，重新通过 413 个普通 + 6 个显式 Rust 测试，以及四条 Python agent 链、fmt 与严格 Clippy，见[恢复记录](ENVIRONMENT_RECOVERY.md)
-- 第六阶段增加有界元数据、旧/新 reader 兼容、无能力请求零发送、单次握手缓存、生命周期前提、按后端支持门控和脏稿保护；最终本地聚合459项Rust、五条Python agent链和两项导出回归已过；同提交CI待发布
+- 第六阶段增加有界元数据、旧/新 reader 兼容、无能力请求零发送、单次握手缓存、生命周期前提、按后端支持门控和脏稿保护；最终本地聚合459项Rust、五条Python agent链和两项导出回归通过，随后同提交Ubuntu/Windows CI通过
 - 真实 SSH 认证/断网互操作仍待专门授权；未生成测试密钥、未启动 sshd 或连接用户服务器。配置解析和 stdio 故障测试不替代这道门槛
 - 原生信任开启、Run/Cancel/重连复核与脏窗口关闭测试仍未完成；能力元数据不会替代或绕过这些权限
 - 历史原生/JDT/Kotlin/debugpy 结果、资源读数和限制保留在各阶段报告；第六阶段不能继承旧二进制的哈希或新平台验收结论

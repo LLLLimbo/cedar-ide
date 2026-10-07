@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第六阶段工程（**0.6.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第七阶段 A 工程（**0.6.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -37,7 +37,7 @@ cargo run -p cedar-app --bin cedar -- examples/demo
 
 Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的第五阶段提交 [`119d5c30ddba51cbfa9f04d5ae6e281103a3803f`](https://github.com/LLLLimbo/cedar-ide/commit/119d5c30ddba51cbfa9f04d5ae6e281103a3803f) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37643452204)，包括 Windows 普通保存与传输故障回归。第六阶段最终本地聚合、Linux release 和 Windows 目标严格 Clippy 已通过；同提交公开 CI 待发布后核验，不能用上一阶段结果代替。环境更换后已从完全匹配的公开树恢复工程并重跑第五阶段全部检查，见[恢复记录](docs/ENVIRONMENT_RECOVERY.md)。
+公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的第六阶段提交 [`f5a0c84f731f66c2f003513e52857fcbf77199a0`](https://github.com/LLLLimbo/cedar-ide/commit/f5a0c84f731f66c2f003513e52857fcbf77199a0) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37649215721)。7A新增独立Windows进程所有权基础库，本地473项Rust测试、五条agent链、两项导出回归、Linux release与Windows目标严格Clippy通过；真实Windows新测试待本检查点CI。**Windows任务/Git/LSP仍不启用**，详见[7A报告](docs/TEST_REPORT_PHASE7A.md)。
 
 ## 格式化、引用与大纲
 
@@ -132,8 +132,9 @@ bash scripts/verify.sh
 | cedar-tasks | 有界异步命令监督、输出捕获、取消和普通子进程组清理 |
 | cedar-language | LSP 客户端/生命周期/有界 JSON-RPC；DAP 基础封包 |
 | cedar-debugger | 有界异步 DAP 进程传输，尚未接入 UI 或远程 agent |
+| cedar-winprocess | Windows Job/句柄/异步管道基础库；7A未接入任务或能力广告 |
 
-更多：[功能矩阵](docs/FEATURE_MATRIX.md)、[架构](docs/ARCHITECTURE.md)、[语言服务](docs/LANGUAGE_SERVICES.md)、[Kotlin 验证](docs/KOTLIN_VALIDATION.md)、[调试](docs/DEBUGGING.md)、[前端恢复与命令交互](crates/app/RECOVERY_AND_COMMANDS.md)。第五阶段增加显式命令配置、普通文件 Windows 替换修复与远程故障边界验证；第六阶段增加协议 4 内的后端能力发现与单次握手快照。格式化、引用与大纲的安全边界见 [重构路线](docs/REFACTORING_ROADMAP.md)。多文件重命名仍暂缓，先解决无版本跨文件结果、跨文档撤销与文件资源操作遗漏的安全问题。完整重构、项目模型和大量 IDEA 功能仍待实现。
+更多：[功能矩阵](docs/FEATURE_MATRIX.md)、[架构](docs/ARCHITECTURE.md)、[语言服务](docs/LANGUAGE_SERVICES.md)、[Kotlin 验证](docs/KOTLIN_VALIDATION.md)、[调试](docs/DEBUGGING.md)、[前端恢复与命令交互](crates/app/RECOVERY_AND_COMMANDS.md)。第五阶段增加显式命令配置、普通文件 Windows 替换修复与远程故障边界验证；第六阶段增加协议 4 内的后端能力发现与单次握手快照；7A先独立验证Windows进程所有权，不直接开放未测执行能力。格式化、引用与大纲的安全边界见 [重构路线](docs/REFACTORING_ROADMAP.md)。多文件重命名仍暂缓，先解决无版本跨文件结果、跨文档撤销与文件资源操作遗漏的安全问题。完整重构、项目模型和大量 IDEA 功能仍待实现。
 
 ## 打包已验证检查点
 

@@ -85,3 +85,9 @@ Focused Linux tests and Linux/Windows-target strict Clippy passed during this
 implementation. Windows-target compilation is not Windows runtime validation;
 the actual Windows CI run must pass before this change is considered verified
 on Windows. All fixtures use synthetic files in temporary directories.
+
+The phase-5 public commit
+[`119d5c30ddba51cbfa9f04d5ae6e281103a3803f`](https://github.com/LLLLimbo/cedar-ide/commit/119d5c30ddba51cbfa9f04d5ae6e281103a3803f)
+subsequently passed the actual Windows replacement regressions in
+[its exact-commit CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37643452204).
+This establishes that tested core path, not Windows GUI or every filesystem/ACL.
