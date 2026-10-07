@@ -100,3 +100,21 @@ fn invalid_arguments_and_help_never_emit_stdout() {
         assert_eq!(output.status.success(), args == ["--help"]);
     }
 }
+
+#[test]
+fn standard_binary_has_no_validation_cli_even_with_all_features() {
+    let root = tempfile::tempdir().unwrap();
+    for flag in ["--synthetic-root", "--windows-language-validation"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cedar-agent"))
+            .arg("--root")
+            .arg(root.path())
+            .arg("--allow-run")
+            .arg(flag)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unknown or duplicate argument"));
+    }
+}

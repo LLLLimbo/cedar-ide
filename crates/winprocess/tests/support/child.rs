@@ -62,8 +62,12 @@ fn run() -> io::Result<()> {
             publish_pid(Path::new(argument(&args, 1)?))?;
             idle();
         }
-        "tree-live" | "tree-exit" | "tree-flood" => {
+        "tree-live" | "tree-exit" | "tree-flood" | "tree-coexist" => {
             let dir = Path::new(argument(&args, 1)?);
+            if args[0] == "tree-coexist" {
+                fs::write(dir.join("startup.waiting"), b"waiting for LSP startup")?;
+                wait_for_file(Path::new(argument(&args, 2)?))?;
+            }
             let _branch = spawn_fixture("branch", dir)?;
             wait_for_file(&dir.join("leaf.pid"))?;
             wait_for_file(&dir.join("branch.pid"))?;

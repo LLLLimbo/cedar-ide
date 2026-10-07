@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 [features]
 fixtures = []
+windows-language-validation = ["fixtures", "cedar-workspace/windows-language-validation"]
 [dependencies]
 cedar-protocol = { path = "../protocol" }
 cedar-workspace = { path = "../workspace" }
@@ -20,6 +21,11 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Syst
 name = "cedar-client-bundle-probe"
 path = "tests/support/bundle_probe.rs"
 required-features = ["fixtures"]
+
+[[test]]
+name = "windows_agent_language"
+path = "tests/windows_agent_language.rs"
+required-features = ["windows-language-validation"]
 
 [[test]]
 name = "windows_tasks"

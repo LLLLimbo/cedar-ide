@@ -182,18 +182,20 @@ impl RawAgent {
     }
     pub fn with_cwd(root: &Path, allow_run: bool, cwd: Option<&Path>) -> Self {
         let mut command = Command::new(agent_binary());
-        command
-            .arg("--root")
-            .arg(root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        command.arg("--root").arg(root);
         if allow_run {
             command.arg("--allow-run");
         }
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
         }
+        Self::from_command(command)
+    }
+    pub fn from_command(mut command: Command) -> Self {
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         let mut child = command.spawn().expect("spawn exact agent binary");
         let input = child.stdin.take();
         let output = child.stdout.take().map(BufReader::new);
@@ -447,8 +449,11 @@ impl ObservedTree {
             );
             thread::sleep(Duration::from_millis(5));
         }
+        Self::observe(dir, &["root.pid", "branch.pid", "leaf.pid"])
+    }
+    pub fn observe(dir: &Path, names: &[&str]) -> Self {
         let tree = Self(
-            ["root.pid", "branch.pid", "leaf.pid"]
+            names
                 .iter()
                 .map(|name| ObservedProcess::from_file(&dir.join(name)))
                 .collect(),

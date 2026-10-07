@@ -49,6 +49,18 @@ jobs:
           $env:CEDAR_WINPROCESS_FIXTURE_BIN = "$PWD/target/release/cedar-winprocess-fixture.exe"
           $env:CEDAR_CLIENT_BUNDLE_PROBE_BIN = "$PWD/target/release/cedar-client-bundle-probe.exe"
           cargo test -p cedar-client --features fixtures --test windows_tasks --locked -- --ignored --test-threads=1
+      - name: Real Windows Java owned-transport acceptance
+        timeout-minutes: 8
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows_java_acceptance.ps1
+      - name: Windows Java acceptance evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-java-acceptance-evidence
+          path: ${{ runner.temp }}/cedar-windows-java-acceptance.txt
+          if-no-files-found: ignore
       - name: Agent and tool protocol chains (Unix)
         if: runner.os != 'Windows'
         run: |
@@ -58,6 +70,16 @@ jobs:
           python3 scripts/task_bridge_smoke.py target/release/cedar-agent
           cargo build --manifest-path examples/task-profiles-demo/Cargo.toml --offline --locked
           python3 scripts/task_profiles_smoke.py target/release/cedar-agent examples/task-profiles-demo/target/debug/cedar-task-profile-demo
+      - name: Windows agent language validation (nonshipping opt-in host)
+        timeout-minutes: 5
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:CEDAR_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
+          $env:CEDAR_AGENT_LANGUAGE_VALIDATION_BIN = "$PWD/target/release/cedar-agent-language-validation.exe"
+          $env:CEDAR_MOCK_LSP_BIN = "$PWD/target/release/cedar-mock-lsp.exe"
+          $env:CEDAR_WINPROCESS_FIXTURE_BIN = "$PWD/target/release/cedar-winprocess-fixture.exe"
+          cargo test -p cedar-client --features windows-language-validation --test windows_agent_language --locked -- --ignored --test-threads=1
       - uses: actions/upload-artifact@v4
         with:
           name: cedar-${{ matrix.os }}

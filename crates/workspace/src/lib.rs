@@ -46,6 +46,8 @@ pub struct Workspace {
     // A host construction choice, never a wire operation or execution grant.
     backend_mode: BackendMode,
     allow_run: bool,
+    #[cfg(feature = "windows-language-validation")]
+    windows_language_validation: bool,
     language: Option<language::LanguageSession>,
     tasks: Option<cedar_tasks::TaskManager>,
 }
@@ -70,9 +72,43 @@ impl Workspace {
             root,
             backend_mode,
             allow_run: false,
+            #[cfg(feature = "windows-language-validation")]
+            windows_language_validation: false,
             language: None,
             tasks: None,
         })
+    }
+
+    /// Nonshipping Windows language acceptance host, never a user workspace API.
+    ///
+    /// Requires an explicitly marked synthetic root and fixes process ownership
+    /// to IsolatedAgent. It does not grant execution trust or change Hello's
+    /// production capability claims. The marker is an opt-in, not a sandbox.
+    #[cfg(feature = "windows-language-validation")]
+    pub fn for_windows_language_validation(root: impl AsRef<Path>) -> Result<Self, RemoteError> {
+        let mut workspace = Self::with_backend_mode(root, BackendMode::IsolatedAgent)?;
+        let marker = workspace.resolve(".cedar-windows-language-validation", false)?;
+        if !fs::metadata(&marker).map_err(io_error)?.is_file() {
+            return Err(error(
+                "invalid_validation_root",
+                "Validation marker must be a regular file",
+            ));
+        }
+        let expected = b"cedar-windows-language-validation-v1\n";
+        let mut contents = Vec::new();
+        File::open(marker)
+            .map_err(io_error)?
+            .take(expected.len() as u64 + 1)
+            .read_to_end(&mut contents)
+            .map_err(io_error)?;
+        if contents != expected {
+            return Err(error(
+                "invalid_validation_root",
+                "Expected a marked synthetic validation root",
+            ));
+        }
+        workspace.windows_language_validation = true;
+        Ok(workspace)
     }
 
     pub fn root(&self) -> &Path {
@@ -1130,3 +1166,6 @@ mod process_wait_tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "windows-language-validation"))]
+mod validation_tests;

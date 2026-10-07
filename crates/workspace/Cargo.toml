@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Nonshipping acceptance fixture only; normal constructors never use this path.
+windows-language-validation = []
+
 [dependencies]
 cedar-language = { path = "../language" }
 cedar-tasks = { path = "../tasks" }

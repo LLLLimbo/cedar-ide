@@ -64,6 +64,17 @@ fn lsp_error(e: cedar_language::Error) -> RemoteError {
     error("language_error", e.to_string())
 }
 impl Workspace {
+    fn language_platform_supported(&self) -> bool {
+        #[cfg(feature = "windows-language-validation")]
+        if cfg!(windows)
+            && self.windows_language_validation
+            && self.backend_mode == cedar_tasks::BackendMode::IsolatedAgent
+        {
+            return true;
+        }
+        platform_supported()
+    }
+
     fn language_uri(&self, path: &str) -> Result<String, RemoteError> {
         let full = self.resolve(path, true)?;
         if full == self.root || full.exists() && !full.is_file() {
@@ -82,7 +93,7 @@ impl Workspace {
         }
         match op {
             Operation::LanguageStart { program, args } => {
-                if !platform_supported() {
+                if !self.language_platform_supported() {
                     return Err(error("unsupported_platform", "Local Windows tool processes are disabled until Job Object cleanup is implemented; use a Linux SSH workspace."));
                 }
                 validate_command(&program, &args, 10)?;

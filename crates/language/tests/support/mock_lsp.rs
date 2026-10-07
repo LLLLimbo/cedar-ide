@@ -19,17 +19,22 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str).unwrap_or("normal");
     #[cfg(windows)]
-    if mode.starts_with("win-") {
+    let _agent_tree = (mode == "win-agent-tree").then(|| windows_fixture::agent_tree(&args));
+    #[cfg(windows)]
+    if mode.starts_with("win-") && mode != "win-agent-tree" {
         windows_fixture::run(&args);
         return;
     }
-    let mut audit = args.get(2).map(|path| {
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .unwrap()
-    });
+    let mut audit = args
+        .get(2)
+        .filter(|_| mode != "win-agent-tree")
+        .map(|path| {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap()
+        });
     let mut output = io::stdout().lock();
     if mode == "eof" {
         return;
@@ -285,6 +290,30 @@ mod windows_fixture {
     use std::process::{self, Command, Stdio};
     use std::time::Instant;
 
+    // The full portable mock protocol runs with Windows-owned descendants, so
+    // agent acceptance reaches initialize/open/query/shutdown through the real
+    // Workspace bridge rather than a second mock implementation of that bridge.
+    #[allow(clippy::zombie_processes)]
+    pub(super) fn agent_tree(args: &[String]) -> File {
+        let dir = Path::new(args.get(2).expect("synthetic fixture directory"));
+        let lifetime = hold_lifetime(dir, "root");
+        let expired = dir.join("root.expired");
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(8));
+            let _ = fs::write(expired, b"fixture lifetime cap reached");
+            process::exit(124);
+        });
+        let _child = spawn_descendant(dir, "win-descendant");
+        wait_file(&dir.join("child.ready"));
+        fs::write(dir.join("root.ready"), b"ready").unwrap();
+        if let Some(task_ready) = args.get(3) {
+            // Paired with tree-coexist: neither synthetic startup can finish
+            // until the other has started, without depending on sleeps.
+            wait_file(Path::new(task_ready));
+        }
+        lifetime
+    }
+
     // Descendants deliberately outlive their parents to test Job cleanup.
     // Windows has no Unix zombie-reaping requirement; the owner Job must kill them.
     #[allow(clippy::zombie_processes)]
@@ -434,12 +463,18 @@ mod windows_fixture {
     }
 
     fn hold_lifetime(dir: &Path, name: &str) -> File {
-        OpenOptions::new()
+        let lifetime = OpenOptions::new()
             .write(true)
             .create_new(true)
             .share_mode(0)
             .open(dir.join(format!("{name}.lock")))
-            .unwrap()
+            .unwrap();
+        // Atomic readiness record lets the agent suite open observation-only
+        // process handles while this exact synthetic process is known live.
+        let staging = dir.join(format!("{name}.pid-writing"));
+        fs::write(&staging, process::id().to_string()).unwrap();
+        fs::rename(staging, dir.join(format!("{name}.pid"))).unwrap();
+        lifetime
     }
 
     fn spawn_descendant(dir: &Path, mode: &str) -> process::Child {

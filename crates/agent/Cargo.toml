@@ -1,9 +1,14 @@
 [package]
 name = "cedar-agent"
+default-run = "cedar-agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+
+[features]
+# Enables a separate fixture binary, never a cedar-agent CLI or capability flag.
+windows-language-validation = ["cedar-workspace/windows-language-validation"]
 
 [dependencies]
 cedar-protocol = { path = "../protocol" }
@@ -15,3 +20,8 @@ tempfile.workspace = true
 [[bin]]
 name = "cedar-agent"
 path = "src/main.rs"
+
+[[bin]]
+name = "cedar-agent-language-validation"
+path = "tests/support/language_validation.rs"
+required-features = ["windows-language-validation"]

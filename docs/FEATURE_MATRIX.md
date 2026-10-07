@@ -1,8 +1,8 @@
-# 功能矩阵与后续验收 · checkpoint 9B fixture fix / 0.8.3
+# 功能矩阵与后续验收 · checkpoint 9C / 0.8.4
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。协议仍为精确版本 4，能力声明不授予执行信任。0.7.1 的同提交 Ubuntu/Windows CI 已通过，Windows 实际执行全部 13 项进程生命周期及 7 项隔离 agent/bundle 测试。第八阶段磁盘对比/干净标签重载已通过同提交双平台 CI；9A 新增可取消 stdin 基础层；9B 实际 Windows 已通过21项进程生命周期和11/12项传输验收；0.8.3修正 stdout EOF 夹具的多余句柄继承后待新 CI。Windows IDE LSP 仍禁用，须实际 CI、agent和真实 Java 验证。此前 Linux 超时未再出现，但原根因未确认。
+“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。协议仍为精确版本 4，能力声明不授予执行信任。0.7.1 的同提交 Ubuntu/Windows CI 已通过，Windows 实际执行全部 13 项进程生命周期及 7 项隔离 agent/bundle 测试。第八阶段磁盘对比/干净标签重载已通过同提交双平台 CI；0.8.3实际Windows已通过21项进程生命周期、12项传输和7项原有agent验收。9C新增固定JDT版本的真实Java三会话测试和独立非分发agent/LSP并发夹具；实际Windows结果待验证。正常Windows IDE LSP仍禁用。此前 Linux 超时未再出现，但原根因未确认。
 
 | 领域 | 当前实现 | 尚缺 / 下一阶段验收 |
 |---|---|---|
@@ -17,15 +17,15 @@
 | 调试 | 独立异步 DAP 传输；第二阶段真实 Python 断点/栈/变量/继续/停止验证 | IDE 调试 UI/远程桥接、可靠后代进程回收、监听安全、Java/JVM 调试 |
 | 命令运行 | 明确 executable + 字面量 argv；RunStart/Poll/Cancel、实时有界输出、终态区分、运行中继续编辑保存、关闭/重连保护 | 本阶段原生显式 Run/Cancel/重连复核待批准启用信任；Windows 0.7.1 隔离 agent 实际 CI 已通过，原生 GUI 待验收；交互式 PTY、测试结果树、并行任务；macOS 运行未验收 |
 | 保存的命令配置 | 显式 Load/选择/新建/Save；`cedar.tasks.json` 严格有界格式；字面量参数行与预览；普通编辑器版本检查、单次撤销和恢复；重连显式复核 | 不是完整运行/调试配置系统；无自动发现、预设、环境变量、目录覆盖、变量展开或 autorun；未序列化表单只在当前会话 |
-| Windows进程基础 | 原子Job绑定、私有本机管道、完成后回收的异步I/O、严格argv；0.6.2的39单元+13生命周期全部通过 | 9A 新增固定64KiB owned stdin、取消后等待完成和明确传输结果，仍待实际 Windows CI；不等同 GUI 或恶意代码沙箱 |
-| Windows本地后端 | 同目录精确cedar-agent.exe；固定IsolatedAgent模式、信任独立、异步任务三项能力；绝对原生.exe路径；完整u32退出码 | 无PATH/PATHEXT或batch解析；缺失bundle无回退；Git/同步Run/LSP/DAP仍禁用；原生 Windows GUI 验收，下一阶段规划可取消 stdin 和 LSP Job 所有权 |
+| Windows进程基础 | 原子Job绑定、私有本机管道、完成后回收的异步I/O、严格argv、固定64KiB owned stdin；0.8.3的48单元+21生命周期+12语言传输全部实际通过 | 新增真实Java/agent并发验收待9C原生CI；不等同GUI或恶意代码沙箱 |
+| Windows本地后端 | 同目录精确cedar-agent.exe；固定IsolatedAgent模式、信任独立、异步任务三项能力；绝对原生.exe路径；完整u32退出码 | 无PATH/PATHEXT或batch解析；缺失bundle无回退；Git/同步Run/LSP/DAP仍禁用；原生 Windows GUI 待验收；LSP Job底层已验证，真实Java和非分发agent并发夹具待9C原生CI |
 | 任务安全 | 配置操作零自动执行；每连接一个异步任务、1–300 秒、每流 256 KiB、8 个历史记录；Linux 普通进程组清理；不自动重试不明结果 | 非 OS 沙箱，恶意逃逸后代可能存活；Unix 强杀 agent 不保证任务清理；Windows 已验证 Job 随所有者退出清理；遗留同步 Run/Git/LSP/DAP 不计入异步任务限额 |
 | 搜索 | 有界文本搜索、结果跳转；语言服务引用查找与工作区边界导航 | 正则、替换、全工作区符号索引 |
 | Git | 可信工作区状态 | diff/hunks/stage/commit/blame/merge、分支/远端管理 |
 | 插件 | Rust crate 扩展边界 | 稳定插件 ABI/协议、权限、生命周期、市场；无 IDEA 插件兼容承诺 |
 | 企业功能 | 无 | 数据库、Spring、Web、容器、应用服务器、Profiler、协作等需分别设计 |
 | 性能 | 懒加载、按需重绘、有界读取/输出/传输/恢复存储 | 无本阶段新内存基准；历史短时前端读数与 JVM 分开；同项目可复现基线、远程延迟、长会话泄漏、生产项目回归、完整进程树核算 |
-| 分发 | Cargo工程、锁文件、许可清单、公开分阶段源码；0.8.0 双平台 CI 全绿，Windows 13 + 7 项实际执行；9A 检查见当前测试报告 | 本阶段发布/精确提交 CI；Windows/macOS 原生 GUI、已签名安装包、自动升级与安全发布 |
+| 分发 | Cargo工程、锁文件、许可清单、公开分阶段源码；0.8.3 双平台 CI 全绿，Windows21进程+12语言传输+7agent实际执行；9C准备见当前测试报告 | 本阶段发布/精确提交 CI；Windows/macOS 原生 GUI、已签名安装包、自动升级与安全发布 |
 
 ## 验收边界
 
@@ -39,7 +39,7 @@
 
 ## 建议下一顺序
 
-1. 完成9A stdin 与9B独占语言传输的精确提交 Windows CI；9B新增12项实际传输验收，含重复句柄/线程计数；能力保持禁用。Linux 原超时若重现，按逐条件诊断定位
+1. 在已通过的0.8.3原生基础上完成9C固定版本真实Java及三项非分发agent/LSP并发生命周期验收；正常Windows IDE能力保持禁用。Linux原超时若重现，按逐条件诊断定位
 2. [Windows Java LSP](WINDOWS_LANGUAGE_PLAN.md)：可取消 stdin 与独占 Job/可加入线程/严格帧解析已实现但仍受门控；通过真实 Windows 语言服务及与任务并发清理测试后才开放能力。初始顺序请求仍有启动阻塞，须明确披露或另做异步生命周期协议
 3. 远程核心路径：获得狭窄测试批准后验证真实 SSH 认证、严格主机密钥、远程路径引用、断开/重连和不明结果不重放；明确版本/能力边界、实际进程清理和 Windows 前端到 Linux 后端的证据。此门槛与语言服务工作并行推进准备，不以 stdio 测试替代
 4. DAP 调试 UI/agent 与真实程序闭环；先解决监听安全和普通后代进程回收，再扩展 PTY、测试树与 JVM 调试

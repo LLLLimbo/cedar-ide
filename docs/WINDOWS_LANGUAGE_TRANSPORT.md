@@ -114,3 +114,8 @@ source commit; ignored or skipped tests do not establish a runtime gate. Future
 activation additionally needs agent-level concurrent task/LSP startup, independent
 stop, owner-death and real Java language-service coverage. The private transport
 checkpoint does not advertise any of those capabilities as passed.
+
+The next [agent integration acceptance fixture](WINDOWS_AGENT_LANGUAGE_VALIDATION.md)
+now exercises the real bridge through a separate feature-gated, nonshipping host.
+Its normal constructors, binary and production capability advertisement stay
+unchanged. That fixture's exact-revision native acceptance is a separate gate.
