@@ -75,6 +75,124 @@ fn persist(app: &mut CedarApp) {
         app.recovery.protected(&workspace(), &app.documents[0])
     });
 }
+
+#[test]
+fn disk_comparison_and_rejected_dirty_reload_preserve_owned_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("recovery");
+    let mut app = app_at(&path);
+    connected(&mut app);
+    dirty_doc(&mut app);
+    persist(&mut app);
+    let (worker, rx) = worker::Worker::recording();
+    app.worker = Some(worker);
+    app.compare_with_disk();
+    let command = rx.try_recv().unwrap();
+    assert!(matches!(command.op, Operation::Read { .. }));
+    app.apply_event(Event {
+        generation: app.generation,
+        id: command.id,
+        connected: true,
+        result: Ok(Payload::File {
+            path: "main.rs".into(),
+            text: "externally changed disk".into(),
+            revision: "b".repeat(64),
+        }),
+    });
+    app.reload_from_disk();
+    app.finish_disk_reload(&egui::Context::default());
+    app.recovery_tick(&egui::Context::default());
+    assert!(rx.try_recv().is_err());
+    assert!(app.recovery.protected(&workspace(), &app.documents[0]));
+    assert_eq!(app.documents[0].saved_text, "original disk");
+    assert_eq!(
+        app.documents[0].revision.as_deref(),
+        Some("original-revision")
+    );
+    drop(app);
+    let store = Store::open(path).unwrap();
+    let saved = store
+        .read(&record_id(&workspace(), "main.rs").unwrap())
+        .unwrap();
+    assert_eq!(saved.text, "current draft");
+    assert_eq!(saved.base_text, "original disk");
+    assert_eq!(saved.base_revision.as_deref(), Some("original-revision"));
+}
+
+#[test]
+fn clean_disk_reload_undo_and_tab_discard_never_take_ownership_of_older_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("recovery");
+    {
+        Store::open(&path).unwrap().write(1, &sample()).unwrap();
+    }
+    let mut app = app_at(&path);
+    connected(&mut app);
+    app.documents.push(Document::new(
+        1,
+        "main.rs".into(),
+        "original disk".into(),
+        "a".repeat(64),
+    ));
+    app.active_document = Some(1);
+    let (worker, rx) = worker::Worker::recording();
+    app.worker = Some(worker);
+    for verify in [false, true] {
+        if verify {
+            app.reload_from_disk();
+        } else {
+            app.compare_with_disk();
+        }
+        let command = rx.try_recv().unwrap();
+        assert!(matches!(command.op, Operation::Read { .. }));
+        app.apply_event(Event {
+            generation: app.generation,
+            id: command.id,
+            connected: true,
+            result: Ok(Payload::File {
+                path: "main.rs".into(),
+                text: "new disk".into(),
+                revision: "b".repeat(64),
+            }),
+        });
+    }
+    let ctx = app.editor_ctx.clone();
+    app.finish_disk_reload(&ctx);
+    app.recovery_tick(&ctx);
+    assert_eq!(app.documents[0].text, "new disk");
+    assert!(!app.documents[0].dirty());
+    let _ = ctx.run(
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Z,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+            ..Default::default()
+        },
+        |ctx| {
+            ctx.memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", 1u64))));
+            editor_state::history_shortcut(ctx, &mut app.documents[0]);
+        },
+    );
+    app.recovery_tick(&ctx);
+    assert_eq!(app.documents[0].text, "original disk");
+    assert!(app.documents[0].dirty());
+    assert_eq!(
+        app.recovery.status(Some(&workspace()), app.active()).0,
+        "Older recovery waiting"
+    );
+    app.remove_tab(1);
+    drop(app);
+    let store = Store::open(path).unwrap();
+    let old = store
+        .read(&record_id(&workspace(), "main.rs").unwrap())
+        .unwrap();
+    assert_eq!(old.text, sample().text);
+    assert_eq!(old.base_revision, sample().base_revision);
+}
 #[test]
 fn durable_status_waits_for_matching_actual_store_ack() {
     let temp = tempfile::tempdir().unwrap();

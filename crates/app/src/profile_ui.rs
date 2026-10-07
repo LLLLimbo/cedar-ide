@@ -110,6 +110,15 @@ impl Profiles {
     }
 }
 impl CedarApp {
+    pub(super) fn profile_disk_reloaded(&mut self) {
+        // Retain the form, its baseline and its old source. Changed source
+        // version/revision makes Save/Run fail until the user explicitly loads.
+        // Also invalidate same-frame actions and outstanding profile reads.
+        self.profiles.queued = None;
+        self.profiles.load_navigation = None;
+        self.profiles.changed();
+        self.profiles.message = Some("The configuration tab was reloaded. Your profile form is retained; discard form changes if needed, then explicitly Load the editor version before Save or Run".into());
+    }
     pub(super) fn queue_profile_action(&mut self, action: Action) {
         // Run only after this frame's form and raw-editor input has been applied.
         self.profiles.queued = Some(action);

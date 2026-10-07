@@ -1,6 +1,7 @@
 //! Cedar IDE — a native Rust frontend for a local or SSH workspace agent.
 mod agent_support;
 pub mod completion;
+mod disk_review;
 mod editor_state;
 mod language_navigation_results;
 mod language_results;
@@ -173,8 +174,9 @@ enum Job {
         epoch: u64,
     },
     Run(run_ui::Action),
-    Inspect {
-        path: String,
+    DiskReview {
+        ticket: u64,
+        purpose: disk_review::Purpose,
     },
     Language(language_ui::Action),
 }
@@ -236,7 +238,7 @@ pub struct CedarApp {
     find_query: String,
     find_index: Option<usize>,
     find_focus: bool,
-    disk_view: Option<(String, String)>,
+    disk_review: disk_review::DiskReview,
     font_size: f32,
     recovery: recovery::Recovery,
 }
@@ -331,7 +333,7 @@ impl CedarApp {
             find_query: String::new(),
             find_index: None,
             find_focus: false,
-            disk_view: None,
+            disk_review: disk_review::DiskReview::default(),
             font_size: 14.0,
             recovery: recovery::Recovery::default(),
         }
@@ -384,12 +386,14 @@ impl CedarApp {
             }
         };
         self.recovery.restoring_generation = None;
+        self.dismiss_disk_review();
         self.run_state.reset();
         self.profiles.disconnected();
         self.worker = None;
         self.language.reset();
         self.generation += 1;
         self.pending.clear();
+        self.disk_review.outstanding = None;
         for doc in &mut self.documents {
             doc.saving = false;
         }
@@ -410,7 +414,9 @@ impl CedarApp {
         if self.state != ConnectionState::Connecting {
             return;
         }
+        self.dismiss_disk_review();
         self.worker = None;
+        self.disk_review.outstanding = None;
         self.agent_info = None;
         self.generation += 1;
         self.connecting_form = None;
@@ -451,6 +457,7 @@ impl CedarApp {
     }
 
     fn disconnected(&mut self, message: String) {
+        self.dismiss_disk_review();
         self.run_state.disconnected();
         self.profiles.disconnected();
         self.recovery.restoring_generation = None;
@@ -460,6 +467,7 @@ impl CedarApp {
         self.language.reset();
         self.worker = None;
         self.pending.clear();
+        self.disk_review.outstanding = None;
         for doc in &mut self.documents {
             doc.saving = false;
         }
@@ -473,6 +481,7 @@ impl CedarApp {
     }
 
     fn navigation_changed(&mut self) {
+        self.dismiss_disk_review();
         self.navigation_epoch = self.navigation_epoch.wrapping_add(1);
         self.language.cancel_navigation();
     }
@@ -670,6 +679,25 @@ impl CedarApp {
         let Some(job) = self.pending.remove(&event.id) else {
             return;
         };
+        if let Job::DiskReview { ticket, purpose } = job {
+            if self.disk_review.outstanding == Some(event.id) {
+                self.disk_review.outstanding = None;
+            }
+            // Transport liveness belongs to the current connection, even when
+            // its old file review has been dismissed. Old generations were
+            // rejected before looking up this job.
+            if !event.connected {
+                self.disconnected(
+                    event
+                        .result
+                        .err()
+                        .unwrap_or_else(|| "The connection closed while reading disk".into()),
+                );
+                return;
+            }
+            self.apply_disk_read(ticket, purpose, event.result, event.connected);
+            return;
+        }
         if let Job::Save { document, .. } = &job {
             if let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == *document) {
                 doc.saving = false;
@@ -812,9 +840,6 @@ impl CedarApp {
             (Job::Language(action), Payload::Language { value }) => {
                 self.apply_language_action(action, value)
             }
-            (Job::Inspect { path }, Payload::File { text, .. }) => {
-                self.disk_view = Some((path, text))
-            }
             _ => {
                 self.error =
                     Some("Unexpected agent response; no editor buffers were changed".into())
@@ -860,6 +885,7 @@ impl CedarApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             return;
         }
+        self.dismiss_disk_review();
         if self.language.running && self.ready() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_after_language_stop = true;
@@ -878,6 +904,9 @@ impl CedarApp {
     }
 
     fn close_tab(&mut self, id: u64) {
+        if self.active_document == Some(id) {
+            self.dismiss_disk_review();
+        }
         if self.documents.iter().any(|doc| doc.id == id && doc.saving) {
             self.error =
                 Some("This file is saving. Wait for the acknowledgement before closing it".into());
@@ -936,6 +965,7 @@ impl CedarApp {
             }
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.dismiss_disk_review();
             self.quick_open = false;
             self.find_open = false;
             self.confirm = None;
@@ -1498,8 +1528,8 @@ impl CedarApp {
             self.close_tab_requested = Some(id);
         }
         ui.separator();
-        let mut inspect = None;
-        let ready = self.ready();
+        let mut compare = false;
+        let can_compare = self.backend_supports("read") && !self.disk_review.busy();
         if let Some(doc) = self.active() {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&doc.path).size(12.0).color(MUTED));
@@ -1515,14 +1545,11 @@ impl CedarApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add_enabled(
-                            ready && doc.revision.is_some(),
-                            egui::Button::new("View disk version").small(),
-                        )
+                        .add_enabled(can_compare, egui::Button::new("Compare with disk").small())
                         .on_hover_text("Read the current file without changing your draft")
                         .clicked()
                     {
-                        inspect = Some(doc.path.clone());
+                        compare = true;
                     }
                     if ui.small_button("Copy draft").clicked() {
                         ui.ctx().copy_text(doc.text.clone());
@@ -1530,11 +1557,8 @@ impl CedarApp {
                 });
             });
         }
-        if let Some(path) = inspect {
-            self.request(
-                Operation::Read { path: path.clone() },
-                Job::Inspect { path },
-            );
+        if compare {
+            self.compare_with_disk();
         }
         self.find_bar(ui);
         if let Some(doc) = self
@@ -1558,6 +1582,8 @@ impl CedarApp {
                 ui.ctx()
                     .memory_mut(|memory| memory.request_focus(editor_id));
             }
+            let cursor_history =
+                editor_state::before_cursor_interaction(ui.ctx(), doc, scroll_to.is_some());
             let enabled = syntax::supports(&doc.path);
             let font_size = self.font_size;
             let mut layouter = |ui: &egui::Ui, text: &str, _width: f32| {
@@ -1603,6 +1629,12 @@ impl CedarApp {
                             doc.edit_version = doc.edit_version.saturating_add(1);
                             doc.has_cjk |= system_fonts::contains_cjk(&doc.text);
                         }
+                        editor_state::after_cursor_interaction(
+                            ui.ctx(),
+                            doc,
+                            &output,
+                            cursor_history,
+                        );
                         if let Some(range) = output.cursor_range {
                             doc.cursor = cursor_location(&doc.text, range.primary.ccursor.index);
                         }
@@ -1752,20 +1784,7 @@ impl CedarApp {
                 });
             });
         }
-        if self.disk_view.is_some() {
-            let mut visible = true;
-            egui::Window::new("Disk version · read-only").open(&mut visible).default_size([780.0, 500.0]).show(ctx, |ui| {
-                if let Some((path, text)) = &mut self.disk_view {
-                    ui.label(RichText::new(path.as_str()).color(GREEN));
-                    ui.label(RichText::new("Your editable draft has not been changed. Copy either version to resolve a conflict; close and reopen the tab to load the latest revision.").small().color(MUTED));
-                    if ui.button("Copy disk version").clicked() { ui.ctx().copy_text(text.clone()); }
-                    egui::ScrollArea::both().show(ui, |ui| { ui.add(egui::TextEdit::multiline(text).font(egui::TextStyle::Monospace).interactive(false).desired_width(f32::INFINITY).frame(false)); });
-                }
-            });
-            if !visible {
-                self.disk_view = None;
-            }
-        }
+        self.disk_review_window(ctx);
     }
 }
 
@@ -1836,12 +1855,13 @@ impl eframe::App for CedarApp {
             });
         self.dialogs(ctx);
         self.language_popups(ctx);
-        self.language_tick(ctx);
         self.run_tick(ctx);
         self.recovery_window(ctx);
         self.run_dialog(ctx);
+        self.finish_disk_reload(ctx);
         self.finish_profile_actions();
         self.finish_tab_close();
+        self.language_tick(ctx);
         self.recovery_tick(ctx);
         self.finish_recovery_close_frame(ctx);
     }

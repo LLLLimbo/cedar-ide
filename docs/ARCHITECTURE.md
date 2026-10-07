@@ -1,10 +1,11 @@
-# Architecture · checkpoint 7B / 0.7.0
+# Architecture · checkpoint 8 / 0.8.0
 
 Cedar is a native Rust frontend plus a workspace backend. The current wire
 protocol remains **4**. The handshake requires an exact protocol match, not an
 application-version match. Bounded operation capabilities are discovered within
 that protocol; unsupported protocol versions are still rejected. Checkpoint 7B
 reuses the existing asynchronous-task operations for an isolated Windows agent.
+Checkpoint 8 adds frontend disk review using the existing bounded Read operation.
 The frontend has no embedded browser or JVM. Language servers and build tools
 can still need a JVM or other runtime on the workspace machine.
 
@@ -87,6 +88,30 @@ Windows CI, including real Windows recovery tests; exact scope is recorded in
 [historical hotfix report](TEST_REPORT_HOTFIX_0_3_1.md).
 Windows native recovery/privacy acceptance and macOS runtime remain unvalidated. See
 [RECOVERY.md](RECOVERY.md) and the [frontend contract](../crates/app/RECOVERY_AND_COMMANDS.md).
+
+## Explicit disk review
+
+The frontend retains one selected-document review and one outstanding Read.
+Its freshness token includes connection generation, request identity, document
+identity/path/edit version/base revision, navigation and task-profile epochs.
+Dismissing a review does not free the outstanding slot until its response drains;
+repeated dismissal/reopening cannot fill the worker queue. A known current
+transport failure still disconnects the session even if its review is stale.
+
+The two read-only panes reuse bounded cached layouts. Cache validity includes
+font-atlas identity, so lazy CJK activation and atlas recreation cannot reuse
+stale texture coordinates. A preview never changes the editor or saved revision.
+Only a clean, unchanged document may request reload. A second matching Read is
+staged until the final input barrier, after editor and language-popup mutations
+and before queued task-profile actions. New typing, saves, navigation or stale
+responses cannot be overwritten by an earlier accepted snapshot.
+
+A changed clean reload is one native undo transaction and separately adopts the
+new disk baseline. Undo makes the previous text dirty against that new baseline;
+Redo returns to the new clean contents. Revision-only/no-op snapshots do not
+invent text edits. Old recovery ownership and unsaved profile forms remain
+protected. This is neither a file watcher nor a merge/force-save operation; see
+[DISK_REVIEW.md](DISK_REVIEW.md) for bounds and the remaining read/save race.
 
 ## Asynchronous command tasks
 

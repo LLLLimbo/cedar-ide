@@ -2,6 +2,13 @@
 use crate::model::Document;
 use eframe::egui;
 pub const MAX_UNDO_STATES: usize = 16;
+type EditorUndoer = egui::util::undoer::Undoer<(egui::text::CCursorRange, String)>;
+
+pub struct CursorHistory {
+    history: EditorUndoer,
+    cursor: Option<egui::text::CCursorRange>,
+    programmatic: bool,
+}
 
 pub fn load(ctx: &egui::Context, doc: &mut Document) -> egui::text_edit::TextEditState {
     let id = egui::Id::new(("editor", doc.id));
@@ -54,6 +61,188 @@ pub fn history_shortcut(ctx: &egui::Context, doc: &mut Document) {
             step_history(ctx, doc, redo);
         }
     }
+}
+
+/// egui's undo state compares (selection, text), so a focus click or selection
+/// move clears redo even when no text changes. Preserve its bounded history only
+/// for an explicit cursor interaction, then restore it if the widget made no
+/// text edit. There is no second persistent history and no idle/hover cloning.
+pub fn before_cursor_interaction(
+    ctx: &egui::Context,
+    doc: &mut Document,
+    programmatic_cursor: bool,
+) -> Option<CursorHistory> {
+    let id = egui::Id::new(("editor", doc.id));
+    let focused = ctx.memory(|memory| memory.has_focus(id));
+    let rect = ctx.read_response(id).map(|response| response.rect);
+    let mac = ctx.os() == egui::os::OperatingSystem::Mac;
+    let cursor_input = ctx.input(|input| {
+        input.events.iter().any(|event| match event {
+            egui::Event::PointerButton { pos, .. } | egui::Event::Touch { pos, .. } => {
+                rect.is_some_and(|rect| rect.contains(*pos))
+            }
+            egui::Event::PointerMoved(_) => focused && input.pointer.any_down(),
+            egui::Event::Key {
+                key,
+                modifiers,
+                pressed: true,
+                ..
+            } if focused => {
+                matches!(
+                    key,
+                    egui::Key::ArrowLeft
+                        | egui::Key::ArrowRight
+                        | egui::Key::ArrowUp
+                        | egui::Key::ArrowDown
+                        | egui::Key::Home
+                        | egui::Key::End
+                ) || (*key == egui::Key::A && modifiers.command)
+                    || (mac
+                        && modifiers.ctrl
+                        && !modifiers.shift
+                        && matches!(
+                            key,
+                            egui::Key::P
+                                | egui::Key::N
+                                | egui::Key::B
+                                | egui::Key::F
+                                | egui::Key::A
+                                | egui::Key::E
+                        ))
+            }
+            _ => false,
+        })
+    });
+    if !programmatic_cursor && !cursor_input {
+        return None;
+    }
+    let state = load(ctx, doc);
+    Some(CursorHistory {
+        history: state.undoer(),
+        cursor: state.cursor.char_range(),
+        programmatic: programmatic_cursor,
+    })
+}
+
+pub fn after_cursor_interaction(
+    ctx: &egui::Context,
+    doc: &Document,
+    output: &egui::text_edit::TextEditOutput,
+    history: Option<CursorHistory>,
+) {
+    let Some(history) = history else {
+        return;
+    };
+    if output.response.changed() {
+        // Text, paste, IME, and native mixed Undo/Redo batches keep their actual
+        // event order. A real edit must invalidate redo in the ordinary way.
+        return;
+    }
+    let Some(cursor) = output.state.cursor.char_range() else {
+        return;
+    };
+    if history.cursor == Some(cursor) && !history.programmatic {
+        return;
+    }
+    // Coalesce selection-only points rather than appending one per arrow/drag
+    // frame: those points would otherwise evict meaningful text history.
+    let history = replace_history_cursor(history.history, cursor, &doc.text);
+    let mut state = output.state.clone();
+    state.set_undoer(history);
+    state.store(ctx, egui::Id::new(("editor", doc.id)));
+}
+
+/// The pinned public Undoer API cannot replace its latest selection in place.
+/// Rebuild the same bounded native history only at a cursor change. Temporary
+/// branches expose past/future through the public Undo/Redo API; no extra
+/// history survives this call. Adjacent equal-text points collapse into one.
+fn replace_history_cursor(
+    mut past: EditorUndoer,
+    cursor: egui::text::CCursorRange,
+    text: &str,
+) -> EditorUndoer {
+    let mut future = past.clone();
+    // A cursor beyond every possible buffer distinguishes the probe from a
+    // real checkpoint. undo(probe) reveals the latest point without popping it.
+    // Its synthetic redo entry stays only in the disposable past branch.
+    let probe = (
+        egui::text::CCursorRange::one(egui::text::CCursor::new(usize::MAX)),
+        String::new(),
+    );
+    let anchor = past.undo(&probe).cloned();
+    if anchor
+        .as_ref()
+        .is_some_and(|state| state.0 == cursor && state.1 == text)
+    {
+        return future;
+    }
+    let mut states = Vec::with_capacity(MAX_UNDO_STATES);
+    if let Some(anchor) = &anchor {
+        states.push(anchor.clone());
+        let mut current = anchor.clone();
+        for _ in 0..MAX_UNDO_STATES {
+            let Some(previous) = past.undo(&current).cloned() else {
+                break;
+            };
+            current = previous;
+            if states.last().is_none_or(|last| last.1 != current.1) {
+                states.push(current.clone());
+            }
+        }
+    }
+    states.reverse();
+    let current = (cursor, text.to_owned());
+    if states.last().is_some_and(|last| last.1 == text) {
+        *states.last_mut().unwrap() = current;
+    } else {
+        states.push(current);
+    }
+    let mut redo_count = 0;
+    if let Some(mut current) = anchor.filter(|anchor| anchor.1 == text) {
+        // Keep the complete bounded redo chain, not just the next text. Native
+        // history can also retain one uncheckpointed typing state beyond its
+        // 16 saved points after Undo.
+        for _ in 0..MAX_UNDO_STATES {
+            let Some(next) = future.redo(&current).cloned() else {
+                break;
+            };
+            current = next;
+            if states.last().is_none_or(|last| last.1 != current.1) {
+                states.push(current.clone());
+                redo_count += 1;
+            }
+        }
+    }
+    let mut rebuilt = EditorUndoer::with_settings(egui::util::undoer::Settings {
+        max_undos: MAX_UNDO_STATES,
+        ..Default::default()
+    });
+    let extra_typing_state = states.len() > MAX_UNDO_STATES;
+    let saved = if extra_typing_state {
+        &states[..states.len() - 1]
+    } else {
+        &states[..]
+    };
+    for state in saved {
+        rebuilt.add_undo(state);
+    }
+    let mut current = states.last().unwrap().clone();
+    if extra_typing_state && redo_count == 0 {
+        // Fully redone history may contain 16 checkpoints plus the former
+        // typing state. Native undo/redo can append that one extra state without
+        // trimming the oldest checkpoint; reproduce that public API behavior.
+        if let Some(previous) = rebuilt.undo(&current).cloned() {
+            rebuilt.redo(&previous);
+        }
+    }
+    for _ in 0..redo_count {
+        // At any partial-Undo split of a 17-state timeline, the first undo
+        // captures the final typing state without evicting the oldest point.
+        if let Some(previous) = rebuilt.undo(&current).cloned() {
+            current = previous;
+        }
+    }
+    rebuilt
 }
 
 fn history_event(event: &egui::Event) -> Option<bool> {
@@ -132,7 +321,7 @@ pub fn commit(ctx: &egui::Context, doc: &mut Document, text: String, cursor_char
     let before = (old_cursor, doc.text.clone());
     let new_cursor = egui::text::CCursorRange::one(egui::text::CCursor::new(cursor_chars));
     let after = (new_cursor, text.clone());
-    // This clones history only for a deliberate language-edit transaction, never per frame.
+    // Clone history only for an explicit editor transaction, never per frame.
     let mut undoer = state.undoer();
     undoer.add_undo(&before);
     undoer.feed_state(ctx.input(|input| input.time), &after);
@@ -151,6 +340,119 @@ pub fn commit(ctx: &egui::Context, doc: &mut Document, text: String, cursor_char
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cursor_coalescing_preserves_sixteen_distinct_texts_and_complete_redo_branch() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::new(1, "file.rs".into(), "value 00".into(), "revision".into());
+        for index in 1..MAX_UNDO_STATES {
+            commit(&ctx, &mut doc, format!("value {index:02}"), 0);
+        }
+        for _ in 0..5 {
+            assert!(step_history(&ctx, &mut doc, false));
+        }
+        assert_eq!(doc.text, "value 10");
+        for index in 0..40 {
+            let mut state = load(&ctx, &mut doc);
+            let cursor = egui::text::CCursorRange::one(egui::text::CCursor::new(index % 2));
+            let history = replace_history_cursor(state.undoer(), cursor, &doc.text);
+            state.cursor.set_char_range(Some(cursor));
+            state.set_undoer(history);
+            state.store(&ctx, egui::Id::new(("editor", 1u64)));
+        }
+        for index in 11..MAX_UNDO_STATES {
+            assert!(step_history(&ctx, &mut doc, true));
+            assert_eq!(doc.text, format!("value {index:02}"));
+        }
+        assert!(!step_history(&ctx, &mut doc, true));
+        for index in (0..MAX_UNDO_STATES - 1).rev() {
+            assert!(step_history(&ctx, &mut doc, false));
+            assert_eq!(doc.text, format!("value {index:02}"));
+        }
+        assert!(!step_history(&ctx, &mut doc, false));
+        assert_eq!(doc.revision.as_deref(), Some("revision"));
+    }
+    #[test]
+    fn cursor_coalescing_preserves_every_split_of_native_checkpoint_plus_in_flux_history() {
+        let cursor = egui::text::CCursorRange::one(egui::text::CCursor::new(0));
+        for undo_depth in 0..=MAX_UNDO_STATES {
+            let mut history = EditorUndoer::with_settings(egui::util::undoer::Settings {
+                max_undos: MAX_UNDO_STATES,
+                ..Default::default()
+            });
+            for index in 0..MAX_UNDO_STATES {
+                history.add_undo(&(cursor, format!("value {index}")));
+            }
+            let mut current = (cursor, format!("value {MAX_UNDO_STATES}"));
+            for _ in 0..undo_depth {
+                current = history.undo(&current).unwrap().clone();
+            }
+            let moved = egui::text::CCursorRange::one(egui::text::CCursor::new(1));
+            history = replace_history_cursor(history, moved, &current.1);
+            current.0 = moved;
+            history.feed_state(10.0, &current);
+            for index in MAX_UNDO_STATES - undo_depth + 1..=MAX_UNDO_STATES {
+                current = history.redo(&current).unwrap().clone();
+                assert_eq!(
+                    current.1,
+                    format!("value {index}"),
+                    "Undo split {undo_depth}"
+                );
+            }
+            assert!(history.redo(&current).is_none());
+            // Full Redo legitimately leaves 17 native undo points. A later
+            // selection move and idle feed must also preserve the oldest one.
+            let after_redo = egui::text::CCursorRange::one(egui::text::CCursor::new(2));
+            history = replace_history_cursor(history, after_redo, &current.1);
+            current.0 = after_redo;
+            history.feed_state(12.0, &current);
+            for index in (0..MAX_UNDO_STATES).rev() {
+                current = history.undo(&current).unwrap().clone();
+                assert_eq!(
+                    current.1,
+                    format!("value {index}"),
+                    "Undo split {undo_depth}"
+                );
+            }
+            assert!(history.undo(&current).is_none());
+            let after_undo = egui::text::CCursorRange::one(egui::text::CCursor::new(3));
+            history = replace_history_cursor(history, after_undo, &current.1);
+            current.0 = after_undo;
+            for index in 1..=MAX_UNDO_STATES {
+                current = history.redo(&current).unwrap().clone();
+                assert_eq!(
+                    current.1,
+                    format!("value {index}"),
+                    "Undo split {undo_depth}"
+                );
+            }
+            assert!(history.redo(&current).is_none());
+        }
+    }
+    #[test]
+    fn idle_and_pointer_hover_do_not_snapshot_editor_history() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::new(1, "file.rs".into(), "before".into(), "revision".into());
+        commit(&ctx, &mut doc, "after".into(), 0);
+        assert!(step_history(&ctx, &mut doc, false));
+        for frame in 0..50 {
+            let _ = ctx.run(
+                egui::RawInput {
+                    time: Some(f64::from(frame)),
+                    events: if frame % 2 == 0 {
+                        vec![]
+                    } else {
+                        vec![egui::Event::PointerMoved(egui::pos2(20.0, 20.0))]
+                    },
+                    ..Default::default()
+                },
+                |ctx| {
+                    assert!(before_cursor_interaction(ctx, &mut doc, false).is_none());
+                },
+            );
+        }
+        assert!(step_history(&ctx, &mut doc, true));
+        assert_eq!(doc.text, "after");
+    }
     #[test]
     fn history_is_bounded_and_released_on_close() {
         let ctx = egui::Context::default();

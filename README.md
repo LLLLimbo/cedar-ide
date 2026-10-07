@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第七阶段 B 工程（**0.7.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第八阶段工程（**0.8.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -12,6 +12,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - 目录浏览、多标签编辑、新建文件、行号、简单 Java/Kotlin/Rust 高亮
 - Ctrl/Cmd+P 打开路径、Ctrl/Cmd+F 文件内查找、Ctrl/Cmd+S 保存、Ctrl/Cmd+W 关闭标签
 - SHA-256 版本检查；文件在外部改变时拒绝覆盖；原子替换和权限保留
+- **磁盘对比与干净标签重载**：显式双栏比较当前草稿与磁盘；只允许干净标签重载，二次读取复核，撤销后保留新的磁盘基线
 - 脏标签/退出确认；断线保留当前进程中的草稿；显式重连
 - **本地草稿恢复**：后台防抖备份、精确版本确认、启动时查看并显式恢复；保留原始保存版本，恢复后仍拒绝覆盖外部修改
 - **异步命令任务**：显式 executable + 字面量参数行、实时有界输出、状态与取消；命令运行时仍能打开、编辑和保存文件
@@ -37,7 +38,13 @@ cargo run -p cedar-app --bin cedar -- examples/demo
 
 Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`，本地连接还要求同目录的 `cedar-agent.exe`；不要只复制前端。缺失或损坏的 agent 会报错，不搜索 PATH 或回退到进程内执行。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.6.2 提交 [`139320e6bb988eb3de4ceecb992d68cd3d0442dd`](https://github.com/LLLLimbo/cedar-ide/commit/139320e6bb988eb3de4ceecb992d68cd3d0442dd) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37662728974)，包括 39 项 Windows 进程基础单元测试与全部 13 项隔离生命周期测试。此前 Linux 生命周期超时在修订后未再出现，原根因仍未确认。7B 在这个基础上接入隔离 agent 的 Windows 异步任务；0.7.0 的 Ubuntu CI 已通过，Windows 在两项运行中进程数断言处失败，七项新agent测试未到达；0.7.1保留已知进程终止与整个Job归零要求，只修正系统辅助进程可能额外计数的测试假设，仍须通过精确提交 CI。**Windows Git、同步 Run 和 LSP 仍不启用**，详见[当前报告](docs/TEST_REPORT.md)与[0.6.2 修订报告](docs/TEST_REPORT_HOTFIX_0_6_2.md)。
+公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.7.1 提交 [`093cd664e1d89c05ebca11da5b44bf3f2a6c2a5f`](https://github.com/LLLLimbo/cedar-ide/commit/093cd664e1d89c05ebca11da5b44bf3f2a6c2a5f) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37673873489)，Windows 实际运行并通过全部 13 项进程生命周期与 7 项隔离 agent/bundle 测试。此前 Linux 生命周期超时未再出现，原根因仍未确认。**Windows Git、同步 Run 和 LSP 仍不启用**；Windows GUI 尚未验收。第八阶段新增磁盘审阅，不增加执行能力，当前验收范围见[测试报告](docs/TEST_REPORT.md)。
+
+## 磁盘对比与重载
+
+在当前文件路径旁点击 **Compare with disk**，查看当前草稿和本次读到的磁盘内容。**Refresh** 显式重新读取，**Close** 关闭审阅；这些操作不写项目文件，也不要求工具执行信任。
+
+只有未修改的干净标签可点击 **Reload clean tab**。接受前会再次读取；磁盘又有变化时只更新预览，须重新确认。成功后新的磁盘内容成为保存基线，单次 Undo 可回到旧文字并标记为未保存，Redo 回到新内容。脏稿、过期请求、标签切换或同一帧的新输入都不能被旧结果替换。恢复副本仍受原有所有权保护。此阶段提供手动审阅，没有自动文件监听或合并，详见[磁盘审阅边界](docs/DISK_REVIEW.md)。
 
 ## 格式化、引用与大纲
 
@@ -107,10 +114,7 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端可连接 Linux 远程工作
 
 ## 验证
 
-0.7.1 对相同本地聚合与最终 release-agent 再次复验通过，Windows 真实重跑仍待精确提交 CI，见[修订报告](docs/TEST_REPORT_HOTFIX_0_7_1.md)。
-
-7B 本地最终验证通过 **493 项 Rust 测试（487 + 6 显式）**、五条 agent 链、两项导出回归、严格 Linux/MSVC Clippy、Linux release 与 release-agent 集成。新增七项真实 Windows agent/bundle 测试已编译并独立审查，仍待本检查点公开 SHA 的 Windows CI 实际运行；详见[7B 报告](docs/TEST_REPORT_PHASE7B.md)。
-
+第八阶段最终通过 **521 项 Rust 测试（515 + 6 显式）**、五条 agent 黑盒链、两项导出回归、严格 Linux/MSVC Clippy、Linux release 与 release-agent 集成。最终原生 Trust 关闭窗口已复验磁盘比较、二次读取竞态、重载后反复移动光标的 Undo/Redo 与脏稿恢复；范围和待验证项见[当前报告](docs/TEST_REPORT.md)。0.7.1 的精确公开提交已通过 Ubuntu/Windows CI，包括全部 13 + 7 项 Windows 生命周期/agent 测试；本阶段须独立验证其公开提交，不能继承旧二进制的验收结果。
 ```sh
 bash scripts/verify.sh
 ```
@@ -136,9 +140,9 @@ bash scripts/verify.sh
 | cedar-tasks | 有界异步命令监督、输出捕获、取消和普通子进程组清理 |
 | cedar-language | LSP 客户端/生命周期/有界 JSON-RPC；DAP 基础封包 |
 | cedar-debugger | 有界异步 DAP 进程传输，尚未接入 UI 或远程 agent |
-| cedar-winprocess | Windows Job/句柄/异步管道基础库；7A独立验收，7B仅由隔离agent任务监督器使用 |
+| cedar-winprocess | Windows Job/句柄/异步管道基础库；7A独立验收，7B起由隔离agent任务监督器使用 |
 
-更多：[功能矩阵](docs/FEATURE_MATRIX.md)、[架构](docs/ARCHITECTURE.md)、[语言服务](docs/LANGUAGE_SERVICES.md)、[Kotlin 验证](docs/KOTLIN_VALIDATION.md)、[调试](docs/DEBUGGING.md)、[前端恢复与命令交互](crates/app/RECOVERY_AND_COMMANDS.md)。第五阶段增加显式命令配置、普通文件 Windows 替换修复与远程故障边界验证；第六阶段增加协议 4 内的后端能力发现与单次握手快照；7A 已完成 Windows 进程基础库的真实 CI 验收；7B 接入隔离 agent 的异步任务，并为这层接入单独验证传输故障、后代清理与本地 bundle。格式化、引用与大纲的安全边界见 [重构路线](docs/REFACTORING_ROADMAP.md)。多文件重命名仍暂缓，先解决无版本跨文件结果、跨文档撤销与文件资源操作遗漏的安全问题。完整重构、项目模型和大量 IDEA 功能仍待实现。
+更多：[功能矩阵](docs/FEATURE_MATRIX.md)、[架构](docs/ARCHITECTURE.md)、[语言服务](docs/LANGUAGE_SERVICES.md)、[Kotlin 验证](docs/KOTLIN_VALIDATION.md)、[调试](docs/DEBUGGING.md)、[前端恢复与命令交互](crates/app/RECOVERY_AND_COMMANDS.md)。第五阶段增加显式命令配置、普通文件 Windows 替换修复与远程故障边界验证；第六阶段增加协议 4 内的后端能力发现与单次握手快照；7A 已完成 Windows 进程基础库的真实 CI 验收；7B 接入隔离 agent 的异步任务，并为这层接入单独验证传输故障、后代清理与本地 bundle。第八阶段新增显式磁盘双栏审阅和只对干净标签的二次读取重载，保留撤销、草稿恢复与语言同步边界。格式化、引用与大纲的安全边界见 [重构路线](docs/REFACTORING_ROADMAP.md)。多文件重命名仍暂缓，先解决无版本跨文件结果、跨文档撤销与文件资源操作遗漏的安全问题。完整重构、项目模型和大量 IDEA 功能仍待实现。
 
 ## 打包已验证检查点
 

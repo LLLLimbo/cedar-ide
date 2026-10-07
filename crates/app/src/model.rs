@@ -42,6 +42,12 @@ impl Document {
         self.revision = Some(revision);
         self.saving = false;
     }
+    /// Called only after a reviewed, twice-read clean reload passes its final
+    /// frame guard. This is baseline adoption, never a write acknowledgement.
+    pub fn adopt_reviewed_disk_baseline(&mut self, revision: String) {
+        self.saved_text = self.text.clone();
+        self.revision = Some(revision);
+    }
 }
 
 /// egui cursor positions count Unicode scalar values, not UTF-8 bytes.

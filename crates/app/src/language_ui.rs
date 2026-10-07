@@ -1405,6 +1405,116 @@ fn safe_relative_path(path: &str) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn disk_reload_uses_existing_language_debounce_and_preserves_sync_mode() {
+        for automatic in [false, true] {
+            let mut app = CedarApp::empty();
+            app.state = crate::ConnectionState::Ready;
+            app.agent_info = Some(crate::agent_support::full_test_agent());
+            app.documents.push(Document::new(
+                1,
+                "file.rs".into(),
+                "before".into(),
+                "a".repeat(64),
+            ));
+            app.active_document = Some(1);
+            let (worker, rx) = crate::worker::Worker::recording();
+            app.worker = Some(worker);
+            app.language.running = true;
+            app.language.session = 4;
+            app.language.automatic = automatic;
+            app.language.next_events = f64::INFINITY;
+            app.language.sync.observe(1, 0, 0.0);
+            app.language.sync.acknowledge(
+                1,
+                Acknowledged {
+                    version: 17,
+                    edit_version: 0,
+                    uri: "file:///project/file.rs".into(),
+                },
+            );
+            app.language.completions = Some(CompletionMenu {
+                context: QueryContext {
+                    session: 4,
+                    document: 1,
+                    edit_version: 0,
+                    source: "before".into(),
+                    cursor: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                },
+                candidates: vec![],
+                selected: 0,
+                incomplete: false,
+                truncated: false,
+            });
+            app.language.completion_popup = true;
+            for verify in [false, true] {
+                if verify {
+                    app.reload_from_disk();
+                } else {
+                    app.compare_with_disk();
+                }
+                let command = rx.try_recv().unwrap();
+                assert!(matches!(command.op, Operation::Read { .. }));
+                app.apply_event(crate::Event {
+                    generation: app.generation,
+                    id: command.id,
+                    connected: true,
+                    result: Ok(crate::Payload::File {
+                        path: "file.rs".into(),
+                        text: "after".into(),
+                        revision: "b".repeat(64),
+                    }),
+                });
+            }
+            let ctx = app.editor_ctx.clone();
+            let _ = ctx.run(
+                egui::RawInput {
+                    time: Some(10.0),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.finish_disk_reload(ctx);
+                    app.language_tick(ctx);
+                },
+            );
+            assert_eq!(app.language.automatic, automatic);
+            assert_eq!(app.language.session, 4);
+            assert!(app.language.running);
+            assert_eq!(app.documents[0].edit_version, 1);
+            assert!(app.language.completions.is_none());
+            assert!(!app.language.completion_popup);
+            assert_eq!(app.language.sync.next_version(1), Some(18));
+            assert!(!app.language.sync.synced(1, 1));
+            assert!((app.language.sync.deadline(1, 1).unwrap() - 10.35).abs() < 0.00001);
+            assert!(rx.try_recv().is_err());
+            let _ = ctx.run(
+                egui::RawInput {
+                    time: Some(10.34),
+                    ..Default::default()
+                },
+                |ctx| app.language_tick(ctx),
+            );
+            assert!(rx.try_recv().is_err());
+            let _ = ctx.run(
+                egui::RawInput {
+                    time: Some(10.36),
+                    ..Default::default()
+                },
+                |ctx| app.language_tick(ctx),
+            );
+            if automatic {
+                let command = rx.try_recv().unwrap();
+                assert!(
+                    matches!(command.op, Operation::LanguageChange { version: 18, text, .. } if text == "after")
+                );
+            } else {
+                assert!(rx.try_recv().is_err());
+            }
+        }
+    }
+    #[test]
     fn converts_cursor_to_utf16() {
         assert_eq!(
             utf16_position("first\nA🐻é.end", (2, 4)).unwrap(),
