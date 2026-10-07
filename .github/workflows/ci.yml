@@ -35,6 +35,11 @@ jobs:
         run: |
           $env:CEDAR_WINPROCESS_FIXTURE_BIN = "$PWD/target/release/cedar-winprocess-fixture.exe"
           cargo test -p cedar-winprocess --features fixtures --test windows_lifecycle --locked -- --ignored --test-threads=1
+      - name: Windows owned language transport (capability gate remains closed)
+        timeout-minutes: 5
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo test -p cedar-language --all-features --test windows_transport --locked -- --ignored --test-threads=1
       - name: Windows isolated-agent tasks and bundled Local
         timeout-minutes: 8
         if: runner.os == 'Windows'

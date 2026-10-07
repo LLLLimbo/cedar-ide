@@ -1,6 +1,6 @@
 # Public source checkpoint
 
-This is the source-only public export of tested development stage `phase9a-0.8.1`.
+This is the source-only public export of tested development stage `phase9b-0.8.2`.
 It is an independent Rust IDE project, not a complete IntelliJ IDEA replacement.
 Public commits preserve the phase-by-phase development sequence, but their hashes
 differ from the private build checkpoints because generated evidence is omitted.

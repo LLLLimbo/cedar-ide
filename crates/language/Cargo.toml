@@ -10,6 +10,9 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+cedar-winprocess = { path = "../winprocess" }
+
 [dev-dependencies]
 tempfile.workspace = true
 
@@ -21,3 +24,6 @@ required-features = ["test-server"]
 [features]
 # A deterministic protocol fixture, never needed in production builds.
 test-server = []
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }

@@ -1,15 +1,23 @@
-use crate::framing::{encode_json, read_frame, write_frame, FrameLimits};
+use crate::framing::{encode_json, FrameLimits};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::BufReader;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+
+#[cfg(any(windows, test))]
+mod owned;
+#[cfg(not(windows))]
+mod portable;
+#[cfg(windows)]
+mod windows;
+#[cfg(not(windows))]
+use portable::Backend;
+#[cfg(windows)]
+use windows::Backend;
 
 #[derive(Debug, Clone, Error)]
 pub enum Error {
@@ -42,8 +50,9 @@ pub struct ProcessConfig {
     pub program: PathBuf,
     pub args: Vec<OsString>,
     pub working_directory: Option<PathBuf>,
-    /// Inherit stderr for server diagnostics. `false` discards it; never pipe it
-    /// without a drain, which could deadlock the language server.
+    /// On non-Windows hosts, inherit stderr for diagnostics (`false` discards it).
+    /// The Windows owned worker always drains stderr and retains at most a
+    /// 16-KiB diagnostic tail when true; it never blocks on the host stderr.
     pub inherit_stderr: bool,
 }
 
@@ -61,6 +70,9 @@ impl ProcessConfig {
 #[derive(Debug, Clone)]
 pub struct ClientOptions {
     pub frame_limits: FrameLimits,
+    /// Request/write deadline. On Windows this also bounds assembly of each
+    /// incoming frame, starting at its first byte; idle frame boundaries do not
+    /// time out. Increasing initialize's per-call timeout does not change this.
     pub request_timeout: Duration,
     pub shutdown_timeout: Duration,
     pub outbound_capacity: usize,
@@ -115,7 +127,11 @@ struct Shared {
 impl Shared {
     fn event(&self, event: RpcEvent) {
         if let Err(mpsc::TrySendError::Full(_)) = self.events.try_send(event) {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            let _ = self
+                .dropped
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                    Some(n.saturating_add(1))
+                });
         }
     }
 
@@ -140,13 +156,15 @@ struct WriteCommand {
 }
 
 /// Thread-safe stdio JSON-RPC transport. Requests may be made concurrently; a
-/// dedicated reader routes IDs and notifications independently. Poll events from
-/// one UI/background consumer. Every queue and payload is bounded.
+/// background worker routes IDs and notifications independently. Poll events
+/// from one consumer. Every queue and payload is bounded.
 ///
-/// Dropping this owner kills and reaps its direct child. This is not a process
-/// sandbox or a process-tree manager: launch a trusted server, not a shell.
+/// Windows requires an isolated host with controlled process spawning. Its
+/// joined worker owns an atomic Job and completes all pending pipe I/O on Drop.
+/// Other platforms kill/reap the direct child only. Launch a trusted server.
+/// This transport does not make a caller's sequential protocol handler concurrent.
 pub struct StdioRpc {
-    child: Mutex<Child>,
+    backend: Backend,
     outbound: Option<mpsc::SyncSender<WriteCommand>>,
     shared: Arc<Shared>,
     events: Mutex<mpsc::Receiver<RpcEvent>>,
@@ -173,26 +191,25 @@ impl StdioRpc {
                 "queue limits, frame limits, and request timeout must be positive".into(),
             ));
         }
-        let mut command = Command::new(&config.program);
-        command
-            .args(&config.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
-        command.stderr(if config.inherit_stderr {
-            Stdio::inherit()
-        } else {
-            Stdio::null()
-        });
-        if let Some(directory) = &config.working_directory {
-            command.current_dir(directory);
+        // Overflow checks make the retained raw-payload budget explicit: the
+        // bounded outbound queue plus one active write, pending replies, events,
+        // and one incoming frame each carry at most max_content_bytes. JSON
+        // nodes have bounded per-byte overhead; callers own returned values.
+        let slots = options
+            .outbound_capacity
+            .checked_add(options.max_pending_requests)
+            .and_then(|n| n.checked_add(options.event_capacity))
+            .and_then(|n| n.checked_add(2));
+        if slots
+            .and_then(|n| n.checked_mul(options.frame_limits.max_content_bytes))
+            .and_then(|n| n.checked_add(options.frame_limits.max_header_bytes))
+            .is_none()
+        {
+            return Err(Error::InvalidState(
+                "retained-payload limit overflow".into(),
+            ));
         }
-        let mut child = command
-            .spawn()
-            .map_err(|e| Error::Io(format!("launch {}: {e}", config.program.display())))?;
-        // Stdio::piped guarantees these handles after a successful spawn.
-        let mut stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let (outbound, writes) = mpsc::sync_channel::<WriteCommand>(options.outbound_capacity);
+        let (outbound, writes) = mpsc::sync_channel(options.outbound_capacity);
         let (events_tx, events_rx) = mpsc::sync_channel(options.event_capacity);
         let shared = Arc::new(Shared {
             routing: Mutex::new(Routing {
@@ -202,79 +219,25 @@ impl StdioRpc {
             events: events_tx,
             dropped: AtomicUsize::new(0),
         });
-        // Construct the owner before thread creation: spawn errors also clean up.
-        let transport = Self {
-            child: Mutex::new(child),
-            outbound: Some(outbound.clone()),
-            shared: Arc::clone(&shared),
+        let backend = Backend::spawn(
+            config,
+            &options,
+            Arc::clone(&shared),
+            outbound.clone(),
+            writes,
+        )?;
+        Ok(Self {
+            backend,
+            outbound: Some(outbound),
+            shared,
             events: Mutex::new(events_rx),
             next_id: AtomicU64::new(1),
-            options: options.clone(),
-        };
-        let writer_shared = Arc::clone(&shared);
-        let limits = options.frame_limits;
-        thread::Builder::new()
-            .name("cedar-lsp-writer".into())
-            .spawn(move || {
-                while let Ok(write) = writes.recv() {
-                    if writer_shared.routing.lock().unwrap().terminal.is_some() {
-                        break;
-                    }
-                    if Instant::now() >= write.deadline {
-                        if let Some(ack) = write.ack {
-                            let _ = ack.try_send(Err(Error::Timeout("stdio write".into())));
-                        }
-                        continue;
-                    }
-                    let result = write_frame(&mut stdin, &write.bytes, limits)
-                        .map_err(|e| Error::Io(e.to_string()));
-                    if let Some(ack) = write.ack {
-                        let _ = ack.try_send(result.clone());
-                    }
-                    if let Err(error) = result {
-                        writer_shared.fail(error);
-                        break;
-                    }
-                }
-            })
-            .map_err(|e| Error::Io(format!("start writer: {e}")))?;
-        let reader_timeout = options.request_timeout;
-        thread::Builder::new()
-            .name("cedar-lsp-reader".into())
-            .spawn(move || {
-                let mut reader = BufReader::new(stdout);
-                loop {
-                    let message = match read_frame(&mut reader, limits) {
-                        Ok(Some(bytes)) => match serde_json::from_slice::<Value>(&bytes) {
-                            Ok(value) => value,
-                            Err(e) => {
-                                shared.fail(Error::Protocol(format!("invalid JSON: {e}")));
-                                break;
-                            }
-                        },
-                        Ok(None) => {
-                            shared.fail(Error::Closed("server stdout reached EOF".into()));
-                            break;
-                        }
-                        Err(e) => {
-                            shared.fail(Error::Protocol(e.to_string()));
-                            break;
-                        }
-                    };
-                    if let Err(error) =
-                        route_message(message, &shared, &outbound, reader_timeout, limits)
-                    {
-                        shared.fail(error);
-                        break;
-                    }
-                }
-            })
-            .map_err(|e| Error::Io(format!("start reader: {e}")))?;
-        Ok(transport)
+            options,
+        })
     }
 
     pub fn process_id(&self) -> u32 {
-        self.child.lock().unwrap().id()
+        self.backend.process_id()
     }
 
     pub fn request(&self, method: &str, params: Value) -> Result<Value, Error> {
@@ -393,31 +356,16 @@ impl StdioRpc {
         }
     }
 
-    /// Wait briefly after `exit`, then kill/reap the direct child if necessary.
+    /// Wait briefly after `exit`, then stop the owned process if necessary.
+    /// On Windows this joins the worker, the Job tree and all outstanding I/O.
     pub fn finish_process(&self) -> Result<(), Error> {
-        let deadline = Instant::now() + self.options.shutdown_timeout;
-        loop {
-            let status = self.child.lock().unwrap().try_wait();
-            match status {
-                Ok(Some(_)) => {
-                    self.shared.fail(Error::Closed("server exited".into()));
-                    return Ok(());
-                }
-                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
-                Ok(None) => {
-                    self.abort(Error::Closed("shutdown grace period elapsed".into()));
-                    return Ok(());
-                }
-                Err(e) => return Err(Error::Io(format!("wait for server: {e}"))),
-            }
-        }
+        self.backend
+            .finish(&self.shared, self.options.shutdown_timeout)
     }
 
     pub fn abort(&self, reason: Error) {
         self.shared.fail(reason);
-        let mut child = self.child.lock().unwrap();
-        let _ = child.kill();
-        let _ = child.wait();
+        self.backend.abort();
     }
 
     fn encode(&self, value: &Value) -> Result<Vec<u8>, Error> {
@@ -435,7 +383,9 @@ impl StdioRpc {
             .map_err(|e| match e {
                 mpsc::TrySendError::Full(_) => Error::QueueFull,
                 mpsc::TrySendError::Disconnected(_) => Error::Closed("writer stopped".into()),
-            })
+            })?;
+        self.backend.wake();
+        Ok(())
     }
 }
 
@@ -443,8 +393,6 @@ impl Drop for StdioRpc {
     fn drop(&mut self) {
         self.abort(Error::Closed("client dropped".into()));
         self.outbound.take();
-        // Threads are intentionally not joined: a server's unrelated descendant
-        // may inherit its pipe. The owner still reliably kills/reaps its direct child.
     }
 }
 
@@ -535,4 +483,156 @@ fn route_message(
         let _ = sender.try_send(result);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared(capacity: usize) -> (Shared, mpsc::Receiver<RpcEvent>) {
+        let (events, receiver) = mpsc::sync_channel(capacity);
+        (
+            Shared {
+                routing: Mutex::new(Routing {
+                    pending: HashMap::new(),
+                    terminal: None,
+                }),
+                events,
+                dropped: AtomicUsize::new(0),
+            },
+            receiver,
+        )
+    }
+
+    fn route(
+        value: Value,
+        shared: &Shared,
+        writes: &mpsc::SyncSender<WriteCommand>,
+    ) -> Result<(), Error> {
+        route_message(
+            value,
+            shared,
+            writes,
+            Duration::from_secs(1),
+            FrameLimits::default(),
+        )
+    }
+
+    #[test]
+    fn routing_correlates_out_of_order_responses_and_discards_late_ids() {
+        let (shared, _) = shared(1);
+        let (writes, _) = mpsc::sync_channel(1);
+        let (first, first_rx) = mpsc::sync_channel(1);
+        let (second, second_rx) = mpsc::sync_channel(1);
+        shared
+            .routing
+            .lock()
+            .unwrap()
+            .pending
+            .extend([(1, first), (2, second)]);
+        route(
+            json!({"jsonrpc":"2.0","id":2,"result":"second"}),
+            &shared,
+            &writes,
+        )
+        .unwrap();
+        assert_eq!(second_rx.try_recv().unwrap().unwrap(), "second");
+        assert!(first_rx.try_recv().is_err());
+        route(
+            json!({"jsonrpc":"2.0","id":1,"result":"first"}),
+            &shared,
+            &writes,
+        )
+        .unwrap();
+        assert_eq!(first_rx.try_recv().unwrap().unwrap(), "first");
+        route(
+            json!({"jsonrpc":"2.0","id":1,"result":"late"}),
+            &shared,
+            &writes,
+        )
+        .unwrap();
+        assert!(shared.routing.lock().unwrap().pending.is_empty());
+    }
+
+    #[test]
+    fn full_event_queue_does_not_block_responses_or_terminal_failure() {
+        let (shared, events) = shared(1);
+        let (writes, _) = mpsc::sync_channel(1);
+        route(
+            json!({"jsonrpc":"2.0","method":"event","params":{"n":1}}),
+            &shared,
+            &writes,
+        )
+        .unwrap();
+        route(
+            json!({"jsonrpc":"2.0","method":"event","params":{"n":2}}),
+            &shared,
+            &writes,
+        )
+        .unwrap();
+        let (pending, response) = mpsc::sync_channel(1);
+        shared.routing.lock().unwrap().pending.insert(1, pending);
+        shared.fail(Error::Closed("first failure".into()));
+        shared.fail(Error::Closed("second failure".into()));
+        assert!(
+            matches!(response.try_recv().unwrap(), Err(Error::Closed(reason)) if reason == "first failure")
+        );
+        assert_eq!(shared.dropped.load(Ordering::Relaxed), 2);
+        assert!(
+            matches!(events.try_recv().unwrap(), RpcEvent::Notification { params, .. } if params["n"] == 1)
+        );
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn rejected_server_request_is_bounded_and_never_reported_before_enqueue() {
+        let (shared, events) = shared(2);
+        let (writes, receiver) = mpsc::sync_channel(1);
+        let request =
+            json!({"jsonrpc":"2.0","id":"server-id","method":"workspace/applyEdit","params":{}});
+        route(request.clone(), &shared, &writes).unwrap();
+        assert!(
+            matches!(events.try_recv().unwrap(), RpcEvent::UnsupportedServerRequest { id, .. } if id == "server-id")
+        );
+        assert!(matches!(
+            route(request, &shared, &writes),
+            Err(Error::QueueFull)
+        ));
+        assert!(events.try_recv().is_err());
+        let reply: Value = serde_json::from_slice(&receiver.try_recv().unwrap().bytes).unwrap();
+        assert_eq!(reply["error"]["code"], -32601);
+        assert_eq!(reply["id"], "server-id");
+    }
+
+    #[test]
+    fn malformed_response_never_consumes_pending_reply() {
+        let (shared, _) = shared(1);
+        let (writes, _) = mpsc::sync_channel(1);
+        let (pending, _) = mpsc::sync_channel(1);
+        shared.routing.lock().unwrap().pending.insert(1, pending);
+        for value in [
+            json!({"jsonrpc":"2.0","id":1,"result":true,"error":{"code":-1,"message":"bad"}}),
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":"bad","message":"bad"}}),
+            json!({"jsonrpc":"1.0","id":1,"result":true}),
+            json!({"jsonrpc":"2.0","method":"run","id":true}),
+        ] {
+            assert!(matches!(
+                route(value, &shared, &writes),
+                Err(Error::Protocol(_))
+            ));
+            assert_eq!(shared.routing.lock().unwrap().pending.len(), 1);
+        }
+    }
+
+    #[test]
+    fn impossible_retention_budget_is_rejected_before_launch() {
+        let options = ClientOptions {
+            outbound_capacity: usize::MAX,
+            ..ClientOptions::default()
+        };
+        assert!(matches!(
+            StdioRpc::spawn(ProcessConfig::new("never-launched"), options),
+            Err(Error::InvalidState(_))
+        ));
+    }
 }

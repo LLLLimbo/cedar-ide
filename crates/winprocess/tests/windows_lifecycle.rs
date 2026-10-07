@@ -732,13 +732,13 @@ fn fill_stdin(command: &mut WindowsCommand) {
     for _ in 0..16 {
         match command.begin_stdin_write(&bytes).unwrap() {
             StdinWriteProgress::Written(n) => assert!(n > 0 && n <= bytes.len()),
-            StdinWriteProgress::Pending => {
-                assert_eq!(
-                    command.poll_stdin_write().unwrap(),
-                    StdinWriteProgress::Pending
-                );
-                return;
-            }
+            StdinWriteProgress::Pending => match command.poll_stdin_write().unwrap() {
+                StdinWriteProgress::Pending => return,
+                // Async acceptance may finish between begin and poll. Account
+                // for it exactly once and continue the bounded capacity fill.
+                StdinWriteProgress::Written(n) => assert!(n > 0 && n <= bytes.len()),
+                other => panic!("unexpected fill completion: {other:?}"),
+            },
             other => panic!("unexpected fill state: {other:?}"),
         }
     }
@@ -884,18 +884,17 @@ fn piped_stdin_full_pipe_cancels_while_child_lives_and_close_is_repeatable() {
 
 #[test]
 #[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
-fn piped_stdin_early_exit_reports_pending_write_failure_without_replay() {
+fn piped_stdin_exit_race_reports_completion_once_then_refuses_closed_peer_writes() {
     let _watchdog = Watchdog::start();
     let dir = TempDir::new().unwrap();
     let mut command = launch_piped(dir.path(), vec!["exit".into(), "23".into()]);
     fill_stdin(&mut command); // pending before any fixture code runs
     command.resume().unwrap();
     let deadline = Instant::now() + WAIT;
-    let error = loop {
+    let completion = loop {
         match command.poll_stdin_write() {
             Ok(StdinWriteProgress::Pending) => {}
-            Err(error) => break error,
-            other => panic!("nonreading exited child incorrectly completed input: {other:?}"),
+            result => break result,
         }
         assert!(
             Instant::now() < deadline,
@@ -906,13 +905,55 @@ fn piped_stdin_early_exit_reports_pending_write_failure_without_replay() {
     use windows_sys::Win32::Foundation::{
         ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED,
     };
-    assert!(
-        matches!(
-            error.raw_os_error().map(|n| n as u32),
-            Some(ERROR_BROKEN_PIPE | ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED)
-        ),
-        "unexpected write failure: {error}"
-    );
+    let assert_disconnected = |error: io::Error| {
+        assert!(
+            matches!(
+                error.raw_os_error().map(|n| n as u32),
+                Some(ERROR_BROKEN_PIPE | ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED)
+            ),
+            "unexpected write failure: {error}"
+        );
+    };
+    let completed = match completion {
+        Ok(StdinWriteProgress::Written(n)) => {
+            // Pending is an async observation, not proof that acceptance cannot
+            // win the race. Completed bytes do not mean the child read them.
+            assert!(n > 0 && n <= MAX_STDIN_WRITE_BYTES);
+            assert_eq!(
+                command.poll_stdin_write().unwrap(),
+                StdinWriteProgress::Idle
+            );
+            true
+        }
+        Err(error) => {
+            assert_disconnected(error);
+            false
+        }
+        other => panic!("invalid terminal write outcome: {other:?}"),
+    };
+    assert_eq!(command.wait_exit().unwrap().code, 23);
+    if completed {
+        // A distinct probe only AFTER owned-handle exit evidence. Never replay
+        // the accepted payload or turn a real completion into invented failure.
+        let deadline = Instant::now() + WAIT;
+        let mut progress = command.begin_stdin_write(b"closed-peer probe");
+        loop {
+            match progress {
+                Err(error) => {
+                    assert_disconnected(error);
+                    break;
+                }
+                Ok(StdinWriteProgress::Pending) => {}
+                other => panic!("write to known exited peer succeeded: {other:?}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "closed-peer probe did not complete"
+            );
+            thread::sleep(Duration::from_millis(1));
+            progress = command.poll_stdin_write();
+        }
+    }
     assert_eq!(
         command.poll_stdin_write().unwrap(),
         StdinWriteProgress::Closed
@@ -922,6 +963,11 @@ fn piped_stdin_early_exit_reports_pending_write_failure_without_replay() {
         io::ErrorKind::BrokenPipe
     );
     command.close_stdin().unwrap();
+    command.close_stdin().unwrap();
+    assert_eq!(
+        command.cancel_stdin_and_complete().unwrap(),
+        StdinCancelOutcome::Idle
+    );
     assert_eq!(Output::default().complete(&mut command).code, 23);
     wait_empty_job(&command);
 }

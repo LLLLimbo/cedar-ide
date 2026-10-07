@@ -18,6 +18,11 @@ fn send(output: &mut impl Write, value: Value) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str).unwrap_or("normal");
+    #[cfg(windows)]
+    if mode.starts_with("win-") {
+        windows_fixture::run(&args);
+        return;
+    }
     let mut audit = args.get(2).map(|path| {
         OpenOptions::new()
             .create(true)
@@ -264,5 +269,213 @@ fn main() {
                 json!({"jsonrpc":"2.0","id":id,"result":result}),
             );
         }
+    }
+}
+
+/// Native transport fixtures are separate from the portable mock's protocol
+/// modes. They never inspect user files or invoke a shell. Each invocation,
+/// including descendants, has its own eight-second process lifetime cap.
+#[cfg(windows)]
+mod windows_fixture {
+    use super::*;
+    use std::fs::{self, File};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use std::path::Path;
+    use std::process::{self, Command, Stdio};
+    use std::time::Instant;
+
+    // Descendants deliberately outlive their parents to test Job cleanup.
+    // Windows has no Unix zombie-reaping requirement; the owner Job must kill them.
+    #[allow(clippy::zombie_processes)]
+    pub(super) fn run(args: &[String]) {
+        let mode = args[1].as_str();
+        let dir = Path::new(args.get(2).expect("fixture directory"));
+        let lifetime_name = match mode {
+            "win-descendant" | "win-descendant-stderr" => "child",
+            "win-grandchild" | "win-grandchild-stderr" => "grandchild",
+            _ => "root",
+        };
+        let watchdog_file = dir.join(format!("{lifetime_name}.expired"));
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(8));
+            let _ = fs::write(watchdog_file, b"fixture lifetime cap reached");
+            process::exit(124);
+        });
+        // Keep an exclusive, non-inheritable file open for this process's
+        // entire lifetime. Tests observe this exact file, never a reusable PID.
+        let _lifetime = hold_lifetime(dir, lifetime_name);
+        match mode {
+            "win-descendant" | "win-descendant-stderr" => {
+                let grandchild = if mode.ends_with("-stderr") {
+                    "win-grandchild-stderr"
+                } else {
+                    "win-grandchild"
+                };
+                let _child = spawn_descendant(dir, grandchild);
+                wait_file(&dir.join("grandchild.ready"));
+                fs::write(dir.join("child.ready"), b"ready").unwrap();
+                idle();
+            }
+            "win-grandchild" | "win-grandchild-stderr" => {
+                fs::write(dir.join("grandchild.ready"), b"ready").unwrap();
+                idle();
+            }
+            "win-tree-blocked" | "win-tree-exit" | "win-stdout-eof-tree" => {
+                let descendant = if mode == "win-stdout-eof-tree" {
+                    "win-descendant-stderr"
+                } else {
+                    "win-descendant"
+                };
+                let _child = spawn_descendant(dir, descendant);
+                wait_file(&dir.join("child.ready"));
+                ready();
+                if mode == "win-tree-blocked" {
+                    idle();
+                }
+                wait_file(&dir.join("go"));
+                if mode == "win-tree-exit" {
+                    // Descendants retain both pipes and do no more I/O. Only
+                    // root-exit observation, not pipe EOF, can stop the owner.
+                    return;
+                }
+                close_standard_handle(io::stdout().as_raw_handle());
+                // Root and descendants retain stderr; stdout EOF must stop the
+                // connection without waiting for any of them to exit naturally.
+                idle();
+            }
+            "win-blocked-stdin" => {
+                ready();
+                idle();
+            }
+            "win-stall-header" | "win-trickle-header" | "win-stall-body" | "win-trickle-body" => {
+                ready();
+                wait_file(&dir.join("go"));
+                let mut output = io::stdout().lock();
+                let body = mode.ends_with("body");
+                output
+                    .write_all(if body {
+                        b"Content-Length: 4096\r\n\r\n{"
+                    } else {
+                        b"C"
+                    })
+                    .unwrap();
+                output.flush().unwrap();
+                if mode.contains("trickle") {
+                    // Every byte arrives inside the request timeout. A sliding
+                    // inactivity timer would incorrectly keep this frame alive.
+                    for byte in if body {
+                        vec![b' '; 80]
+                    } else {
+                        b"ontent-Length: 4096\r\nX-Ignored: ".repeat(3)
+                    } {
+                        thread::sleep(Duration::from_millis(75));
+                        if output.write_all(&[byte]).is_err() || output.flush().is_err() {
+                            return;
+                        }
+                    }
+                }
+                idle();
+            }
+            "win-stderr-eof" => {
+                close_standard_handle(io::stderr().as_raw_handle());
+            }
+            "win-echo" | "win-stderr-flood" | "win-final-response" => {}
+            _ => panic!("unknown native fixture mode {mode}"),
+        }
+        ready();
+        let mut input = BufReader::new(io::stdin().lock());
+        while let Ok(Some(bytes)) = read_frame(&mut input, FrameLimits::default()) {
+            let message: Value = serde_json::from_slice(&bytes).unwrap();
+            match message["method"].as_str() {
+                Some("mock/floodStderr") => {
+                    assert_eq!(mode, "win-stderr-flood");
+                    let mut stderr = io::stderr().lock();
+                    stderr.write_all(b"discarded-stderr-prefix\n").unwrap();
+                    for _ in 0..128 {
+                        stderr.write_all(&[b'E'; 8192]).unwrap();
+                    }
+                    stderr.write_all(b"\nretained-stderr-suffix\n").unwrap();
+                    stderr.flush().unwrap();
+                }
+                Some("mock/fail") => {
+                    // The preceding flood response acknowledges that the full
+                    // flood was drained before the test asks for this failure.
+                    io::stdout()
+                        .write_all(b"Content-Length: -1\r\n\r\n")
+                        .unwrap();
+                    io::stdout().flush().unwrap();
+                    idle();
+                }
+                Some("mock/exit") => return,
+                _ => {}
+            }
+            if let Some(id) = message.get("id") {
+                send(
+                    &mut io::stdout().lock(),
+                    json!({"jsonrpc":"2.0","id":id,"result":message["params"]}),
+                );
+                if mode == "win-final-response" {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn ready() {
+        send(
+            &mut io::stdout().lock(),
+            json!({"jsonrpc":"2.0","method":"mock/ready","params":{}}),
+        );
+    }
+
+    fn hold_lifetime(dir: &Path, name: &str) -> File {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(0)
+            .open(dir.join(format!("{name}.lock")))
+            .unwrap()
+    }
+
+    fn spawn_descendant(dir: &Path, mode: &str) -> process::Child {
+        Command::new(std::env::current_exe().unwrap())
+            .arg(mode)
+            .arg(dir)
+            .stdin(Stdio::null())
+            .stdout(if mode.ends_with("-stderr") {
+                Stdio::null()
+            } else {
+                Stdio::inherit()
+            })
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap()
+    }
+
+    fn wait_file(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !path.is_file() {
+            assert!(Instant::now() < deadline, "fixture gate did not open");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn idle() -> ! {
+        loop {
+            thread::sleep(Duration::from_secs(1));
+        }
+    }
+
+    fn close_standard_handle(handle: RawHandle) {
+        assert!(!handle.is_null() && handle as isize != -1);
+        // SAFETY: This synthetic process owns the inherited standard handle.
+        // No Rust File/OwnedHandle owns it, no thread uses that stream, and all
+        // temporary stdout/stderr locks have been dropped. Transfer ownership
+        // exactly once to close it. The caller never accesses that stream
+        // again and opens no new handles after closure (avoiding handle reuse).
+        // Rust's global stdout/stderr objects do not close the standard handle
+        // on Drop. The fixture watchdog only writes a separate file and exits.
+        drop(unsafe { OwnedHandle::from_raw_handle(handle) });
     }
 }

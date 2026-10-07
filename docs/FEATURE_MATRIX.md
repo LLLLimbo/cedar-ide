@@ -1,8 +1,8 @@
-# 功能矩阵与后续验收 · checkpoint 9A / 0.8.1
+# 功能矩阵与后续验收 · checkpoint 9B / 0.8.2
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。协议仍为精确版本 4，能力声明不授予执行信任。0.7.1 的同提交 Ubuntu/Windows CI 已通过，Windows 实际执行全部 13 项进程生命周期及 7 项隔离 agent/bundle 测试。第八阶段磁盘对比/干净标签重载已通过同提交双平台 CI；9A 新增可取消 stdin 基础层，其新 Windows 行为仍待独立 CI 验证。此前 Linux 超时未再出现，但原根因未确认。
+“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。协议仍为精确版本 4，能力声明不授予执行信任。0.7.1 的同提交 Ubuntu/Windows CI 已通过，Windows 实际执行全部 13 项进程生命周期及 7 项隔离 agent/bundle 测试。第八阶段磁盘对比/干净标签重载已通过同提交双平台 CI；9A 新增可取消 stdin 基础层；9B 接入独占进程的语言传输和 12 项原生验收，Windows IDE LSP 仍禁用，须实际 CI 和真实 Java 验证。此前 Linux 超时未再出现，但原根因未确认。
 
 | 领域 | 当前实现 | 尚缺 / 下一阶段验收 |
 |---|---|---|
@@ -39,8 +39,8 @@
 
 ## 建议下一顺序
 
-1. 完成9A可取消stdin基础层的精确提交 Windows CI，实际执行48项库测试、21项生命周期与7项既有agent回归；能力保持禁用。Linux 原超时若重现，按逐条件诊断定位
-2. [Windows Java LSP](WINDOWS_LANGUAGE_PLAN.md)：先实现可取消、完成后回收的有界 stdin 管道，再接入独占 Job/可加入线程和严格帧解析；通过真实 Windows 语言服务及与任务并发清理测试后才开放能力。初始顺序请求仍有启动阻塞，须明确披露或另做异步生命周期协议
+1. 完成9A stdin 与9B独占语言传输的精确提交 Windows CI；9B新增12项实际传输验收，含重复句柄/线程计数；能力保持禁用。Linux 原超时若重现，按逐条件诊断定位
+2. [Windows Java LSP](WINDOWS_LANGUAGE_PLAN.md)：可取消 stdin 与独占 Job/可加入线程/严格帧解析已实现但仍受门控；通过真实 Windows 语言服务及与任务并发清理测试后才开放能力。初始顺序请求仍有启动阻塞，须明确披露或另做异步生命周期协议
 3. 远程核心路径：获得狭窄测试批准后验证真实 SSH 认证、严格主机密钥、远程路径引用、断开/重连和不明结果不重放；明确版本/能力边界、实际进程清理和 Windows 前端到 Linux 后端的证据。此门槛与语言服务工作并行推进准备，不以 stdio 测试替代
 4. DAP 调试 UI/agent 与真实程序闭环；先解决监听安全和普通后代进程回收，再扩展 PTY、测试树与 JVM 调试
 5. Java/Kotlin 工程导入：真实大型 Maven/Gradle 项目、JDK 选择与索引进度；解决当前官方 Kotlin 许可/安装阻碍后再验兼容性
