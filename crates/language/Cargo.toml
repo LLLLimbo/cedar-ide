@@ -1,0 +1,23 @@
+[package]
+name = "cedar-language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "cedar-mock-lsp"
+path = "tests/support/mock_lsp.rs"
+required-features = ["test-server"]
+
+[features]
+# A deterministic protocol fixture, never needed in production builds.
+test-server = []

@@ -1,0 +1,17 @@
+[package]
+name = "cedar-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cedar-language = { path = "../language" }
+serde_json.workspace = true
+url = "2.5"
+cedar-protocol = { path = "../protocol" }
+sha2.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

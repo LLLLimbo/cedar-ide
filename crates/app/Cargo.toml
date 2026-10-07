@@ -1,0 +1,16 @@
+[package]
+name = "cedar-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "cedar"
+path = "src/main.rs"
+
+[dependencies]
+cedar-protocol = { path = "../protocol" }
+cedar-client = { path = "../client" }
+eframe = { version = "=0.31.1", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+serde_json.workspace = true

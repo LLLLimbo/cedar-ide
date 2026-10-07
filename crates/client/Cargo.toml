@@ -1,0 +1,10 @@
+[package]
+name = "cedar-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+cedar-protocol = { path = "../protocol" }
+cedar-workspace = { path = "../workspace" }
+[dev-dependencies]
+tempfile.workspace = true
