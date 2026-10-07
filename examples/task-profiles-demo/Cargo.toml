@@ -1,0 +1,8 @@
+[package]
+name = "cedar-task-profile-demo"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Deliberately independent of the IDE workspace and external package registries.
+[workspace]

@@ -28,6 +28,17 @@ impl Drop for Worker {
     }
 }
 impl Worker {
+    #[cfg(test)]
+    pub(crate) fn recording() -> (Self, Receiver<Command>) {
+        let (tx, rx) = mpsc::channel();
+        (
+            Self {
+                tx,
+                cancel: Arc::new(AtomicBool::new(false)),
+            },
+            rx,
+        )
+    }
     pub fn spawn(
         spec: ConnectionSpec,
         generation: u64,

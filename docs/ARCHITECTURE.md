@@ -1,7 +1,9 @@
-# Architecture · phase 4 / 0.4.0
+# Architecture · phase 5 / 0.5.0
 
 Cedar is a native Rust frontend plus a workspace backend. The current wire
-protocol is **4**; incompatible frontend/agent versions fail the handshake.
+protocol remains **4**. The handshake requires an exact protocol match, not an
+application-version match; there is no general capability negotiation. Phase 5
+reuses the existing file and asynchronous-task operations.
 The frontend has no embedded browser or JVM. Language servers and build tools
 can still need a JVM or other runtime on the workspace machine.
 
@@ -10,7 +12,13 @@ can still need a JVM or other runtime on the workspace machine.
 The native UI owns draft text, tab identity, saved/base revisions, bounded undo
 history, and connection generation. Connection and workspace requests execute
 on a dedicated worker. Results carry a generation and request ID, so a stale
-connection cannot mutate the newly selected workspace. Save acknowledgements
+connection cannot mutate the newly selected workspace. A typed `WorkspaceKey`
+keeps local roots and SSH host/port/root/agent fields separate instead of joining
+them with delimiters that valid paths or IPv6 hosts can contain. Dirty drafts
+are checked before connecting and after Hello; a matching canonical root alone
+cannot authorize another endpoint to inherit them. Trust-only changes keep the
+same identity, while canonical-root changes still reject dirty reconnects.
+Seven no-network regressions cover these boundaries. Save acknowledgements
 refer to the exact submitted snapshot and never replace newer typing.
 
 `cedar-client` selects an in-process `Workspace` for local files or a child-process
@@ -74,7 +82,7 @@ reader replacement failure. The fix uses Rust 1.99 standard-library rename for
 compatible readers; restrictive sharing remains an explicit error with the old
 record preserved. The corrected phase-3.1 public commit passed both Linux and
 Windows CI, including real Windows recovery tests; exact scope is recorded in
-[TEST_REPORT.md](TEST_REPORT.md).
+[historical hotfix report](TEST_REPORT_HOTFIX_0_3_1.md).
 Windows native recovery/privacy acceptance and macOS runtime remain unvalidated. See
 [RECOVERY.md](RECOVERY.md) and the [frontend contract](../crates/app/RECOVERY_AND_COMMANDS.md).
 
@@ -112,6 +120,74 @@ not an OS-enforced shutdown deadline. Linux is runtime-tested, macOS is not.
 Windows local execution remains unsupported pending Job Object containment and
 cancellable pipes. See [RUN_TASKS.md](RUN_TASKS.md).
 
+## Explicit workspace task profiles
+
+`cedar-app::task_profiles` parses and encodes version-1 `cedar.tasks.json`; it
+never runs commands. The root configuration is an ordinary `Document`, so local
+and SSH backends share reads, SHA revision checks, undo, save acknowledgements
+and frontend-local recovery. Explicit Load uses an already-open editor buffer,
+including its unsaved text. Only a genuine `not_found` produces a new unsaved
+configuration with a no-clobber create revision. Invalid text is retained for
+inspection instead of being replaced by defaults.
+
+The strict schema allows at most 32 uniquely named profiles in 256 KiB encoded
+UTF-8. Each stores only name, program, literal ordered arguments and timeout.
+Unknown/duplicate fields, positional struct arrays, unsupported versions and
+invalid bounds fail before mutation. Executable whitespace, empty arguments,
+Unicode and shell-looking bytes remain literal. Output is two-space-indented
+JSON with one newline, and its size is bounded independently of input: a valid
+compact input can be too large to save prettily without invalidating its draft.
+No trust, credentials, environment, working-directory overrides, shell strings,
+variable expansion, autorun or dependency graph is stored.
+
+The structured form snapshots workspace identity, connection generation,
+document ID, edit version and base revision. Save profile checks that source,
+serializes the complete configuration, applies one editor undo transaction and
+requests an ordinary save by document ID without switching the active tab.
+Same-frame editor input precedes queued profile/close actions. A raw-editor
+change, closed tab, stale response or changed connection blocks stale Save/Run;
+new typing survives earlier save acknowledgements. Form-only changes participate
+in dirty-close/workspace-switch guards but remain session-only until serialized.
+
+Load, selection, creation, Save, Discard, restore and reconnect never dispatch
+`RunStart`. Only explicit Run does, and it never saves automatically. A same-
+workspace reconnect requires explicit retained-draft review or Load, retaining
+the original SHA for later conflict detection. Different workspace identities
+do not inherit profiles. Trust is independently granted to the connection and
+is never recovered from configuration. The frontend gate permits a Windows
+frontend with a supported SSH backend while keeping local Windows execution
+disabled; agent-side trust/platform checks remain authoritative. Synthetic gate
+coverage does not establish real Windows-to-Linux SSH interoperability.
+See [TASK_PROFILES.md](TASK_PROFILES.md).
+
+## Process transport ownership and fault bounds
+
+The child transport uses one-slot request and response queues and retains only
+a 4 KiB stderr tail while draining the pipe. Oversized/malformed/truncated frames,
+wrong response IDs, EOF and request deadlines poison the session. Matching
+application errors remain ordinary responses and leave the connection usable.
+An acknowledgement can be lost after a mutation committed; reconnect and inspect
+before retrying. There is no automatic write/command replay or task adoption.
+The public deadlines remain 30 seconds for ordinary requests, 75 seconds for
+language startup, and bounded requested duration plus ten seconds for legacy
+synchronous Run; short fault-test deadlines use private seams.
+
+A dedicated owner/reaper starts when the child is created. Close/failure drops
+the request sender and response receiver and signals that owner without waiting
+on the caller/UI thread. Once the writer is idle it closes child stdin. The
+owner allows two seconds for orderly exit, then attempts to kill/reap only its
+direct child. Releasing the response receiver also unblocks a reader stalled on
+the full response slot. Exclusive wait ownership is required; a non-interrupted
+wait error abandons signaling rather than trusting a potentially reused PID.
+
+This bounds the graceful opportunity, not every operating-system failure.
+Escaped descendants retaining pipes, uninterruptible processes and abrupt
+frontend death can prevent normal completion. The reaper does not chase arbitrary
+PIDs or prove remote cleanup. Linux compiled-agent tests show ordinary EOF and
+serve errors unwind the workspace/task owner; a separate agent-SIGKILL test
+shows its task can survive until the fixture's own lifetime ends. Real SSH
+interruption must be observed separately. See [REMOTE_VALIDATION.md](REMOTE_VALIDATION.md).
+
 ## Failure semantics
 
 - Transport errors close the session; a remote application error such as `conflict` keeps it usable
@@ -134,17 +210,35 @@ are not executed implicitly. Restoring text does not restore trust.
 
 The filesystem layer rejects traversal, absolute paths, platform prefixes,
 special files and symbolic links. Project save uses a same-parent temporary,
-fsync, late revision verification and atomic replace or no-clobber create.
-A directory writer can race canonicalization or the final version check;
-this is not filesystem-level compare-and-swap or adversarial isolation.
+flushes data and prepares attributes before its final path/revision verification,
+then commits immediately via replace or no-clobber create. Windows ordinary-file
+replacement now uses Rust 1.99 `std::fs::rename`, after clearing the temporary-file
+attribute and restoring cleanup ownership; delete-sharing readers may keep old
+complete bytes while fresh opens see the replacement. Read-only or deny-delete-
+sharing restrictions still fail without deleting the destination or retrying.
+New-file creation retains `persist_noclobber`. Deterministic preparation hooks
+exercise late edits/removals/creation and cleanup; actual Windows runtime proof
+for the new path is still pending. A directory writer can race canonicalization
+or the final revision check; this is not filesystem-level compare-and-swap,
+universal crash durability or adversarial isolation. See
+[WORKSPACE_SAVE.md](WORKSPACE_SAVE.md).
 
 OpenSSH owns authentication and encrypted transport. The client requires
 existing known-host trust, noninteractive BatchMode and explicit
-StrictHostKeyChecking=yes. It disables automatic host-key updates, local
-commands, multiplexing, agent/X11 forwarding and port forwards. It does not
-manage secrets. The remote command is quoted for a POSIX shell, and destination
-values cannot inject local SSH options. Real stdio subprocess integration is
-tested; authenticated SSH and real network-failure interoperability are not.
+StrictHostKeyChecking=yes, including localhost. It disables automatic host-key/IP
+recording, adding keys to the authentication agent, delegated GSSAPI credentials,
+local commands, multiplexing, tunnel/agent/X11/port forwarding. It overrides
+inherited settings that would detach SSH, close stdin or suppress the command
+session. Only the three OpenSSH-8.7 aliases StdinNull, SessionType and
+ForkAfterAuthentication are in IgnoreUnknown; security settings are never
+ignored. The option design requires OpenSSH 7.6 or newer, with older-client
+runtime acceptance still pending. User-controlled ProxyJump/ProxyCommand routing
+remains supported, so SSH configuration itself is trusted code, not a sandbox.
+Cedar does not manage secrets. The remote command is quoted for a POSIX shell,
+and destination values cannot inject local SSH options. Real stdio subprocess
+integration and OpenSSH 10.0p2 local option parsing are tested; authenticated SSH
+and real network-failure interoperability are not. No authentication fixtures
+have been created; the proposed narrow test remains permission-gated.
 
 ## Language, debugging and extensibility
 
@@ -196,7 +290,8 @@ Editor Undo/Redo skips same-text cursor checkpoints for shortcut-only batches,
 while mixed text/paste/navigation batches pass unchanged to egui to preserve input
 order. History is bounded and cloned only for deliberate edits/history actions.
 Full-frame regressions cover navigation and mixed input; native release acceptance
-status is separate in [TEST_REPORT.md](TEST_REPORT.md).
+status is separate in the [phase-4 report](TEST_REPORT_PHASE4.md); these are
+historical language-feature results, not phase-5 native retests.
 
 References synchronize every matching open draft before dispatch and capture
 each participating document's identity, text, edit and acknowledged LSP version.

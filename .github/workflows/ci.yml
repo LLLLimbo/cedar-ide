@@ -31,6 +31,8 @@ jobs:
           python3 scripts/protocol_smoke.py target/release/cedar-agent
           python3 scripts/language_bridge_smoke.py target/release/cedar-agent target/release/cedar-mock-lsp
           python3 scripts/task_bridge_smoke.py target/release/cedar-agent
+          cargo build --manifest-path examples/task-profiles-demo/Cargo.toml --offline --locked
+          python3 scripts/task_profiles_smoke.py target/release/cedar-agent examples/task-profiles-demo/target/debug/cedar-task-profile-demo
       - uses: actions/upload-artifact@v4
         with:
           name: cedar-${{ matrix.os }}

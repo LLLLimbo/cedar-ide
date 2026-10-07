@@ -6,6 +6,7 @@ mod language_results;
 mod language_sync;
 mod language_ui;
 mod model;
+mod profile_ui;
 mod recovery;
 mod recovery_actor;
 #[cfg(test)]
@@ -14,6 +15,7 @@ mod recovery_ui;
 mod run_ui;
 mod syntax;
 mod system_fonts;
+pub mod task_profiles;
 pub mod text_edits;
 mod worker;
 
@@ -61,6 +63,20 @@ struct ConnectForm {
     agent: String,
     allow_run: bool,
 }
+// Keep endpoint fields separate: paths and SSH hosts can contain colons. Trust
+// changes intentionally retain the workspace identity; Hello checks its root.
+#[derive(Debug, PartialEq, Eq)]
+enum WorkspaceKey {
+    Local {
+        root: String,
+    },
+    Ssh {
+        host: String,
+        port: String,
+        root: String,
+        agent_path: String,
+    },
+}
 impl Default for ConnectForm {
     fn default() -> Self {
         Self {
@@ -80,17 +96,18 @@ impl Default for ConnectForm {
     }
 }
 impl ConnectForm {
-    fn key(&self) -> String {
+    fn key(&self) -> WorkspaceKey {
         if self.ssh {
-            format!(
-                "ssh:{}:{}:{}:{}",
-                self.host.trim(),
-                self.port.trim(),
-                self.remote_root.trim(),
-                self.agent.trim()
-            )
+            WorkspaceKey::Ssh {
+                host: self.host.trim().into(),
+                port: self.port.trim().into(),
+                root: self.remote_root.trim().into(),
+                agent_path: self.agent.trim().into(),
+            }
         } else {
-            format!("local:{}", self.local_root.trim())
+            WorkspaceKey::Local {
+                root: self.local_root.trim().into(),
+            }
         }
     }
     fn spec(&self) -> Result<ConnectionSpec, String> {
@@ -151,6 +168,9 @@ enum Job {
         query: String,
     },
     Git,
+    ProfilesLoad {
+        epoch: u64,
+    },
     Run(run_ui::Action),
     Inspect {
         path: String,
@@ -170,7 +190,7 @@ pub struct CedarApp {
     state: ConnectionState,
     form: ConnectForm,
     active_form: Option<ConnectForm>,
-    workspace_key: Option<String>,
+    workspace_key: Option<WorkspaceKey>,
     connecting_form: Option<ConnectForm>,
     root: String,
     generation: u64,
@@ -183,6 +203,7 @@ pub struct CedarApp {
     pending: HashMap<u64, Job>,
     documents: Vec<Document>,
     active_document: Option<u64>,
+    close_tab_requested: Option<u64>,
     directory: String,
     entries: Vec<Entry>,
     directory_request: u64,
@@ -200,9 +221,7 @@ pub struct CedarApp {
     search_truncated: bool,
     search_request: u64,
     git_output: String,
-    run_program: String,
-    run_args: String,
-    run_timeout: u64,
+    profiles: profile_ui::Profiles,
     run_state: run_ui::RunPanel,
     language: language_ui::LanguagePanel,
     quick_open: bool,
@@ -278,6 +297,7 @@ impl CedarApp {
             pending: HashMap::new(),
             documents: Vec::new(),
             active_document: None,
+            close_tab_requested: None,
             directory: String::new(),
             entries: Vec::new(),
             directory_request: 0,
@@ -295,9 +315,7 @@ impl CedarApp {
             search_truncated: false,
             search_request: 0,
             git_output: "Refresh to read workspace Git status".into(),
-            run_program: String::new(),
-            run_args: "[]".into(),
-            run_timeout: 30,
+            profiles: profile_ui::Profiles::default(),
             run_state: run_ui::RunPanel::default(),
             language: language_ui::LanguagePanel::default(),
             quick_open: false,
@@ -319,7 +337,16 @@ impl CedarApp {
         self.state == ConnectionState::Ready
     }
     fn dirty(&self) -> bool {
-        self.documents.iter().any(Document::dirty)
+        self.profiles.dirty() || self.documents.iter().any(Document::dirty)
+    }
+    fn draft_versions(&self) -> Vec<(u64, u64)> {
+        let mut versions: Vec<_> = self
+            .documents
+            .iter()
+            .map(|doc| (doc.id, doc.edit_version))
+            .collect();
+        versions.push((0, self.profiles.epoch));
+        versions
     }
     fn mutation_pending(&self) -> bool {
         self.pending
@@ -341,7 +368,7 @@ impl CedarApp {
                 Some("Wait for the current save, Git, command, or language request to finish before reconnecting".into());
             return;
         }
-        if self.dirty() && self.workspace_key.as_deref() != Some(form.key().as_str()) {
+        if self.dirty() && self.workspace_key.as_ref() != Some(&form.key()) {
             self.error = Some("Save or explicitly close your unsaved tabs before switching workspaces. Your drafts are still here".into());
             return;
         }
@@ -354,6 +381,7 @@ impl CedarApp {
         };
         self.recovery.restoring_generation = None;
         self.run_state.reset();
+        self.profiles.disconnected();
         self.worker = None;
         self.language.reset();
         self.generation += 1;
@@ -398,6 +426,7 @@ impl CedarApp {
 
     fn disconnected(&mut self, message: String) {
         self.run_state.disconnected();
+        self.profiles.disconnected();
         self.recovery.restoring_generation = None;
         self.state = ConnectionState::Disconnected;
         self.language.reset();
@@ -464,7 +493,13 @@ impl CedarApp {
     }
 
     fn save(&mut self) {
-        let Some(doc) = self.active() else {
+        if let Some(id) = self.active_document {
+            self.save_document(id);
+        }
+    }
+
+    fn save_document(&mut self, id: u64) {
+        let Some(doc) = self.documents.iter().find(|doc| doc.id == id) else {
             return;
         };
         if !doc.dirty() || doc.saving {
@@ -514,6 +549,7 @@ impl CedarApp {
                     let Some(form) = self.connecting_form.take() else {
                         return;
                     };
+                    let key = form.key();
                     if self.recovery.restoring_generation == Some(self.generation)
                         && self.recovery.pending_restore.as_ref().is_some_and(|draft| {
                             draft.workspace != recovery_ui::identity(&form, &root)
@@ -523,7 +559,7 @@ impl CedarApp {
                         self.disconnected("Recovery workspace identity did not match".into());
                         return;
                     }
-                    if self.workspace_key.as_deref() == Some(form.key().as_str())
+                    if self.workspace_key.as_ref() == Some(&key)
                         && !self.root.is_empty()
                         && self.root != root
                         && self.dirty()
@@ -531,7 +567,7 @@ impl CedarApp {
                         self.disconnected("The workspace root changed while reconnecting. Your drafts are retained; reconnect to their original root before saving".into());
                         return;
                     }
-                    if self.workspace_key.as_deref() != Some(form.key().as_str())
+                    if self.workspace_key.as_ref() != Some(&key)
                         || (!self.root.is_empty() && self.root != root)
                     {
                         if self.dirty() {
@@ -547,7 +583,8 @@ impl CedarApp {
                         self.git_output = "Refresh to read workspace Git status".into();
                         self.run_state.output = "Command output will appear here".into();
                     }
-                    self.workspace_key = Some(form.key());
+                    self.profiles.connected(recovery_ui::identity(&form, &root));
+                    self.workspace_key = Some(key);
                     self.active_form = Some(form);
                     self.root = root;
                     self.state = ConnectionState::Ready;
@@ -582,6 +619,11 @@ impl CedarApp {
         let payload = match event.result {
             Ok(payload) => payload,
             Err(error) => {
+                if let Job::ProfilesLoad { epoch } = &job {
+                    if self.profile_load_error(*epoch, event.connected, &error) {
+                        return;
+                    }
+                }
                 if matches!(&job, Job::Language(action) if action.is_stop()) {
                     self.close_after_language_stop = false;
                     self.close_snapshot = None;
@@ -664,6 +706,21 @@ impl CedarApp {
                 }
                 self.complete_language_navigation(&requested);
             }
+            (
+                Job::ProfilesLoad { epoch },
+                Payload::File {
+                    path,
+                    text,
+                    revision,
+                },
+            ) => {
+                if path == profile_ui::PATH {
+                    self.apply_profile_load(epoch, Some((text, revision)));
+                } else {
+                    self.profiles.message =
+                        Some("Agent returned a different profile path; response ignored".into());
+                }
+            }
             (Job::Save { document, snapshot }, Payload::Written { revision }) => {
                 let workspace = self.recovery_workspace();
                 if let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == document) {
@@ -673,6 +730,7 @@ impl CedarApp {
                     }
                     self.notice = format!("Saved {}", doc.path);
                 }
+                self.profile_saved(document);
                 self.list(self.directory.clone());
             }
             (Job::Search { query }, Payload::Matches { matches, truncated })
@@ -728,11 +786,7 @@ impl CedarApp {
     fn finish_pending_close(&mut self, ctx: &egui::Context) {
         if self.close_after_language_stop && !self.language.running && !self.language_busy() {
             self.close_after_language_stop = false;
-            let current: Vec<_> = self
-                .documents
-                .iter()
-                .map(|doc| (doc.id, doc.edit_version))
-                .collect();
+            let current = self.draft_versions();
             if self.close_snapshot.take().as_ref() != Some(&current) && self.dirty() {
                 self.confirm = Some(Confirm::CloseWindow);
                 self.notice = "A draft changed while the language server was stopping; confirm before quitting".into();
@@ -750,16 +804,17 @@ impl CedarApp {
         if self.language.running && self.ready() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_after_language_stop = true;
-            self.close_snapshot = Some(
-                self.documents
-                    .iter()
-                    .map(|doc| (doc.id, doc.edit_version))
-                    .collect(),
-            );
+            self.close_snapshot = Some(self.draft_versions());
             self.stop_language();
             self.notice = "Stopping language server before closing".into();
         } else {
             self.finish_recovery_close(ctx);
+        }
+    }
+
+    fn finish_tab_close(&mut self) {
+        if let Some(id) = self.close_tab_requested.take() {
+            self.close_tab(id);
         }
     }
 
@@ -769,13 +824,16 @@ impl CedarApp {
                 Some("This file is saving. Wait for the acknowledgement before closing it".into());
             return;
         }
-        if self.documents.iter().any(|doc| doc.id == id && doc.dirty()) {
+        if self.documents.iter().any(|doc| doc.id == id && doc.dirty())
+            || (self.profiles.owns_document(id) && self.profiles.dirty())
+        {
             self.confirm = Some(Confirm::CloseTab(id));
         } else {
             self.remove_tab(id);
         }
     }
     fn remove_tab(&mut self, id: u64) {
+        self.profiles.document_closed(id);
         if let Some(workspace) = self.recovery_workspace() {
             if let Some(doc) = self.documents.iter().find(|doc| doc.id == id) {
                 self.recovery.discard_owned(&workspace, doc);
@@ -815,7 +873,7 @@ impl CedarApp {
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
             if let Some(id) = self.active_document {
-                self.close_tab(id);
+                self.close_tab_requested = Some(id);
             }
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
@@ -1379,7 +1437,7 @@ impl CedarApp {
             self.find_index = None;
         }
         if let Some(id) = close {
-            self.close_tab(id);
+            self.close_tab_requested = Some(id);
         }
         ui.separator();
         let mut inspect = None;
@@ -1617,7 +1675,7 @@ impl CedarApp {
                     .find(|doc| doc.id == *id)
                     .map(|doc| doc.path.clone())
                     .unwrap_or_default(),
-                _ => "all unsaved files".into(),
+                _ => "all unsaved files and profile form edits".into(),
             };
             egui::Modal::new(egui::Id::new("discard_confirmation")).show(ctx, |ui| {
                 ui.set_max_width(430.0);
@@ -1664,7 +1722,15 @@ impl eframe::App for CedarApp {
                 || system_fonts::contains_cjk(&self.form.local_root)
                 || system_fonts::contains_cjk(&self.form.remote_root)
                 || system_fonts::contains_cjk(&self.search_query)
-                || system_fonts::contains_cjk(&self.find_query));
+                || system_fonts::contains_cjk(&self.find_query)
+                || system_fonts::contains_cjk(&self.profiles.draft.name)
+                || system_fonts::contains_cjk(&self.profiles.draft.program)
+                || self
+                    .profiles
+                    .draft
+                    .args
+                    .iter()
+                    .any(|arg| system_fonts::contains_cjk(arg)));
         if let Some(result) = self.system_fonts.tick(ctx, cjk) {
             match result {
                 Ok(message) => self.notice = message,
@@ -1716,6 +1782,8 @@ impl eframe::App for CedarApp {
         self.run_tick(ctx);
         self.recovery_window(ctx);
         self.run_dialog(ctx);
+        self.finish_profile_actions();
+        self.finish_tab_close();
         self.recovery_tick(ctx);
         self.finish_recovery_close_frame(ctx);
     }
@@ -1759,6 +1827,232 @@ fn logo(ui: &mut egui::Ui, size: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn colliding_ssh_forms() -> (ConnectForm, ConnectForm) {
+        let first = ConnectForm {
+            ssh: true,
+            host: "user@[2001:db8::1]".into(),
+            remote_root: "/work:bin".into(),
+            agent: "cedar".into(),
+            ..Default::default()
+        };
+        let second = ConnectForm {
+            remote_root: "/work".into(),
+            agent: "bin:cedar".into(),
+            ..first.clone()
+        };
+        (first, second)
+    }
+
+    fn workspace_app(form: &ConnectForm, dirty: bool) -> (CedarApp, Receiver<Command>) {
+        let mut app = CedarApp::empty();
+        let (worker, commands) = Worker::recording();
+        app.worker = Some(worker);
+        app.workspace_key = Some(form.key());
+        app.active_form = Some(form.clone());
+        app.root = "/canonical/workspace".into();
+        app.profiles
+            .connected(recovery_ui::identity(form, &app.root));
+        app.state = ConnectionState::Ready;
+        let mut doc = Document::new(1, "main.rs".into(), "disk".into(), "r0".into());
+        if dirty {
+            doc.text = "precious draft".into();
+        }
+        app.documents.push(doc);
+        app.active_document = Some(1);
+        (app, commands)
+    }
+
+    fn apply_hello(app: &mut CedarApp, form: ConnectForm, root: &str) {
+        app.connecting_form = Some(form);
+        app.state = ConnectionState::Connecting;
+        app.apply_event(Event {
+            generation: app.generation,
+            id: 0,
+            connected: true,
+            result: Ok(Payload::Hello {
+                protocol: cedar_protocol::PROTOCOL_VERSION,
+                root: root.into(),
+            }),
+        });
+    }
+
+    #[test]
+    fn workspace_keys_keep_ssh_fields_separate() {
+        let (first, second) = colliding_ssh_forms();
+        let legacy_key = |form: &ConnectForm| {
+            format!(
+                "ssh:{}:{}:{}:{}",
+                form.host, form.port, form.remote_root, form.agent
+            )
+        };
+        assert_eq!(legacy_key(&first), legacy_key(&second));
+        assert_ne!(first.key(), second.key());
+        assert!(first.spec().is_ok());
+        assert!(second.spec().is_ok());
+        for field in ["host", "port", "root", "agent"] {
+            let mut different = first.clone();
+            match field {
+                "host" => different.host.push_str(":2"),
+                "port" => different.port = "2222".into(),
+                "root" => different.remote_root.push_str(":more"),
+                "agent" => different.agent.push_str(":more"),
+                _ => unreachable!(),
+            }
+            assert_ne!(first.key(), different.key(), "changed {field}");
+        }
+        let local = ConnectForm {
+            ssh: false,
+            local_root: first.remote_root.clone(),
+            ..first.clone()
+        };
+        assert_ne!(first.key(), local.key());
+    }
+
+    #[test]
+    fn workspace_keys_ignore_trust_inactive_fields_and_outer_whitespace() {
+        for ssh in [false, true] {
+            let form = ConnectForm {
+                ssh,
+                local_root: "/local:workspace".into(),
+                host: "user@[2001:db8::1]".into(),
+                remote_root: "/remote:workspace".into(),
+                agent: "bin:cedar".into(),
+                ..Default::default()
+            };
+            let mut changed = form.clone();
+            changed.allow_run = !form.allow_run;
+            if ssh {
+                changed.local_root = "/ignored".into();
+                changed.host = format!(" {} ", form.host);
+                changed.port = format!(" {} ", form.port);
+                changed.remote_root = format!(" {} ", form.remote_root);
+                changed.agent = format!(" {} ", form.agent);
+            } else {
+                changed.local_root = format!(" {} ", form.local_root);
+                changed.host = "ignored".into();
+                changed.port = "2222".into();
+                changed.remote_root = "/ignored".into();
+                changed.agent = "ignored".into();
+            }
+            assert_eq!(form.key(), changed.key());
+        }
+    }
+
+    #[test]
+    fn dirty_workspace_rejects_delimiter_collision_before_connect() {
+        let (first, second) = colliding_ssh_forms();
+        // Fail before calling connect if the key regresses, so this test can
+        // never launch SSH even when the delimiter-collision bug is restored.
+        assert_ne!(first.key(), second.key());
+        let (mut app, commands) = workspace_app(&first, true);
+        app.connect(&egui::Context::default(), second);
+        assert!(app.state == ConnectionState::Ready);
+        assert_eq!(app.generation, 0);
+        assert!(app.connecting_form.is_none());
+        assert_eq!(app.workspace_key, Some(first.key()));
+        assert_eq!(app.documents[0].text, "precious draft");
+        assert!(app
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("switching workspaces"));
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn delimiter_collision_handshake_cannot_adopt_dirty_workspace() {
+        let (first, second) = colliding_ssh_forms();
+        let (mut app, commands) = workspace_app(&first, true);
+        // Distinct paths/agents can report the same canonical root. The Hello
+        // root alone therefore cannot establish the retained draft's identity.
+        apply_hello(&mut app, second, "/canonical/workspace");
+        assert!(app.state == ConnectionState::Disconnected);
+        assert_eq!(app.workspace_key, Some(first.key()));
+        assert_eq!(app.active_form.as_ref().unwrap().key(), first.key());
+        assert_eq!(app.root, "/canonical/workspace");
+        assert_eq!(app.documents[0].text, "precious draft");
+        assert_eq!(app.documents[0].revision.as_deref(), Some("r0"));
+        assert!(app
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Workspace switch cancelled"));
+        app.save_document(1);
+        assert!(!app.documents[0].saving);
+        assert!(app.pending.is_empty());
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn delimiter_collision_handshake_clears_clean_workspace() {
+        let (first, second) = colliding_ssh_forms();
+        let (mut app, commands) = workspace_app(&first, false);
+        let next_key = second.key();
+        apply_hello(&mut app, second, "/canonical/workspace");
+        assert!(app.ready());
+        assert_eq!(app.workspace_key, Some(next_key));
+        assert!(app.documents.is_empty());
+        assert!(app.active_document.is_none());
+        assert!(matches!(
+            commands.try_recv().unwrap().op,
+            Operation::List { .. }
+        ));
+    }
+
+    #[test]
+    fn canonical_root_change_rejects_same_endpoint_dirty_reconnect() {
+        let (form, _) = colliding_ssh_forms();
+        let (mut app, commands) = workspace_app(&form, true);
+        apply_hello(&mut app, form.clone(), "/different/canonical/root");
+        assert!(app.state == ConnectionState::Disconnected);
+        assert_eq!(app.workspace_key, Some(form.key()));
+        assert_eq!(app.root, "/canonical/workspace");
+        assert_eq!(app.documents[0].text, "precious draft");
+        assert_eq!(app.documents[0].revision.as_deref(), Some("r0"));
+        assert!(app
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("workspace root changed"));
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn trust_only_handshake_retains_same_workspace_drafts() {
+        for ssh in [false, true] {
+            for allow_run in [false, true] {
+                let (mut form, _) = colliding_ssh_forms();
+                form.ssh = ssh;
+                form.allow_run = allow_run;
+                let (mut app, commands) = workspace_app(&form, true);
+                let original_key = form.key();
+                form.allow_run = !allow_run;
+                apply_hello(&mut app, form, "/canonical/workspace");
+                assert!(app.ready());
+                assert!(app.error.is_none());
+                assert_eq!(app.workspace_key, Some(original_key));
+                assert_eq!(app.active_form.as_ref().unwrap().allow_run, !allow_run);
+                assert_eq!(app.documents[0].text, "precious draft");
+                assert_eq!(app.documents[0].revision.as_deref(), Some("r0"));
+                assert!(app.documents[0].dirty());
+                assert!(matches!(
+                    commands.try_recv().unwrap().op,
+                    Operation::List { .. }
+                ));
+            }
+        }
+    }
+
     #[test]
     fn stale_generation_cannot_replace_workspace() {
         let mut app = CedarApp::empty();
@@ -1865,7 +2159,12 @@ mod tests {
             }),
         });
         assert_eq!(app.documents[0].text, "edited during connection");
-        assert_eq!(app.workspace_key.as_deref(), Some("local:/old"));
+        assert_eq!(
+            app.workspace_key,
+            Some(WorkspaceKey::Local {
+                root: "/old".into()
+            })
+        );
         assert!(app.state == ConnectionState::Disconnected);
     }
     #[test]
@@ -1918,8 +2217,9 @@ mod tests {
             for stage in 0..6 {
                 if stage == 1 {
                     app.state = ConnectionState::Ready;
-                    app.workspace_key = Some("test".into());
-                    app.active_form = Some(ConnectForm::default());
+                    let form = ConnectForm::default();
+                    app.workspace_key = Some(form.key());
+                    app.active_form = Some(form);
                     app.open_form = false;
                     app.documents.push(Document::new(
                         1,

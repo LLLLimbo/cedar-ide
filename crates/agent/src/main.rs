@@ -3,6 +3,8 @@ use std::io;
 use std::path::PathBuf;
 
 fn main() {
+    // run owns Workspace and returns before exit, so normal serve errors
+    // unwind task/language owners. Never call process::exit inside that scope.
     if let Err(message) = run() {
         eprintln!("cedar-agent: {message}");
         std::process::exit(1);

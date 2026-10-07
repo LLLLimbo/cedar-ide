@@ -132,6 +132,9 @@ impl RunPanel {
         Ok(())
     }
 }
+pub(super) fn command_platform_supported(frontend_windows: bool, ssh: bool) -> bool {
+    !frontend_windows || ssh
+}
 fn state_label(state: TaskState) -> &'static str {
     match state {
         TaskState::Starting => "Starting",
@@ -161,14 +164,20 @@ impl CedarApp {
             self.error = Some("Command execution is disabled for this connection".into());
             return;
         }
-        let args: Vec<String> = match serde_json::from_str(&self.run_args) {
-            Ok(args) => args,
-            Err(_) => {
-                self.error = Some("Arguments must be a JSON string array, for example [\"test\", \"--workspace\"]".into());
-                return;
-            }
-        };
-        let program = self.run_program.trim().to_owned();
+        if !command_platform_supported(
+            cfg!(windows),
+            self.active_form.as_ref().is_some_and(|form| form.ssh),
+        ) {
+            self.error = Some("Command tasks require Linux or macOS; Windows needs verified Job Object and cancellable pipe support. A Windows frontend can run commands on a Linux SSH workspace".into());
+            return;
+        }
+        if let Some(problem) = self.profile_run_problem() {
+            self.profiles.message = Some(problem.into());
+            return;
+        }
+        let command = &self.profiles.draft;
+        let program = &command.program;
+        let args = &command.args;
         if program.is_empty()
             || program.len() > cedar_tasks::MAX_PROGRAM_BYTES
             || program.contains('\0')
@@ -179,10 +188,14 @@ impl CedarApp {
             self.error = Some("Enter a valid executable and bounded literal arguments (256 arguments / 64 KiB maximum; no NUL)".into());
             return;
         }
-        if !(1..=300).contains(&self.run_timeout) {
+        if !(1..=300).contains(&command.timeout_secs) {
             self.error = Some("Command timeout must be from 1 to 300 seconds".into());
             return;
         }
+        let timeout_secs = command.timeout_secs;
+        let program = program.clone();
+        let args = args.clone();
+        let preview = format!("Executable: {program:?}\nargv: {args:?}");
         self.run_state.epoch = self.run_state.epoch.wrapping_add(1);
         let action = Action {
             epoch: self.run_state.epoch,
@@ -193,16 +206,13 @@ impl CedarApp {
             Operation::RunStart {
                 program: program.clone(),
                 args,
-                timeout_secs: self.run_timeout,
+                timeout_secs,
             },
             Job::Run(action),
         );
         if id != 0 {
             self.run_state.starting = true;
-            self.run_state.output = format!(
-                "$ {program} {}\nWaiting for command acceptance...",
-                self.run_args
-            );
+            self.run_state.output = format!("{preview}\nWaiting for command acceptance...");
         }
     }
     fn cancel_run(&mut self) {
@@ -324,57 +334,56 @@ impl CedarApp {
         }
     }
     pub(super) fn run_panel(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .id_salt("command_panel_scroll")
+            .show(ui, |ui| self.run_panel_contents(ui));
+    }
+    fn run_panel_contents(&mut self, ui: &mut egui::Ui) {
         let allowed = self.active_form.as_ref().is_some_and(|form| form.allow_run);
+        let supported = command_platform_supported(
+            cfg!(windows),
+            self.active_form.as_ref().is_some_and(|form| form.ssh),
+        );
         if !allowed {
             ui.colored_label(AMBER, "Command execution is off. Enable trust in Open workspace and reconnect only for a workspace you trust.");
         }
-        ui.add_enabled_ui(allowed && self.ready(), |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Executable");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.run_program)
-                        .hint_text("cargo")
-                        .desired_width(160.0),
-                );
-                ui.label("Arguments (JSON)");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.run_args)
-                        .font(egui::TextStyle::Monospace)
-                        .hint_text("[\"test\"]")
-                        .desired_width((ui.available_width() - 235.0).max(100.0)),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut self.run_timeout)
-                        .range(1..=300)
-                        .suffix(" s"),
-                );
-                if ui
-                    .add_enabled(
-                        self.run_state.can_start()
-                            && !self.run_request_pending()
-                            && self.recovery.closing.is_none()
-                            && !self.close_after_language_stop,
-                        egui::Button::new("Run"),
-                    )
-                    .clicked()
-                {
-                    self.run();
-                }
-                if ui
-                    .add_enabled(
-                        self.run_state
+        if !supported {
+            ui.colored_label(AMBER, "Command tasks require Linux or macOS; Windows needs verified Job Object and cancellable pipe support. Profiles can still be edited and saved; Linux SSH commands are supported.");
+        }
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(
+                    allowed
+                        && supported
+                        && self.ready()
+                        && self.profile_run_problem().is_none()
+                        && self.run_state.can_start()
+                        && !self.run_request_pending()
+                        && self.recovery.closing.is_none()
+                        && !self.close_after_language_stop,
+                    egui::Button::new("Run"),
+                )
+                .clicked()
+            {
+                self.queue_profile_action(crate::profile_ui::Action::Run);
+            }
+            if ui
+                .add_enabled(
+                    self.ready()
+                        && self
+                            .run_state
                             .snapshot
                             .as_ref()
                             .is_some_and(|task| !task.state.is_terminal())
-                            && !self.run_request_pending(),
-                        egui::Button::new("Cancel"),
-                    )
-                    .clicked()
-                {
-                    self.cancel_run();
-                }
-            });
+                        && !self.run_request_pending(),
+                    egui::Button::new("Cancel command"),
+                )
+                .clicked()
+            {
+                self.cancel_run();
+            }
         });
+        self.profile_fields(ui);
         ui.label(RichText::new("Runs explicitly in the workspace with literal argv and no implicit shell. Live bounded output; editing and saving remain available. Commands are never automatically restarted.").small().color(MUTED));
         if self.run_state.starting {
             ui.colored_label(AMBER, "Waiting for command acceptance...");
@@ -405,6 +414,7 @@ impl CedarApp {
         }
         egui::ScrollArea::both()
             .id_salt("run_output")
+            .max_height(240.0)
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 ui.add(
@@ -665,9 +675,12 @@ mod tests {
         wait(&mut app, |app| {
             app.state == ConnectionState::Ready && app.pending.is_empty()
         });
-        app.run_program = "/bin/sh".into();
-        app.run_args = r#"["-c", "printf first; sleep 0.05; printf second; sleep 10"]"#.into();
-        app.run_timeout = 30;
+        app.profiles.draft.program = "/bin/sh".into();
+        app.profiles.draft.args = vec![
+            "-c".into(),
+            "printf first; sleep 0.05; printf second; sleep 10".into(),
+        ];
+        app.profiles.draft.timeout_secs = 30;
         let started = Instant::now();
         app.run();
         assert!(started.elapsed() < Duration::from_secs(1));

@@ -56,9 +56,11 @@ latest acknowledged snapshot, including the debounce window.
 ## Commands
 
 Commands uses `RunStart`, `RunPoll`, and `RunCancel`. A command is run only after
-an explicit click, in a connection whose execution trust is enabled. The existing
-executable, literal JSON argv and 1–300-second timeout form is preserved. There is
-no implicit shell, automatic retry/restart, or recovered execution trust.
+an explicit click, in a connection whose execution trust is enabled. The phase-5 form uses an
+executable, ordered literal argument rows and a 1–300-second timeout. Explicit
+saved profiles reuse this dispatch and the ordinary document save path; see
+[Task profiles](../../docs/TASK_PROFILES.md). There is no implicit shell,
+automatic retry/restart, or recovered execution trust.
 
 The UI accepts one task per connection, polls at most once per 250 ms while it is
 nonterminal, and replaces full bounded output snapshots instead of appending

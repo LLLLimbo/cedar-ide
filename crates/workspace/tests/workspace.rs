@@ -2,7 +2,9 @@ use cedar_protocol::{Operation, Payload, MAX_FILE_BYTES};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use cedar_workspace::MAX_COMMAND_OUTPUT_BYTES;
 use cedar_workspace::{Workspace, MAX_COMMAND_TIMEOUT_SECS};
-use std::fs;
+use sha2::{Digest, Sha256};
+use std::fs::{self, File};
+use std::io::Read;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -29,6 +31,16 @@ fn write(
         text: text.into(),
         expected_revision: expected,
     })
+}
+
+fn written_revision(payload: Payload, text: &str) -> String {
+    match payload {
+        Payload::Written { revision } => {
+            assert_eq!(revision, format!("{:x}", Sha256::digest(text.as_bytes())));
+            revision
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
@@ -171,6 +183,179 @@ fn removed_file_is_a_conflict_not_implicit_recreation() {
         write(&mut ws, "missing/child", "x", None).unwrap_err().code,
         "not_found"
     );
+}
+
+#[test]
+fn replacement_keeps_held_reader_on_old_bytes_and_new_opens_on_new_bytes() {
+    let (dir, mut ws) = workspace();
+    let path = dir.path().join("held.txt");
+    let old = "original complete file 你好\r\n";
+    let new = "replacement complete file 🦀\n";
+    let old_revision = written_revision(write(&mut ws, "held.txt", old, None).unwrap(), old);
+    let mut held_reader = File::open(&path).unwrap();
+    let new_revision = written_revision(
+        write(&mut ws, "held.txt", new, Some(old_revision)).unwrap(),
+        new,
+    );
+    let mut held_bytes = Vec::new();
+    held_reader.read_to_end(&mut held_bytes).unwrap();
+    assert_eq!(held_bytes, old.as_bytes());
+    assert_eq!(fs::read(&path).unwrap(), new.as_bytes());
+    assert_eq!(read(&mut ws, "held.txt"), (new.into(), new_revision));
+    drop(held_reader);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn concurrent_readers_never_observe_partial_or_missing_files_and_every_save_succeeds() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    let (dir, mut ws) = workspace();
+    let a = "A🦀\r\n".repeat(4000);
+    let b = "B你好\n".repeat(5000);
+    let mut revision = written_revision(write(&mut ws, "file", &a, None).unwrap(), &a);
+    let path = dir.path().join("file");
+    let a_bytes = a.as_bytes().to_owned();
+    let b_bytes = b.as_bytes().to_owned();
+    let running = Arc::new(AtomicBool::new(true));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let active = running.clone();
+    let reader_count = reads.clone();
+    let (started_sender, started_receiver) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut started = Some(started_sender);
+        while active.load(Ordering::Acquire) {
+            let bytes = fs::read(&path).expect("a reader must never observe a missing file");
+            assert!(
+                bytes == a_bytes || bytes == b_bytes,
+                "partial/interleaved file"
+            );
+            reader_count.fetch_add(1, Ordering::Relaxed);
+            if let Some(sender) = started.take() {
+                sender.send(()).unwrap();
+            }
+        }
+    });
+    let started = started_receiver.recv_timeout(Duration::from_secs(15));
+    let mut failure = None;
+    let mut saved = 0;
+    if started.is_ok() {
+        for sequence in 0..64 {
+            let contents = if sequence % 2 == 0 { &b } else { &a };
+            match write(&mut ws, "file", contents, Some(revision.clone())) {
+                Ok(payload) => {
+                    // Defer assertions until the reader is stopped and joined.
+                    if let Payload::Written { revision: next } = payload {
+                        if next != format!("{:x}", Sha256::digest(contents.as_bytes())) {
+                            failure = Some("save returned the wrong SHA-256".to_owned());
+                            break;
+                        }
+                        revision = next;
+                        saved += 1;
+                    } else {
+                        failure = Some(format!("unexpected save response: {payload:?}"));
+                        break;
+                    }
+                }
+                Err(error) => {
+                    failure = Some(format!("save failed with an ordinary reader: {error:?}"));
+                    break;
+                }
+            }
+        }
+    }
+    // Stop and join even on failure, before assertions can drop the directory.
+    running.store(false, Ordering::Release);
+    reader.join().unwrap();
+    started.unwrap();
+    assert!(failure.is_none(), "{}", failure.unwrap_or_default());
+    assert_eq!(saved, 64);
+    assert!(reads.load(Ordering::Relaxed) > 0);
+    assert_eq!(read(&mut ws, "file"), (a, revision));
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn deny_delete_sharing_preserves_old_file_cleans_temporary_and_retry_succeeds() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let (dir, mut ws) = workspace();
+    let path = dir.path().join("blocked.txt");
+    let old = "original safe file 你好";
+    let new = "new complete file 🦀";
+    let revision = written_revision(write(&mut ws, "blocked.txt", old, None).unwrap(), old);
+    let mut held_reader = File::options()
+        .read(true)
+        .share_mode(0x1 | 0x2) // FILE_SHARE_READ | FILE_SHARE_WRITE, no DELETE
+        .open(&path)
+        .unwrap();
+    let failure = write(&mut ws, "blocked.txt", new, Some(revision.clone())).unwrap_err();
+    assert!(matches!(
+        failure.code.as_str(),
+        "permission_denied" | "io_error"
+    ));
+    assert_eq!(fs::read(&path).unwrap(), old.as_bytes());
+    assert_eq!(read(&mut ws, "blocked.txt"), (old.into(), revision.clone()));
+    let mut held_bytes = Vec::new();
+    held_reader.read_to_end(&mut held_bytes).unwrap();
+    assert_eq!(held_bytes, old.as_bytes());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    drop(held_reader);
+    let saved = written_revision(
+        write(&mut ws, "blocked.txt", new, Some(revision)).unwrap(),
+        new,
+    );
+    assert_eq!(read(&mut ws, "blocked.txt"), (new.into(), saved));
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn new_and_replaced_files_do_not_keep_the_windows_temporary_attribute() {
+    use std::os::windows::fs::MetadataExt;
+
+    let (dir, mut ws) = workspace();
+    let mut revision = None;
+    for contents in ["first", "replacement", "another replacement"] {
+        revision = Some(written_revision(
+            write(&mut ws, "file", contents, revision).unwrap(),
+            contents,
+        ));
+        assert_eq!(
+            fs::metadata(dir.path().join("file"))
+                .unwrap()
+                .file_attributes()
+                & 0x100,
+            0,
+            "persisted file must not retain FILE_ATTRIBUTE_TEMPORARY"
+        );
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn read_only_windows_file_is_denied_and_unchanged() {
+    let (dir, mut ws) = workspace();
+    let path = dir.path().join("file");
+    let revision = written_revision(write(&mut ws, "file", "before", None).unwrap(), "before");
+    let original_permissions = fs::metadata(&path).unwrap().permissions();
+    let mut read_only = original_permissions.clone();
+    read_only.set_readonly(true);
+    fs::set_permissions(&path, read_only).unwrap();
+    let result = write(&mut ws, "file", "after", Some(revision.clone()));
+    let actual = fs::read(&path).unwrap();
+    let permissions = fs::metadata(&path).unwrap().permissions();
+    // Restore before asserting so even a regression leaves a removable fixture.
+    fs::set_permissions(&path, original_permissions).unwrap();
+    assert_eq!(result.unwrap_err().code, "permission_denied");
+    assert_eq!(actual, b"before");
+    assert!(permissions.readonly());
+    assert_eq!(read(&mut ws, "file"), ("before".into(), revision));
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
 }
 
 #[test]
@@ -618,19 +803,25 @@ fn simultaneous_new_file_creation_has_exactly_one_winner() {
             handles.push(std::thread::spawn(move || {
                 let mut ws = Workspace::open(path).unwrap();
                 barrier.wait();
-                write(&mut ws, "new", contents, None)
+                (contents, write(&mut ws, "new", contents, None))
             }));
         }
         let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
         assert_eq!(
-            results.into_iter().find_map(Result::err).unwrap().code,
-            "conflict"
+            results.iter().filter(|(_, result)| result.is_ok()).count(),
+            1
         );
-        assert!(matches!(
-            fs::read_to_string(dir.path().join("new")).unwrap().as_str(),
-            "left" | "right"
-        ));
+        let disk = fs::read_to_string(dir.path().join("new")).unwrap();
+        for (contents, result) in results {
+            match result {
+                Ok(payload) => {
+                    assert_eq!(disk, contents, "disk must contain the acknowledged winner");
+                    written_revision(payload, contents);
+                }
+                Err(error) => assert_eq!(error.code, "conflict"),
+            }
+        }
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }
 

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "name": "Literal arguments demo",
+      "program": "cargo",
+      "args": ["run", "--offline", "--quiet", "--", "plain", "two words", "", "$(touch not-a-shell)", "你好"],
+      "timeout_secs": 120
+    },
+    {
+      "name": "Cancelable demo",
+      "program": "cargo",
+      "args": ["run", "--offline", "--quiet", "--", "--sleep-seconds", "120"],
+      "timeout_secs": 180
+    },
+    {
+      "name": "Explicit sentinel demo",
+      "program": "cargo",
+      "args": ["run", "--offline", "--quiet", "--", "--touch-sentinel"],
+      "timeout_secs": 120
+    }
+  ]
+}

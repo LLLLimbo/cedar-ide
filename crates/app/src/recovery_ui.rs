@@ -84,11 +84,7 @@ impl CedarApp {
             self.recovery.visible = true;
         }
         if let Some(snapshot) = &self.recovery.closing {
-            let current: Vec<_> = self
-                .documents
-                .iter()
-                .map(|doc| (doc.id, doc.edit_version))
-                .collect();
+            let current = self.draft_versions();
             if *snapshot != current {
                 self.recovery.closing = None;
                 self.allow_close = false;
@@ -115,12 +111,7 @@ impl CedarApp {
             }
             self.recovery.flush();
         }
-        self.recovery.closing = Some(
-            self.documents
-                .iter()
-                .map(|doc| (doc.id, doc.edit_version))
-                .collect(),
-        );
+        self.recovery.closing = Some(self.draft_versions());
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         self.notice = "Finishing explicit recovery discards before quitting".into();
     }

@@ -216,6 +216,18 @@ impl Workspace {
         text: &str,
         expected: Option<&str>,
     ) -> Result<Payload, RemoteError> {
+        self.write_with_preparation_hook(path, text, expected, || {})
+    }
+
+    // A private, per-call seam lets tests change the destination after all
+    // temporary-file preparation, without sleeps or a process-global hook.
+    fn write_with_preparation_hook(
+        &self,
+        path: &str,
+        text: &str,
+        expected: Option<&str>,
+        after_preparation: impl FnOnce(),
+    ) -> Result<Payload, RemoteError> {
         if text.len() > MAX_FILE_BYTES {
             return Err(error(
                 "file_too_large",
@@ -281,11 +293,13 @@ impl Workspace {
                 .set_permissions(meta.permissions())
                 .map_err(io_error)?;
         }
-        temporary.as_file().sync_all().map_err(io_error)?;
-        // Repeat checks as late as possible. This narrows races; it is not an
-        // atomic filesystem CAS against non-cooperating external writers.
-        self.resolve(path, true)?;
         if let Some(wanted) = expected {
+            let temporary = PreparedReplacement::new(temporary).map_err(io_error)?;
+            after_preparation();
+            // All attribute changes and flushing precede these final checks.
+            // Commit immediately afterward: this narrows races, but is not an
+            // atomic filesystem CAS against non-cooperating external writers.
+            self.resolve(path, true)?;
             let latest = read_text(&full).map_err(|e| {
                 if e.code == "not_found" {
                     error("conflict", "The file was removed while saving")
@@ -299,8 +313,11 @@ impl Workspace {
                     "File changed while saving; reload before saving",
                 ));
             }
-            temporary.persist(&full).map_err(|e| io_error(e.error))?;
+            temporary.persist(&full).map_err(io_error)?;
         } else {
+            temporary.as_file().sync_all().map_err(io_error)?;
+            after_preparation();
+            self.resolve(path, true)?;
             temporary.persist_noclobber(&full).map_err(|e| {
                 if e.error.kind() == io::ErrorKind::AlreadyExists {
                     error("conflict", "File was created while saving")
@@ -533,6 +550,46 @@ impl Workspace {
         } else {
             text.to_owned()
         })
+    }
+}
+
+/// An existing-file replacement that needs no more preparation before commit.
+/// Kept private to workspace saves; new files still use persist_noclobber.
+struct PreparedReplacement {
+    temporary: tempfile::NamedTempFile,
+}
+
+impl PreparedReplacement {
+    fn new(temporary: tempfile::NamedTempFile) -> io::Result<Self> {
+        #[cfg(windows)]
+        let temporary = {
+            // keep clears FILE_ATTRIBUTE_TEMPORARY. Re-arm cleanup immediately
+            // so a failed flush, late validation, or rename removes our source.
+            // The path is absolute (the workspace root is canonical), so
+            // try_from_path needs no current-directory lookup or filesystem I/O.
+            let (file, path) = temporary.keep().map_err(|error| error.error)?;
+            let cleanup = tempfile::TempPath::try_from_path(path)?;
+            tempfile::NamedTempFile::from_parts(file, cleanup)
+        };
+        temporary.as_file().sync_all()?;
+        Ok(Self { temporary })
+    }
+
+    fn persist(self, destination: &Path) -> io::Result<()> {
+        #[cfg(windows)]
+        {
+            // tempfile 3.27 uses legacy MoveFileExW. Rust 1.99's maintained
+            // rename has a POSIX-semantics fallback for delete-sharing readers;
+            // it does not bypass read-only attributes or sharing restrictions.
+            fs::rename(self.temporary.path(), destination)?;
+            let mut temporary = self.temporary;
+            temporary.disable_cleanup(true);
+        }
+        #[cfg(not(windows))]
+        self.temporary
+            .persist(destination)
+            .map_err(|error| error.error)?;
+        Ok(())
     }
 }
 
@@ -876,6 +933,157 @@ fn exited_without_reaping(_child: &Child) -> io::Result<bool> {
         io::ErrorKind::Unsupported,
         "Safe wait observation is unavailable on this platform",
     ))
+}
+
+#[cfg(test)]
+mod save_preparation_tests {
+    use super::*;
+
+    fn prepared_temporary(root: &Path) {
+        let temporaries: Vec<_> = fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".cedar-save-")
+            })
+            .collect();
+        assert_eq!(temporaries.len(), 1);
+        assert_eq!(fs::read(temporaries[0].path()).unwrap(), b"saved");
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            assert_eq!(
+                temporaries[0].metadata().unwrap().file_attributes() & 0x100,
+                0,
+                "Windows attributes must be prepared before final validation"
+            );
+        }
+    }
+
+    #[test]
+    fn external_edit_after_preparation_is_detected_and_temporary_is_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("file");
+        fs::write(&path, "before").unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let failure = workspace
+            .write_with_preparation_hook("file", "saved", Some(&revision("before")), || {
+                prepared_temporary(root.path());
+                fs::write(&path, "external edit").unwrap();
+            })
+            .unwrap_err();
+        assert_eq!(failure.code, "conflict");
+        assert_eq!(fs::read(&path).unwrap(), b"external edit");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn external_removal_after_preparation_is_not_recreated() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("file");
+        fs::write(&path, "before").unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let failure = workspace
+            .write_with_preparation_hook("file", "saved", Some(&revision("before")), || {
+                prepared_temporary(root.path());
+                fs::remove_file(&path).unwrap();
+            })
+            .unwrap_err();
+        assert_eq!(failure.code, "conflict");
+        assert!(!path.exists());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn stale_revision_is_rejected_before_preparation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("file");
+        fs::write(&path, "external edit").unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let failure = workspace
+            .write_with_preparation_hook("file", "saved", Some(&revision("before")), || {
+                panic!("a stale revision must fail the early check");
+            })
+            .unwrap_err();
+        assert_eq!(failure.code, "conflict");
+        assert_eq!(fs::read(&path).unwrap(), b"external edit");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn external_creation_after_preparation_is_not_clobbered() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("file");
+        let workspace = Workspace::open(root.path()).unwrap();
+        let failure = workspace
+            .write_with_preparation_hook("file", "saved", None, || {
+                fs::write(&path, "external creation").unwrap();
+            })
+            .unwrap_err();
+        assert_eq!(failure.code, "conflict");
+        assert_eq!(fs::read(&path).unwrap(), b"external creation");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_added_after_preparation_is_rejected_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = root.path().join("file");
+        let target = outside.path().join("file");
+        // Identical revisions cannot excuse a failed late path validation.
+        fs::write(&path, "before").unwrap();
+        fs::write(&target, "before").unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let failure = workspace
+            .write_with_preparation_hook("file", "saved", Some(&revision("before")), || {
+                prepared_temporary(root.path());
+                fs::remove_file(&path).unwrap();
+                symlink(&target, &path).unwrap();
+            })
+            .unwrap_err();
+        assert_eq!(failure.code, "invalid_path");
+        assert!(fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), b"before");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_only_attribute_added_after_preparation_is_not_bypassed_by_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("file");
+        fs::write(&path, "before").unwrap();
+        let original_permissions = fs::metadata(&path).unwrap().permissions();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let result = workspace.write_with_preparation_hook(
+            "file",
+            "saved",
+            Some(&revision("before")),
+            || {
+                prepared_temporary(root.path());
+                let mut permissions = original_permissions.clone();
+                permissions.set_readonly(true);
+                fs::set_permissions(&path, permissions).unwrap();
+            },
+        );
+        let actual = fs::read(&path).unwrap();
+        let permissions = fs::metadata(&path).unwrap().permissions();
+        fs::set_permissions(&path, original_permissions).unwrap();
+        assert_eq!(result.unwrap_err().code, "permission_denied");
+        assert_eq!(actual, b"before");
+        assert!(permissions.readonly());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
