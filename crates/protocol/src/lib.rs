@@ -1,7 +1,7 @@
 //! Bounded newline-delimited JSON protocol between native UI and workspace agent.
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_FILE_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +61,17 @@ pub enum Operation {
     },
     LanguageEvents,
     LanguageStop,
+    RunStart {
+        program: String,
+        args: Vec<String>,
+        timeout_secs: u64,
+    },
+    RunPoll {
+        task_id: u64,
+    },
+    RunCancel {
+        task_id: u64,
+    },
     Run {
         program: String,
         args: Vec<String>,
@@ -106,6 +117,9 @@ pub enum Payload {
     },
     Language {
         value: serde_json::Value,
+    },
+    RunTask {
+        snapshot: serde_json::Value,
     },
     Run {
         stdout: String,

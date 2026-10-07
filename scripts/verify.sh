@@ -9,3 +9,4 @@ export CEDAR_AGENT_BIN="$PWD/target/debug/cedar-agent"
 cargo test -p cedar-client --test stdio_roundtrip --locked -- --ignored
 python3 scripts/protocol_smoke.py "$CEDAR_AGENT_BIN"
 python3 scripts/language_bridge_smoke.py "$CEDAR_AGENT_BIN" "$PWD/target/debug/cedar-mock-lsp"
+python3 scripts/task_bridge_smoke.py "$CEDAR_AGENT_BIN"

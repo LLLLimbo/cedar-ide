@@ -96,3 +96,24 @@ This is the newer CJK-capable frontend sample; the earlier 78.44 MiB phase-1
 number must not be used as its footprint. Neither includes a JVM or GPU-service
 memory. Both are short interactive samples, not fixed budgets, leak tests or an
 IDEA comparison. JVM observations remain reported separately above.
+
+### Phase-3 release frontend with Chinese text and private recovery
+
+A 112.597-second release session opened the tiny synthetic `note.txt` fixture
+with workspace trust off, no JVM or command running, and local recovery enabled.
+It loaded the existing system CJK font, accepted an unsaved edit, showed an exact
+recovery acknowledgement, and removed the owned copy after explicit discard.
+The frontend exited successfully; the original workspace bytes were unchanged.
+
+Direct frontend-PID sampling collected 1,093 readings. Maximum sampled RSS was
+**117,908 KiB (115.14 MiB)**; observed Linux high-water RSS was **120,800 KiB
+(117.97 MiB)**, with at most 23 threads. A short allocation can raise VmHWM
+between 100ms RSS samples. Raw evidence is
+`gui-phase3-cjk-recovery-resource-sample.json`.
+
+This is a phase-3 smoke observation, not an idle-memory guarantee or a measured
+recovery overhead. The phase-2 session had different interactions and duration;
+the two sessions are not a controlled performance comparison. GPU-service memory
+and separate language/build/debug processes remain excluded. No IDEA comparison
+was performed. Recovery bounds are described in `RECOVERY.md`; recovery and undo
+can retain multiple text copies, and pasted drafts are not a hard memory budget.

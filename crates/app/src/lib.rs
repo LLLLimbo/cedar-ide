@@ -5,6 +5,12 @@ mod language_results;
 mod language_sync;
 mod language_ui;
 mod model;
+mod recovery;
+mod recovery_actor;
+#[cfg(test)]
+mod recovery_tests;
+mod recovery_ui;
+mod run_ui;
 mod syntax;
 mod system_fonts;
 mod worker;
@@ -143,7 +149,7 @@ enum Job {
         query: String,
     },
     Git,
-    Run,
+    Run(run_ui::Action),
     Inspect {
         path: String,
     },
@@ -195,7 +201,7 @@ pub struct CedarApp {
     run_program: String,
     run_args: String,
     run_timeout: u64,
-    run_output: String,
+    run_state: run_ui::RunPanel,
     language: language_ui::LanguagePanel,
     quick_open: bool,
     quick_path: String,
@@ -208,6 +214,7 @@ pub struct CedarApp {
     find_focus: bool,
     disk_view: Option<(String, String)>,
     font_size: f32,
+    recovery: recovery::Recovery,
 }
 
 impl CedarApp {
@@ -240,6 +247,10 @@ impl CedarApp {
         });
         let mut app = Self::empty();
         app.editor_ctx = cc.egui_ctx.clone();
+        app.recovery.start(
+            cedar_recovery::default_store_path().map_err(|error| error.to_string()),
+            &cc.egui_ctx,
+        );
         app
     }
 
@@ -285,7 +296,7 @@ impl CedarApp {
             run_program: String::new(),
             run_args: "[]".into(),
             run_timeout: 30,
-            run_output: "Command output will appear here".into(),
+            run_state: run_ui::RunPanel::default(),
             language: language_ui::LanguagePanel::default(),
             quick_open: false,
             quick_path: String::new(),
@@ -298,6 +309,7 @@ impl CedarApp {
             find_focus: false,
             disk_view: None,
             font_size: 14.0,
+            recovery: recovery::Recovery::default(),
         }
     }
 
@@ -308,15 +320,9 @@ impl CedarApp {
         self.documents.iter().any(Document::dirty)
     }
     fn mutation_pending(&self) -> bool {
-        self.pending.values().any(|job| {
-            matches!(
-                job,
-                Job::Save { .. } | Job::Run | Job::Git | Job::Language(_)
-            )
-        })
-    }
-    fn running(&self) -> bool {
-        self.pending.values().any(|job| matches!(job, Job::Run))
+        self.pending
+            .values()
+            .any(|job| matches!(job, Job::Save { .. } | Job::Git | Job::Language(_)))
     }
     fn active(&self) -> Option<&Document> {
         self.documents
@@ -325,6 +331,9 @@ impl CedarApp {
     }
 
     fn connect(&mut self, ctx: &egui::Context, form: ConnectForm) {
+        if !self.guard_run_transition(run_ui::Transition::Reconnect) {
+            return;
+        }
         if self.mutation_pending() {
             self.error =
                 Some("Wait for the current save, Git, command, or language request to finish before reconnecting".into());
@@ -341,6 +350,8 @@ impl CedarApp {
                 return;
             }
         };
+        self.recovery.restoring_generation = None;
+        self.run_state.reset();
         self.worker = None;
         self.language.reset();
         self.generation += 1;
@@ -384,6 +395,8 @@ impl CedarApp {
     }
 
     fn disconnected(&mut self, message: String) {
+        self.run_state.disconnected();
+        self.recovery.restoring_generation = None;
         self.state = ConnectionState::Disconnected;
         self.language.reset();
         self.worker = None;
@@ -499,7 +512,26 @@ impl CedarApp {
                     let Some(form) = self.connecting_form.take() else {
                         return;
                     };
-                    if self.workspace_key.as_deref() != Some(form.key().as_str()) {
+                    if self.recovery.restoring_generation == Some(self.generation)
+                        && self.recovery.pending_restore.as_ref().is_some_and(|draft| {
+                            draft.workspace != recovery_ui::identity(&form, &root)
+                        })
+                    {
+                        self.recovery.error = Some("The agent returned a different workspace root. Recovery was not restored; verify the intended workspace and retry".into());
+                        self.disconnected("Recovery workspace identity did not match".into());
+                        return;
+                    }
+                    if self.workspace_key.as_deref() == Some(form.key().as_str())
+                        && !self.root.is_empty()
+                        && self.root != root
+                        && self.dirty()
+                    {
+                        self.disconnected("The workspace root changed while reconnecting. Your drafts are retained; reconnect to their original root before saving".into());
+                        return;
+                    }
+                    if self.workspace_key.as_deref() != Some(form.key().as_str())
+                        || (!self.root.is_empty() && self.root != root)
+                    {
                         if self.dirty() {
                             self.disconnected("Workspace switch cancelled because a draft changed while connecting. Your edits are retained; reconnect to the original workspace to save them".into());
                             return;
@@ -511,7 +543,7 @@ impl CedarApp {
                         self.active_document = None;
                         self.search_results.clear();
                         self.git_output = "Refresh to read workspace Git status".into();
-                        self.run_output = "Command output will appear here".into();
+                        self.run_state.output = "Command output will appear here".into();
                     }
                     self.workspace_key = Some(form.key());
                     self.active_form = Some(form);
@@ -523,6 +555,14 @@ impl CedarApp {
                     self.directory.clear();
                     self.entries.clear();
                     self.list(String::new());
+                    if self.recovery.restoring_generation.take() == Some(self.generation) {
+                        if let Some(draft) = self.recovery.pending_restore.take() {
+                            if let Err(error) = self.install_recovered(draft.clone()) {
+                                self.recovery.error = Some(error);
+                                self.recovery.pending_restore = Some(draft);
+                            }
+                        }
+                    }
                 }
                 Ok(_) => self.disconnected("Unexpected connection handshake".into()),
                 Err(error) => self.disconnected(error),
@@ -546,6 +586,9 @@ impl CedarApp {
                 }
                 if let Job::Language(action) = &job {
                     self.language_error(action, &error);
+                }
+                if let Job::Run(action) = &job {
+                    self.run_error(action, event.connected, &error);
                 }
                 if !event.connected {
                     self.disconnected(error);
@@ -620,8 +663,12 @@ impl CedarApp {
                 self.complete_language_navigation(&requested);
             }
             (Job::Save { document, snapshot }, Payload::Written { revision }) => {
+                let workspace = self.recovery_workspace();
                 if let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == document) {
                     doc.acknowledge_save(snapshot, revision);
+                    if let Some(workspace) = &workspace {
+                        self.recovery.saved(workspace, doc);
+                    }
                     self.notice = format!("Saved {}", doc.path);
                 }
                 self.list(self.directory.clone());
@@ -641,47 +688,8 @@ impl CedarApp {
                     text
                 };
             }
-            (
-                Job::Run,
-                Payload::Run {
-                    stdout,
-                    stderr,
-                    exit_code,
-                    timed_out,
-                    truncated,
-                },
-            ) => {
-                self.run_output = format!(
-                    "{stdout}{}{}\n\n{}{}{}",
-                    if stderr.is_empty() {
-                        ""
-                    } else {
-                        "\n[stderr]\n"
-                    },
-                    stderr,
-                    if timed_out {
-                        "Timed out".into()
-                    } else {
-                        format!(
-                            "Exit: {}",
-                            exit_code
-                                .map(|code| code.to_string())
-                                .unwrap_or_else(|| "signal".into())
-                        )
-                    },
-                    if truncated {
-                        " · output truncated"
-                    } else {
-                        ""
-                    },
-                    ""
-                );
-                self.notice = if timed_out {
-                    "Command timed out".into()
-                } else {
-                    "Command finished".into()
-                };
-            }
+            (Job::Run(action), Payload::RunTask { snapshot }) => self.apply_run(action, snapshot),
+            (Job::Run(action), _) => self.run_error(&action, true, "Unexpected command response"),
             (Job::Language(action), Payload::Language { value }) => {
                 self.apply_language_action(action, value)
             }
@@ -715,37 +723,6 @@ impl CedarApp {
         }
         self.request(Operation::GitStatus, Job::Git);
     }
-    fn run(&mut self) {
-        if self.running() {
-            return;
-        }
-        if !self.active_form.as_ref().is_some_and(|form| form.allow_run) {
-            self.error = Some("Command execution is disabled for this connection".into());
-            return;
-        }
-        let args: Vec<String> = match serde_json::from_str(&self.run_args) {
-            Ok(args) => args,
-            Err(_) => {
-                self.error = Some("Arguments must be a JSON string array, for example [\"test\", \"--workspace\"]".into());
-                return;
-            }
-        };
-        if self.run_program.trim().is_empty() {
-            self.error = Some("Enter an executable name or path".into());
-            return;
-        }
-        let program = self.run_program.trim().to_owned();
-        self.run_output = format!("$ {} {}\nRunning...", program, self.run_args);
-        self.request(
-            Operation::Run {
-                program,
-                args,
-                timeout_secs: self.run_timeout,
-            },
-            Job::Run,
-        );
-    }
-
     fn finish_pending_close(&mut self, ctx: &egui::Context) {
         if self.close_after_language_stop && !self.language.running && !self.language_busy() {
             self.close_after_language_stop = false;
@@ -758,13 +735,16 @@ impl CedarApp {
                 self.confirm = Some(Confirm::CloseWindow);
                 self.notice = "A draft changed while the language server was stopping; confirm before quitting".into();
             } else {
-                self.allow_close = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.finish_recovery_close(ctx);
             }
         }
     }
 
     fn begin_close(&mut self, ctx: &egui::Context) {
+        if !self.guard_run_transition(run_ui::Transition::Close) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            return;
+        }
         if self.language.running && self.ready() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_after_language_stop = true;
@@ -777,8 +757,7 @@ impl CedarApp {
             self.stop_language();
             self.notice = "Stopping language server before closing".into();
         } else {
-            self.allow_close = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.finish_recovery_close(ctx);
         }
     }
 
@@ -795,6 +774,11 @@ impl CedarApp {
         }
     }
     fn remove_tab(&mut self, id: u64) {
+        if let Some(workspace) = self.recovery_workspace() {
+            if let Some(doc) = self.documents.iter().find(|doc| doc.id == id) {
+                self.recovery.discard_owned(&workspace, doc);
+            }
+        }
         if self.active_document == Some(id) {
             self.navigation_changed();
         }
@@ -878,6 +862,9 @@ impl CedarApp {
                         {
                             self.save();
                         }
+                        if ui.button("Recovery").clicked() {
+                            self.recovery.visible = true;
+                        }
                         if ui.button("Open workspace").clicked() {
                             self.open_form = true;
                         }
@@ -925,6 +912,9 @@ impl CedarApp {
                         ConnectionState::Disconnected => (RED, "Disconnected"),
                     };
                     ui.colored_label(color, label);
+                    let workspace = self.recovery_workspace();
+                    let (recovery_status, protected) = self.recovery.status(workspace.as_ref(), self.active());
+                    if ui.small_button(RichText::new(recovery_status).color(if protected { GREEN } else { AMBER })).on_hover_text("Private recovery on this computer. Click to review copies and settings").clicked() { self.recovery.visible = true; }
                     if let Some(form) = &self.active_form {
                         ui.label(
                             RichText::new(if form.ssh {
@@ -1077,25 +1067,7 @@ impl CedarApp {
                         if !allowed { ui.colored_label(AMBER, "Enable trusted command execution and reconnect. Git may execute repository-configured filters."); }
                         egui::ScrollArea::both().id_salt("git_output").show(ui, |ui| { ui.add(egui::TextEdit::multiline(&mut self.git_output).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY).interactive(false).frame(false)); });
                     }
-                    Tool::Run => {
-                        let allowed = self.active_form.as_ref().is_some_and(|form| form.allow_run);
-                        if !allowed {
-                            ui.colored_label(AMBER, "Command execution is off");
-                            ui.label("Enable trusted command execution in Open workspace, then reconnect to the same root");
-                        }
-                        ui.add_enabled_ui(allowed && self.ready(), |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Executable");
-                                ui.add(egui::TextEdit::singleline(&mut self.run_program).hint_text("cargo").desired_width(170.0));
-                                ui.label("Arguments (JSON)");
-                                ui.add(egui::TextEdit::singleline(&mut self.run_args).font(egui::TextStyle::Monospace).hint_text("[\"test\"]").desired_width((ui.available_width() - 215.0).max(100.0)));
-                                ui.add(egui::DragValue::new(&mut self.run_timeout).range(1..=300).suffix(" s"));
-                                if ui.add_enabled(!self.running(), egui::Button::new(if self.running() { "Running..." } else { "Run" })).clicked() { self.run(); }
-                            });
-                        });
-                        ui.label(RichText::new("Runs in the workspace. No implicit shell. Output is returned when the command exits; timeout is enforced.").small().color(MUTED));
-                        egui::ScrollArea::both().id_salt("run_output").stick_to_bottom(true).show(ui, |ui| { ui.add(egui::TextEdit::multiline(&mut self.run_output).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY).interactive(false).frame(false)); });
-                    }
+                    Tool::Run => self.run_panel(ui),
                 }
             });
     }
@@ -1242,7 +1214,7 @@ impl CedarApp {
                     ui.add_space(25.0);
                     ui.label(
                         RichText::new(
-                            "Built in Rust · No browser engine · Your files stay in your workspace",
+                            "Built in Rust · No browser engine · Private draft recovery on this computer",
                         )
                         .size(12.0)
                         .color(MUTED),
@@ -1647,7 +1619,7 @@ impl CedarApp {
             egui::Modal::new(egui::Id::new("discard_confirmation")).show(ctx, |ui| {
                 ui.set_max_width(430.0);
                 ui.heading("Discard unsaved changes?");
-                ui.label(format!("Your changes to {target} will be lost. Save or copy the draft first if you need to keep it."));
+                ui.label(format!("Your changes to {target} and recovery copies owned by these tabs will be discarded. Save or copy the draft first if you need to keep it."));
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.button("Keep editing").clicked() { self.confirm = None; }
@@ -1681,6 +1653,7 @@ impl CedarApp {
 impl eframe::App for CedarApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        self.recovery_tick(ctx);
         let cjk = self.system_fonts.needs_probe()
             && (self.cjk_seen
                 || self.language.cjk_seen
@@ -1697,7 +1670,12 @@ impl eframe::App for CedarApp {
         }
         self.finish_pending_close(ctx);
         if ctx.input(|input| input.viewport().close_requested()) && !self.allow_close {
-            if self.mutation_pending() {
+            if self.recovery.closing.is_some() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.recovery.visible = true;
+            } else if !self.guard_run_transition(run_ui::Transition::Close) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            } else if self.mutation_pending() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.error = Some(
                     "A save, Git, command, or language request is still running. Wait for it to finish before quitting"
@@ -1732,6 +1710,11 @@ impl eframe::App for CedarApp {
         self.dialogs(ctx);
         self.language_popups(ctx);
         self.language_tick(ctx);
+        self.run_tick(ctx);
+        self.recovery_window(ctx);
+        self.run_dialog(ctx);
+        self.recovery_tick(ctx);
+        self.finish_recovery_close_frame(ctx);
     }
 }
 

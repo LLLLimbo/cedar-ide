@@ -1,17 +1,15 @@
 [package]
-name = "cedar-workspace"
+name = "cedar-recovery"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cedar-language = { path = "../language" }
-cedar-tasks = { path = "../tasks" }
+serde.workspace = true
 serde_json.workspace = true
-url = "2.5"
-cedar-protocol = { path = "../protocol" }
 sha2.workspace = true
+thiserror.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]

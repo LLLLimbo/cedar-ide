@@ -14,7 +14,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-targets --all-features --locked
-      - run: cargo build --release --workspace --locked
+      - run: cargo build --release --workspace --all-features --locked
       - name: Process integration (Unix)
         if: runner.os != 'Windows'
         run: CEDAR_AGENT_BIN="$PWD/target/release/cedar-agent" cargo test -p cedar-client --test stdio_roundtrip --locked -- --ignored
@@ -24,6 +24,12 @@ jobs:
         run: |
           $env:CEDAR_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
           cargo test -p cedar-client --test stdio_roundtrip --locked -- --ignored
+      - name: Agent and tool protocol chains (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          python3 scripts/protocol_smoke.py target/release/cedar-agent
+          python3 scripts/language_bridge_smoke.py target/release/cedar-agent target/release/cedar-mock-lsp
+          python3 scripts/task_bridge_smoke.py target/release/cedar-agent
       - uses: actions/upload-artifact@v4
         with:
           name: cedar-${{ matrix.os }}

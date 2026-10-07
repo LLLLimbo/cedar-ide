@@ -10,6 +10,7 @@
 //! permissions, not merely workspace access.
 
 mod language;
+mod tasks;
 
 use cedar_protocol::{
     Entry, Operation, Payload, RemoteError, SearchMatch, MAX_FILE_BYTES, PROTOCOL_VERSION,
@@ -42,6 +43,7 @@ pub struct Workspace {
     root: PathBuf,
     allow_run: bool,
     language: Option<language::LanguageSession>,
+    tasks: Option<cedar_tasks::TaskManager>,
 }
 
 impl Workspace {
@@ -54,6 +56,7 @@ impl Workspace {
             root,
             allow_run: false,
             language: None,
+            tasks: None,
         })
     }
 
@@ -97,6 +100,9 @@ impl Workspace {
             | Operation::LanguageResolveCompletion { .. }
             | Operation::LanguageEvents
             | Operation::LanguageStop) => self.handle_language(op),
+            op @ (Operation::RunStart { .. }
+            | Operation::RunPoll { .. }
+            | Operation::RunCancel { .. }) => self.handle_task(op),
             Operation::Run {
                 program,
                 args,

@@ -1,127 +1,267 @@
-# Verification report · phase 2 · 2026-10-07
+# Verification report · phase 3 · 2026-10-07
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-Cedar 0.2.0 is a tested development checkpoint, not a complete IntelliJ IDEA
-replacement. Phase 1 is preserved by Git tag `phase1-0.1.0` and
-`TEST_REPORT_PHASE1.md`. The current frontend/agent protocol version is 2;
-version mismatches are rejected.
+Cedar **0.3.0**, frontend/agent protocol **3**, is a tested development checkpoint,
+not a complete IntelliJ IDEA replacement. This phase adds private frontend-local
+draft recovery and bounded asynchronous command tasks. Incompatible protocol
+versions are rejected. [Phase 2](TEST_REPORT_PHASE2.md) is preserved as an
+unchanged historical report; [phase 1](TEST_REPORT_PHASE1.md) and Git tag
+`phase1-0.1.0` retain earlier evidence.
 
-## Aggregate results
+## Current aggregate results
 
 Environment: Linux x86_64, kernel 6.18.44, glibc 2.41, rustc 1.99.0.
 
-- Formatting and strict all-target/all-feature Clippy: PASS
-- All-target/all-feature workspace suite: **152 ordinary tests passed**, zero failures; environment-dependent real-server/font checks remain explicitly ignored in this aggregate
-- Explicit client→separate-agent process test: **1 additional PASS**
-- Black-box agent filesystem/trust/conflict/EOF/malformed-frame smoke: PASS
-- Agent→LSP process-chain smoke including completion resolution and safe URI navigation: PASS
-- Complete release workspace build: PASS
-- Complete Windows MSVC target, all-target/all-feature compilation check: PASS. Windows execution and final linking were not performed
+| Check | Phase-3 result |
+|---|---|
+| `cargo fmt --all -- --check` | PASS |
+| Strict workspace Clippy, all targets and features, locked dependencies | PASS |
+| Workspace tests, all targets and features | **244 ordinary tests passed**, zero failures, 4 opt-in tests ignored |
+| Explicit client → separate-agent process test | **1 additional PASS**; this is one of the 4 tests ignored in the aggregate |
+| Python black-box filesystem/trust/conflict/EOF/malformed-frame smoke | PASS |
+| Python agent → LSP lifecycle/completion/resolve/navigation smoke | PASS |
+| Python asynchronous agent task/live-output/edit/cancel smoke | PASS |
+| Full Linux release workspace build | PASS |
+| Windows MSVC full-workspace/all-target/all-feature `cargo check` | PASS; **no Windows execution or final link** |
 
-Raw logs: `verification-phase2-log.txt`, `windows-phase2-check.txt`.
-The provided CI workflow has not run on an external service.
+Thus the Rust count is **244 + 1 = 245 passed** across the aggregate and explicit
+agent invocation, plus three Python smoke scripts. Do not add the 4 ignored
+cases to the passed count. Real JDT LS, installed-system-font and real debugpy
+checks remain opt-in and were not rerun as part of this phase's aggregate;
+their phase-2 runs are historical evidence below.
 
-## Native Linux desktop checks
+The complete `scripts/verify.sh` passed. Raw logs:
+[verification-phase3-log.txt](../PUBLICATION.md#verification-evidence),
+[release-phase3-build.txt](../PUBLICATION.md#verification-evidence),
+[windows-phase3-check.txt](../PUBLICATION.md#verification-evidence).
+The supplied CI workflow has not run on an external service.
 
-A real OS window was operated with actual keyboard and pointer input. This is
-separate from the automated/headless app-state tests.
+## Native Linux desktop checks in this phase
 
-### Phase-1 behavior revalidated by code regressions
+A real OS window was operated with keyboard and pointer input on the Linux
+cloud desktop. The forced-crash and asynchronous command checks below used the
+debug binary; a separate release-binary window/recovery pass is recorded after
+them. These checks are distinct from headless UI/state tests. Inputs were
+synthetic fixtures; no user's server or project was accessed.
 
-Local connection, directory navigation, multiple Java/Kotlin tabs, typing,
-Ctrl+S disk writes, dirty-tab/dirty-window confirmation, external-change save
-conflict and draft retention were exercised in the original native session.
-Those behaviors remain covered by the expanded regression suite.
+### Exact draft recovery after forced process termination
 
-### Actual JDT LS session through the desktop
+1. Edited a Chinese draft in the native editor, leaving it unsaved
+2. Waited for **Draft backed up locally**, the acknowledgement for that exact
+   draft version rather than merely a queued write
+3. Verified the owned frontend PID and terminated that process with SIGKILL
+4. Restarted Cedar and reviewed the available recovery copy; then explicitly
+   connected with execution trust **off** and restored it
+5. Verified the buffer matched the original unsaved draft exactly
+6. Before restoration, externally changed the synthetic workspace file; after
+   restoration, Ctrl+S produced a conflict instead of overwriting the changed
+   file. Both the external disk content and recovered draft remained intact
+7. Explicitly discarded and quit, verified the owned recovery record was
+   removed, and restored the original test fixture
 
-The `examples/java-language-demo` Eclipse fixture deliberately begins with a
-missing GregorianCalendar import and a String-to-int assignment error.
+Screenshot: [native-recovery-phase3.png](../PUBLICATION.md#verification-evidence).
 
-- Explicitly started official JDT LS 1.61.0 in the UI; the two real diagnostics appeared automatically without pressing Sync
-- Ctrl+Space inside `GregorianCalendar` returned actual JDT completion candidates
-- Enter resolved the selected candidate and applied its primary edit plus deferred import as one unsaved transaction
-- Disk bytes were checked and remained unchanged
-- One Ctrl+Z removed the entire operation; Ctrl+Shift+Z restored both edits
-- Editing `"oops"` to `42` removed the type error automatically; two expected unused-local warnings remained, not falsely reported as a completely clean file
-- F12 on `greeting` selected the local declaration, using agent-confined URI resolution
-- Ctrl+K displayed its real String type hover
-- Closing the dirty session required an explicit discard decision, then shut down the server; the original fixture remained unchanged
+This proves process-crash recovery of an acknowledged snapshot on the tested
+Linux filesystem. It does not prove power-loss durability, recovery of input
+after the last acknowledgement, or Windows/macOS behavior. Recovery is local
+plaintext backup, not project autosave or an encrypted secrets store.
 
-Screenshot: `native-java-phase2.png`. A separate automated real-JDT frontend
-transaction test checks the same protocol/atomic-edit/undo path; evidence:
-`crates/app/tests/evidence/jdtls-1.61.0-editor.json`.
+### Live command output with concurrent editing and cancellation
 
-### Chinese rendering
+- In an explicitly trusted workspace, launched executable `sh` with literal
+  argv `["run-demo.sh"]`; the synthetic script printed output and slept for
+  180 seconds
+- Observed live command output and the **Running** state while the command was
+  still active
+- Opened another note, typed and saved it while the command remained Running;
+  independently verified the saved disk contents
+- Attempted reconnect while running and observed the **Cancel-and-wait** guard
+- Dismissed that guard, then used **Commands → Cancel**; a fresh native screenshot
+  confirmed the terminal **Cancelled** state
+- Reconnected after terminal status; the saved buffer remained available and
+  the command did not restart automatically
 
-The original default fonts displayed Chinese source as missing-glyph squares.
-A bounded lazy system-font fallback was implemented. The real egui glyph test
-and native screenshot now show the full Chinese comment and `你好，世界` in
-`UnicodeDemo.java`, including when workspace execution trust is disabled.
+Screenshots: [native-tasks-running-phase3.png](../PUBLICATION.md#verification-evidence)
+and [native-tasks-cancelled-phase3.png](../PUBLICATION.md#verification-evidence).
+The guard's appearance was manually tested; its own Cancel-and-wait button was
+**not** the cancellation path exercised in this session. Ordinary task-manager,
+agent and UI-state tests separately cover cancellation behavior and transition
+protection. A cancellation request alone is never reported here as terminal
+cancellation.
 
-The Linux font is the existing Noto Sans Mono CJK SC collection face. It was not
-downloaded or bundled. File reads are off the UI thread, capped at 32 MiB, and
-validated. Screenshot: `native-cjk-phase2.png`. Windows/macOS lookup paths are
-implemented but remain unverified on those systems.
+### Separate release-binary window and recovery check
 
-## Real server/adapter validation beyond GUI checks
+The optimized `target/release/cedar` was also operated in a native window for
+112.597 seconds. It opened a CJK `note.txt` with trust off, no JVM and default
+recovery on. After typing unsaved text, the exact backup acknowledgement was
+observed; dirty-close required explicit discard and the owned recovery record's
+removal was verified. The fixture disk content was unchanged and the process
+exited with code 0. This validates release window/recovery interaction, not a
+repeat of the debug-binary forced-kill or running-command sessions.
 
-### Java
+Direct frontend-PID sampling collected 1,093 readings: sampled RSS maximum
+117,908 KiB (**115.14 MiB**), observed HWM 120,800 KiB (**117.97 MiB**), and maximum
+23 threads. Raw evidence:
+[gui-phase3-cjk-recovery-resource-sample.json](../PUBLICATION.md#verification-evidence).
+Separate JVM/adapter processes and GPU-service memory are excluded; child
+rusage is not a concurrent process-tree total. Different interactions prevent
+an overhead or improvement comparison against phase 2. There is no IDEA
+comparison, fixed memory budget, long-session leak test or production benchmark.
 
-Official JDT LS 1.61.0 milestone, OpenJDK21.0.12.1: semantic diagnostic, hover,
-completion, definition, correction and process cleanup pass. Lazy
-`completionItem/resolve` returned the required GregorianCalendar import. No
-completion callback/server command was executed. Exact provenance/checksum,
-limits and evidence are in `LANGUAGE_SERVICES.md` and the language crate's
-`tests/evidence` directory.
+## New automated recovery coverage
 
-### Kotlin
+The recovery crate contributes **32 passing tests** (one unit test and 31
+storage/integration tests). They exercise:
 
-Deprecated MIT-licensed fwcd server 1.3.13 (Kotlin compiler 2.1.0): actual type
-error, typed hover, relevant completion, local definition, correction and zero
-resulting diagnostics pass through the Rust language client. Shutdown required
-forced process reaping and logged an upstream disposal error. This is not a
-native Kotlin UI or current-Kotlin project compatibility pass.
+- Exact Unicode, CRLF/BOM and saved/base revision round trips; new files retain
+  an absent base revision; all SSH identity fields distinguish records
+- No workspace modification or connection while storing remote drafts;
+  startup metadata listing without eagerly reading every payload
+- Real separate-process lock contention and actual process termination after
+  durable acknowledgement, followed by lock reacquisition and exact recovery
+- Atomic replacement, monotonic mutation ordering, deletion tombstones,
+  failed-write retry ordering and bounded per-process sequence memory
+- Corrupt, truncated, oversized and unsupported records; metadata/payload
+  checksums, parse-valid revision/timestamp damage, invalid UTF-8 and strict
+  portable path validation
+- Quota/headroom/entry exhaustion without eviction or false acknowledgement;
+  retained unknown files and interrupted temporaries
+- Unix private modes, symlinks, hard links, special files, root/lock replacement,
+  and retry of parent-directory synchronization after an injected sync failure
 
-The official 263.6379.0 archive was checksum-verified but requires an explicit
-EULA and reports its bundled EULA.txt missing. No acceptance or semantic session
-was attempted. Details and raw evidence: `KOTLIN_VALIDATION.md`.
+Frontend regression tests additionally cover coalescing and exact-version
+acknowledgements, save-while-typing, explicit restore with original revisions,
+trust-off connection, older unreviewed copy protection, tab ownership,
+workspace/session changes, full-store behavior, discard/removal waits and new
+input cancelling a pending close. The UI renders recovery errors and review
+controls in headless layout tests as well as the native session above.
 
-### Debugging foundation
+See [RECOVERY.md](RECOVERY.md) and
+[frontend recovery/commands](../crates/app/RECOVERY_AND_COMMANDS.md) for bounds
+and durability limits. File flush and Unix directory barriers do not establish
+physical power-loss safety on every filesystem or storage device. Windows
+inherits ACLs and lacks the same containing-directory flush guarantee; cross-
+compilation is not runtime validation.
 
-The separate cedar-debugger crate has 14 deterministic DAP process tests and a
-real debugpy1.8.22 Python fixture: breakpoint, thread/stack/scope/answer=41 local,
-resume/answer=42 output and termination. Graceful disconnect, adapter crash and
-client drop were tested; no owned processes remained running in those test runs.
+## New automated asynchronous task coverage
 
-This is not an integrated GUI or remote debugger. Cleanup only generally
-guarantees the direct adapter, and debugpy opens an additional unauthenticated
-loopback client endpoint. No documented disable/authentication option was found.
-These are recorded integration blockers, not silently waived. Java debugging is
-not implemented. See `DEBUGGING.md`.
+The task crate contributes **24 passing tests** (9 unit and 15 real-process
+integration tests). Coverage includes:
 
-## Important fixes covered by regressions
+- Prompt acceptance/polling, partial output before exit, literal argv/cwd,
+  null stdin, success/nonzero exit and retained spawn failure without retry
+- Timeout versus explicit cancellation, repeated cancellation racing natural
+  exit, and old task cancellation never targeting a newer task
+- Independent stdout/stderr floods, raw-byte caps, split Unicode, bounded
+  error text, retained-history eviction and manager-scoped nonreused IDs
+- Concurrent start rejection, manager-drop cleanup, normal leader exit with
+  descendants holding pipes, nonblocking bounded final draining
+- `WNOWAIT` observation before group cleanup/reaping, lost wait ownership,
+  unwind cleanup, real read errors and injected interrupted/would-block reads
 
-- Workspace switch / save acknowledgement cannot replace newer drafts
-- SSH response generations and LSP session/document/edit versions reject stale results
-- Cancelled completion resolution cannot mutate the buffer later
-- Full edit plans validate UTF-16 boundaries, CRLF, overlap, size, source snapshot and optional imports before atomic application
-- Arbitrary server commands and workspace edits are not automatically executed
-- Diagnostic versions after reopening a file cannot reuse old state
-- Typing during asynchronous language shutdown triggers a fresh discard check
-- Undo history is capped at 16 full-text snapshots per tab and released on close
-- Search, tabs including pending opens, queues, protocol text, output and diagnostics have explicit bounds
-- Git clean filters cannot bypass workspace execution trust
-- Linux/macOS process-group signaling precedes reaping to avoid PID reuse
-- URI navigation rejects external schemes, outside-root files, symlinks and Unix backslash aliasing
+Workspace tests enforce the trust gate and lazy supervisor creation, and prove
+filesystem operations remain available until cancellation finishes. The real
+frontend-worker test opens/saves files while a real process streams output and
+then cancels it. UI-state tests reject stale connection/task results and cover
+unknown outcomes, transition guards and bounded full-snapshot presentation.
+
+The separate Python `task_bridge_smoke.py` drives the **actual stdio agent**:
+start, live output, concurrent file reads/writes, busy rejection, cancel and
+repeated cancel, success, spawn failure, unknown IDs and EOF. It is evidence for
+the shared local/remote protocol path, **not authenticated SSH/network testing**.
+
+The supervisor cleans ordinary owned process groups on tested Linux. Deliberate
+session/group escape, privilege changes and uninterruptible kernel operations
+are outside that guarantee. Windows local command execution remains disabled;
+macOS is compile-path implementation without runtime evidence. Details:
+[RUN_TASKS.md](RUN_TASKS.md).
+
+## Retained regressions
+
+The full suite continues to check file revision conflicts, traversal/symlink
+rejection, bounded search, dirty-close protection, save acknowledgements versus
+newer drafts, and stale workspace generations. LSP tests retain bounded queues,
+timeouts, UTF-16/CRLF edit validation, atomic completion/import undo, safe URI
+navigation, session/document/edit stamps and rejection of arbitrary server
+commands. Deterministic DAP transport tests also remain in the aggregate.
+
+## Historical phase-2 evidence, not rerun claims
+
+These results remain useful but must not be presented as new phase-3 real-server
+or performance measurements. Full detail and limits are preserved unchanged in
+[TEST_REPORT_PHASE2.md](TEST_REPORT_PHASE2.md) and its referenced raw evidence.
+
+### Java and Chinese rendering
+
+Phase 2 exercised official JDT LS 1.61.0 / OpenJDK 21.0.12.1 through the real
+native editor: automatic diagnostics; resolved GregorianCalendar completion
+with deferred import as one unsaved transaction; atomic undo/redo; correction
+of a type error; F12 definition and String hover; explicit dirty-session discard
+and server shutdown. Disk remained unchanged by unsaved completion edits. The
+corrected example retained two unused-local warnings, not zero diagnostics.
+
+Evidence: [native-java-phase2.png](../PUBLICATION.md#verification-evidence),
+`crates/app/tests/evidence/jdtls-1.61.0-editor.json` and
+[LANGUAGE_SERVICES.md](LANGUAGE_SERVICES.md).
+The system CJK font test and [native-cjk-phase2.png](../PUBLICATION.md#verification-evidence)
+validated existing Noto Sans Mono CJK SC glyphs without downloading or bundling
+fonts. Phase 3's native recovery check also displayed a Chinese draft; it was
+not a rerun of the explicit font-only test.
+
+### Kotlin and debugging foundation
+
+Phase 2's deprecated MIT-licensed fwcd Kotlin server 1.3.13 (compiler 2.1.0)
+passed actual type diagnostics, hover, completion, definition and correction
+through the Rust client. Shutdown required forced reaping and logged an upstream
+disposal error. This is not a current Kotlin or production-project compatibility
+pass. The official 263.6379.0 archive was checksum-verified but required an
+explicit EULA while reporting its referenced EULA.txt missing. No acceptance
+or semantic session was attempted. See [KOTLIN_VALIDATION.md](KOTLIN_VALIDATION.md).
+
+The separate debugger crate's historical debugpy 1.8.22 session verified a real
+Python breakpoint, thread/stack/scope, local answer=41, resume/output answer=42
+and termination, with graceful/crash/drop checks. It is not an integrated GUI
+or remote debugger. General descendant cleanup and debugpy's additional
+unauthenticated loopback endpoint remain integration blockers. Java debugging
+is absent. See [DEBUGGING.md](DEBUGGING.md).
+
+### Historical performance evidence remains separate
+
+The current release smoke sample is reported above. No controlled phase-3
+resource benchmark or IDEA comparison was performed. The phase-2
+Chinese-capable **frontend-only** release sample measured 118.52 MiB observed
+RSS/HWM on a tiny fixture. The earlier phase-1 78.44 MiB sample predates that
+feature set and is not its footprint. Neither includes JVM or GPU-service
+memory, and neither is a hard budget or leak test.
+
+Phase-2 JDT LS/JVM-only measurements and heap/GC experiments are reported
+separately in [PERFORMANCE.md](PERFORMANCE.md) and
+[jvm-profile-experiments/REPORT.md](jvm-profile-experiments/REPORT.md). They cannot
+be added to a different frontend session as a measured simultaneous total.
+Moving JVM work to a remote host relocates its cost; it does not eliminate it
+or establish a quantified advantage over IntelliJ IDEA.
 
 ## Still unverified or missing
 
-Real SSH authentication/network failure interoperability, Windows/macOS runtime,
-IME/accessibility, production Maven/Gradle/Kotlin projects, official Kotlin
-license/setup resolution, full debugger UI/remote adapter lifecycle, PTY,
-crash-recovery storage, multi-file refactoring, plugin compatibility, signing and
-deployment remain open. The phase-2 CJK-capable frontend-only sample measured 118.52 MiB HWM; Java/Kotlin JVM readings are reported separately. Memory samples and JVM experiments are separate,
-small-fixture evidence; they do not establish IDEA-relative savings. See
-`PERFORMANCE.md` and `FEATURE_MATRIX.md`.
+- Authenticated real SSH sessions, network-failure interoperability and remote
+  task outcome reconciliation across lost/restarted agent sessions
+- Windows final link/runtime and Job Object command support; macOS runtime;
+  platform recovery/privacy/locking behavior; physical power-loss durability
+- Complete IME/accessibility/high-DPI acceptance and sustained production use
+- Safe formatting previews, references and document outline; multi-file rename
+  with reliable snapshots/resource operations; general workspace edits, code
+  actions, snippets, full semantic refactoring and project indexing
+- Production Maven/Gradle/Kotlin imports, JDK management and official Kotlin
+  license/setup resolution
+- Integrated debugger UI/remote lifecycle and listener security, PTY, test tree,
+  full Git workflows, stable plugins, signed installation and deployment
+- Controlled equivalent-feature performance comparison and long-session
+  resource/leak testing
+
+The next proposed phase prioritizes validated single-document formatting
+previews, references and document outline; these features remain unimplemented.
+Multi-file rename is deferred until unversioned cross-file responses have a
+trustworthy snapshot design and potentially omitted file resource operations
+can be handled safely. See [FEATURE_MATRIX.md](FEATURE_MATRIX.md)
+for the wider gap and proposed acceptance order.

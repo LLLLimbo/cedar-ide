@@ -1,0 +1,2 @@
+Recovery demonstration
+Original disk text. 原始文本保留在磁盘。

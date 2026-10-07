@@ -12,10 +12,13 @@ path = "src/main.rs"
 [dependencies]
 cedar-protocol = { path = "../protocol" }
 cedar-client = { path = "../client" }
+cedar-recovery = { path = "../recovery" }
+cedar-tasks = { path = "../tasks" }
 eframe = { version = "=0.31.1", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 serde_json.workspace = true
 ab_glyph = "=0.2.32"
 ttf-parser = "=0.25.1"
 
 [dev-dependencies]
+cedar-workspace = { path = "../workspace" }
 tempfile.workspace = true

@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-agent"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cedar-protocol",
  "cedar-workspace",
@@ -289,11 +289,14 @@ dependencies = [
 
 [[package]]
 name = "cedar-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ab_glyph",
  "cedar-client",
  "cedar-protocol",
+ "cedar-recovery",
+ "cedar-tasks",
+ "cedar-workspace",
  "eframe",
  "serde_json",
  "tempfile",
@@ -302,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-client"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cedar-protocol",
  "cedar-workspace",
@@ -311,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-debugger"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cedar-language",
  "serde",
@@ -322,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-language"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -332,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -340,11 +343,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "cedar-recovery"
+version = "0.3.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cedar-tasks"
+version = "0.3.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "cedar-workspace"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cedar-language",
  "cedar-protocol",
+ "cedar-tasks",
  "libc",
  "serde_json",
  "sha2",
