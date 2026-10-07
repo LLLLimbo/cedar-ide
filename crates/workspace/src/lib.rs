@@ -9,6 +9,7 @@
 //! boundary for hostile filesystems. Enabled commands have the account's full
 //! permissions, not merely workspace access.
 
+mod capabilities;
 mod language;
 mod tasks;
 
@@ -74,6 +75,7 @@ impl Workspace {
             Operation::Hello => Ok(Payload::Hello {
                 protocol: PROTOCOL_VERSION,
                 root: self.root.to_string_lossy().into_owned(),
+                agent: Some(capabilities::agent_info()),
             }),
             Operation::List { path } => self.list(&path),
             Operation::Read { path } => self.read(&path),

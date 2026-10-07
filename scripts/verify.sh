@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo fmt --all -- --check
+python3 scripts/test_public_export.py
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-targets --all-features --locked
 cargo build --workspace --all-features --locked
@@ -9,6 +10,7 @@ target_dir="$(cargo metadata --no-deps --format-version 1 --offline --locked | p
 export CEDAR_AGENT_BIN="$target_dir/debug/cedar-agent"
 cargo test -p cedar-client --test stdio_roundtrip --locked -- --ignored
 python3 scripts/protocol_smoke.py "$CEDAR_AGENT_BIN"
+python3 scripts/capability_smoke.py "$CEDAR_AGENT_BIN"
 python3 scripts/language_bridge_smoke.py "$CEDAR_AGENT_BIN" "$target_dir/debug/cedar-mock-lsp"
 python3 scripts/task_bridge_smoke.py "$CEDAR_AGENT_BIN"
 cargo build --manifest-path examples/task-profiles-demo/Cargo.toml --offline --locked

@@ -1,7 +1,8 @@
 //! Transport-neutral workspace client. SSH uses the user's existing OpenSSH configuration.
 //! No passwords, host-key acceptance, key generation, port listeners, or telemetry.
 use cedar_protocol::{
-    read_frame, write_frame, Operation, Payload, Request, Response, PROTOCOL_VERSION,
+    read_frame, supports_capability, write_frame, Operation, Payload, Request, Response,
+    LANGUAGE_SESSION_CAPABILITIES, PROTOCOL_VERSION, RUN_TASK_CAPABILITIES,
 };
 use cedar_workspace::Workspace;
 use std::{
@@ -31,6 +32,9 @@ pub enum ConnectionSpec {
 
 pub struct Client {
     backend: Backend,
+    // A session uses exactly one validated implementation/capability/root snapshot.
+    // Capability claims describe compatibility, never execution authorization.
+    handshake: Payload,
 }
 enum Backend {
     Local(Box<Workspace>),
@@ -42,8 +46,13 @@ impl Client {
             ConnectionSpec::Local { root, allow_run } => {
                 let mut workspace = Workspace::open(root).map_err(|e| e.to_string())?;
                 workspace.set_allow_run(allow_run);
+                let handshake = workspace
+                    .handle(Operation::Hello)
+                    .map_err(|e| e.to_string())?;
+                validate_handshake(&handshake)?;
                 Ok(Self {
                     backend: Backend::Local(Box::new(workspace)),
+                    handshake,
                 })
             }
             ConnectionSpec::Ssh {
@@ -73,21 +82,60 @@ impl Client {
         Self::from_process(ProcessClient::spawn(cmd)?)
     }
     fn from_process(mut process: ProcessClient) -> Result<Self, String> {
-        match process.request(Operation::Hello)? {
-            Payload::Hello { protocol, .. } if protocol == PROTOCOL_VERSION => Ok(Self {
-                backend: Backend::Process(process),
-            }),
-            Payload::Hello { protocol, .. } => Err(format!(
-                "protocol_mismatch: agent uses {protocol}, client needs {PROTOCOL_VERSION}"
-            )),
-            _ => Err("protocol_error: expected hello".into()),
-        }
+        let handshake = process.request(Operation::Hello)?;
+        validate_handshake(&handshake)?;
+        Ok(Self {
+            backend: Backend::Process(process),
+            handshake,
+        })
+    }
+    /// The first validated Hello, retained unchanged for this connection.
+    /// Agent metadata is a compatibility claim, not verified identity or trust.
+    pub fn handshake(&self) -> &Payload {
+        &self.handshake
     }
     pub fn request(&mut self, op: Operation) -> Result<Payload, String> {
+        if !self.is_connected() {
+            return Err(
+                "disconnected: reconnect before retrying; unsaved buffers remain local".into(),
+            );
+        }
+        if matches!(op, Operation::Hello) {
+            return Ok(self.handshake.clone());
+        }
+        self.require_capabilities(&op)?;
         match &mut self.backend {
             Backend::Local(ws) => ws.handle(op).map_err(|e| e.to_string()),
             Backend::Process(p) => p.request(op),
         }
+    }
+    fn require_capabilities(&self, op: &Operation) -> Result<(), String> {
+        let Payload::Hello { agent, .. } = &self.handshake else {
+            unreachable!("client handshake is validated before construction");
+        };
+        let require = |capability: &str| {
+            if supports_capability(agent.as_ref(), capability) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "unsupported_operation: agent does not advertise {capability}; reconnect with a compatible agent"
+                ))
+            }
+        };
+        if let Some(capability) = op.capability_name() {
+            require(capability)?;
+        }
+        // Do not launch a process whose required lifecycle cannot be managed.
+        // In particular, never downgrade RunStart to the legacy blocking Run.
+        let lifecycle = match op {
+            Operation::RunStart { .. } => RUN_TASK_CAPABILITIES,
+            Operation::LanguageStart { .. } => LANGUAGE_SESSION_CAPABILITIES,
+            _ => &[],
+        };
+        for capability in lifecycle {
+            require(capability)?;
+        }
+        Ok(())
     }
     pub fn is_connected(&self) -> bool {
         match &self.backend {
@@ -95,6 +143,31 @@ impl Client {
             Backend::Process(p) => p.connected,
         }
     }
+}
+
+fn validate_handshake(handshake: &Payload) -> Result<(), String> {
+    let Payload::Hello {
+        protocol, agent, ..
+    } = handshake
+    else {
+        return Err("protocol_error: expected hello".into());
+    };
+    if *protocol != PROTOCOL_VERSION {
+        return Err(format!(
+            "protocol_mismatch: agent uses {protocol}, client needs {PROTOCOL_VERSION}"
+        ));
+    }
+    if let Some(agent) = agent {
+        agent.validate().map_err(|e| e.to_string())?;
+    }
+    for capability in ["list", "read"] {
+        if !supports_capability(agent.as_ref(), capability) {
+            return Err(format!(
+                "unsupported_workspace: agent must support {capability} to open a workspace"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Return explicit noninteractive SSH arguments. Shell quote only the remote POSIX command.
@@ -487,6 +560,56 @@ mod tests {
     fn rejects_control_path_and_zero_port() {
         assert!(ssh_arguments("host", 0, "/work", "cedar-agent", false).is_err());
         assert!(ssh_arguments("host", 22, "/work\n", "cedar-agent", false).is_err());
+    }
+    #[test]
+    fn local_connection_retains_validated_metadata_without_granting_execution_trust() {
+        let root = tempfile::tempdir().unwrap();
+        let mut client = Client::connect(ConnectionSpec::Local {
+            root: root.path().into(),
+            allow_run: false,
+        })
+        .unwrap();
+        let Payload::Hello {
+            protocol,
+            root: reported_root,
+            agent: Some(agent),
+        } = client.handshake()
+        else {
+            panic!("local workspace must advertise metadata");
+        };
+        assert_eq!(*protocol, PROTOCOL_VERSION);
+        assert_eq!(
+            *reported_root,
+            root.path().canonicalize().unwrap().to_string_lossy()
+        );
+        agent.validate().unwrap();
+        assert_eq!(agent.os, std::env::consts::OS);
+        assert_eq!(agent.arch, std::env::consts::ARCH);
+        assert!(agent.supports("list"));
+        assert!(agent.supports("read"));
+        let supports_run = agent.supports("run");
+        let snapshot = serde_json::to_value(client.handshake()).unwrap();
+        assert_eq!(
+            serde_json::to_value(client.request(Operation::Hello).unwrap()).unwrap(),
+            snapshot
+        );
+        let error = client
+            .request(Operation::Run {
+                program: "never-executed".into(),
+                args: vec![],
+                timeout_secs: 1,
+            })
+            .unwrap_err();
+        assert!(
+            error.starts_with(if supports_run {
+                "run_disabled:"
+            } else {
+                "unsupported_operation:"
+            }),
+            "{error}"
+        );
+        assert!(client.is_connected());
+        assert_eq!(serde_json::to_value(client.handshake()).unwrap(), snapshot);
     }
     #[test]
     fn local_errors_dont_disconnect() {

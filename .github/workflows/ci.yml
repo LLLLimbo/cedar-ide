@@ -13,6 +13,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
+      - run: python scripts/test_public_export.py
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-targets --all-features --locked
       - run: cargo build --release --workspace --all-features --locked
@@ -29,6 +30,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           python3 scripts/protocol_smoke.py target/release/cedar-agent
+          python3 scripts/capability_smoke.py target/release/cedar-agent
           python3 scripts/language_bridge_smoke.py target/release/cedar-agent target/release/cedar-mock-lsp
           python3 scripts/task_bridge_smoke.py target/release/cedar-agent
           cargo build --manifest-path examples/task-profiles-demo/Cargo.toml --offline --locked

@@ -65,18 +65,14 @@ impl Worker {
             if cancelled.load(Ordering::Acquire) {
                 return;
             }
-            let hello = client.request(Operation::Hello);
-            let failed = hello.is_err();
+            let hello = client.handshake().clone();
             let _ = result_tx.send(Event {
                 generation,
                 id: 0,
-                connected: !failed,
-                result: hello,
+                connected: true,
+                result: Ok(hello),
             });
             ctx.request_repaint();
-            if failed {
-                return;
-            }
             while let Ok(command) = rx.recv() {
                 if cancelled.load(Ordering::Acquire) {
                     break;

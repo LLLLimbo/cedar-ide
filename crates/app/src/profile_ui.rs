@@ -380,6 +380,11 @@ impl CedarApp {
         if !self.ready() || self.profiles.mode == Mode::Manual {
             return;
         }
+        // Check before encoding or mutating either editor state or form baselines.
+        if !self.backend_supports("write") {
+            self.profiles.message = Some(self.unsupported_message("write"));
+            return;
+        }
         if let Some(problem) = self.profile_source_problem(false) {
             self.profiles.message = Some(problem.into());
             return;
@@ -437,6 +442,9 @@ impl CedarApp {
         }
     }
     pub(super) fn profile_fields(&mut self, ui: &mut egui::Ui) {
+        if self.ready() && !self.backend_supports("write") {
+            ui.colored_label(AMBER, self.unsupported_message("write"));
+        }
         ui.horizontal_wrapped(|ui| {
             let selected = match self.profiles.mode {
                 Mode::Manual => "Manual command".to_owned(),
@@ -492,7 +500,7 @@ impl CedarApp {
             }
             if ui
                 .add_enabled(
-                    self.ready()
+                    self.backend_supports("write")
                         && self.profiles.mode != Mode::Manual
                         && self.profile_source_problem(false).is_none(),
                     egui::Button::new("Save profile"),
@@ -689,6 +697,7 @@ mod tests {
         app.root = "/project".into();
         app.active_form = Some(form);
         app.state = ConnectionState::Ready;
+        app.agent_info = Some(crate::agent_support::full_test_agent());
         app.generation = 7;
         app.profiles.connected(app.recovery_workspace().unwrap());
         let (worker, rx) = worker::Worker::recording();
@@ -720,6 +729,68 @@ mod tests {
         app.select_profile(Some(0));
         assert!(rx.try_recv().is_err());
         (app, rx)
+    }
+    #[test]
+    fn read_only_profile_save_and_queued_save_have_zero_editor_or_form_mutation() {
+        for queued in [false, true] {
+            let (mut app, rx) = loaded();
+            app.profiles.draft.args.push("unsaved form change".into());
+            app.profiles.changed();
+            let text = app.documents[0].text.clone();
+            let saved_text = app.documents[0].saved_text.clone();
+            let revision = app.documents[0].revision.clone();
+            let edit_version = app.documents[0].edit_version;
+            let file = encode_task_file(app.profiles.file.as_ref().unwrap()).unwrap();
+            let baseline = app.profiles.baseline.clone();
+            let mode = app.profiles.mode;
+            let epoch = app.profiles.epoch;
+            let source = format!("{:?}", app.profiles.source);
+            let next_request = app.next_request;
+            if queued {
+                app.queue_profile_action(Action::Save);
+            }
+            app.agent_info
+                .as_mut()
+                .unwrap()
+                .capabilities
+                .retain(|name| name != "write");
+            if queued {
+                app.finish_profile_actions();
+            } else {
+                app.save_profile();
+            }
+            assert_eq!(app.documents[0].text, text);
+            assert_eq!(app.documents[0].saved_text, saved_text);
+            assert_eq!(app.documents[0].revision, revision);
+            assert_eq!(app.documents[0].edit_version, edit_version);
+            assert!(!app.documents[0].saving);
+            assert_eq!(
+                encode_task_file(app.profiles.file.as_ref().unwrap()).unwrap(),
+                file
+            );
+            assert_eq!(app.profiles.baseline, baseline);
+            assert_eq!(app.profiles.mode, mode);
+            assert_eq!(app.profiles.epoch, epoch);
+            assert_eq!(format!("{:?}", app.profiles.source), source);
+            assert!(app.profiles.dirty());
+            assert_eq!(app.next_request, next_request);
+            assert!(rx.try_recv().is_err());
+            assert!(app.profiles.message.as_ref().unwrap().contains("write"));
+        }
+    }
+    #[test]
+    fn queued_run_checks_capabilities_and_trust_after_form_frame() {
+        let (mut app, rx) = loaded();
+        app.queue_profile_action(Action::Run);
+        app.agent_info
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .retain(|name| name != "run_cancel");
+        app.finish_profile_actions();
+        assert!(rx.try_recv().is_err());
+        assert!(app.run_state.snapshot.is_none());
+        assert!(app.run_state.output.is_empty());
     }
     #[test]
     fn load_select_new_and_save_never_run_and_save_uses_document_id() {
@@ -1199,6 +1270,7 @@ mod tests {
             connected: true,
             result: Ok(Payload::Hello {
                 protocol: cedar_protocol::PROTOCOL_VERSION,
+                agent: None,
                 root: "/different".into(),
             }),
         });
@@ -1321,16 +1393,30 @@ mod tests {
         assert!(app.run_state.output.contains("\" cargo \""));
     }
     #[test]
-    fn windows_local_execution_gate_does_not_disable_linux_ssh() {
-        assert!(!crate::run_ui::command_platform_supported(true, false));
-        assert!(crate::run_ui::command_platform_supported(true, true));
-        assert!(crate::run_ui::command_platform_supported(false, false));
-        #[cfg(windows)]
-        {
-            let (mut app, rx) = loaded();
+    fn command_support_uses_remote_capabilities_independent_of_frontend_and_transport() {
+        for ssh in [false, true] {
+            let (mut app, rx) = connected();
+            app.active_form.as_mut().unwrap().ssh = ssh;
+            app.profiles.draft.program = "cargo".into();
+            app.agent_info.as_mut().unwrap().os = "windows".into();
+            app.agent_info
+                .as_mut()
+                .unwrap()
+                .capabilities
+                .retain(|name| name != "run_cancel");
             app.run();
             assert!(rx.try_recv().is_err());
-            assert!(app.error.unwrap().contains("Windows needs"));
+            app.agent_info.as_mut().unwrap().os = "linux".into();
+            app.agent_info
+                .as_mut()
+                .unwrap()
+                .capabilities
+                .push("run_cancel".into());
+            app.run();
+            assert!(matches!(
+                rx.try_recv().unwrap().op,
+                Operation::RunStart { .. }
+            ));
         }
     }
     #[test]

@@ -188,6 +188,26 @@ serve errors unwind the workspace/task owner; a separate agent-SIGKILL test
 shows its task can survive until the fixture's own lifetime ends. Real SSH
 interruption must be observed separately. See [REMOTE_VALIDATION.md](REMOTE_VALIDATION.md).
 
+## Immutable handshake and backend capabilities
+
+Protocol 4 Hello now optionally includes schema-1 AgentInfo. Workspace reports
+compiled implementation support independently of execution trust and installed
+tools. Client validates one handshake, caches its entire root/metadata payload,
+and rejects missing capabilities locally before transmission. Legacy peers keep
+four file operations; advanced tools require an upgraded metadata-aware agent.
+No server session token, task adoption or automatic retry is introduced.
+
+The frontend installs this snapshot only after the active generation, typed
+workspace identity and canonical-root/recovery checks pass. Both successful and
+failed duplicate Hello events are ignored outside an active connection attempt.
+Backend capabilities replace frontend-OS/SSH heuristics; readiness, trust and
+operation lifecycle groups remain separate conditions. Missing Write blocks
+profile Save before raw-document mutation. Optional language features still
+intersect agent support with language-server capabilities.
+
+See [REMOTE_CAPABILITIES.md](REMOTE_CAPABILITIES.md) for the wire bounds,
+intentional legacy policy change, platform boundaries and regression matrix.
+
 ## Failure semantics
 
 - Transport errors close the session; a remote application error such as `conflict` keeps it usable

@@ -261,6 +261,7 @@ fn recovery_connect_handshake_must_match_before_clearing_current_tabs() {
     app.recovery.pending_restore = Some(sample());
     app.recovery.restoring_generation = Some(3);
     app.generation = 3;
+    app.state = ConnectionState::Connecting;
     app.connecting_form = Some(ConnectForm {
         local_root: "/synthetic/project".into(),
         ..Default::default()
@@ -271,6 +272,7 @@ fn recovery_connect_handshake_must_match_before_clearing_current_tabs() {
         connected: true,
         result: Ok(Payload::Hello {
             protocol: cedar_protocol::PROTOCOL_VERSION,
+            agent: None,
             root: "/wrong".into(),
         }),
     });
@@ -408,12 +410,14 @@ fn workspace_switch_does_not_move_pending_drafts_or_inherit_protection() {
     persist(&mut app);
     assert!(app.recovery.protected(&workspace(), &app.documents[0]));
     app.connecting_form = app.active_form.clone();
+    app.state = ConnectionState::Connecting;
     app.apply_event(Event {
         generation: 0,
         id: 0,
         connected: true,
         result: Ok(Payload::Hello {
             protocol: cedar_protocol::PROTOCOL_VERSION,
+            agent: None,
             root: "/different/root".into(),
         }),
     });

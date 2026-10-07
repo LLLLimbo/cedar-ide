@@ -4,6 +4,98 @@ use std::io::{self, BufRead, Write};
 pub const PROTOCOL_VERSION: u32 = 4;
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_FILE_BYTES: usize = 1024 * 1024;
+pub const AGENT_INFO_SCHEMA: u32 = 1;
+pub const MAX_AGENT_VERSION_BYTES: usize = 64;
+pub const MAX_AGENT_PLATFORM_BYTES: usize = 32;
+pub const MAX_AGENT_CAPABILITIES: usize = 32;
+pub const MAX_CAPABILITY_BYTES: usize = 64;
+/// Minimum complete lifecycle required before starting a managed command task.
+pub const RUN_TASK_CAPABILITIES: &[&str] = &["run_start", "run_poll", "run_cancel"];
+/// Minimum session Cedar must be able to synchronize and shut down.
+/// Queries, navigation, formatting and completion resolution remain optional.
+pub const LANGUAGE_SESSION_CAPABILITIES: &[&str] = &[
+    "language_start",
+    "language_open",
+    "language_change",
+    "language_close",
+    "language_events",
+    "language_stop",
+];
+
+/// Unverified implementation information, never execution permission or identity.
+/// Validate received information before retaining it as a connection snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentInfo {
+    pub schema: u32,
+    pub version: String,
+    pub os: String,
+    pub arch: String,
+    pub capabilities: Vec<String>,
+}
+
+impl AgentInfo {
+    pub fn validate(&self) -> Result<(), RemoteError> {
+        let invalid = |message| RemoteError::new("invalid_agent_info", message);
+        if self.schema != AGENT_INFO_SCHEMA {
+            return Err(invalid("Unsupported agent metadata schema"));
+        }
+        if self.version.is_empty()
+            || self.version.len() > MAX_AGENT_VERSION_BYTES
+            || !self
+                .version
+                .bytes()
+                .all(|b| b.is_ascii() && !b.is_ascii_control())
+        {
+            return Err(invalid("Agent version must be 1..64 printable ASCII bytes"));
+        }
+        for value in [&self.os, &self.arch] {
+            if !valid_identifier(value, MAX_AGENT_PLATFORM_BYTES) {
+                return Err(invalid(
+                    "Agent platform identifiers must be 1..32 lowercase ASCII identifier bytes",
+                ));
+            }
+        }
+        if self.capabilities.len() > MAX_AGENT_CAPABILITIES {
+            return Err(invalid("Agent metadata exceeds 32 capabilities"));
+        }
+        for (index, capability) in self.capabilities.iter().enumerate() {
+            if !valid_identifier(capability, MAX_CAPABILITY_BYTES) {
+                return Err(invalid(
+                    "Agent capabilities must be 1..64 lowercase ASCII identifier bytes",
+                ));
+            }
+            if self.capabilities[..index].contains(capability) {
+                return Err(invalid("Agent capabilities must be unique"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns only a support claim. Callers must separately enforce trust,
+    /// operation-family prerequisites, and current connection/session state.
+    pub fn supports(&self, name: &str) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability == name)
+    }
+}
+
+fn valid_identifier(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_bytes
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+}
+
+/// Legacy protocol-4 peers retain basic editing; execution support requires
+/// explicit metadata. An empty declared list never falls back to legacy support.
+pub fn supports_capability(agent: Option<&AgentInfo>, name: &str) -> bool {
+    match agent {
+        Some(agent) => agent.supports(name),
+        None => matches!(name, "list" | "read" | "write" | "search"),
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub id: u64,
@@ -95,6 +187,37 @@ pub enum Operation {
         timeout_secs: u64,
     },
 }
+
+impl Operation {
+    /// Names are the existing protocol-4 operation discriminants. Hello is
+    /// always available so support discovery cannot depend on its own result.
+    pub fn capability_name(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Hello => return None,
+            Self::List { .. } => "list",
+            Self::Read { .. } => "read",
+            Self::Write { .. } => "write",
+            Self::Search { .. } => "search",
+            Self::GitStatus => "git_status",
+            Self::LanguageStart { .. } => "language_start",
+            Self::LanguageOpen { .. } => "language_open",
+            Self::LanguageChange { .. } => "language_change",
+            Self::LanguageClose { .. } => "language_close",
+            Self::LanguageQuery { .. } => "language_query",
+            Self::LanguageFormat { .. } => "language_format",
+            Self::LanguageReferences { .. } => "language_references",
+            Self::LanguageDocumentSymbols { .. } => "language_document_symbols",
+            Self::LanguageResolveUri { .. } => "language_resolve_uri",
+            Self::LanguageResolveCompletion { .. } => "language_resolve_completion",
+            Self::LanguageEvents => "language_events",
+            Self::LanguageStop => "language_stop",
+            Self::RunStart { .. } => "run_start",
+            Self::RunPoll { .. } => "run_poll",
+            Self::RunCancel { .. } => "run_cancel",
+            Self::Run { .. } => "run",
+        })
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LanguageQueryKind {
@@ -113,6 +236,8 @@ pub enum Payload {
     Hello {
         protocol: u32,
         root: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<AgentInfo>,
     },
     Entries {
         entries: Vec<Entry>,

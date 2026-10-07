@@ -2,12 +2,13 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第五阶段工程（**0.5.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第六阶段工程（**0.6.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
 - 原生 egui/Glow 桌面界面，无 WebView、Electron 或前端 JVM
 - 本地目录与 SSH 工作区，共用同一文件、搜索、工具和语言服务后端
+- **远程能力发现**：缓存一次有效握手，报告后端版本/平台/操作支持；按后端实际能力启用功能，声明不授予执行信任
 - 目录浏览、多标签编辑、新建文件、行号、简单 Java/Kotlin/Rust 高亮
 - Ctrl/Cmd+P 打开路径、Ctrl/Cmd+F 文件内查找、Ctrl/Cmd+S 保存、Ctrl/Cmd+W 关闭标签
 - SHA-256 版本检查；文件在外部改变时拒绝覆盖；原子替换和权限保留
@@ -36,7 +37,7 @@ cargo run -p cedar-app --bin cedar -- examples/demo
 
 Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的第四阶段提交 [`b1ad6f53e325bf19b1fec469394f6eb6ecf2c3ca`](https://github.com/LLLLimbo/cedar-ide/commit/b1ad6f53e325bf19b1fec469394f6eb6ecf2c3ca) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37630631194)。第五阶段最终本地聚合、Linux release 构建和 Windows MSVC 全目标编译检查已通过；本报告封存时尚无本阶段公开提交的 CI 结果，发布后的状态以对应提交的 Actions 记录为准。Windows 编译成功或上一阶段 CI 成功都不代表本阶段 Windows 运行通过。当前结果与待验收项见[第五阶段报告](docs/TEST_REPORT_PHASE5.md)；[第四阶段原始报告](docs/TEST_REPORT_PHASE4.md)保留其当时记录，不回写后来的 CI 结果。
+公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的第五阶段提交 [`119d5c30ddba51cbfa9f04d5ae6e281103a3803f`](https://github.com/LLLLimbo/cedar-ide/commit/119d5c30ddba51cbfa9f04d5ae6e281103a3803f) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37643452204)，包括 Windows 普通保存与传输故障回归。第六阶段最终本地聚合、Linux release 和 Windows 目标严格 Clippy 已通过；同提交公开 CI 待发布后核验，不能用上一阶段结果代替。环境更换后已从完全匹配的公开树恢复工程并重跑第五阶段全部检查，见[恢复记录](docs/ENVIRONMENT_RECOVERY.md)。
 
 ## 格式化、引用与大纲
 
@@ -48,7 +49,7 @@ Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完�
 
 输入、标签切换、关闭重开、重连、语言服务重启或更新请求都会使旧提案失效。单纯移动光标不使格式化过期，Apply 会重新映射最新光标。畸形、重叠、越界、无效 UTF-16/CRLF 或超限编辑整体拒绝；空或等效结果不制造撤销记录。不执行服务器命令、WorkspaceEdit 或文件重命名。
 
-真实 JDT 已通过双未保存文档引用、类/方法大纲、中文格式化、旧版本拒绝、幂等性和磁盘源码不变检查。原生候选窗口已操作预览、Apply/Cancel、立即撤销/重做和导航；最终 release 窗口又验证 Escape 取消、移动光标/切换文件后的单步撤销与重做，两份项目源码磁盘逐字不变。上述原生语言界面结果是第四阶段历史证据；本阶段共享测试脚本改动后又通过了真实 JDT 经 stdio agent 的 10 项检查，见[JDT 复验记录](PUBLICATION.md#verification-evidence)，不等于重新验收整个原生语言界面。详见 [交互与边界](crates/app/PHASE4_LANGUAGE.md)、[文本编辑校验](docs/TEXT_EDITS.md) 和 [重构安全路线](docs/REFACTORING_ROADMAP.md)。
+真实 JDT 已通过双未保存文档引用、类/方法大纲、中文格式化、旧版本拒绝、幂等性和磁盘源码不变检查。原生候选窗口已操作预览、Apply/Cancel、立即撤销/重做和导航；最终 release 窗口又验证 Escape 取消、移动光标/切换文件后的单步撤销与重做，两份项目源码磁盘逐字不变。上述原生语言界面结果是第四阶段历史证据；第五阶段共享测试脚本改动后又通过了真实 JDT 经 stdio agent 的 10 项检查，见[JDT 复验记录](PUBLICATION.md#verification-evidence)，不等于重新验收整个原生语言界面。详见 [交互与边界](crates/app/PHASE4_LANGUAGE.md)、[文本编辑校验](docs/TEXT_EDITS.md) 和 [重构安全路线](docs/REFACTORING_ROADMAP.md)。
 
 ## 草稿恢复
 
@@ -80,7 +81,7 @@ Linux 已有真实子进程、独立 agent 和原生界面验证；macOS 未运�
 4. 启动 Cedar，选择 **Remote over SSH**，填写 `user@host` 或 SSH 配置别名、端口、远程绝对目录、agent 可执行路径
 5. 如需 Git、构建命令或语言服务，只对可信工作区启用工具执行
 
-前端与 agent 握手要求**协议版本恰好为 4**，不比较应用版本号；0.5.0 沿用 0.4.0 的协议，命令配置复用文件读写与 `RunStart` / `RunPoll` / `RunCancel`。协议 3 或 5 都被拒绝，没有跨版本能力协商；实际部署建议前后端使用同一已验证检查点。
+前端与 agent 握手要求**协议版本恰好为 4**；新增有界 `agent` 元数据报告产品版本、平台与支持的操作，不用产品版本推断协议兼容。0.6.0 客户端对旧的无元数据协议 4 agent 保留目录、读取、保存和搜索；Git、命令和语言服务须升级 agent 后重新连接。这是明确的兼容策略收紧，不会回退到同步命令。显式空能力列表不等于旧 agent；畸形元数据直接拒绝。协议 3 或 5 仍被拒绝，建议前后端部署同一已验证检查点。详见[能力边界](docs/REMOTE_CAPABILITIES.md)。
 
 连接通过 `ssh -T` 的标准输入/输出传输有界 JSON，agent 不开启 TCP 监听。即使 localhost 也要求严格主机密钥检查；禁用 agent/X11/端口/隧道转发、本地命令、复用连接与自动记录主机密钥。覆盖可能关闭 stdin、后台化或禁止命令会话的 SSH 配置。仅为旧客户端忽略三个新增选项别名，安全开关不会被忽略；参数设计最低支持 OpenSSH 7.6，但旧版本运行待验收。用户的 ProxyJump/ProxyCommand 路由仍受支持，不把 SSH 配置当作沙箱；不自动信任主机、不生成密钥、不保存密码。
 
@@ -93,7 +94,7 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端连接 Linux 远程工作区
 - Windows 本地命令、Git 和语言服务器启动暂时禁用；普通本地编辑不受影响，真实 Windows/macOS 编辑与恢复仍待验收
 - 路径访问拒绝绝对路径、越界和符号链接；无法抵抗所有恶意并发文件系统修改
 - 保存会做晚期版本复核，但无法对不合作的外部写入者提供文件系统级原子 compare-and-swap
-- 普通文件的 Windows 替换路径已改用 Rust 1.99 的 `std::fs::rename`，兼容 delete-sharing 读句柄；不绕过只读或共享限制、不先删除目标、不自动重试。此更改仍待真实 Windows CI，见[保存边界](docs/WORKSPACE_SAVE.md)
+- 普通文件的 Windows 替换路径已改用 Rust 1.99 的 `std::fs::rename`，兼容 delete-sharing 读句柄；不绕过只读或共享限制、不先删除目标、不自动重试。第五阶段同提交真实 Windows CI 已通过该回归，Windows GUI 仍未验收，见[保存边界](docs/WORKSPACE_SAVE.md)
 - 恢复存储错误、锁冲突、配额满或损坏会显示问题，不阻止继续编辑，不静默删除旧副本腾空间，也不虚报备份成功
 - 外部语言服务器可能需要 JVM，并会自行索引/执行构建探测；Rust 前端不意味着整个 Java/Kotlin 工具链不使用 JVM
 - 第二阶段检查的官方 Kotlin 包要求新的 EULA，且缺少其引用的 EULA 文件，未接受任何协议；已验证的社区替代版本已弃用，不能据此声称支持当前 Kotlin 全特性
@@ -110,11 +111,13 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端连接 Linux 远程工作区
 bash scripts/verify.sh
 ```
 
-第五阶段最终聚合通过 fmt、严格 Clippy、**413 个普通 Rust 测试 + 6 个显式独立进程测试（共 419）**，以及文件、LSP、异步任务、命令配置四条 Python 黑盒链。聚合有 9 个 opt-in 忽略，其中 6 个进程测试随后显式运行；前端 227 项包含在总数中。最终 Linux release 构建与 Windows MSVC 全目标编译检查通过，但精确提交发布和真实 Windows CI 尚未完成，详见[第五阶段报告](docs/TEST_REPORT_PHASE5.md)。
+第五阶段最终聚合通过 fmt、严格 Clippy、**413 个普通 Rust 测试 + 6 个显式独立进程测试（共 419）**，以及文件、LSP、异步任务、命令配置四条 Python 黑盒链。聚合有 9 个 opt-in 忽略，其中 6 个进程测试随后显式运行；前端 227 项包含在总数中。最终 Linux release 构建与 Windows MSVC 全目标编译检查通过，且随后通过了同提交真实 Ubuntu/Windows CI，详见[第五阶段报告](docs/TEST_REPORT_PHASE5.md)。
 
-Linux 原生候选窗口已在信任关闭下操作配置加载、字面量参数、保存和外部修改冲突；随后 release 候选复验通过首次 Load 激活编辑器、美化 JSON 和精确参数落盘，未产生 sentinel。该窗口早于最后的连接身份修复，不称作最终二进制完整验收。冒号拼接工作区标识的碰撞已改为分字段枚举，并有 7 项无网络回归防止错误端点接管脏稿。原生 Run/Cancel/重连复核仍需要单独批准启用测试工作区信任；真实认证 SSH 与 Windows/macOS GUI 也尚未验收。
+第五阶段最终 Linux release 在连接身份修复后，已重新验证信任关闭下的首次配置 Load、编辑器激活、美化 JSON 保存、精确参数和外部冲突保护；记录于阶段报告。冒号拼接工作区标识的碰撞已改为分字段枚举，并有 7 项无网络回归防止错误端点接管脏稿。环境更换后保留了对应报告，公开树不含这些原始截图。原生 Run/Cancel/重连复核仍需要单独批准启用测试工作区信任；真实认证 SSH 与 Windows/macOS GUI 也尚未验收。
 
-历史验收与资源读数按阶段保存：[第四阶段](docs/TEST_REPORT_PHASE4.md)、[0.3.1 恢复修复](docs/TEST_REPORT_HOTFIX_0_3_1.md)、[第三阶段](docs/TEST_REPORT_PHASE3.md)、[第二阶段](docs/TEST_REPORT_PHASE2.md)、[第一阶段](docs/TEST_REPORT_PHASE1.md)。第四阶段公开精确提交的 Ubuntu/Windows CI 已通过，但不能为第五阶段的 Windows 文件替换和传输更改提供运行验收。
+历史验收与资源读数按阶段保存：[第四阶段](docs/TEST_REPORT_PHASE4.md)、[0.3.1 恢复修复](docs/TEST_REPORT_HOTFIX_0_3_1.md)、[第三阶段](docs/TEST_REPORT_PHASE3.md)、[第二阶段](docs/TEST_REPORT_PHASE2.md)、[第一阶段](docs/TEST_REPORT_PHASE1.md)。第五阶段公开精确提交的 Ubuntu/Windows CI 也已通过；所有历史报告保留封存时的描述，后续结果另列，不回写历史。
+
+第六阶段最终聚合通过 **459 项 Rust 测试（453 + 6 显式）**、五条 Python agent 链和两项公开导出回归，Linux release 与 Windows MSVC 全目标严格 Clippy 通过。最终原生 release 已验证能力提示与执行信任分离、Run/LSP 启动保持禁用、未信任文件读写保存可用。准确范围和待验收项见[第六阶段报告](docs/TEST_REPORT_PHASE6.md)。
 
 ## 工程结构
 
@@ -130,7 +133,7 @@ Linux 原生候选窗口已在信任关闭下操作配置加载、字面量参�
 | cedar-language | LSP 客户端/生命周期/有界 JSON-RPC；DAP 基础封包 |
 | cedar-debugger | 有界异步 DAP 进程传输，尚未接入 UI 或远程 agent |
 
-更多：[功能矩阵](docs/FEATURE_MATRIX.md)、[架构](docs/ARCHITECTURE.md)、[语言服务](docs/LANGUAGE_SERVICES.md)、[Kotlin 验证](docs/KOTLIN_VALIDATION.md)、[调试](docs/DEBUGGING.md)、[前端恢复与命令交互](crates/app/RECOVERY_AND_COMMANDS.md)。第五阶段增加显式命令配置、普通文件 Windows 替换修复与远程故障边界验证。格式化、引用与大纲的安全边界见 [重构路线](docs/REFACTORING_ROADMAP.md)。多文件重命名仍暂缓，先解决无版本跨文件结果、跨文档撤销与文件资源操作遗漏的安全问题。完整重构、项目模型和大量 IDEA 功能仍待实现。
+更多：[功能矩阵](docs/FEATURE_MATRIX.md)、[架构](docs/ARCHITECTURE.md)、[语言服务](docs/LANGUAGE_SERVICES.md)、[Kotlin 验证](docs/KOTLIN_VALIDATION.md)、[调试](docs/DEBUGGING.md)、[前端恢复与命令交互](crates/app/RECOVERY_AND_COMMANDS.md)。第五阶段增加显式命令配置、普通文件 Windows 替换修复与远程故障边界验证；第六阶段增加协议 4 内的后端能力发现与单次握手快照。格式化、引用与大纲的安全边界见 [重构路线](docs/REFACTORING_ROADMAP.md)。多文件重命名仍暂缓，先解决无版本跨文件结果、跨文档撤销与文件资源操作遗漏的安全问题。完整重构、项目模型和大量 IDEA 功能仍待实现。
 
 ## 打包已验证检查点
 

@@ -1,4 +1,5 @@
 //! Cedar IDE — a native Rust frontend for a local or SSH workspace agent.
+mod agent_support;
 pub mod completion;
 mod editor_state;
 mod language_navigation_results;
@@ -20,7 +21,7 @@ pub mod text_edits;
 mod worker;
 
 use cedar_client::ConnectionSpec;
-use cedar_protocol::{Entry, Operation, Payload, SearchMatch};
+use cedar_protocol::{AgentInfo, Entry, Operation, Payload, SearchMatch};
 use eframe::egui::{self, Color32, FontId, RichText, Stroke};
 use model::{cursor_location, find_ranges, language, line_start, parent_path, Document};
 use std::{
@@ -192,6 +193,8 @@ pub struct CedarApp {
     active_form: Option<ConnectForm>,
     workspace_key: Option<WorkspaceKey>,
     connecting_form: Option<ConnectForm>,
+    // Validated, immutable support claims for this accepted connection only.
+    agent_info: Option<AgentInfo>,
     root: String,
     generation: u64,
     next_request: u64,
@@ -286,6 +289,7 @@ impl CedarApp {
             active_form: None,
             workspace_key: None,
             connecting_form: None,
+            agent_info: None,
             root: String::new(),
             generation: 0,
             next_request: 1,
@@ -389,6 +393,7 @@ impl CedarApp {
         for doc in &mut self.documents {
             doc.saving = false;
         }
+        self.agent_info = None;
         self.state = ConnectionState::Connecting;
         self.notice = format!("Connecting to {}...", form.label());
         self.error = None;
@@ -401,10 +406,31 @@ impl CedarApp {
         ));
     }
 
+    fn cancel_connection(&mut self) {
+        if self.state != ConnectionState::Connecting {
+            return;
+        }
+        self.worker = None;
+        self.agent_info = None;
+        self.generation += 1;
+        self.connecting_form = None;
+        self.recovery.restoring_generation = None;
+        self.state = if self.workspace_key.is_some() {
+            ConnectionState::Disconnected
+        } else {
+            ConnectionState::Idle
+        };
+        self.notice = "Connection cancelled".into();
+    }
+
     fn request(&mut self, op: Operation, job: Job) -> u64 {
         if !self.ready() {
             self.error =
                 Some("Reconnect to the workspace first. Unsaved buffers are retained".into());
+            return 0;
+        }
+        if let Some(problem) = self.operation_problem(&op) {
+            self.error = Some(problem);
             return 0;
         }
         let id = self.next_request;
@@ -429,6 +455,8 @@ impl CedarApp {
         self.profiles.disconnected();
         self.recovery.restoring_generation = None;
         self.state = ConnectionState::Disconnected;
+        self.connecting_form = None;
+        self.agent_info = None;
         self.language.reset();
         self.worker = None;
         self.pending.clear();
@@ -544,8 +572,38 @@ impl CedarApp {
             return;
         }
         if event.id == 0 {
+            // Every connection event, including errors, belongs to a single active
+            // attempt. Duplicate handshakes must never revoke a Ready session.
+            if self.state != ConnectionState::Connecting || self.connecting_form.is_none() {
+                return;
+            }
             match event.result {
-                Ok(Payload::Hello { root, .. }) => {
+                Ok(Payload::Hello {
+                    protocol,
+                    root,
+                    agent,
+                }) => {
+                    if protocol != cedar_protocol::PROTOCOL_VERSION {
+                        self.disconnected(
+                            "Agent protocol version does not match this frontend".into(),
+                        );
+                        return;
+                    }
+                    if let Some(info) = &agent {
+                        if let Err(error) = info.validate() {
+                            self.disconnected(error.to_string());
+                            return;
+                        }
+                    }
+                    if !["list", "read"]
+                        .iter()
+                        .all(|name| cedar_protocol::supports_capability(agent.as_ref(), name))
+                    {
+                        self.disconnected(
+                            "Agent must support list and read to open a workspace".into(),
+                        );
+                        return;
+                    }
                     let Some(form) = self.connecting_form.take() else {
                         return;
                     };
@@ -587,6 +645,7 @@ impl CedarApp {
                     self.workspace_key = Some(key);
                     self.active_form = Some(form);
                     self.root = root;
+                    self.agent_info = agent;
                     self.state = ConnectionState::Ready;
                     self.error = None;
                     self.notice = "Workspace connected".into();
@@ -910,7 +969,7 @@ impl CedarApp {
                     ui.label(RichText::new(name).color(MUTED))
                         .on_hover_text(&self.root);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let can_save = self.ready()
+                        let can_save = self.backend_supports("write")
                             && self.active().is_some_and(|doc| doc.dirty() && !doc.saving);
                         if ui
                             .add_enabled(
@@ -975,6 +1034,11 @@ impl CedarApp {
                     let workspace = self.recovery_workspace();
                     let (recovery_status, protected) = self.recovery.status(workspace.as_ref(), self.active());
                     if ui.small_button(RichText::new(recovery_status).color(if protected { GREEN } else { AMBER })).on_hover_text("Private recovery on this computer. Click to review copies and settings").clicked() { self.recovery.visible = true; }
+                    if self.ready() {
+                        let status = self.agent_status();
+                        ui.add_sized([240.0, 18.0], egui::Label::new(RichText::new(&status).small().color(MUTED)).truncate())
+                            .on_hover_text(format!("{status}\n{}", self.agent_details()));
+                    }
                     if let Some(form) = &self.active_form {
                         ui.label(
                             RichText::new(if form.ssh {
@@ -1072,7 +1136,7 @@ impl CedarApp {
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui.selectable_label(self.tools_open && self.tool == Tool::Search, "Search").clicked() { self.tool = Tool::Search; self.tools_open = true; }
-                        if ui.selectable_label(self.tools_open && self.tool == Tool::Git, "Git").clicked() { self.tool = Tool::Git; self.tools_open = true; if self.ready() && self.active_form.as_ref().is_some_and(|form| form.allow_run) { self.git(); } }
+                        if ui.selectable_label(self.tools_open && self.tool == Tool::Git, "Git").clicked() { self.tool = Tool::Git; self.tools_open = true; if self.backend_supports("git_status") && self.execution_trusted() { self.git(); } }
                         if ui.selectable_label(self.tools_open && self.tool == Tool::Run, "Run").clicked() { self.tool = Tool::Run; self.tools_open = true; }
                         if ui.selectable_label(self.tools_open && self.tool == Tool::Language, "LSP").clicked() { self.tool = Tool::Language; self.tools_open = true; }
                     });
@@ -1099,10 +1163,11 @@ impl CedarApp {
                 match self.tool {
                     Tool::Language => self.language_panel(ui),
                     Tool::Search => {
+                        if self.ready() && !self.backend_supports("search") { ui.colored_label(AMBER, self.unsupported_message("search")); }
                         ui.horizontal(|ui| {
                             let edit = ui.add(egui::TextEdit::singleline(&mut self.search_query).hint_text("Find text across the workspace...").desired_width((ui.available_width() - 175.0).max(180.0)));
                             let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                            if ui.add_enabled(self.ready(), egui::Button::new("Search")).clicked() || enter { self.search(); }
+                            if ui.add_enabled(self.backend_supports("search"), egui::Button::new("Search")).clicked() || enter { self.search(); }
                             ui.label(RichText::new(format!("{} results", self.search_results.len())).small().color(MUTED));
                         });
                         if self.search_truncated { ui.colored_label(AMBER, "Results capped at 500. Narrow your query to see more specific matches"); }
@@ -1121,10 +1186,11 @@ impl CedarApp {
                     Tool::Git => {
                         let allowed = self.active_form.as_ref().is_some_and(|form| form.allow_run);
                         ui.horizontal(|ui| {
-                            if ui.add_enabled(self.ready() && allowed, egui::Button::new("Refresh status")).clicked() { self.git(); }
+                            if ui.add_enabled(self.backend_supports("git_status") && allowed, egui::Button::new("Refresh status")).clicked() { self.git(); }
                             ui.label(RichText::new("Porcelain status · requires trusted command permission").small().color(MUTED));
                         });
                         if !allowed { ui.colored_label(AMBER, "Enable trusted command execution and reconnect. Git may execute repository-configured filters."); }
+                        if self.ready() && !self.backend_supports("git_status") { ui.colored_label(AMBER, self.unsupported_message("git_status")); }
                         egui::ScrollArea::both().id_salt("git_output").show(ui, |ui| { ui.add(egui::TextEdit::multiline(&mut self.git_output).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY).interactive(false).frame(false)); });
                     }
                     Tool::Run => self.run_panel(ui),
@@ -1204,15 +1270,7 @@ impl CedarApp {
             if self.state == ConnectionState::Connecting {
                 ui.spinner();
                 if ui.button("Cancel").clicked() {
-                    self.worker = None;
-                    self.generation += 1;
-                    self.connecting_form = None;
-                    self.state = if self.workspace_key.is_some() {
-                        ConnectionState::Disconnected
-                    } else {
-                        ConnectionState::Idle
-                    };
-                    self.notice = "Connection cancelled".into();
+                    self.cancel_connection();
                 }
             }
         });
@@ -1872,6 +1930,7 @@ mod tests {
             connected: true,
             result: Ok(Payload::Hello {
                 protocol: cedar_protocol::PROTOCOL_VERSION,
+                agent: None,
                 root: root.into(),
             }),
         });
@@ -2063,6 +2122,7 @@ mod tests {
             connected: true,
             result: Ok(Payload::Hello {
                 protocol: cedar_protocol::PROTOCOL_VERSION,
+                agent: None,
                 root: "wrong".into(),
             }),
         });
@@ -2155,6 +2215,7 @@ mod tests {
             connected: true,
             result: Ok(Payload::Hello {
                 protocol: cedar_protocol::PROTOCOL_VERSION,
+                agent: None,
                 root: "/new".into(),
             }),
         });
@@ -2281,6 +2342,51 @@ mod tests {
                     .all(|shape| shape.clip_rect.is_finite()));
             }
         }
+    }
+    #[test]
+    fn maximum_agent_metadata_preserves_recovery_visibility_at_minimum_window_size() {
+        let ctx = egui::Context::default();
+        let mut app = CedarApp::empty();
+        let mut info = agent_support::full_test_agent();
+        info.version = "v".repeat(cedar_protocol::MAX_AGENT_VERSION_BYTES);
+        info.os = "o".repeat(cedar_protocol::MAX_AGENT_PLATFORM_BYTES);
+        info.arch = "a".repeat(cedar_protocol::MAX_AGENT_PLATFORM_BYTES);
+        info.validate().unwrap();
+        app.agent_info = Some(info);
+        app.state = ConnectionState::Ready;
+        app.active_form = Some(ConnectForm::default());
+        app.recovery.enabled = true;
+        app.recovery.error = Some("Backup needs review".into());
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(780.0, 540.0));
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ctx| app.footer(ctx),
+        );
+        let text = |prefix: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text().starts_with(prefix) => {
+                        Some((text.visual_bounding_rect(), shape.clip_rect))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("Missing status text: {prefix}"))
+        };
+        let (recovery, recovery_clip) = text("Recovery needs attention");
+        let (reported, agent_clip) = text("Reported agent");
+        assert!(screen.contains_rect(recovery));
+        assert!(recovery_clip.contains_rect(recovery));
+        assert!(screen.contains_rect(reported));
+        assert!(agent_clip.contains_rect(reported));
+        assert!(reported.width() <= 242.0);
+        assert!(recovery.right() < reported.left());
+        assert!(app.agent_status().len() > 128);
+        assert!(app.agent_details().contains("not verified identity"));
     }
     #[test]
     fn slow_file_open_does_not_steal_focus_from_newer_navigation() {

@@ -218,6 +218,23 @@ impl CedarApp {
         )
     }
     fn start_language(&mut self) {
+        if !self.ready()
+            || self.language.running
+            || self.language_busy()
+            || self.recovery.closing.is_some()
+            || self.close_after_language_stop
+        {
+            return;
+        }
+        if !self.execution_trusted() {
+            self.error =
+                Some("Language servers require trusted tool permission for this connection".into());
+            return;
+        }
+        if !self.backend_language_supported() {
+            self.error = Some(self.unsupported_message("the complete language session lifecycle"));
+            return;
+        }
         let args: Vec<String> = match serde_json::from_str(&self.language.args) {
             Ok(args) => args,
             Err(_) => {
@@ -374,6 +391,16 @@ impl CedarApp {
         if !self.language.matches(&doc.path) {
             self.error =
                 Some("This file does not match the running server’s language profile".into());
+            return;
+        }
+        if matches!(kind, LanguageQueryKind::Definition)
+            && !self.backend_supports("language_resolve_uri")
+        {
+            self.error = Some(self.unsupported_message("language_resolve_uri"));
+            return;
+        }
+        if !self.backend_supports("language_query") {
+            self.error = Some(self.unsupported_message("language_query"));
             return;
         }
         let capability = match kind {
@@ -729,7 +756,11 @@ impl CedarApp {
                 })
     }
     fn navigate_language(&mut self, location: Location) {
-        if !self.language.running {
+        if !self.ready() || !self.language.running {
+            return;
+        }
+        if !self.backend_supports("language_resolve_uri") {
+            self.error = Some(self.unsupported_message("language_resolve_uri"));
             return;
         }
         // Even file:// strings are sent to the agent for remote-filesystem confinement.
@@ -781,6 +812,17 @@ impl CedarApp {
             _ => self.error = Some("The target range does not fit the current file. Its contents may have changed; no draft was modified".into()),
         }
     }
+    fn completion_apply_supported(&self) -> bool {
+        self.ready()
+            && (self
+                .language
+                .capabilities
+                .get("completionProvider")
+                .and_then(|value| value.get("resolveProvider"))
+                .and_then(Value::as_bool)
+                != Some(true)
+                || self.backend_supports("language_resolve_completion"))
+    }
     fn accept_completion(&mut self, index: usize) {
         if self.language_busy() {
             return;
@@ -816,6 +858,10 @@ impl CedarApp {
             .and_then(Value::as_bool)
             == Some(true)
         {
+            if !self.backend_supports("language_resolve_completion") {
+                self.error = Some(self.unsupported_message("language_resolve_completion"));
+                return;
+            }
             self.language_request(
                 Operation::LanguageResolveCompletion { item: item.clone() },
                 ActionKind::ResolveCompletion {
@@ -866,13 +912,20 @@ impl CedarApp {
     }
 
     pub(super) fn language_panel(&mut self, ui: &mut egui::Ui) {
-        let trusted = self.active_form.as_ref().is_some_and(|form| form.allow_run);
+        let trusted = self.execution_trusted();
         let busy = self.language_busy();
+        let supported = self.backend_language_supported();
+        if !supported {
+            ui.colored_label(
+                AMBER,
+                self.unsupported_message("the complete language session lifecycle"),
+            );
+        }
         if !trusted {
             ui.colored_label(AMBER, "Language servers require trusted tool permission. Enable it in Open workspace and reconnect.");
         }
         egui::CollapsingHeader::new("Server configuration").default_open(!self.language.running).show(ui, |ui| {
-            ui.add_enabled_ui(trusted && self.ready() && !self.language.running && !busy, |ui| {
+            ui.add_enabled_ui(trusted && supported && self.ready() && !self.language.running && !busy, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Executable"); ui.add(egui::TextEdit::singleline(&mut self.language.program).hint_text("jdtls / kotlin-lsp / rust-analyzer").desired_width(245.0));
                     ui.label("Arguments (JSON)"); ui.add(egui::TextEdit::singleline(&mut self.language.args).desired_width(210.0));
@@ -901,7 +954,7 @@ impl CedarApp {
                 {
                     self.sync_current_language();
                 }
-                let can_query = matching && self.ready();
+                let can_query = matching && self.backend_supports("language_query");
                 if ui
                     .add_enabled(
                         can_query && self.language.supports("completionProvider"),
@@ -914,7 +967,9 @@ impl CedarApp {
                 }
                 if ui
                     .add_enabled(
-                        can_query && self.language.supports("definitionProvider"),
+                        can_query
+                            && self.backend_supports("language_resolve_uri")
+                            && self.language.supports("definitionProvider"),
                         egui::Button::new("Definition"),
                     )
                     .on_hover_text("F12")
@@ -933,7 +988,10 @@ impl CedarApp {
                     self.request_language_feature(LanguageQueryKind::Hover);
                 }
                 if ui
-                    .add_enabled(!busy, egui::Button::new("Refresh events"))
+                    .add_enabled(
+                        !busy && self.backend_supports("language_events"),
+                        egui::Button::new("Refresh events"),
+                    )
                     .clicked()
                 {
                     self.language_request(Operation::LanguageEvents, ActionKind::Events);
@@ -980,12 +1038,15 @@ impl CedarApp {
                         }
                         for location in &self.language.definitions {
                             if ui
-                                .button(format!(
-                                    "{}:{}:{}",
-                                    location.uri,
-                                    u64::from(location.range.start.line) + 1,
-                                    u64::from(location.range.start.character) + 1
-                                ))
+                                .add_enabled(
+                                    self.backend_supports("language_resolve_uri"),
+                                    egui::Button::new(format!(
+                                        "{}:{}:{}",
+                                        location.uri,
+                                        u64::from(location.range.start.line) + 1,
+                                        u64::from(location.range.start.character) + 1
+                                    )),
+                                )
                                 .clicked()
                             {
                                 selected = Some(location.clone());
@@ -997,8 +1058,15 @@ impl CedarApp {
                 }
             }
             View::Completion => {
+                let enabled = !busy && self.completion_apply_supported();
+                if !self.completion_apply_supported() {
+                    ui.colored_label(
+                        AMBER,
+                        self.unsupported_message("language_resolve_completion"),
+                    );
+                }
                 let selected =
-                    completion_rows(ui, self.language.completions.as_mut(), !busy, 150.0);
+                    completion_rows(ui, self.language.completions.as_mut(), enabled, 150.0);
                 if let Some(index) = selected {
                     self.accept_completion(index);
                 }
@@ -1076,7 +1144,8 @@ impl CedarApp {
                         ui.horizontal(|ui| {
                             ui.colored_label(color, severity);
                             let response =
-                                ui.add(
+                                ui.add_enabled(
+                                    self.backend_supports("language_resolve_uri"),
                                     egui::Button::new(
                                         RichText::new(format!(
                                             "{name}:{}",
@@ -1133,6 +1202,7 @@ impl CedarApp {
         }
         let busy = self.language_busy();
         let mut visible = true;
+        let enabled = !busy && self.completion_apply_supported();
         let mut selected = None;
         egui::Window::new("Completion")
             .id(egui::Id::new("completion_menu"))
@@ -1142,7 +1212,13 @@ impl CedarApp {
             .default_width(620.0)
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 105.0))
             .show(ctx, |ui| {
-                selected = completion_rows(ui, self.language.completions.as_mut(), !busy, 290.0);
+                selected = completion_rows(ui, self.language.completions.as_mut(), enabled, 290.0);
+                if !self.completion_apply_supported() {
+                    ui.colored_label(
+                        AMBER,
+                        self.unsupported_message("language_resolve_completion"),
+                    );
+                }
                 if busy {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -1401,10 +1477,130 @@ mod tests {
         let replacement = serde_json::json!({"label":"Other","insertText":"Thing"});
         assert!(validate_resolved_identity(&original, &replacement).is_err());
     }
+    fn capability_app() -> (CedarApp, std::sync::mpsc::Receiver<crate::worker::Command>) {
+        let mut app = CedarApp::empty();
+        app.state = crate::ConnectionState::Ready;
+        app.agent_info = Some(crate::agent_support::full_test_agent());
+        app.active_form = Some(crate::ConnectForm {
+            allow_run: true,
+            ..Default::default()
+        });
+        app.language.program = "language-server".into();
+        let (worker, rx) = crate::worker::Worker::recording();
+        app.worker = Some(worker);
+        (app, rx)
+    }
+    #[test]
+    fn language_start_requires_core_lifecycle_and_trust_without_resetting_rejected_session() {
+        for missing in cedar_protocol::LANGUAGE_SESSION_CAPABILITIES {
+            let (mut app, rx) = capability_app();
+            app.agent_info
+                .as_mut()
+                .unwrap()
+                .capabilities
+                .retain(|name| name != missing);
+            let session = app.language.session;
+            app.start_language();
+            assert_eq!(app.language.session, session);
+            assert!(rx.try_recv().is_err());
+        }
+        let (mut app, rx) = capability_app();
+        app.active_form.as_mut().unwrap().allow_run = false;
+        app.start_language();
+        assert_eq!(app.language.session, 0);
+        assert!(rx.try_recv().is_err());
+    }
+    #[test]
+    fn missing_optional_query_or_navigation_does_not_disable_core_language_session() {
+        let (mut app, rx) = capability_app();
+        app.agent_info
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .retain(|name| {
+                !matches!(
+                    name.as_str(),
+                    "language_query" | "language_resolve_uri" | "language_resolve_completion"
+                )
+            });
+        assert!(app.backend_language_supported());
+        app.start_language();
+        assert!(matches!(
+            rx.try_recv().unwrap().op,
+            Operation::LanguageStart { .. }
+        ));
+        app.pending.clear();
+        app.language.running = true;
+        app.language.capabilities =
+            serde_json::json!({"completionProvider":{},"definitionProvider":true});
+        app.documents.push(Document::new(
+            1,
+            "main.rs".into(),
+            "text".into(),
+            "r".into(),
+        ));
+        app.active_document = Some(1);
+        app.request_language_feature(LanguageQueryKind::Completion);
+        assert!(app.language.intent.is_none());
+        let navigation = app.navigation_epoch;
+        app.navigate_language(Location {
+            uri: "file:///workspace/main.rs".into(),
+            range: Range::default(),
+        });
+        assert_eq!(app.navigation_epoch, navigation);
+        assert!(rx.try_recv().is_err());
+        app.active_form.as_mut().unwrap().allow_run = false;
+        app.stop_language();
+        assert!(matches!(rx.try_recv().unwrap().op, Operation::LanguageStop));
+    }
+    #[test]
+    fn missing_completion_resolve_never_falls_back_to_direct_apply() {
+        let (mut app, rx) = capability_app();
+        app.agent_info
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .retain(|name| name != "language_resolve_completion");
+        app.language.running = true;
+        app.language.capabilities =
+            serde_json::json!({"completionProvider":{"resolveProvider":true}});
+        app.documents
+            .push(Document::new(1, "main.rs".into(), "x".into(), "r".into()));
+        app.active_document = Some(1);
+        let context = QueryContext {
+            session: app.language.session,
+            document: 1,
+            edit_version: 0,
+            source: "x".into(),
+            cursor: Position::default(),
+        };
+        app.language.completions = Some(CompletionMenu {
+            context,
+            candidates: completion::parse_completion_result(
+                &serde_json::json!([{"label":"replacement","insertText":"replacement"}]),
+            )
+            .unwrap()
+            .candidates,
+            selected: 0,
+            incomplete: false,
+            truncated: false,
+        });
+        assert!(!app.completion_apply_supported());
+        app.accept_completion(0);
+        assert_eq!(app.documents[0].text, "x");
+        assert_eq!(app.documents[0].edit_version, 0);
+        assert!(rx.try_recv().is_err());
+        assert!(app
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("language_resolve_completion"));
+    }
     #[test]
     fn explicit_queries_preserve_disabled_automatic_updates() {
         let mut app = CedarApp::empty();
         app.state = crate::ConnectionState::Ready;
+        app.agent_info = Some(crate::agent_support::full_test_agent());
         app.language.running = true;
         app.language.automatic = false;
         app.language.capabilities = serde_json::json!({"completionProvider":{}});

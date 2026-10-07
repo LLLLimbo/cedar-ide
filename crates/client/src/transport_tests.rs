@@ -293,3 +293,393 @@ fn dropping_an_unresponsive_peer_does_not_wait_for_the_grace_deadline() {
     reaped.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(!dir.path().join("eof").exists());
 }
+
+fn agent_info(capabilities: &[&str]) -> cedar_protocol::AgentInfo {
+    cedar_protocol::AgentInfo {
+        schema: cedar_protocol::AGENT_INFO_SCHEMA,
+        version: "fixture-agent-6".into(),
+        os: "fixture_os".into(),
+        arch: "fixture_arch".into(),
+        capabilities: capabilities.iter().map(|name| (*name).into()).collect(),
+    }
+}
+fn capability_peer(directory: &Path, hello: serde_json::Value) -> ProcessClient {
+    fs::write(directory.join("hello.json"), hello.to_string()).unwrap();
+    spawn("capability_peer", directory)
+}
+fn capability_client(directory: &Path, agent: Option<cedar_protocol::AgentInfo>) -> Client {
+    let hello = serde_json::json!({
+        "type": "hello", "protocol": PROTOCOL_VERSION, "root": "/first/工作区", "agent": agent,
+    });
+    Client::from_process(capability_peer(directory, hello)).unwrap()
+}
+fn recorded_requests(directory: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(directory.join("requests"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+fn read_fixture(client: &mut Client) {
+    assert!(matches!(
+        client.request(Operation::Read { path: "fixture.txt".into() }).unwrap(),
+        Payload::File { text, .. } if text == "fixture text"
+    ));
+}
+fn start_task() -> Operation {
+    Operation::RunStart {
+        program: "never-executed".into(),
+        args: vec![],
+        timeout_secs: 1,
+    }
+}
+fn start_language() -> Operation {
+    Operation::LanguageStart {
+        program: "never-executed".into(),
+        args: vec![],
+    }
+}
+fn advanced_operations() -> Vec<Operation> {
+    vec![
+        Operation::GitStatus,
+        start_task(),
+        Operation::RunPoll { task_id: 1 },
+        Operation::RunCancel { task_id: 1 },
+        Operation::Run {
+            program: "never-executed".into(),
+            args: vec![],
+            timeout_secs: 1,
+        },
+        start_language(),
+        Operation::LanguageOpen {
+            path: "fixture.txt".into(),
+            language_id: "text".into(),
+            version: 1,
+            text: "fixture text".into(),
+        },
+        Operation::LanguageChange {
+            path: "fixture.txt".into(),
+            version: 2,
+            text: "changed text".into(),
+        },
+        Operation::LanguageClose {
+            path: "fixture.txt".into(),
+        },
+        Operation::LanguageQuery {
+            path: "fixture.txt".into(),
+            line: 0,
+            character: 0,
+            kind: cedar_protocol::LanguageQueryKind::Hover,
+        },
+        Operation::LanguageFormat {
+            path: "fixture.txt".into(),
+            version: 1,
+            tab_size: 4,
+            insert_spaces: true,
+        },
+        Operation::LanguageReferences {
+            path: "fixture.txt".into(),
+            line: 0,
+            character: 0,
+            include_declaration: true,
+        },
+        Operation::LanguageDocumentSymbols {
+            path: "fixture.txt".into(),
+        },
+        Operation::LanguageResolveUri {
+            uri: "file:///fixture.txt".into(),
+        },
+        Operation::LanguageResolveCompletion {
+            item: serde_json::json!({}),
+        },
+        Operation::LanguageEvents,
+        Operation::LanguageStop,
+    ]
+}
+#[test]
+fn public_client_sends_one_hello_and_keeps_the_complete_first_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(
+        directory.path(),
+        Some(agent_info(&["list", "read", "unknown_future_feature"])),
+    );
+    let snapshot = serde_json::to_value(client.handshake()).unwrap();
+    for _ in 0..3 {
+        let hello = client.request(Operation::Hello).unwrap();
+        assert_eq!(serde_json::to_value(hello).unwrap(), snapshot);
+    }
+    assert_eq!(snapshot["root"], "/first/工作区");
+    assert_eq!(snapshot["agent"]["version"], "fixture-agent-6");
+    assert_eq!(snapshot["agent"]["os"], "fixture_os");
+    assert_eq!(snapshot["agent"]["arch"], "fixture_arch");
+    assert_eq!(recorded_requests(directory.path()).len(), 1);
+    read_fixture(&mut client);
+    assert_eq!(serde_json::to_value(client.handshake()).unwrap(), snapshot);
+    let requests = recorded_requests(directory.path());
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["op"]["type"], "hello");
+    assert_eq!(requests[1]["op"]["type"], "read");
+    assert_eq!(requests[1]["id"], 2);
+}
+#[test]
+fn legacy_peers_keep_file_operations_but_never_receive_execution_requests() {
+    for explicit_null in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut hello = serde_json::json!({"type": "hello", "protocol": 4, "root": "/legacy"});
+        if explicit_null {
+            hello["agent"] = serde_json::Value::Null;
+        }
+        let mut client = Client::from_process(capability_peer(directory.path(), hello)).unwrap();
+        assert!(matches!(
+            client.handshake(),
+            Payload::Hello { agent: None, .. }
+        ));
+        client
+            .request(Operation::List { path: ".".into() })
+            .unwrap();
+        read_fixture(&mut client);
+        client
+            .request(Operation::Write {
+                path: "fixture.txt".into(),
+                text: "changed".into(),
+                expected_revision: None,
+            })
+            .unwrap();
+        client
+            .request(Operation::Search {
+                query: "fixture".into(),
+                limit: 1,
+            })
+            .unwrap();
+        for operation in advanced_operations() {
+            let name = operation.capability_name().unwrap();
+            let error = client.request(operation.clone()).unwrap_err();
+            assert!(
+                error.starts_with("unsupported_operation:"),
+                "{name}: {error}"
+            );
+            assert!(error.contains(name), "{name}: {error}");
+            assert!(client.is_connected());
+        }
+        // An allowed request after all rejections proves the stream/IDs remain aligned.
+        read_fixture(&mut client);
+        let requests = recorded_requests(directory.path());
+        let operations: Vec<_> = requests
+            .iter()
+            .map(|r| r["op"]["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            operations,
+            ["hello", "list", "read", "write", "search", "read"]
+        );
+    }
+}
+#[test]
+fn unknown_capabilities_grant_nothing_and_browsing_survives_missing_optional_features() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(
+        directory.path(),
+        Some(agent_info(&[
+            "list",
+            "read",
+            "execute",
+            "run_future",
+            "language_future",
+            "write_future",
+        ])),
+    );
+    let mut operations = advanced_operations();
+    operations.extend([
+        Operation::Write {
+            path: "fixture.txt".into(),
+            text: "changed".into(),
+            expected_revision: None,
+        },
+        Operation::Search {
+            query: "fixture".into(),
+            limit: 1,
+        },
+    ]);
+    for operation in operations {
+        assert!(client
+            .request(operation)
+            .unwrap_err()
+            .starts_with("unsupported_operation:"));
+    }
+    assert_eq!(recorded_requests(directory.path()).len(), 1);
+    assert!(client.is_connected());
+    read_fixture(&mut client);
+    assert_eq!(recorded_requests(directory.path()).len(), 2);
+}
+#[test]
+fn every_operation_requires_its_own_declared_capability() {
+    let operations = advanced_operations();
+    let capabilities: Vec<_> = ["list", "read", "write", "search"]
+        .into_iter()
+        .chain(
+            operations
+                .iter()
+                .map(|operation| operation.capability_name().unwrap()),
+        )
+        .collect();
+    for operation in &operations {
+        let missing = operation.capability_name().unwrap();
+        let available: Vec<_> = capabilities
+            .iter()
+            .copied()
+            .filter(|name| *name != missing)
+            .collect();
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = capability_client(directory.path(), Some(agent_info(&available)));
+        let error = client.request(operation.clone()).unwrap_err();
+        assert!(
+            error.starts_with("unsupported_operation:"),
+            "{missing}: {error}"
+        );
+        assert!(error.contains(missing), "{missing}: {error}");
+        assert_eq!(recorded_requests(directory.path()).len(), 1, "{missing}");
+        read_fixture(&mut client);
+        assert_eq!(recorded_requests(directory.path()).len(), 2, "{missing}");
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+    for operation in operations {
+        client.request(operation).unwrap();
+    }
+    assert_eq!(
+        recorded_requests(directory.path()).len(),
+        capabilities.len() - 3
+    );
+}
+#[test]
+fn starts_require_the_complete_lifecycle_before_sending_any_request() {
+    for (start, lifecycle) in [
+        (start_task(), RUN_TASK_CAPABILITIES),
+        (start_language(), LANGUAGE_SESSION_CAPABILITIES),
+    ] {
+        for missing in lifecycle {
+            let capabilities: Vec<_> = ["list", "read", "run"]
+                .into_iter()
+                .chain(lifecycle.iter().copied().filter(|name| name != missing))
+                .collect();
+            let directory = tempfile::tempdir().unwrap();
+            let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+            let error = client.request(start.clone()).unwrap_err();
+            assert!(
+                error.starts_with("unsupported_operation:"),
+                "{missing}: {error}"
+            );
+            assert!(error.contains(missing), "{missing}: {error}");
+            assert!(client.is_connected());
+            assert_eq!(recorded_requests(directory.path()).len(), 1);
+            read_fixture(&mut client);
+            let requests = recorded_requests(directory.path());
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[1]["op"]["type"], "read");
+        }
+        // Optional language extensions are not prerequisites for the base session.
+        let capabilities: Vec<_> = ["list", "read"]
+            .into_iter()
+            .chain(lifecycle.iter().copied())
+            .collect();
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+        client.request(start).unwrap();
+        assert_eq!(recorded_requests(directory.path()).len(), 2);
+    }
+}
+#[test]
+fn missing_required_workspace_capability_refuses_connection_without_fallback() {
+    for capabilities in [&[][..], &["list"][..], &["read"][..], &["run"][..]] {
+        let directory = tempfile::tempdir().unwrap();
+        let hello = serde_json::json!({"type": "hello", "protocol": 4, "root": "/fixture", "agent": agent_info(capabilities)});
+        let error = match Client::from_process(capability_peer(directory.path(), hello)) {
+            Ok(_) => panic!("accepted incomplete workspace: {capabilities:?}"),
+            Err(error) => error,
+        };
+        assert!(error.starts_with("unsupported_workspace:"), "{error}");
+        wait_until(|| directory.path().join("eof").exists());
+        assert_eq!(recorded_requests(directory.path()).len(), 1);
+    }
+}
+#[test]
+fn malformed_present_metadata_refuses_connection_and_never_falls_back_to_legacy() {
+    let valid = serde_json::to_value(agent_info(&["list", "read"])).unwrap();
+    let mut malformed = vec![
+        (serde_json::json!({}), "transport_read:"),
+        (serde_json::json!("legacy"), "transport_read:"),
+    ];
+    for (field, value, expected) in [
+        ("schema", serde_json::json!(0), "invalid_agent_info:"),
+        ("schema", serde_json::json!(2), "invalid_agent_info:"),
+        ("schema", serde_json::json!("1"), "transport_read:"),
+        ("version", serde_json::json!(""), "invalid_agent_info:"),
+        (
+            "version",
+            serde_json::json!("v\nforged display"),
+            "invalid_agent_info:",
+        ),
+        (
+            "version",
+            serde_json::json!("v".repeat(65)),
+            "invalid_agent_info:",
+        ),
+        ("os", serde_json::json!("Linux"), "invalid_agent_info:"),
+        ("arch", serde_json::json!(""), "invalid_agent_info:"),
+        (
+            "capabilities",
+            serde_json::json!(["list", "read", "list"]),
+            "invalid_agent_info:",
+        ),
+        (
+            "capabilities",
+            serde_json::json!(["list", "read", "run\n"]),
+            "invalid_agent_info:",
+        ),
+        (
+            "capabilities",
+            serde_json::json!(["list", "read", 3]),
+            "transport_read:",
+        ),
+        ("capabilities", serde_json::Value::Null, "transport_read:"),
+    ] {
+        let mut agent = valid.clone();
+        agent[field] = value;
+        malformed.push((agent, expected));
+    }
+    for (agent, expected) in malformed {
+        let directory = tempfile::tempdir().unwrap();
+        let hello =
+            serde_json::json!({"type": "hello", "protocol": 4, "root": "/fixture", "agent": agent});
+        let error = match Client::from_process(capability_peer(directory.path(), hello)) {
+            Ok(_) => panic!("accepted invalid metadata: {agent}"),
+            Err(error) => error,
+        };
+        assert!(error.starts_with(expected), "{agent}: {error}");
+        wait_until(|| directory.path().join("eof").exists());
+        assert_eq!(recorded_requests(directory.path()).len(), 1);
+    }
+}
+#[test]
+fn cached_hello_cannot_hide_an_already_detected_disconnect() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::from_process(spawn("eof_after_request", directory.path())).unwrap();
+    client.request(Operation::Hello).unwrap();
+    assert_eq!(recorded_requests(directory.path()).len(), 1);
+    assert!(client
+        .request(Operation::Read {
+            path: "fixture.txt".into()
+        })
+        .unwrap_err()
+        .starts_with("transport_eof:"));
+    assert!(!client.is_connected());
+    assert!(client
+        .request(Operation::Hello)
+        .unwrap_err()
+        .starts_with("disconnected:"));
+    assert!(client
+        .request(start_task())
+        .unwrap_err()
+        .starts_with("disconnected:"));
+    assert_eq!(recorded_requests(directory.path()).len(), 2);
+}

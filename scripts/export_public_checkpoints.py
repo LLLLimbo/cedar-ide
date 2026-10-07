@@ -82,7 +82,9 @@ def main():
         stage.mkdir()
         exported = []
         for path, mode, oid in items:
-            if path in excluded:
+            if path in excluded or path == 'PUBLICATION.md':
+                # A recovered public checkout already contains this generated
+                # file. Regenerate it exactly once for the new checkpoint.
                 continue
             data = git(root, 'cat-file', 'blob', oid)
             text = data.decode('utf-8')  # Fail closed for any unexpected binary.
@@ -109,13 +111,15 @@ def main():
                         return '[' + label + '](' + note_link + '#verification-evidence)'
                     return match.group(0)
                 text = re.sub(r'\[([^\]\n]+)\]\(([^)\n]+)\)', clean_link, text)
-                if mentioned:
+                if mentioned and "> Public-source note:" not in text:
                     lines = text.splitlines(keepends=True)
                     lines.insert(1, '\n> Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See ['
                                  'verification evidence](' + note_link + '#verification-evidence).\n')
                     text = ''.join(lines)
             if path == 'README.md':
-                text += '\nPublic source history and omitted machine-specific evidence are described in [PUBLICATION.md](PUBLICATION.md).\n'
+                footer = 'Public source history and omitted machine-specific evidence are described in [PUBLICATION.md](PUBLICATION.md).'
+                if footer not in text:
+                    text += '\n' + footer + '\n'
             data = text.encode()
             for description, pattern in SENSITIVE_PATTERNS.items():
                 if re.search(pattern, data):
@@ -151,7 +155,7 @@ adapters, credentials, private user projects or tool caches are included.
 The 343 locked upstream dependencies keep their respective licenses; bundled
 license texts may contain their upstream authors' public copyright information.
 Java/Kotlin servers still need separate installation and any applicable license.
-Windows runtime, authenticated SSH interoperability, full refactoring, integrated
+Native Windows/macOS GUI, authenticated SSH interoperability, full refactoring, integrated
 debugging and IntelliJ plugin compatibility are not claimed by this checkpoint.
 '''
         data = publication.encode()

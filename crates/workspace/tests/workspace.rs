@@ -66,7 +66,12 @@ fn hello_and_sorted_listing() {
     fs::write(dir.path().join("beta"), "").unwrap();
     fs::write(dir.path().join("alpha"), "").unwrap();
     match ws.handle(Operation::Hello).unwrap() {
-        Payload::Hello { protocol, root } => {
+        Payload::Hello {
+            protocol,
+            root,
+            agent,
+        } => {
+            agent.expect("backend metadata").validate().unwrap();
             assert_eq!(protocol, cedar_protocol::PROTOCOL_VERSION);
             assert_eq!(root, dir.path().canonicalize().unwrap().to_string_lossy());
         }

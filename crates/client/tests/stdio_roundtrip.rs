@@ -8,6 +8,17 @@ fn process_round_trip_preserves_revisions() {
     let agent = PathBuf::from(std::env::var_os("CEDAR_AGENT_BIN").expect("set CEDAR_AGENT_BIN"));
     let dir = tempfile::tempdir().unwrap();
     let mut client = Client::spawn_agent(&agent, dir.path(), false).unwrap();
+    let Payload::Hello {
+        agent: Some(info), ..
+    } = client.handshake()
+    else {
+        panic!("current real agent must advertise metadata");
+    };
+    info.validate().unwrap();
+    assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(info.os, std::env::consts::OS);
+    assert_eq!(info.arch, std::env::consts::ARCH);
+    let supports_run = info.supports("run");
     assert!(matches!(
         client.request(Operation::Hello).unwrap(),
         Payload::Hello { .. }
@@ -57,7 +68,11 @@ fn process_round_trip_preserves_revisions() {
             timeout_secs: 1
         })
         .unwrap_err()
-        .starts_with("run_disabled:"));
+        .starts_with(if supports_run {
+            "run_disabled:"
+        } else {
+            "unsupported_operation:"
+        }));
     drop(client);
     let mut reconnect = Client::spawn_agent(&agent, dir.path(), false).unwrap();
     assert!(

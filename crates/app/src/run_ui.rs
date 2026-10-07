@@ -132,9 +132,6 @@ impl RunPanel {
         Ok(())
     }
 }
-pub(super) fn command_platform_supported(frontend_windows: bool, ssh: bool) -> bool {
-    !frontend_windows || ssh
-}
 fn state_label(state: TaskState) -> &'static str {
     match state {
         TaskState::Starting => "Starting",
@@ -164,11 +161,8 @@ impl CedarApp {
             self.error = Some("Command execution is disabled for this connection".into());
             return;
         }
-        if !command_platform_supported(
-            cfg!(windows),
-            self.active_form.as_ref().is_some_and(|form| form.ssh),
-        ) {
-            self.error = Some("Command tasks require Linux or macOS; Windows needs verified Job Object and cancellable pipe support. A Windows frontend can run commands on a Linux SSH workspace".into());
+        if !self.backend_run_supported() {
+            self.error = Some(self.unsupported_message("run_start/run_poll/run_cancel"));
             return;
         }
         if let Some(problem) = self.profile_run_problem() {
@@ -310,6 +304,7 @@ impl CedarApp {
                 "invalid_command:",
                 "invalid_timeout:",
                 "unsupported_platform:",
+                "unsupported_operation:",
                 "invalid_root:",
                 "task_capacity:",
             ]
@@ -340,15 +335,15 @@ impl CedarApp {
     }
     fn run_panel_contents(&mut self, ui: &mut egui::Ui) {
         let allowed = self.active_form.as_ref().is_some_and(|form| form.allow_run);
-        let supported = command_platform_supported(
-            cfg!(windows),
-            self.active_form.as_ref().is_some_and(|form| form.ssh),
-        );
+        let supported = self.backend_run_supported();
         if !allowed {
             ui.colored_label(AMBER, "Command execution is off. Enable trust in Open workspace and reconnect only for a workspace you trust.");
         }
         if !supported {
-            ui.colored_label(AMBER, "Command tasks require Linux or macOS; Windows needs verified Job Object and cancellable pipe support. Profiles can still be edited and saved; Linux SSH commands are supported.");
+            ui.colored_label(
+                AMBER,
+                self.unsupported_message("run_start/run_poll/run_cancel"),
+            );
         }
         ui.horizontal_wrapped(|ui| {
             if ui
@@ -633,6 +628,31 @@ mod tests {
         assert!(app.run_state.unknown.is_some());
         assert!(app.pending.is_empty());
         assert!(!app.guard_run_transition(Transition::Close));
+    }
+    #[test]
+    fn unsupported_start_is_known_not_started_but_poll_and_cancel_are_unknown() {
+        let mut app = CedarApp::empty();
+        app.run_state.starting = true;
+        app.run_error(
+            &start(0),
+            true,
+            "unsupported_operation: run_start unavailable",
+        );
+        assert!(app.run_state.can_start());
+        assert!(app.run_state.output.contains("not started"));
+        for kind in [Kind::Poll(1), Kind::Cancel(1)] {
+            let mut app = CedarApp::empty();
+            app.run_state
+                .accept(start(0), value(task(1, TaskState::Running, "")), 0.0)
+                .unwrap();
+            app.run_error(
+                &Action { epoch: 0, kind },
+                true,
+                "unsupported_operation: unavailable",
+            );
+            assert!(app.run_state.unknown.is_some());
+            assert!(!app.run_state.can_start());
+        }
     }
     #[test]
     fn outer_connection_generation_rejects_late_run_response() {

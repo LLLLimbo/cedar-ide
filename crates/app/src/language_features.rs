@@ -160,6 +160,15 @@ impl CedarApp {
             self.error = Some("Start a language server first".into());
             return;
         }
+        let remote_capability = match kind {
+            FeatureKind::Format { .. } => "language_format",
+            FeatureKind::References { .. } => "language_references",
+            FeatureKind::Outline => "language_document_symbols",
+        };
+        if !self.backend_supports(remote_capability) {
+            self.error = Some(self.unsupported_message(remote_capability));
+            return;
+        }
         let capability = match kind {
             FeatureKind::Format { .. } => "documentFormattingProvider",
             FeatureKind::References { .. } => "referencesProvider",
@@ -466,17 +475,17 @@ impl CedarApp {
                 .active()
                 .is_some_and(|doc| self.language.matches(&doc.path));
         ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(matching && self.language.supports("documentFormattingProvider"), egui::Button::new("Format preview")).clicked() {
+            if ui.add_enabled(matching && self.backend_supports("language_format") && self.language.supports("documentFormattingProvider"), egui::Button::new("Format preview")).clicked() {
                 self.request_language_navigation_feature(FeatureKind::Format { tab_size: self.language.features.tab_size, insert_spaces: self.language.features.insert_spaces });
             }
             ui.label("Indent");
             ui.add(egui::DragValue::new(&mut self.language.features.tab_size).range(1..=16));
             ui.checkbox(&mut self.language.features.insert_spaces, "Spaces");
-            if ui.add_enabled(matching && self.language.supports("referencesProvider"), egui::Button::new("Find references")).clicked() {
+            if ui.add_enabled(matching && self.backend_supports("language_references") && self.language.supports("referencesProvider"), egui::Button::new("Find references")).clicked() {
                 self.request_language_navigation_feature(FeatureKind::References { include_declaration: self.language.features.include_declaration });
             }
             ui.checkbox(&mut self.language.features.include_declaration, "Include declaration");
-            if ui.add_enabled(matching && self.language.supports("documentSymbolProvider"), egui::Button::new("Refresh outline")).clicked() {
+            if ui.add_enabled(matching && self.backend_supports("language_document_symbols") && self.language.supports("documentSymbolProvider"), egui::Button::new("Refresh outline")).clicked() {
                 self.request_language_navigation_feature(FeatureKind::Outline);
             }
             let pending = self.language.features.intent.is_some() || self.pending.values().any(|job| matches!(job, Job::Language(Action { kind: ActionKind::Feature { request }, .. }) if request.sequence == self.language.features.sequence));
@@ -520,12 +529,15 @@ impl CedarApp {
             .show(ui, |ui| {
                 for location in &self.language.features.references {
                     if ui
-                        .button(format!(
-                            "{}:{}:{}",
-                            location.uri,
-                            u64::from(location.range.start.line) + 1,
-                            u64::from(location.range.start.character) + 1
-                        ))
+                        .add_enabled(
+                            self.backend_supports("language_resolve_uri"),
+                            egui::Button::new(format!(
+                                "{}:{}:{}",
+                                location.uri,
+                                u64::from(location.range.start.line) + 1,
+                                u64::from(location.range.start.character) + 1
+                            )),
+                        )
                         .clicked()
                     {
                         selected = Some(location.clone());
@@ -573,7 +585,13 @@ impl CedarApp {
                         ui.horizontal(|ui| {
                             ui.add_space((item.depth.min(12) * 12) as f32);
                             ui.label(RichText::new(symbol_kind(item.kind)).small().color(MUTED));
-                            if ui.button(&item.name).on_hover_text(&item.detail).clicked() {
+                            let navigable = !matches!(item.location, OutlineLocation::Remote(_))
+                                || self.backend_supports("language_resolve_uri");
+                            if ui
+                                .add_enabled(navigable, egui::Button::new(&item.name))
+                                .on_hover_text(&item.detail)
+                                .clicked()
+                            {
                                 selected = Some(item.location.clone());
                             }
                             if !item.detail.is_empty() {

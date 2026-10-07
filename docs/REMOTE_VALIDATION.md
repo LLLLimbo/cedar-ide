@@ -285,37 +285,23 @@ keys/configs, exact command guard and cleanup. Stop if the port is occupied.
 Use `[127.0.0.1]:42222` in known_hosts and add a loopback source restriction to the
 authorized key. Do not alter system SSH/network settings or listen externally.
 
-## Additive Hello design assessment (not implemented)
+## Protocol-4 capability discovery
 
-Do not loosen exact protocol-4 validation just because agent product versions
-change. Product version and wire compatibility are different values. An optional
-Hello metadata extension can be additive without changing the base operations:
+The phase-6 implementation replaces the earlier design sketch with a nested,
+bounded schema-1 `agent` object. Wire protocol 4 remains exact; product version
+is informational. The first validated Hello is an immutable connection snapshot.
 
-```json
-{"id":1,"result":{"Ok":{"type":"hello","protocol":4,"root":"/fixture","agent_version":"0.5.0","capabilities":["workspace.files.v1","tasks.async.v1"]}}}}
-```
+Compatibility is deliberately conservative: absent/null metadata keeps basic
+list/read/write/search working, but Git, commands and language services require
+an upgraded metadata-aware agent. Present metadata is authoritative for support;
+missing features are disabled, malformed metadata fails without fallback, and
+unknown well-formed names never enable new client behavior. This tightens the
+previous phase's legacy execution behavior; it is not an assertion that older
+agents could not execute those operations.
 
-Suggested validation bounds: version at most 64 ASCII bytes; at most 32 unique
-capability names of at most 64 ASCII bytes each; capability alphabet
-`[a-z0-9._-]`. Reject malformed recognized metadata, tolerate unrecognized future
-fields/names, and retain the outer 8 MiB frame cap. Agent version is informational.
-Capabilities describe implementation, never execution trust or permission.
-
-Missing metadata means a legacy protocol-4 peer; an explicitly empty capability
-list is distinguishable. Keep base protocol-4 features available as documented;
-gate only future optional operations on positive capability advertisement.
-Unknown capabilities are not errors and never enable unimplemented client code.
-
-Preferred coordinated change: add optional/defaulted Hello fields to the shared
-protocol type, populate them in Workspace, retain them in Client, and expose
-bounded connection information to the UI. The old typed reader already ignores
-additional fields. If shared types must stay frozen, private serde_json wire
-wrappers in agent/client can inject/extract the same metadata, at the cost of
-additional conversion and validation; do not implement both approaches.
-[Serde unknown/default-field behavior](https://serde.rs/container-attrs.html)
-
-Required matrix before shipping: old/new client-agent combinations; missing and
-empty metadata; malformed/oversized metadata; unknown future capability; wrong
-protocol rejection; non-Hello/error frames unchanged; no capability bypass of
-Workspace trust. A server session nonce, task adoption and reconnect replay are
-separate designs and are not implied by this extension.
+Capabilities never confer execution trust. Actual backend process support
+replaces frontend-OS/SSH guessing, and complete task/language lifecycle groups
+are required before startup. No session token, task adoption or replay is added.
+See [REMOTE_CAPABILITIES.md](REMOTE_CAPABILITIES.md) for the exact schema,
+bounds, compatibility table, platform rules, immutable-handshake semantics and
+validation matrix. Authenticated SSH remains the independent gate above.

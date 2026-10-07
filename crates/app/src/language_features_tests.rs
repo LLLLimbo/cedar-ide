@@ -6,6 +6,7 @@ const AFTER: &str = "fn main() {\n}\n";
 fn app() -> CedarApp {
     let mut app = CedarApp::empty();
     app.state = crate::ConnectionState::Ready;
+    app.agent_info = Some(crate::agent_support::full_test_agent());
     app.language.running = true;
     app.language.automatic = false;
     app.language.capabilities = json!({"documentFormattingProvider":true,"referencesProvider":true,"documentSymbolProvider":true});
@@ -953,4 +954,37 @@ fn actual_frames_preserve_multiple_history_presses_and_repeats() {
         assert_eq!(app.documents[0].text, third, "repeat={repeat}");
         assert_eq!(app.documents[0].saved_text, BEFORE);
     }
+}
+
+#[test]
+fn optional_agent_operations_are_independent_of_server_and_core_lifecycle() {
+    for (missing, kind) in [
+        ("language_format", formatting()),
+        (
+            "language_references",
+            FeatureKind::References {
+                include_declaration: true,
+            },
+        ),
+        ("language_document_symbols", FeatureKind::Outline),
+    ] {
+        let mut app = app();
+        app.agent_info
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .retain(|name| name != missing);
+        assert!(app.backend_language_supported());
+        app.request_language_navigation_feature(kind);
+        assert!(app.language.features.intent.is_none());
+        assert!(app.error.as_ref().unwrap().contains(missing));
+    }
+    let mut app = app();
+    app.agent_info
+        .as_mut()
+        .unwrap()
+        .capabilities
+        .retain(|name| !matches!(name.as_str(), "language_query" | "language_resolve_uri"));
+    preview(&mut app);
+    assert!(app.language.features.preview.is_some());
 }

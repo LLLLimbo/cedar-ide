@@ -6,6 +6,12 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
 
+pub(super) const fn platform_supported() -> bool {
+    // Match this service's existing startup guard, independently of the more
+    // restrictive Linux/macOS command-task and Git implementations.
+    !cfg!(windows)
+}
+
 pub(super) struct LanguageSession {
     client: LspClient,
     opened: HashMap<String, OpenLanguageDocument>,
@@ -76,7 +82,7 @@ impl Workspace {
         }
         match op {
             Operation::LanguageStart { program, args } => {
-                if cfg!(windows) {
+                if !platform_supported() {
                     return Err(error("unsupported_platform", "Local Windows tool processes are disabled until Job Object cleanup is implemented; use a Linux SSH workspace."));
                 }
                 validate_command(&program, &args, 10)?;

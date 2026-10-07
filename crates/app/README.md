@@ -21,7 +21,7 @@ The optional argument prefills the local workspace field. Select **Connect works
 - UTF-8 editing, line numbers, Java/Kotlin/Rust lexical colors, and case-sensitive find
 - Revision-checked saves, disk-version inspection, and explicit confirmation before discarding a dirty tab or quitting
 - Project text search with clickable line results
-- Trusted-workspace Git status and explicit executable/JSON-argv commands
+- Trusted-workspace Git status and explicit executable commands with literal argument rows, cancellable task output, and saved project profiles in `cedar.tasks.json`
 
 Shortcuts:
 
@@ -38,6 +38,14 @@ Shortcuts:
 | Ctrl/Cmd+Shift+Z | Redo |
 
 The explorer's **R** button refreshes its directory; **Up** opens its parent.
+
+## Agent capabilities and trust
+
+Each accepted connection retains the first validated handshake. The status bar shows the agent-reported version and OS/architecture; its tooltip summarizes feature support and the separate trust setting. These are unverified support claims, not identity or permission. Support follows the workspace agent's advertised operations, never the frontend OS or the SSH/local transport.
+
+Listing and reading are required to connect. When writing is unavailable, buffers and profile forms remain editable but all saves are disabled; profile Save cannot change the raw editor or advance its baseline. Search can be unavailable independently. Commands require the complete start/poll/cancel lifecycle. Language sessions require start/open/change/close/events/stop; query, URI navigation, formatting, references, symbols, and completion resolution are gated separately, alongside the language server's own capabilities. A completion that requires resolution cannot bypass that step when the agent lacks it. Stop and Cancel stay available for active sessions.
+
+Legacy protocol-4 agents without metadata retain file listing, opening, editing, saving, and search. Upgrade the workspace agent to enable Git, commands, or language tools. Capability claims never enable workspace trust; reconnecting, cancellation, and disconnection clear usable metadata until a new handshake is accepted.
 
 ## Native language features
 
@@ -80,7 +88,7 @@ cargo test -p cedar-app real_system_cjk -- --ignored --nocapture
 
 ## Limits and resource policy
 
-This remains an independent prototype, not a complete replacement for a mature IDE. There is no debugger, interactive PTY, project configuration UI, semantic token coloring, snippet engine, multi-file refactoring, persistent settings, autosave, or crash-recovery store. Unsaved buffers survive connection errors in the running process, not a crash or force-quit.
+This remains an independent prototype, not a complete replacement for a mature IDE. There is no debugger, interactive PTY, general project configuration UI, semantic token coloring, snippet engine, multi-file refactoring, general persistent settings, or automatic saves to workspace files. Opt-in private recovery retains bounded unsaved text on the frontend computer; review recovery status before relying on it after a crash or force-quit.
 
 - The backend opens/saves files up to 1 MiB; the frontend allows 32 tabs
 - Pasted text is retained, never silently truncated. An oversized draft must be shortened or copied before saving or using language features
@@ -91,7 +99,7 @@ This remains an independent prototype, not a complete replacement for a mature I
 - Diagnostic display is bounded to 2,000 entries, 128 files, and 512 KiB of text
 - Protocol detail serialization stops at 128 KiB rather than building an unlimited pretty-printed string
 
-Git, commands, and language servers require explicit workspace trust. Local Windows process tools remain disabled by the backend; a Windows frontend can use them on a POSIX SSH workspace. Local file editing does not require command trust.
+Git, commands, and language servers require explicit workspace trust and the agent’s advertised support. The current Windows agent does not advertise process tools; a Windows frontend can use a capable POSIX agent, while a Linux frontend does not infer process support from a Windows SSH destination. Local file editing does not require command trust.
 
 Normal quitting waits for active tools and explicitly stops the language server. If a draft changes while shutdown is pending, Cedar asks again before discarding it.
 
@@ -102,7 +110,7 @@ cargo test -p cedar-app
 cargo clippy -p cedar-app --all-targets -- -D warnings
 ```
 
-The ordinary suite covers race handling, dirty-close protection, revision-safe saves, debounce/coalescing, stale snapshots, UTF-16/Unicode/CRLF positions, malformed and overlapping edits, lazy imports, cancelled acceptance, diagnostic freshness, bounded history, and headless layout at minimum/default window sizes.
+The ordinary suite covers race handling, dirty-close protection, revision-safe saves, debounce/coalescing, stale snapshots, UTF-16/Unicode/CRLF positions, malformed and overlapping edits, lazy imports, cancelled acceptance, diagnostic freshness, bounded history, capability negotiation and legacy compatibility, rejected-save non-mutation, stale handshake isolation, and headless layout at minimum/default window sizes.
 
 An opt-in real Java integration test creates a temporary Eclipse Java project and exercises actual JDT LS through the local workspace protocol and the frontend transaction/egui undo code:
 
