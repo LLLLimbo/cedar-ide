@@ -1,6 +1,6 @@
 # Cedar IDE · Rust 原生远程开发底座
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前交付是经过测试的第一阶段工程，**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第二阶段工程（0.2.0），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -12,8 +12,10 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - 脏标签/退出确认；断线保留当前进程中的草稿；显式重连
 - 项目文本搜索与跳转；显式信任后读取 Git 状态和执行带超时的命令
 - agent 侧真实 LSP：启动、初始化、文件同步、补全/定义/悬浮请求、诊断事件、停止与重启
-- LSP 面板当前手动同步并显示只读结果；未实现自动插入补全或自动重构
-- DAP 仅有独立的消息/封包基础，尚无可用调试器
+- 350ms 防抖自动同步、自动诊断列表、F12 定义跳转、类型悬浮、Ctrl+Space 补全
+- 补全可延迟解析 import，校验所有编辑后一次性改动草稿；一次撤销/重做覆盖整个操作；不执行服务器返回的任意命令
+- 中文注释/字符串可按需加载现有系统 CJK 字体，无静默下载或打包系统字体
+- 独立 DAP 子进程传输已经用真实 Python 调试器验证断点/栈/变量；尚未接入 IDE 调试界面或远程代理
 
 ## 构建与运行
 
@@ -36,9 +38,11 @@ Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；可执行�
 4. 启动 Cedar，选择 **Remote over SSH**，填写 `user@host` 或 SSH 配置别名、端口、远程绝对目录、agent 可执行路径
 5. 如需 Git、构建命令或语言服务，只对可信工作区启用工具执行
 
+前端与 agent 必须同版本：0.2.0 使用协议版本 2，会拒绝旧版 agent。
+
 连接通过 `ssh -T` 的标准输入/输出传输有界 JSON，不开启服务端 TCP 监听。开启严格主机密钥检查，禁用 agent/X11/端口转发，不自动信任主机、不生成密钥、不保存密码。
 
-SSH 远程 shell 目前要求 POSIX；Windows 前端连接 Linux 远程工作区是本阶段的主要 Windows 路径。远程 JDK/语言服务器运行在服务器端。本次验证了真实子进程协议链和 SSH 参数/引用规则；没有连接你的服务器，也没有用真实 SSH 服务器完成认证连通性测试。
+SSH 远程 shell 目前要求 POSIX；Windows 前端连接 Linux 远程工作区是本阶段的主要 Windows 路径。远程 JDK/语言服务器运行在服务器端。当前验证了真实子进程协议链和 SSH 参数/引用规则；没有连接你的服务器，也没有用真实 SSH 服务器完成认证连通性测试。
 
 ## 信任与平台边界
 
@@ -48,7 +52,8 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端连接 Linux 远程工作区
 - 路径访问拒绝绝对路径、越界和符号链接。它不是抵抗恶意并发文件系统修改的 OS 沙箱
 - 保存会做晚期版本复核，但无法对不合作的外部写入者提供文件系统级原子 compare-and-swap
 - 草稿只保留在内存中；崩溃、强制结束或断电没有恢复保证。重要修改请保存或复制
-- 外部语言服务器可能需要 JVM，并会自行索引/执行构建探测；Rust 前端不意味着整个 Java 工具链不使用 JVM
+- 外部语言服务器可能需要 JVM，并会自行索引/执行构建探测；Rust 前端不意味着整个 Java/Kotlin 工具链不使用 JVM
+- 官方 Kotlin 服务最新包要求新的 EULA，且已校验的包缺少 EULA 文件，未接受任何协议；已验证的社区替代版本已弃用，不能据此声称支持当前 Kotlin 全特性
 
 ## 当前资源策略
 
@@ -74,8 +79,9 @@ bash scripts/verify.sh
 | cedar-workspace | 文件边界、保存、搜索、可信工具、语言服务代理 |
 | cedar-agent | 远程 stdio 入口 |
 | cedar-language | LSP 客户端/生命周期/有界 JSON-RPC；DAP 基础封包 |
+| cedar-debugger | 有界异步 DAP 进程传输、确定性与真实 Python 适配器验证，尚未接入 UI |
 
-更多：`docs/FEATURE_MATRIX.md`、`docs/ARCHITECTURE.md`、`docs/LANGUAGE_SERVICES.md`、`docs/TEST_REPORT.md`。
+更多：`docs/FEATURE_MATRIX.md`、`docs/ARCHITECTURE.md`、`docs/LANGUAGE_SERVICES.md`、`docs/KOTLIN_VALIDATION.md`、`docs/DEBUGGING.md`、`docs/TEST_REPORT.md`。
 
 ## 许可
 

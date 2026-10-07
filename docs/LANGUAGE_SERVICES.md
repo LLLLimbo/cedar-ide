@@ -23,6 +23,13 @@ provided by this crate. Check the main README for the current desktop/agent wiri
   They check negotiated capabilities and return the complete JSON result, including
   nulls, completion lists/arrays and definition links. They do not apply edits,
   execute completion commands or render server-provided markup.
+- `resolve_completion(item)` resolves a selected original completion item only
+  when `completionProvider.resolveProvider` is true. Initialization advertises
+  lazy `documentation`, `detail` and `additionalTextEdits`. The original item,
+  including opaque `data` and extension fields, is sent intact. The server may
+  remove its `data` in the result; retain client-side document/version context
+  separately. This call uses the normal request deadline and frame limits and
+  never executes an attached command or applies edits.
 - `next_event(timeout)` returns typed `PublishDiagnostics`, other notifications,
   unsupported server requests, overflow notices, or closure. This is independent
   of waiting requests. A poll timeout is `None`, not an EOF indication.
@@ -107,8 +114,13 @@ a pipe. A production remote agent should add process-group supervision.
 2. Initialize off the render/event thread and show errors plus negotiated features.
 3. Open/change/close documents through these APIs. Debounce changes and preserve
    strictly increasing versions. Keep unsaved text on the owning editor side.
-4. Schedule completion/hover/definition requests asynchronously. Reject stale UI
-   results if the document/caret changed while a request was running.
+4. Schedule completion/hover/definition requests asynchronously. Resolve a selected
+   completion before acceptance if the server advertises a resolve provider, so
+   lazy import edits are available. Preserve the original item for the resolve
+   call. Reject stale UI results if the document/caret changed while a request
+   was running. Validate UTF-16 ranges and nonoverlapping primary/additional edits,
+   then apply them atomically against the captured document version. Commands are
+   separate from text edits and must never be executed implicitly.
 5. Drain diagnostic events independently and map server URIs to existing workspace
    files only after validating the workspace boundary. Treat text and URLs as
    untrusted display content; never execute server-suggested commands implicitly.
@@ -270,6 +282,44 @@ emit an explicit unsupported-measurement record. The parser has two focused test
 cargo test -p cedar-language --example java_smoke
 ```
 
+
+### Verified lazy completion-import resolution
+
+The optional `--resolve-imports` mode reran the same official JDT LS 1.61.0
+milestone and synthetic project on 2026-10-07, with the same JVM options. All
+previous semantic checks passed. In addition:
+
+- The initial `GregorianCalendar - java.util` completion had an ordinary primary
+  text edit and opaque `data`, but no `additionalTextEdits`
+- `resolve_completion` sent that original item back with its opaque fields intact
+- The resolved response supplied `import java.util.GregorianCalendar;` followed by
+  two newlines as an additional edit at line 0, character 0
+- The primary edit and label remained unchanged; JDT removed its opaque `data`
+  from the response, which the client permits
+- The advisory `java.completion.onDidSelect` command was retained as data and never
+  executed. The probe inspected returned edits without applying this candidate to
+  the fixture; native UI edit application requires separate validation
+
+The full run took **10,858 ms**. This proves lazy import retrieval, not the UI's
+atomic edit application or a performance improvement. The original functional
+and JVM-memory captures remain historical and unchanged; this extra resolve
+operation is not an equivalent memory workload for cross-run comparison.
+
+Evidence:
+[`jdtls-1.61.0-completion-resolve.jsonl`](../crates/language/tests/evidence/jdtls-1.61.0-completion-resolve.jsonl).
+Reproduce with:
+
+```sh
+cargo run -p cedar-language --example java_smoke -- /absolute/path/to/jdtls /absolute/path/to/java --resolve-imports
+```
+
+Capability negotiation follows the
+[official LSP completion/resolve specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#completionItem_resolve).
+The [official JDT LS resolve handler](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/main/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/CompletionResolveHandler.java)
+conditions additional-edit resolution on the advertised client support. Mock
+process regressions cover negotiation, absent/false providers, input/output shape,
+opaque-field preservation, error responses, deadlines, notifications during a
+pending resolve, frame-size bounds and absence of command execution.
 
 ## DAP: honest current boundary
 

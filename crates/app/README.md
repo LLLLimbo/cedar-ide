@@ -1,6 +1,8 @@
 # Cedar native desktop frontend
 
-This is a native Rust application using `eframe`/`egui` 0.31.1 and the Glow renderer. It does not embed a browser or a JVM. The remote workspace agent and any optional language server run separately from the UI.
+> Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../../PUBLICATION.md#verification-evidence).
+
+Cedar is a native Rust application using `eframe`/`egui` 0.31.1 and the Glow renderer. It does not embed a browser or a JVM. The remote workspace agent and optional language server run separately from the UI.
 
 ## Run
 
@@ -10,39 +12,88 @@ From the repository root:
 cargo run -p cedar-app --bin cedar -- /path/to/workspace
 ```
 
-The optional positional argument prefills the local workspace field. Select **Connect workspace** to open it. For SSH, enter the system OpenSSH destination, port, remote directory, and path to the installed `cedar-agent`. Authenticate and verify the remote host key in an ordinary terminal first. The app never silently accepts unknown SSH host keys.
+The optional argument prefills the local workspace field. Select **Connect workspace** to open it. For SSH, enter the system OpenSSH destination, port, remote directory, and path to the installed `cedar-agent`. Authenticate and verify the host key in an ordinary terminal first. Cedar never silently accepts unknown SSH host keys.
 
-The application supports:
+## Editing and workspace tools
 
-- Local and SSH connection forms, explicit reconnect, generation-tagged background work, and draft retention after disconnection
-- Directory navigation, new-file drafts, 32 editor tabs, and path-based quick open
-- UTF-8 editing, line numbers, simple Java/Kotlin/Rust lexical colors, and case-sensitive in-file search
-- Revision-checked saves that do not overwrite changes made outside the editor; a disk-version viewer for manual conflict resolution
-- Explicit discard confirmation for dirty tabs and normal window-close requests
-- Project text search and clickable line results
-- Trusted-workspace Git status and bounded, explicit executable/JSON-argv commands
-- A manual language-server panel with genuine stdio LSP initialization, open/change/close, hover, definition, completion, and event/diagnostic requests
+- Local/SSH connections, explicit reconnect, background requests, and draft retention after disconnection
+- Directory navigation, new-file drafts, up to 32 tabs, and path-based quick open
+- UTF-8 editing, line numbers, Java/Kotlin/Rust lexical colors, and case-sensitive find
+- Revision-checked saves, disk-version inspection, and explicit confirmation before discarding a dirty tab or quitting
+- Project text search with clickable line results
+- Trusted-workspace Git status and explicit executable/JSON-argv commands
 
-Use Ctrl/Cmd+P to open a relative path, Ctrl/Cmd+F to find text, Ctrl/Cmd+S to save, and Ctrl/Cmd+W to close a tab. The explorer's **R** button refreshes its directory; **Up** navigates to its parent.
+Shortcuts:
 
-## Language-server workflow
+| Shortcut | Action |
+| --- | --- |
+| Ctrl/Cmd+P | Open a relative file path |
+| Ctrl/Cmd+F | Find in the current file |
+| Ctrl/Cmd+S | Save |
+| Ctrl/Cmd+W | Close the current tab |
+| Ctrl+Space | Request completion |
+| F12 | Go to definition |
+| Ctrl/Cmd+K | Show hover information |
+| Ctrl/Cmd+Z | Undo |
+| Ctrl/Cmd+Shift+Z | Redo |
 
-1. Connect with trusted command execution enabled
-2. Select **LSP** in the explorer and enter the installed server executable and its JSON argument array
-3. Start the server, open an existing file, enter its LSP language ID (`rust`, `java`, or `kotlin`), and select **Sync current file**
-4. Place the editor cursor and request Hover, Definition, or Completion
-5. Resync after editing; query buttons intentionally stay disabled for an unsynced draft
-6. Select **Refresh diagnostics / events** to collect current notifications
+The explorer's **R** button refreshes its directory; **Up** opens its parent.
 
-Positions are converted to zero-based UTF-16 columns. Results are displayed as read-only JSON, without automatically applying edits. Servers and any required JDK are installed and configured separately on the workspace host. They may index projects or execute repository code with that account's permissions.
+## Native language features
 
-## Deliberate limits
+1. Connect with trusted tool execution enabled
+2. Select **LSP**, enter the installed server executable, JSON argument array, and language ID (`java`, `kotlin`, or `rust`)
+3. Select **Start server**
+4. Matching open files synchronize automatically, with a 350 ms editing debounce
+5. Diagnostics appear in **Problems**. Click a location to jump to the file
+6. Place the cursor on a symbol and press F12, Ctrl/Cmd+K, or Ctrl+Space
 
-This is an independent prototype, not a complete replacement for a mature IDE. There is no debugger, interactive PTY, project model, inline completion menu, rename/refactor engine, persistent settings, autosave, or crash-recovery store. Unsaved buffers survive connection errors within the running process, not a crash or force-quit. Normal close is guarded; commands in progress must finish or time out before quitting.
+Only one server runs per connection. A Java profile syncs `.java` files, a Kotlin profile `.kt`/`.kts`, and Rust `.rs`. Servers and any required JDK must be installed separately on the workspace host. Starting a trusted server can index projects or execute repository code under that account.
 
-Files opened by the backend are bounded to 1 MiB and tabs to 32. Pasted text is retained rather than silently truncated, but a draft over the 1 MiB limit must be shortened or copied before saving. In-file search keeps the first 10,000 matches, project search requests 500, and syntax coloring falls back to plain text above 256 KiB. No recursive file index or always-running polling loop is created by the UI.
+The editor coalesces changes while a sync is in flight. Feature requests wait for their exact draft snapshot to synchronize. New typing, changed cursor positions, stopped/restarted sessions, and lost connections invalidate stale results. Diagnostics are polled at a bounded one-second cadence while a server is active; the UI does not run a perpetual 60 fps polling loop. Automatic updates can be switched off; **Sync now** and **Refresh events** remain available.
 
-Git, command execution, and language servers require explicit workspace trust. Local Windows process tools are currently rejected by the backend; a Windows frontend can still use these tools on a POSIX SSH workspace. Plain local file editing does not require command trust.
+### Completion and imports
+
+Ctrl+Space opens a candidate menu. Single-click selects an item; Enter, **Apply selected**, or double-click accepts it. When supported, Cedar resolves the item first to obtain lazy imports. It validates every edit against the captured text and applies the primary edit and additional same-document edits atomically. The change stays unsaved and is one undo step. Escape or the popup close button cancels a pending acceptance.
+
+Cedar supports plain-text edits and explicit replacement-mode InsertReplaceEdit. Snippets, ambiguous/overlapping ranges, unknown command-dependent items, and unsupported complex edits are disabled with an explanation. `insertTextMode: 2` is accepted for a single-line primary insertion, where indentation adjustment has no effect; multiline primary indentation adjustment remains unsupported. Additional import edits preserve their exact text.
+
+No completion command is executed. The exact JDT LS callback `java.completion.onDidSelect` is deliberately skipped while its validated text edits are applied. Its selection-ranking feedback and automatic signature-help follow-up are unavailable. The official [JDT handler](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/main/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/CompletionHandler.java) handles that callback separately from text/import edits.
+
+### Problems and navigation
+
+Versioned diagnostics are marked current only when they match the synchronized draft. Older results are dimmed or ignored. Results without a version are explicitly labeled **unversioned**, including when they happen to correspond to the latest file. A missing batch version is never treated as proof of freshness. Empty batches clear the file's problems. Lost/oversized event batches produce an incomplete-results warning.
+
+Definitions support ordinary Location and LocationLink responses. Every target file URI is resolved by the workspace agent and checked against the remote workspace root before opening. Outside-root files, dependency archives, `jdt:` targets, and external URLs are unavailable; they are never opened in a browser. Existing dirty tabs remain intact. Hover text and protocol details are inert, copyable text.
+
+## Chinese and CJK display
+
+Cedar's small bundled fonts do not cover Chinese. When CJK text first appears in an editor, file name, or workspace path, Cedar looks for an already installed system font in the background. It prefers a Simplified Chinese face identified from the collection's metadata, including Noto Sans Mono CJK SC on Linux, Microsoft YaHei on Windows, and suitable PingFang/Heiti faces on macOS. Latin code keeps the existing monospace font.
+
+Only known system/user-font locations are checked. One regular font file, up to 32 MiB, is read and validated before being given to egui. There is no font download, installer, directory-wide scan, or redistribution of proprietary system fonts. Missing or oversized fonts produce a visible warning; text stays intact. Rare glyph coverage still depends on the selected font. The first fallback load increases memory use and may cause a short font-atlas rebuild.
+
+The installed Linux Noto collection was verified through actual egui glyph queries: the default fonts did not cover the Chinese test string, while collection face 7 (Noto Sans Mono CJK SC, 19,484,784 bytes) did. Windows/macOS font lookup paths require native-platform validation and are not claimed tested.
+
+```sh
+cargo test -p cedar-app real_system_cjk -- --ignored --nocapture
+```
+
+## Limits and resource policy
+
+This remains an independent prototype, not a complete replacement for a mature IDE. There is no debugger, interactive PTY, project configuration UI, semantic token coloring, snippet engine, multi-file refactoring, persistent settings, autosave, or crash-recovery store. Unsaved buffers survive connection errors in the running process, not a crash or force-quit.
+
+- The backend opens/saves files up to 1 MiB; the frontend allows 32 tabs
+- Pasted text is retained, never silently truncated. An oversized draft must be shortened or copied before saving or using language features
+- Undo retains at most 16 full-text snapshots per tab, initialized once. Completion creates one transaction; tab close/workspace replacement releases its stored history. Large tabs can still use significant memory; this is not a fixed-memory guarantee or a delta-based undo engine
+- In-file find retains 10,000 matches; project search requests 500
+- Syntax coloring falls back to plain text above 256 KiB
+- Completion retains up to 256 candidates/4 MiB, applies at most 128 edits, and enforces a 1 MiB resulting document
+- Diagnostic display is bounded to 2,000 entries, 128 files, and 512 KiB of text
+- Protocol detail serialization stops at 128 KiB rather than building an unlimited pretty-printed string
+
+Git, commands, and language servers require explicit workspace trust. Local Windows process tools remain disabled by the backend; a Windows frontend can use them on a POSIX SSH workspace. Local file editing does not require command trust.
+
+Normal quitting waits for active tools and explicitly stops the language server. If a draft changes while shutdown is pending, Cedar asks again before discarding it.
 
 ## Verification
 
@@ -51,6 +102,15 @@ cargo test -p cedar-app
 cargo clippy -p cedar-app --all-targets -- -D warnings
 ```
 
-Headless tests cover save acknowledgements after newer typing, conflicts and disconnection, stale generations, edits during workspace switches, delayed open requests at the tab limit, dirty tab protection, Unicode search, UTF-16 LSP positions, unsynced-language-query protection, and native UI frame layout at minimum and default window sizes. A headless frame test does not replace an OS-window interaction test.
+The ordinary suite covers race handling, dirty-close protection, revision-safe saves, debounce/coalescing, stale snapshots, UTF-16/Unicode/CRLF positions, malformed and overlapping edits, lazy imports, cancelled acceptance, diagnostic freshness, bounded history, and headless layout at minimum/default window sizes.
 
-Framework API reference: <https://docs.rs/eframe/0.31.1/eframe/>.
+An opt-in real Java integration test creates a temporary Eclipse Java project and exercises actual JDT LS through the local workspace protocol and the frontend transaction/egui undo code:
+
+```sh
+CEDAR_JDTLS_HOME=/path/to/jdtls \
+  cargo test -p cedar-app real_java_completion -- --ignored --nocapture
+```
+
+It checks semantic diagnostics, definition/URI resolution, GregorianCalendar completion, lazy import resolution, atomic application, one-step undo/redo, unchanged disk contents, subsequent synchronization, and shutdown. Evidence is in `tests/evidence/jdtls-1.61.0-editor.json`. That test does not claim OS-window keyboard coverage or real Kotlin/SSH interoperability. Native-window tests and additional server/environment tests must be reported separately.
+
+Framework reference: <https://docs.rs/eframe/0.31.1/eframe/>.

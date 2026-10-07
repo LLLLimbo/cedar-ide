@@ -79,8 +79,14 @@ fn main() {
                 let mut capabilities = if mode == "no-capabilities" {
                     json!({})
                 } else {
-                    json!({"textDocumentSync":{"openClose":true,"change":if mode == "incremental" {2} else {1}}, "completionProvider":{}, "definitionProvider":true,"hoverProvider":true})
+                    json!({"textDocumentSync":{"openClose":true,"change":if mode == "incremental" {2} else {1}}, "completionProvider":{"resolveProvider":true}, "definitionProvider":true,"hoverProvider":true})
                 };
+                if mode == "resolve-no-provider" {
+                    capabilities["completionProvider"] = json!({});
+                }
+                if mode == "resolve-false-provider" {
+                    capabilities["completionProvider"]["resolveProvider"] = json!(false);
+                }
                 if mode == "bad-encoding" {
                     capabilities["positionEncoding"] = json!("utf-8");
                 }
@@ -101,7 +107,34 @@ fn main() {
             "textDocument/didClose" | "$/cancelRequest" => continue,
             "textDocument/completion" => {
                 assert!(initialized);
-                json!({"isIncomplete":false,"items":[{"label":"hello","kind":6}]})
+                json!({"isIncomplete":false,"items":[{"label":"hello","kind":6,"data":{"resultId":17,"opaque":["keep",42]},"extension":{"future":true},"command":{"command":"mock.mustNotExecute","title":"Do not execute","arguments":[17]},"textEdit":{"newText":"hello","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}}}}]})
+            }
+            "completionItem/resolve" => {
+                assert!(initialized);
+                if mode == "resolve-never" {
+                    send(
+                        &mut output,
+                        json!({"jsonrpc":"2.0","method":"mock/resolvePending","params":{}}),
+                    );
+                    continue;
+                }
+                if mode == "resolve-error" {
+                    send(
+                        &mut output,
+                        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":"unknown completion item","data":{"reason":"expired"}}}),
+                    );
+                    continue;
+                }
+                if mode == "resolve-invalid" {
+                    Value::Null
+                } else {
+                    let mut item = message["params"].clone();
+                    item["documentation"] =
+                        json!({"kind":"plaintext","value":"Resolved mock documentation"});
+                    item["detail"] = json!("demo.Hello");
+                    item["additionalTextEdits"] = json!([{"newText":"import demo.Hello;\n","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}]);
+                    item
+                }
             }
             "textDocument/definition" => {
                 json!({"uri":message["params"]["textDocument"]["uri"],"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}})

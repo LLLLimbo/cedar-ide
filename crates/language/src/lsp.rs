@@ -177,7 +177,7 @@ impl LspClient {
                     "window": {"workDoneProgress":false},
                     "textDocument": {
                         "synchronization": {"dynamicRegistration":false,"willSave":false,"willSaveWaitUntil":false,"didSave":false},
-                        "completion": {"dynamicRegistration":false,"completionItem":{"snippetSupport":false,"documentationFormat":["plaintext","markdown"]}},
+                        "completion": {"dynamicRegistration":false,"completionItem":{"snippetSupport":false,"documentationFormat":["plaintext","markdown"],"resolveSupport":{"properties":["documentation","detail","additionalTextEdits"]}}},
                         "hover": {"dynamicRegistration":false,"contentFormat":["plaintext","markdown"]},
                         "definition": {"dynamicRegistration":false,"linkSupport":true},
                         "publishDiagnostics": {"relatedInformation":true,"versionSupport":true,"codeDescriptionSupport":true,"dataSupport":true}
@@ -318,6 +318,35 @@ impl LspClient {
             uri,
             position,
         )
+    }
+
+    /// Resolve one original completion item, preserving its opaque `data` and
+    /// extension fields. Requires the server's static `resolveProvider` capability.
+    /// The returned item may contain lazy documentation, detail and import edits.
+    /// This call does not execute commands or apply any text edits. The UI must
+    /// validate its captured document/version before applying the returned edits.
+    pub fn resolve_completion(&self, item: Value) -> Result<Value, Error> {
+        let _gate = self.gate.read().unwrap();
+        let (capabilities, _) = self.ready()?;
+        if capabilities
+            .pointer("/completionProvider/resolveProvider")
+            .and_then(Value::as_bool)
+            != Some(true)
+        {
+            return Err(Error::Unsupported("completionItem/resolve".into()));
+        }
+        if !item.is_object() || item.get("label").and_then(Value::as_str).is_none() {
+            return Err(Error::InvalidState(
+                "completion item must be an object with a string label".into(),
+            ));
+        }
+        let resolved = self.rpc.request("completionItem/resolve", item)?;
+        if !resolved.is_object() || resolved.get("label").and_then(Value::as_str).is_none() {
+            return Err(Error::Protocol(
+                "completion resolve result must be an item with a string label".into(),
+            ));
+        }
+        Ok(resolved)
     }
 
     /// Return null, Location(s), or LocationLink(s) unchanged.

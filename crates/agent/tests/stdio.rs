@@ -43,7 +43,7 @@ fn stdio_agent_handles_sequential_frames_without_stdout_noise() {
         match i {
             0 => assert!(matches!(
                 response.result,
-                Ok(Payload::Hello { protocol: 1, .. })
+                Ok(Payload::Hello { protocol, .. }) if protocol == cedar_protocol::PROTOCOL_VERSION
             )),
             1 => assert!(matches!(response.result, Ok(Payload::Written { .. }))),
             2 => assert!(

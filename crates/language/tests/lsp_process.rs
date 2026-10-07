@@ -408,3 +408,146 @@ fn cold_initialize_timeout_can_be_extended_without_changing_feature_deadlines() 
     assert!(start.elapsed() < Duration::from_millis(600));
     extended.shutdown().unwrap();
 }
+
+#[test]
+fn completion_resolve_negotiates_lazy_fields_and_preserves_opaque_item_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let audit_path = temp.path().join("resolve-audit.jsonl");
+    let client = ready("normal", Some(&audit_path));
+    let uri = "file:///mock/Main.java";
+    client.did_open(uri, "java", 1, "hel").unwrap();
+    let completion = client
+        .completion(
+            uri,
+            Position {
+                line: 0,
+                character: 3,
+            },
+        )
+        .unwrap();
+    let original = completion["items"][0].clone();
+    assert!(original.get("additionalTextEdits").is_none());
+    let resolved = client.resolve_completion(original.clone()).unwrap();
+    assert_eq!(resolved["data"], original["data"]);
+    assert_eq!(resolved["extension"], original["extension"]);
+    assert_eq!(resolved["command"], original["command"]);
+    assert_eq!(resolved["textEdit"], original["textEdit"]);
+    assert_eq!(resolved["detail"], "demo.Hello");
+    assert_eq!(
+        resolved["documentation"]["value"],
+        "Resolved mock documentation"
+    );
+    assert_eq!(
+        resolved["additionalTextEdits"][0]["newText"],
+        "import demo.Hello;\n"
+    );
+    client.shutdown().unwrap();
+    let audit: Vec<Value> = std::fs::read_to_string(audit_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(audit[0].pointer("/params/capabilities/textDocument/completion/completionItem/resolveSupport/properties").unwrap(), &json!(["documentation","detail","additionalTextEdits"]));
+    let resolve = audit
+        .iter()
+        .find(|v| v["method"] == "completionItem/resolve")
+        .unwrap();
+    assert_eq!(resolve["params"], original);
+    assert!(!audit
+        .iter()
+        .any(|v| v["method"] == "workspace/executeCommand"));
+}
+
+#[test]
+fn completion_resolve_requires_ready_state_and_advertised_provider() {
+    let item = json!({"label":"hello", "data":{"opaque":1}});
+    let client = LspClient::spawn(config("normal", None), options()).unwrap();
+    assert!(matches!(
+        client.resolve_completion(item.clone()),
+        Err(Error::InvalidState(_))
+    ));
+    client.initialize(None, json!({})).unwrap();
+    for malformed in [Value::Null, json!([]), json!({}), json!({"label":99})] {
+        assert!(matches!(
+            client.resolve_completion(malformed),
+            Err(Error::InvalidState(_))
+        ));
+    }
+    client.shutdown().unwrap();
+    assert!(matches!(
+        client.resolve_completion(item.clone()),
+        Err(Error::InvalidState(_))
+    ));
+    for mode in [
+        "resolve-no-provider",
+        "resolve-false-provider",
+        "no-capabilities",
+    ] {
+        let client = ready(mode, None);
+        assert!(matches!(
+            client.resolve_completion(item.clone()),
+            Err(Error::Unsupported(_))
+        ));
+        client.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn completion_resolve_propagates_server_error_and_rejects_malformed_result() {
+    let item = json!({"label":"hello"});
+    let client = ready("resolve-error", None);
+    assert!(
+        matches!(client.resolve_completion(item.clone()), Err(Error::Remote { code: -32602, data: Some(data), .. }) if data["reason"] == "expired")
+    );
+    assert_eq!(
+        client.request("mock/echo", json!({"ok":true})).unwrap()["ok"],
+        true
+    );
+    client.shutdown().unwrap();
+    let client = ready("resolve-invalid", None);
+    assert!(matches!(
+        client.resolve_completion(item),
+        Err(Error::Protocol(_))
+    ));
+    client.shutdown().unwrap();
+}
+
+#[test]
+fn completion_resolve_keeps_normal_deadline_and_notifications_flow() {
+    let mut opts = options();
+    opts.request_timeout = Duration::from_millis(250);
+    let client = LspClient::spawn(config("resolve-never", None), opts).unwrap();
+    client.initialize(None, json!({})).unwrap();
+    thread::scope(|scope| {
+        let pending = scope.spawn(|| client.resolve_completion(json!({"label":"hello"})));
+        assert!(
+            matches!(client.next_event(Duration::from_secs(1)).unwrap(), Some(LspEvent::Notification { method, .. }) if method == "mock/resolvePending")
+        );
+        assert_eq!(
+            client.request("mock/echo", json!({"ok":true})).unwrap()["ok"],
+            true
+        );
+        assert!(
+            matches!(pending.join().unwrap(), Err(Error::Timeout(method)) if method == "completionItem/resolve")
+        );
+    });
+    client.shutdown().unwrap();
+}
+
+#[test]
+fn completion_resolve_enforces_frame_limit_without_poisoning_connection() {
+    let mut opts = options();
+    opts.frame_limits.max_content_bytes = 2048;
+    let client = LspClient::spawn(config("normal", None), opts).unwrap();
+    client.initialize(None, json!({})).unwrap();
+    assert!(matches!(
+        client.resolve_completion(json!({"label":"hello","data":"x".repeat(4096)})),
+        Err(Error::Protocol(_))
+    ));
+    let resolved = client
+        .resolve_completion(json!({"label":"hello","data":{"small":true}}))
+        .unwrap();
+    assert_eq!(resolved["data"]["small"], true);
+    assert_eq!(resolved["detail"], "demo.Hello");
+    client.shutdown().unwrap();
+}

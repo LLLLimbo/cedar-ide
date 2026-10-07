@@ -55,7 +55,7 @@ fn hello_and_sorted_listing() {
     fs::write(dir.path().join("alpha"), "").unwrap();
     match ws.handle(Operation::Hello).unwrap() {
         Payload::Hello { protocol, root } => {
-            assert_eq!(protocol, 1);
+            assert_eq!(protocol, cedar_protocol::PROTOCOL_VERSION);
             assert_eq!(root, dir.path().canonicalize().unwrap().to_string_lossy());
         }
         other => panic!("{other:?}"),

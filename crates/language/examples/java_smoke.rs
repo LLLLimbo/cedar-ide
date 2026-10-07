@@ -1,5 +1,5 @@
 //! Opt-in real-server test using an installed Eclipse JDT LS distribution.
-//! Usage: cargo run -p cedar-language --example java_smoke -- /path/to/jdtls [/path/to/java]
+//! Usage: cargo run -p cedar-language --example java_smoke -- /path/to/jdtls [/path/to/java] [--resolve-imports]
 //! Only a synthetic, temporary Eclipse Java project is created and inspected.
 use cedar_language::{
     ClientOptions, LspClient, LspEvent, Position, ProcessConfig, PublishDiagnostics,
@@ -138,9 +138,13 @@ fn await_diagnostics(
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let mut args: Vec<_> = std::env::args_os().skip(1).collect();
+    let resolve_imports = args.last().is_some_and(|arg| arg == "--resolve-imports");
+    if resolve_imports {
+        args.pop();
+    }
     if args.is_empty() || args.len() > 2 {
-        eprintln!("Usage: java_smoke JDTLS_DIRECTORY [JAVA_EXECUTABLE]");
+        eprintln!("Usage: java_smoke JDTLS_DIRECTORY [JAVA_EXECUTABLE] [--resolve-imports]");
         std::process::exit(2);
     }
     let jdtls = Path::new(&args[0]).canonicalize()?;
@@ -211,7 +215,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             "kind":"run_metadata", "fixture":"fresh synthetic Eclipse Java project, one source file",
             "os":std::env::consts::OS, "arch":std::env::consts::ARCH,
             "jvm_max_heap_mib":512, "memory_scope":"direct_language_server_jvm_only",
-            "frontend_or_agent_included":false, "fresh_project_and_server_data":true
+            "frontend_or_agent_included":false, "fresh_project_and_server_data":true,
+            "resolve_imports":resolve_imports
         })
     );
     let start = Instant::now();
@@ -244,6 +249,50 @@ fn main() -> Result<(), Box<dyn Error>> {
     }) {
         return Err("expected greeting in real completion results".into());
     }
+    if resolve_imports {
+        let original = items
+            .iter()
+            .find(|item| {
+                item["label"]
+                    .as_str()
+                    .is_some_and(|label| label.starts_with("GregorianCalendar"))
+            })
+            .ok_or("expected GregorianCalendar candidate for lazy import resolution")?
+            .clone();
+        if original
+            .get("additionalTextEdits")
+            .is_some_and(|edits| !edits.is_null() && !edits.as_array().is_some_and(Vec::is_empty))
+        {
+            return Err("expected import edits to be deferred until completionItem/resolve".into());
+        }
+        let resolved = client.resolve_completion(original.clone())?;
+        println!(
+            "{}",
+            json!({"kind":"completion_resolve","input":original,"payload":resolved,"server_command_executed":false})
+        );
+        let edits = resolved
+            .get("additionalTextEdits")
+            .and_then(Value::as_array)
+            .ok_or("resolve did not return additionalTextEdits")?;
+        if !edits.iter().any(|edit| {
+            edit["newText"]
+                .as_str()
+                .is_some_and(|text| text.contains("import java.util.GregorianCalendar;"))
+        }) {
+            return Err(
+                "resolved item did not contain the expected GregorianCalendar import".into(),
+            );
+        }
+        if original.get("textEdit") != resolved.get("textEdit")
+            || original["label"] != resolved["label"]
+        {
+            return Err(
+                "server changed the completion's primary edit or label during resolve".into(),
+            );
+        }
+        // Deliberately do not execute java.completion.onDidSelect or apply this
+        // candidate to the fixture: the UI separately validates and applies edits.
+    }
     let definition =
         client.definition(&document_uri, Position::end_of(&SOURCE[..reference + 2]))?;
     println!("{}", json!({"kind":"definition","payload":definition}));
@@ -263,7 +312,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     client.shutdown()?;
     println!(
         "{}",
-        json!({"kind":"pass","elapsed_ms":start.elapsed().as_millis(),"initial_diagnostics":initial_diagnostics.diagnostics.len(),"corrected_diagnostics":corrected_diagnostics.diagnostics.len(),"checks":["initialize","didOpen","semantic_diagnostics","hover","completion","definition","didChange","diagnostic_error_cleared","didClose","shutdown"]})
+        json!({"kind":"pass","elapsed_ms":start.elapsed().as_millis(),"initial_diagnostics":initial_diagnostics.diagnostics.len(),"corrected_diagnostics":corrected_diagnostics.diagnostics.len(),"lazy_import_resolve_checked":resolve_imports,"server_commands_executed":false,"checks":["initialize","didOpen","semantic_diagnostics","hover","completion","definition","didChange","diagnostic_error_cleared","didClose","shutdown"]})
     );
     Ok(())
 }

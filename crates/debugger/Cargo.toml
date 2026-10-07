@@ -1,0 +1,23 @@
+[package]
+name = "cedar-debugger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cedar-language = { path = "../language" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+test-server = []
+
+[[bin]]
+name = "cedar-mock-dap"
+path = "tests/support/mock_dap.rs"
+required-features = ["test-server"]

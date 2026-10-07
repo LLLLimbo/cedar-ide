@@ -1,7 +1,12 @@
 //! Cedar IDE — a native Rust frontend for a local or SSH workspace agent.
+pub mod completion;
+mod editor_state;
+mod language_results;
+mod language_sync;
 mod language_ui;
 mod model;
 mod syntax;
+mod system_fonts;
 mod worker;
 
 use cedar_client::ConnectionSpec;
@@ -122,13 +127,26 @@ impl ConnectForm {
 }
 
 enum Job {
-    List { path: String },
-    Open { path: String, line: Option<usize> },
-    Save { document: u64, snapshot: String },
-    Search { query: String },
+    List {
+        path: String,
+    },
+    Open {
+        path: String,
+        line: Option<usize>,
+        navigation: u64,
+    },
+    Save {
+        document: u64,
+        snapshot: String,
+    },
+    Search {
+        query: String,
+    },
     Git,
     Run,
-    Inspect { path: String },
+    Inspect {
+        path: String,
+    },
     Language(language_ui::Action),
 }
 
@@ -138,6 +156,9 @@ enum Confirm {
 }
 
 pub struct CedarApp {
+    editor_ctx: egui::Context,
+    system_fonts: system_fonts::SystemFonts,
+    cjk_seen: bool,
     state: ConnectionState,
     form: ConnectForm,
     active_form: Option<ConnectForm>,
@@ -147,6 +168,7 @@ pub struct CedarApp {
     generation: u64,
     next_request: u64,
     next_document: u64,
+    navigation_epoch: u64,
     worker: Option<Worker>,
     result_tx: Sender<Event>,
     result_rx: Receiver<Event>,
@@ -160,6 +182,7 @@ pub struct CedarApp {
     confirm: Option<Confirm>,
     allow_close: bool,
     close_after_language_stop: bool,
+    close_snapshot: Option<Vec<(u64, u64)>>,
     error: Option<String>,
     notice: String,
     tool: Tool,
@@ -215,12 +238,17 @@ impl CedarApp {
                 .text_styles
                 .insert(egui::TextStyle::Monospace, FontId::monospace(14.0));
         });
-        Self::empty()
+        let mut app = Self::empty();
+        app.editor_ctx = cc.egui_ctx.clone();
+        app
     }
 
     fn empty() -> Self {
         let (result_tx, result_rx) = mpsc::channel();
         Self {
+            editor_ctx: egui::Context::default(),
+            system_fonts: system_fonts::SystemFonts::default(),
+            cjk_seen: false,
             state: ConnectionState::Idle,
             form: ConnectForm::default(),
             active_form: None,
@@ -230,6 +258,7 @@ impl CedarApp {
             generation: 0,
             next_request: 1,
             next_document: 1,
+            navigation_epoch: 0,
             worker: None,
             result_tx,
             result_rx,
@@ -243,6 +272,7 @@ impl CedarApp {
             confirm: None,
             allow_close: false,
             close_after_language_stop: false,
+            close_snapshot: None,
             error: None,
             notice: "Ready when you are".into(),
             tool: Tool::Search,
@@ -370,7 +400,14 @@ impl CedarApp {
             self.request(Operation::List { path: path.clone() }, Job::List { path });
     }
 
+    fn navigation_changed(&mut self) {
+        self.navigation_epoch = self.navigation_epoch.wrapping_add(1);
+        self.language.cancel_navigation();
+    }
+
     fn open(&mut self, path: String, line: Option<usize>) {
+        self.navigation_changed();
+        let navigation = self.navigation_epoch;
         if let Some(doc) = self.documents.iter_mut().find(|doc| doc.path == path) {
             self.active_document = Some(doc.id);
             if let Some(line) = line {
@@ -386,16 +423,27 @@ impl CedarApp {
             );
             return;
         }
-        if self
-            .pending
-            .values()
-            .any(|job| matches!(job, Job::Open { path: pending, .. } if pending == &path))
-        {
-            return;
+        for job in self.pending.values_mut() {
+            if let Job::Open {
+                path: pending,
+                line: pending_line,
+                navigation: pending_navigation,
+            } = job
+            {
+                if pending == &path {
+                    *pending_line = line;
+                    *pending_navigation = navigation;
+                    return;
+                }
+            }
         }
         self.request(
             Operation::Read { path: path.clone() },
-            Job::Open { path, line },
+            Job::Open {
+                path,
+                line,
+                navigation,
+            },
         );
         self.quick_open = false;
     }
@@ -456,6 +504,9 @@ impl CedarApp {
                             self.disconnected("Workspace switch cancelled because a draft changed while connecting. Your edits are retained; reconnect to the original workspace to save them".into());
                             return;
                         }
+                        for doc in &self.documents {
+                            editor_state::forget(&self.editor_ctx, doc.id);
+                        }
                         self.documents.clear();
                         self.active_document = None;
                         self.search_results.clear();
@@ -489,8 +540,12 @@ impl CedarApp {
         let payload = match event.result {
             Ok(payload) => payload,
             Err(error) => {
-                if matches!(job, Job::Language(language_ui::Action::Stop)) {
+                if matches!(&job, Job::Language(action) if action.is_stop()) {
                     self.close_after_language_stop = false;
+                    self.close_snapshot = None;
+                }
+                if let Job::Language(action) = &job {
+                    self.language_error(action, &error);
                 }
                 if !event.connected {
                     self.disconnected(error);
@@ -510,6 +565,9 @@ impl CedarApp {
                         .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
                 });
                 self.directory = path;
+                self.cjk_seen |= entries
+                    .iter()
+                    .any(|entry| system_fonts::contains_cjk(&entry.name));
                 self.entries = entries;
             }
             (Job::List { .. }, Payload::Entries { .. }) => {}
@@ -517,6 +575,7 @@ impl CedarApp {
                 Job::Open {
                     path: requested,
                     line,
+                    navigation,
                 },
                 Payload::File {
                     path,
@@ -531,10 +590,13 @@ impl CedarApp {
                     return;
                 }
                 if let Some(doc) = self.documents.iter_mut().find(|doc| doc.path == path) {
-                    self.active_document = Some(doc.id);
-                    if let Some(line) = line {
-                        doc.jump_to = Some(line_start(&doc.text, line));
+                    if navigation == self.navigation_epoch {
+                        self.active_document = Some(doc.id);
+                        if let Some(line) = line {
+                            doc.jump_to = Some(line_start(&doc.text, line));
+                        }
                     }
+                    self.complete_language_navigation(&requested);
                     return;
                 }
                 if self.documents.len() >= 32 {
@@ -551,8 +613,11 @@ impl CedarApp {
                     doc.jump_to = Some(line_start(&doc.text, line));
                 }
                 self.documents.push(doc);
-                self.active_document = Some(id);
-                self.open_form = false;
+                if navigation == self.navigation_epoch {
+                    self.active_document = Some(id);
+                    self.open_form = false;
+                }
+                self.complete_language_navigation(&requested);
             }
             (Job::Save { document, snapshot }, Payload::Written { revision }) => {
                 if let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == document) {
@@ -618,7 +683,7 @@ impl CedarApp {
                 };
             }
             (Job::Language(action), Payload::Language { value }) => {
-                self.language.apply(action, value)
+                self.apply_language_action(action, value)
             }
             (Job::Inspect { path }, Payload::File { text, .. }) => {
                 self.disk_view = Some((path, text))
@@ -681,14 +746,35 @@ impl CedarApp {
         );
     }
 
+    fn finish_pending_close(&mut self, ctx: &egui::Context) {
+        if self.close_after_language_stop && !self.language.running && !self.language_busy() {
+            self.close_after_language_stop = false;
+            let current: Vec<_> = self
+                .documents
+                .iter()
+                .map(|doc| (doc.id, doc.edit_version))
+                .collect();
+            if self.close_snapshot.take().as_ref() != Some(&current) && self.dirty() {
+                self.confirm = Some(Confirm::CloseWindow);
+                self.notice = "A draft changed while the language server was stopping; confirm before quitting".into();
+            } else {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
     fn begin_close(&mut self, ctx: &egui::Context) {
         if self.language.running && self.ready() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_after_language_stop = true;
-            self.request(
-                Operation::LanguageStop,
-                Job::Language(language_ui::Action::Stop),
+            self.close_snapshot = Some(
+                self.documents
+                    .iter()
+                    .map(|doc| (doc.id, doc.edit_version))
+                    .collect(),
             );
+            self.stop_language();
             self.notice = "Stopping language server before closing".into();
         } else {
             self.allow_close = true;
@@ -709,11 +795,11 @@ impl CedarApp {
         }
     }
     fn remove_tab(&mut self, id: u64) {
-        if self.ready() && self.language.running && (self.language.opened.contains_key(&id) || self.pending.values().any(|job| matches!(job, Job::Language(language_ui::Action::Sync { document, .. }) if *document == id))) {
-            if let Some(path) = self.documents.iter().find(|doc| doc.id == id).map(|doc| doc.path.clone()) {
-                self.request(Operation::LanguageClose { path }, Job::Language(language_ui::Action::Close { document: id }));
-            }
+        if self.active_document == Some(id) {
+            self.navigation_changed();
         }
+        self.close_language_document(id);
+        editor_state::forget(&self.editor_ctx, id);
         let position = self
             .documents
             .iter()
@@ -729,6 +815,7 @@ impl CedarApp {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        self.language_shortcuts(ctx);
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
             self.save();
         }
@@ -852,6 +939,13 @@ impl CedarApp {
                     if !self.pending.is_empty() {
                         ui.spinner();
                         ui.label(RichText::new(format!("{} pending", self.pending.len())).small());
+                    }
+                    if ui.available_width() > 690.0 {
+                        ui.add_sized(
+                            [350.0, 18.0],
+                            egui::Label::new(RichText::new(&self.notice).small().color(MUTED))
+                                .truncate(),
+                        );
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(doc) = self.active() {
@@ -1306,6 +1400,7 @@ impl CedarApp {
                 });
             });
         if let Some(id) = activate {
+            self.navigation_changed();
             self.active_document = Some(id);
             self.find_index = None;
         }
@@ -1358,6 +1453,7 @@ impl CedarApp {
             .find(|doc| Some(doc.id) == self.active_document)
         {
             let editor_id = egui::Id::new(("editor", doc.id));
+            editor_state::load(ui.ctx(), doc);
             let jump_to = doc.jump_to.take();
             let scroll_to = jump_to.or(doc.scroll_to.take());
             if let Some(index) = jump_to {
@@ -1414,6 +1510,7 @@ impl CedarApp {
                         }
                         if output.response.changed() {
                             doc.edit_version = doc.edit_version.saturating_add(1);
+                            doc.has_cjk |= system_fonts::contains_cjk(&doc.text);
                         }
                         if let Some(range) = output.cursor_range {
                             doc.cursor = cursor_location(&doc.text, range.primary.ccursor.index);
@@ -1528,7 +1625,7 @@ impl CedarApp {
                         let id = self.next_document; self.next_document += 1;
                         let mut doc = Document::new(id, path, String::new(), String::new());
                         doc.revision = None;
-                        self.documents.push(doc); self.active_document = Some(id); self.new_file = false;
+                        self.documents.push(doc); self.navigation_changed(); self.active_document = Some(id); self.new_file = false;
                     }
                 }
             });
@@ -1584,11 +1681,21 @@ impl CedarApp {
 impl eframe::App for CedarApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
-        if self.close_after_language_stop && !self.language.running && !self.language_busy() {
-            self.close_after_language_stop = false;
-            self.allow_close = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        let cjk = self.system_fonts.needs_probe()
+            && (self.cjk_seen
+                || self.language.cjk_seen
+                || self.documents.iter().any(|doc| doc.has_cjk)
+                || system_fonts::contains_cjk(&self.form.local_root)
+                || system_fonts::contains_cjk(&self.form.remote_root)
+                || system_fonts::contains_cjk(&self.search_query)
+                || system_fonts::contains_cjk(&self.find_query));
+        if let Some(result) = self.system_fonts.tick(ctx, cjk) {
+            match result {
+                Ok(message) => self.notice = message,
+                Err(error) => self.error = Some(error),
+            }
         }
+        self.finish_pending_close(ctx);
         if ctx.input(|input| input.viewport().close_requested()) && !self.allow_close {
             if self.mutation_pending() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1623,6 +1730,8 @@ impl eframe::App for CedarApp {
                 }
             });
         self.dialogs(ctx);
+        self.language_popups(ctx);
+        self.language_tick(ctx);
     }
 }
 
@@ -1673,7 +1782,7 @@ mod tests {
             id: 0,
             connected: true,
             result: Ok(Payload::Hello {
-                protocol: 1,
+                protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: "wrong".into(),
             }),
         });
@@ -1765,13 +1874,27 @@ mod tests {
             id: 0,
             connected: true,
             result: Ok(Payload::Hello {
-                protocol: 1,
+                protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: "/new".into(),
             }),
         });
         assert_eq!(app.documents[0].text, "edited during connection");
         assert_eq!(app.workspace_key.as_deref(), Some("local:/old"));
         assert!(app.state == ConnectionState::Disconnected);
+    }
+    #[test]
+    fn typing_during_language_shutdown_requires_fresh_discard_confirmation() {
+        let mut app = CedarApp::empty();
+        let mut doc = Document::new(1, "Main.java".into(), "saved".into(), "r".into());
+        app.close_after_language_stop = true;
+        app.close_snapshot = Some(vec![(1, 0)]);
+        doc.text = "typed during shutdown".into();
+        doc.edit_version = 1;
+        app.documents.push(doc);
+        app.finish_pending_close(&egui::Context::default());
+        assert!(!app.allow_close);
+        assert!(matches!(app.confirm, Some(Confirm::CloseWindow)));
+        assert_eq!(app.documents[0].text, "typed during shutdown");
     }
     #[test]
     fn slow_open_results_cannot_exceed_tab_limit() {
@@ -1785,6 +1908,7 @@ mod tests {
             Job::Open {
                 path: "extra.rs".into(),
                 line: None,
+                navigation: 0,
             },
         );
         app.apply_event(Event {
@@ -1871,6 +1995,39 @@ mod tests {
                     .all(|shape| shape.clip_rect.is_finite()));
             }
         }
+    }
+    #[test]
+    fn slow_file_open_does_not_steal_focus_from_newer_navigation() {
+        let mut app = CedarApp::empty();
+        app.documents.push(Document::new(
+            1,
+            "current.rs".into(),
+            "draft".into(),
+            "r".into(),
+        ));
+        app.active_document = Some(1);
+        app.next_document = 2;
+        app.navigation_epoch = 2;
+        app.pending.insert(
+            7,
+            Job::Open {
+                path: "older.rs".into(),
+                line: None,
+                navigation: 1,
+            },
+        );
+        app.apply_event(Event {
+            generation: 0,
+            id: 7,
+            connected: true,
+            result: Ok(Payload::File {
+                path: "older.rs".into(),
+                text: "older".into(),
+                revision: "r".into(),
+            }),
+        });
+        assert_eq!(app.active_document, Some(1));
+        assert_eq!(app.documents.len(), 2);
     }
     #[test]
     fn newer_directory_request_wins() {

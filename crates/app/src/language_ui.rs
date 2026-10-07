@@ -1,10 +1,38 @@
-//! Deliberate, manual LSP controls. Servers execute only after explicit user action.
-use crate::{model::Document, CedarApp, Job, AMBER, GREEN, MUTED};
-use cedar_protocol::{LanguageQueryKind, Operation};
+//! Native language UI. Remote payloads remain inert; edits are snapshot-checked transactions.
+use crate::{
+    completion::{self, Candidate, Position, Range},
+    language_results::{self, Diagnostics, Location},
+    language_sync::{Acknowledged, SyncTracker},
+    model::Document,
+    CedarApp, Job, AMBER, GREEN, MUTED, RED,
+};
+use cedar_protocol::{LanguageQueryKind, Operation, MAX_FILE_BYTES};
 use eframe::egui::{self, RichText};
-use std::collections::HashMap;
+use serde_json::Value;
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
-pub(super) enum Action {
+#[derive(Clone)]
+pub(super) struct QueryContext {
+    session: u64,
+    document: u64,
+    edit_version: u64,
+    source: String,
+    cursor: Position,
+}
+#[derive(Clone)]
+struct QueryIntent {
+    context: QueryContext,
+    kind: LanguageQueryKind,
+}
+
+pub(super) struct Action {
+    pub session: u64,
+    pub kind: ActionKind,
+}
+pub(super) enum ActionKind {
     Start,
     Stop,
     Sync {
@@ -15,71 +43,147 @@ pub(super) enum Action {
     Close {
         document: u64,
     },
-    Query,
+    Query {
+        context: QueryContext,
+        kind: LanguageQueryKind,
+    },
     Events,
+    ResolveUri {
+        sequence: u64,
+        navigation: u64,
+        location: Location,
+    },
+    ResolveCompletion {
+        context: QueryContext,
+        original: Value,
+        acceptance: u64,
+    },
+}
+impl Action {
+    pub fn is_stop(&self) -> bool {
+        matches!(self.kind, ActionKind::Stop)
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Problems,
+    Completion,
+    Definitions,
+    Hover,
+    Activity,
+}
+struct CompletionMenu {
+    context: QueryContext,
+    candidates: Vec<Candidate>,
+    selected: usize,
+    incomplete: bool,
+    truncated: bool,
+}
+struct DeferredNavigation {
+    session: u64,
+    sequence: u64,
+    navigation: u64,
+    range: Range,
 }
 
 pub(super) struct LanguagePanel {
     pub running: bool,
-    pub opened: HashMap<u64, (i32, u64)>,
+    pub cjk_seen: bool,
+    pub session: u64,
+    pub sync: SyncTracker,
+    next_version: i32,
+    closed_uris: HashSet<String>,
     program: String,
     args: String,
     language_id: String,
+    capabilities: Value,
+    diagnostics: Diagnostics,
+    definitions: Vec<Location>,
+    hover: String,
     output: String,
+    view: View,
+    automatic: bool,
+    paused_reason: Option<String>,
+    next_events: f64,
+    intent: Option<QueryIntent>,
+    completions: Option<CompletionMenu>,
+    completion_popup: bool,
+    acceptance_sequence: u64,
+    navigation_sequence: u64,
+    deferred_navigation: HashMap<String, DeferredNavigation>,
 }
 impl Default for LanguagePanel {
     fn default() -> Self {
         Self {
-            running: false, opened: HashMap::new(), program: String::new(), args: "[]".into(),
-            language_id: "rust".into(),
-            output: "Start an installed stdio language server, sync a file, then request language information. Java/Kotlin servers and a JDK must be installed separately on the workspace host.".into(),
+            running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), next_version: 1, closed_uris: HashSet::new(),
+            program: String::new(), args: "[]".into(), language_id: "rust".into(), capabilities: Value::Null,
+            diagnostics: Diagnostics::default(), definitions: Vec::new(), hover: String::new(),
+            output: "Start an installed stdio language server. Java/Kotlin servers and their JDK must be installed on the workspace host.".into(),
+            view: View::Problems, automatic: true, paused_reason: None, next_events: 0.0,
+            intent: None, completions: None, completion_popup: false, acceptance_sequence: 0, navigation_sequence: 0, deferred_navigation: HashMap::new(),
         }
     }
 }
 impl LanguagePanel {
     pub fn reset(&mut self) {
+        self.session = self.session.wrapping_add(1);
         self.running = false;
-        self.opened.clear();
-        self.output =
-            "Language session stopped. Start a server for this connection when needed.".into();
+        self.sync.clear();
+        self.next_version = 1;
+        self.closed_uris.clear();
+        self.diagnostics.clear();
+        self.definitions.clear();
+        self.hover.clear();
+        self.intent = None;
+        self.acceptance_sequence = self.acceptance_sequence.wrapping_add(1);
+        self.completions = None;
+        self.completion_popup = false;
+        self.deferred_navigation.clear();
+        self.automatic = true;
+        self.paused_reason = None;
+        self.capabilities = Value::Null;
+        self.output = "Language session stopped. Start a server when needed.".into();
     }
-    pub fn apply(&mut self, action: Action, value: serde_json::Value) {
-        match action {
-            Action::Start => {
-                self.running = true;
-                self.opened.clear();
-            }
-            Action::Stop => {
-                self.running = false;
-                self.opened.clear();
-            }
-            Action::Sync {
-                document,
-                version,
-                edit_version,
-            } => {
-                self.opened.insert(document, (version, edit_version));
-            }
-            Action::Close { document } => {
-                self.opened.remove(&document);
-            }
-            Action::Query | Action::Events => {}
-        }
-        let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
-        if output.len() > 128 * 1024 {
-            let mut end = 128 * 1024;
-            while !output.is_char_boundary(end) {
-                end -= 1;
-            }
-            output.truncate(end);
-            output.push_str("\n[Display truncated at 128 KiB]");
-        }
-        self.output = output;
+    pub(super) fn cancel_navigation(&mut self) {
+        self.navigation_sequence = self.navigation_sequence.wrapping_add(1);
+        self.deferred_navigation.clear();
     }
-    fn synced(&self, doc: &Document) -> bool {
-        self.opened
-            .get(&doc.id)
-            .is_some_and(|(_, version)| *version == doc.edit_version)
+    fn remember_closed_uri(&mut self, uri: String) {
+        if self.closed_uris.len() >= 512 {
+            if let Some(old) = self.closed_uris.iter().next().cloned() {
+                self.closed_uris.remove(&old);
+            }
+        }
+        self.closed_uris.insert(uri);
+    }
+    fn matches(&self, path: &str) -> bool {
+        match self.language_id.trim() {
+            "java" => path.ends_with(".java"),
+            "kotlin" => path.ends_with(".kt") || path.ends_with(".kts"),
+            "rust" => path.ends_with(".rs"),
+            "python" => path.ends_with(".py"),
+            "typescript" => path.ends_with(".ts") || path.ends_with(".tsx"),
+            "javascript" => path.ends_with(".js") || path.ends_with(".jsx"),
+            _ => true,
+        }
+    }
+    fn supports(&self, key: &str) -> bool {
+        self.capabilities
+            .get(key)
+            .is_some_and(|value| value.as_bool() == Some(true) || value.is_object())
+    }
+    fn valid(&self, context: &QueryContext, documents: &[Document]) -> bool {
+        self.running
+            && self.session == context.session
+            && documents.iter().any(|doc| {
+                doc.id == context.document
+                    && doc.edit_version == context.edit_version
+                    && doc.text == context.source
+            })
+    }
+    fn activity(&mut self, value: &Value) {
+        self.output = language_results::bounded_json(value, 128 * 1024);
+        self.cjk_seen |= crate::system_fonts::contains_cjk(&self.output);
     }
 }
 
@@ -88,6 +192,15 @@ impl CedarApp {
         self.pending
             .values()
             .any(|job| matches!(job, Job::Language(_)))
+    }
+    fn language_request(&mut self, operation: Operation, kind: ActionKind) -> u64 {
+        self.request(
+            operation,
+            Job::Language(Action {
+                session: self.language.session,
+                kind,
+            }),
+        )
     }
     fn start_language(&mut self) {
         let args: Vec<String> = match serde_json::from_str(&self.language.args) {
@@ -99,27 +212,47 @@ impl CedarApp {
             }
         };
         let program = self.language.program.trim().to_owned();
-        if program.is_empty() {
-            self.error = Some("Enter the installed language server executable".into());
+        if program.is_empty() || self.language.language_id.trim().is_empty() {
+            self.error = Some("Enter the installed server executable and language ID".into());
             return;
         }
-        self.request(
+        self.language.reset();
+        self.language_request(
             Operation::LanguageStart { program, args },
-            Job::Language(Action::Start),
+            ActionKind::Start,
         );
     }
-    fn sync_language(&mut self) {
-        let Some(doc) = self.active() else {
+    pub(super) fn stop_language(&mut self) {
+        self.language.intent = None;
+        self.language.automatic = false;
+        self.language_request(Operation::LanguageStop, ActionKind::Stop);
+    }
+    fn sync_document(&mut self, document: u64) {
+        let Some(doc) = self.documents.iter().find(|doc| doc.id == document) else {
             return;
         };
-        let document = doc.id;
+        if doc.text.len() > MAX_FILE_BYTES {
+            self.language.sync.fail(doc.id, doc.edit_version);
+            self.language.intent = None;
+            self.error = Some(
+                "Language synchronization is limited to 1 MiB per document; your draft is retained"
+                    .into(),
+            );
+            return;
+        }
+        let Some(document_version) = self.language.sync.next_version(document) else {
+            self.error = Some("Language version limit reached; restart the server".into());
+            return;
+        };
+        let version = document_version.max(self.language.next_version);
+        let Some(next_version) = version.checked_add(1) else {
+            self.error = Some("Language version limit reached; restart the server".into());
+            self.language.intent = None;
+            return;
+        };
+        self.language.next_version = next_version;
         let edit_version = doc.edit_version;
-        let version = self
-            .language
-            .opened
-            .get(&document)
-            .map_or(1, |(version, _)| version.saturating_add(1));
-        let op = if self.language.opened.contains_key(&document) {
+        let op = if self.language.sync.opened.contains_key(&document) {
             Operation::LanguageChange {
                 path: doc.path.clone(),
                 version,
@@ -133,154 +266,1021 @@ impl CedarApp {
                 text: doc.text.clone(),
             }
         };
-        self.request(
+        self.language_request(
             op,
-            Job::Language(Action::Sync {
+            ActionKind::Sync {
                 document,
                 version,
                 edit_version,
-            }),
+            },
         );
     }
-    fn query_language(&mut self, kind: LanguageQueryKind) {
+    fn sync_current_language(&mut self) {
+        if let Some(document) = self.active_document {
+            self.language.sync.retry(document);
+            self.language.paused_reason = None;
+            self.sync_document(document);
+        }
+    }
+    pub(super) fn close_language_document(&mut self, document: u64) {
+        let opening = self.pending.values().any(|job| matches!(job, Job::Language(Action { kind: ActionKind::Sync { document: id, .. }, .. }) if *id == document));
+        if self.ready()
+            && self.language.running
+            && (self.language.sync.opened.contains_key(&document) || opening)
+        {
+            if let Some(path) = self
+                .documents
+                .iter()
+                .find(|doc| doc.id == document)
+                .map(|doc| doc.path.clone())
+            {
+                self.language_request(
+                    Operation::LanguageClose { path },
+                    ActionKind::Close { document },
+                );
+            }
+        }
+        if let Some(ack) = self.language.sync.opened.get(&document).cloned() {
+            self.language.remember_closed_uri(ack.uri.clone());
+            self.language.diagnostics.files.remove(&ack.uri);
+        }
+        self.language.sync.close(document);
+        if self
+            .language
+            .completions
+            .as_ref()
+            .is_some_and(|menu| menu.context.document == document)
+        {
+            self.language.completions = None;
+            self.language.completion_popup = false;
+        }
+        if self
+            .language
+            .intent
+            .as_ref()
+            .is_some_and(|intent| intent.context.document == document)
+        {
+            self.language.intent = None;
+        }
+    }
+    pub(super) fn language_error(&mut self, action: &Action, error: &str) {
+        if action.session != self.language.session {
+            return;
+        }
+        match action.kind {
+            ActionKind::Sync {
+                document,
+                edit_version,
+                ..
+            } => {
+                self.language.sync.fail(document, edit_version);
+                self.language.intent = None;
+                self.language.paused_reason = Some(error.into());
+            }
+            ActionKind::Events => {
+                self.language.automatic = false;
+                self.language.paused_reason = Some(error.into());
+            }
+            ActionKind::Start => self.language.running = false,
+            _ => {}
+        }
+    }
+    pub(super) fn request_language_feature(&mut self, kind: LanguageQueryKind) {
         let Some(doc) = self.active() else {
             return;
         };
-        if !self.language.synced(doc) {
-            self.error = Some("Sync this draft to the language server before querying it".into());
+        if !self.ready() || !self.language.running {
+            self.error = Some("Start a language server first".into());
             return;
         }
-        let (line, character) = utf16_position(&doc.text, doc.cursor);
-        self.request(
-            Operation::LanguageQuery {
-                path: doc.path.clone(),
-                line,
-                character,
-                kind,
+        if !self.language.matches(&doc.path) {
+            self.error =
+                Some("This file does not match the running server’s language profile".into());
+            return;
+        }
+        let capability = match kind {
+            LanguageQueryKind::Completion => "completionProvider",
+            LanguageQueryKind::Definition => "definitionProvider",
+            LanguageQueryKind::Hover => "hoverProvider",
+        };
+        if !self.language.supports(capability) {
+            self.error = Some("The running language server does not advertise this feature".into());
+            return;
+        }
+        if doc.text.len() > MAX_FILE_BYTES {
+            self.error = Some(
+                "Language features are limited to 1 MiB documents; your draft is retained".into(),
+            );
+            return;
+        }
+        let context = QueryContext {
+            session: self.language.session,
+            document: doc.id,
+            edit_version: doc.edit_version,
+            source: doc.text.clone(),
+            cursor: match utf16_position(&doc.text, doc.cursor) {
+                Ok(cursor) => cursor,
+                Err(error) => {
+                    self.error = Some(error);
+                    return;
+                }
             },
-            Job::Language(Action::Query),
+        };
+        let document = doc.id;
+        self.language.intent = Some(QueryIntent { context, kind });
+        self.language.sync.retry(document);
+        self.language.paused_reason = None;
+    }
+    pub(super) fn language_tick(&mut self, ctx: &egui::Context) {
+        if !self.ready() || !self.language.running || self.close_after_language_stop {
+            return;
+        }
+        let now = ctx.input(|input| input.time);
+        for doc in &self.documents {
+            if self.language.matches(&doc.path) {
+                self.language.sync.observe(doc.id, doc.edit_version, now);
+            }
+        }
+        if self
+            .language
+            .completions
+            .as_ref()
+            .is_some_and(|menu| !self.language.valid(&menu.context, &self.documents))
+        {
+            self.language.completions = None;
+            self.language.completion_popup = false;
+        }
+        if self
+            .language
+            .intent
+            .as_ref()
+            .is_some_and(|intent| !self.language.valid(&intent.context, &self.documents))
+        {
+            self.language.intent = None;
+            self.notice = "Code changed while language work was pending; request it again".into();
+        }
+        if !self.pending.is_empty() {
+            return;
+        }
+        if let Some(intent) = self.language.intent.clone() {
+            if self
+                .language
+                .sync
+                .synced(intent.context.document, intent.context.edit_version)
+            {
+                if let Some(path) = self
+                    .documents
+                    .iter()
+                    .find(|doc| doc.id == intent.context.document)
+                    .map(|doc| doc.path.clone())
+                {
+                    self.language.intent = None;
+                    self.language_request(
+                        Operation::LanguageQuery {
+                            path,
+                            line: intent.context.cursor.line,
+                            character: intent.context.cursor.character,
+                            kind: intent.kind.clone(),
+                        },
+                        ActionKind::Query {
+                            context: intent.context,
+                            kind: intent.kind,
+                        },
+                    );
+                }
+            } else {
+                self.sync_document(intent.context.document);
+            }
+            return;
+        }
+        if !self.language.automatic {
+            return;
+        }
+        let due = self
+            .documents
+            .iter()
+            .filter(|doc| self.language.matches(&doc.path))
+            .filter_map(|doc| {
+                self.language
+                    .sync
+                    .deadline(doc.id, doc.edit_version)
+                    .map(|deadline| (doc.id, deadline))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((document, deadline)) = due {
+            if now >= deadline {
+                self.sync_document(document);
+                return;
+            }
+        }
+        if now >= self.language.next_events {
+            self.language.next_events = now + 1.0;
+            self.language_request(Operation::LanguageEvents, ActionKind::Events);
+            return;
+        }
+        let next = due.map_or(self.language.next_events, |(_, deadline)| {
+            deadline.min(self.language.next_events)
+        });
+        ctx.request_repaint_after(Duration::from_secs_f64((next - now).clamp(0.016, 1.0)));
+    }
+
+    pub(super) fn apply_language_action(&mut self, action: Action, value: Value) {
+        if action.session != self.language.session {
+            return;
+        }
+        self.language.activity(&value);
+        match action.kind {
+            ActionKind::Start => {
+                self.language.running = true;
+                self.language.capabilities = value
+                    .get("initialize")
+                    .and_then(|value| value.get("capabilities"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                self.language.next_events = 0.0;
+                self.language.automatic = true;
+                self.language.view = View::Problems;
+                self.notice =
+                    "Language server ready; matching open files synchronize automatically".into();
+            }
+            ActionKind::Stop => self.language.reset(),
+            ActionKind::Sync {
+                document,
+                version,
+                edit_version,
+            } => {
+                if self.documents.iter().any(|doc| doc.id == document) {
+                    if let Some(uri) = value
+                        .get("opened")
+                        .or_else(|| value.get("changed"))
+                        .and_then(Value::as_str)
+                    {
+                        self.language.closed_uris.remove(uri);
+                        self.language.sync.acknowledge(
+                            document,
+                            Acknowledged {
+                                version,
+                                edit_version,
+                                uri: uri.into(),
+                            },
+                        );
+                    } else {
+                        self.language.sync.fail(document, edit_version);
+                        self.error =
+                            Some("Language sync response did not identify its document".into());
+                    }
+                } else if let Some(uri) = value
+                    .get("opened")
+                    .or_else(|| value.get("changed"))
+                    .and_then(Value::as_str)
+                {
+                    self.language.remember_closed_uri(uri.into());
+                    self.language.diagnostics.files.remove(uri);
+                }
+            }
+            ActionKind::Close { document } => {
+                self.language.sync.close(document);
+                if let Some(uri) = value.get("closed").and_then(Value::as_str) {
+                    self.language.remember_closed_uri(uri.into());
+                    self.language.diagnostics.files.remove(uri);
+                }
+            }
+            ActionKind::Events => self.apply_language_events(&value),
+            ActionKind::Query { context, kind } => {
+                if !self.query_is_current(&context) {
+                    self.notice = "Stale language result ignored; your draft changed".into();
+                    return;
+                }
+                self.tools_open = true;
+                self.tool = crate::Tool::Language;
+                match kind {
+                    LanguageQueryKind::Completion => {
+                        match completion::parse_completion_result(&value) {
+                            Ok(results) => {
+                                self.language.completions = Some(CompletionMenu {
+                                    context,
+                                    candidates: results.candidates,
+                                    selected: 0,
+                                    incomplete: results.is_incomplete,
+                                    truncated: results.truncated,
+                                });
+                                self.language.completion_popup = true;
+                                self.language.view = View::Completion;
+                            }
+                            Err(error) => self.error = Some(error),
+                        }
+                    }
+                    LanguageQueryKind::Definition => {
+                        match language_results::parse_definitions(&value) {
+                            Ok(locations) => {
+                                self.language.view = View::Definitions;
+                                self.language.definitions = locations;
+                                if self.language.definitions.len() == 1 {
+                                    self.navigate_language(self.language.definitions[0].clone());
+                                }
+                            }
+                            Err(error) => self.error = Some(error),
+                        }
+                    }
+                    LanguageQueryKind::Hover => {
+                        self.language.hover = language_results::hover_text(&value);
+                        self.language.view = View::Hover;
+                    }
+                }
+            }
+            ActionKind::ResolveUri {
+                sequence,
+                navigation,
+                location,
+            } => {
+                if sequence != self.language.navigation_sequence
+                    || navigation != self.navigation_epoch
+                {
+                    return;
+                }
+                let Some(path) = value.get("path").and_then(Value::as_str) else {
+                    self.error = Some("Agent did not return a workspace path".into());
+                    return;
+                };
+                if !safe_relative_path(path) {
+                    self.error = Some("Agent returned an unsafe navigation path; ignored".into());
+                    return;
+                }
+                let path = path.to_owned();
+                self.open(path.clone(), None);
+                self.language.deferred_navigation.insert(
+                    path.clone(),
+                    DeferredNavigation {
+                        session: self.language.session,
+                        sequence: self.language.navigation_sequence,
+                        navigation: self.navigation_epoch,
+                        range: location.range,
+                    },
+                );
+                self.complete_language_navigation(&path);
+            }
+            ActionKind::ResolveCompletion {
+                context,
+                original,
+                acceptance,
+            } => {
+                if acceptance != self.language.acceptance_sequence {
+                    self.notice = "Completion cancelled; nothing was applied".into();
+                    return;
+                }
+                if let Err(error) = validate_resolved_identity(&original, &value) {
+                    self.error = Some(error);
+                    return;
+                }
+                self.apply_language_completion(context, value)
+            }
+        }
+    }
+    fn apply_language_events(&mut self, value: &Value) {
+        let truncated = value.get("truncated").and_then(Value::as_bool) == Some(true);
+        let Some(events) = value.get("events").and_then(Value::as_array) else {
+            self.error = Some("Language event response has no event array".into());
+            return;
+        };
+        if truncated
+            || events
+                .iter()
+                .any(|event| event.get("type").and_then(Value::as_str) == Some("lagged"))
+        {
+            self.language.diagnostics.invalidate();
+        }
+        for event in events.iter().take(32) {
+            match event.get("type").and_then(Value::as_str) {
+                Some("diagnostics") => {
+                    if let Some(value) = event.get("value") {
+                        if let Some(uri) = value.get("uri").and_then(Value::as_str) {
+                            if self.language.closed_uris.contains(uri) {
+                                continue;
+                            }
+                            if let Some(version) = value.get("version").and_then(Value::as_i64) {
+                                if self
+                                    .language
+                                    .sync
+                                    .opened
+                                    .values()
+                                    .any(|ack| ack.uri == uri && version < i64::from(ack.version))
+                                {
+                                    continue;
+                                }
+                            }
+                        }
+                        if let Err(error) = self.language.diagnostics.apply(value) {
+                            self.language.diagnostics.incomplete = true;
+                            self.language.paused_reason = Some(error);
+                        }
+                    }
+                }
+                Some("closed") => {
+                    self.language.automatic = false;
+                    self.language.intent = None;
+                    self.language.completions = None;
+                    self.language.diagnostics.invalidate();
+                    self.language.paused_reason =
+                        Some("The language server exited. Stop this session and restart it".into());
+                }
+                _ => {}
+            }
+        }
+    }
+    fn query_is_current(&self, context: &QueryContext) -> bool {
+        self.active_document == Some(context.document)
+            && self.language.valid(context, &self.documents)
+            && self
+                .documents
+                .iter()
+                .find(|doc| doc.id == context.document)
+                .is_some_and(|doc| {
+                    utf16_position(&doc.text, doc.cursor).ok() == Some(context.cursor)
+                })
+    }
+    fn navigate_language(&mut self, location: Location) {
+        if !self.language.running {
+            return;
+        }
+        // Even file:// strings are sent to the agent for remote-filesystem confinement.
+        if !location.uri.starts_with("file:") {
+            self.error = Some("This target is outside supported workspace files (for example a JDK archive). Cedar does not open external URLs or dependency archives".into());
+            return;
+        }
+        self.navigation_changed();
+        let sequence = self.language.navigation_sequence;
+        let navigation = self.navigation_epoch;
+        self.language_request(
+            Operation::LanguageResolveUri {
+                uri: location.uri.clone(),
+            },
+            ActionKind::ResolveUri {
+                sequence,
+                navigation,
+                location,
+            },
         );
     }
+    pub(super) fn complete_language_navigation(&mut self, path: &str) {
+        if !self.documents.iter().any(|doc| doc.path == path) {
+            return;
+        }
+        let Some(navigation) = self.language.deferred_navigation.remove(path) else {
+            return;
+        };
+        if navigation.session != self.language.session
+            || navigation.sequence != self.language.navigation_sequence
+            || navigation.navigation != self.navigation_epoch
+        {
+            return;
+        }
+        let Some(doc) = self.documents.iter_mut().find(|doc| doc.path == path) else {
+            return;
+        };
+        let start = completion::position_to_offsets(&doc.text, navigation.range.start);
+        let end = completion::position_to_offsets(&doc.text, navigation.range.end);
+        match (start, end) {
+            (Ok((_, start)), Ok((_, end))) if start <= end => {
+                self.active_document = Some(doc.id); doc.scroll_to = Some(start);
+                let id = egui::Id::new(("editor", doc.id));
+                let mut state = egui::TextEdit::load_state(&self.editor_ctx, id).unwrap_or_default();
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(start), egui::text::CCursor::new(end))));
+                state.store(&self.editor_ctx, id);
+                self.editor_ctx.memory_mut(|memory| memory.request_focus(id));
+            }
+            _ => self.error = Some("The target range does not fit the current file. Its contents may have changed; no draft was modified".into()),
+        }
+    }
+    fn accept_completion(&mut self, index: usize) {
+        if self.language_busy() {
+            return;
+        }
+        let Some(menu) = self.language.completions.as_ref() else {
+            return;
+        };
+        if !self.query_is_current(&menu.context) {
+            self.language.completions = None;
+            self.language.completion_popup = false;
+            self.error = Some(
+                "Completion expired because the draft or cursor changed. Request completion again"
+                    .into(),
+            );
+            return;
+        }
+        let Some(candidate) = menu.candidates.get(index) else {
+            return;
+        };
+        if let Some(reason) = &candidate.disabled_reason {
+            self.error = Some(reason.clone());
+            return;
+        }
+        let context = menu.context.clone();
+        let item = candidate.item.clone();
+        self.language.acceptance_sequence = self.language.acceptance_sequence.wrapping_add(1);
+        let acceptance = self.language.acceptance_sequence;
+        if self
+            .language
+            .capabilities
+            .get("completionProvider")
+            .and_then(|value| value.get("resolveProvider"))
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            self.language_request(
+                Operation::LanguageResolveCompletion { item: item.clone() },
+                ActionKind::ResolveCompletion {
+                    context,
+                    original: item,
+                    acceptance,
+                },
+            );
+        } else {
+            self.apply_language_completion(context, item);
+        }
+    }
+    fn apply_language_completion(&mut self, context: QueryContext, item: Value) {
+        if !self.query_is_current(&context) {
+            self.error = Some(
+                "The draft or cursor changed while completion was resolving. Nothing was applied"
+                    .into(),
+            );
+            return;
+        }
+        let applied = match completion::apply_completion(&context.source, context.cursor, &item) {
+            Ok(applied) => applied,
+            Err(error) => {
+                self.error = Some(format!("Completion not applied: {error}"));
+                return;
+            }
+        };
+        let Some(doc) = self
+            .documents
+            .iter_mut()
+            .find(|doc| doc.id == context.document)
+        else {
+            return;
+        };
+        crate::editor_state::commit(&self.editor_ctx, doc, applied.text, applied.cursor_chars);
+        self.language.completion_popup = false;
+        self.language.completions = None;
+        self.language.intent = None;
+        self.language.view = View::Problems;
+        self.notice = format!(
+            "Applied {} completion edit{}; Ctrl/Cmd+Z undoes the whole change",
+            applied.edit_count,
+            if applied.edit_count == 1 { "" } else { "s" }
+        );
+        if applied.skipped_advisory {
+            self.language.output = "Applied the validated Java text edits. Skipped java.completion.onDidSelect: selection-ranking feedback and automatic signature-help follow-up are unavailable. No server command was executed.".into();
+        }
+    }
+
     pub(super) fn language_panel(&mut self, ui: &mut egui::Ui) {
         let trusted = self.active_form.as_ref().is_some_and(|form| form.allow_run);
         let busy = self.language_busy();
         if !trusted {
-            ui.colored_label(AMBER, "Language servers require trusted command permission. Enable it in Open workspace and reconnect.");
+            ui.colored_label(AMBER, "Language servers require trusted tool permission. Enable it in Open workspace and reconnect.");
         }
-        ui.add_enabled_ui(trusted && self.ready() && !busy, |ui| {
+        egui::CollapsingHeader::new("Server configuration").default_open(!self.language.running).show(ui, |ui| {
+            ui.add_enabled_ui(trusted && self.ready() && !self.language.running && !busy, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Executable"); ui.add(egui::TextEdit::singleline(&mut self.language.program).hint_text("jdtls / kotlin-lsp / rust-analyzer").desired_width(245.0));
+                    ui.label("Arguments (JSON)"); ui.add(egui::TextEdit::singleline(&mut self.language.args).desired_width(210.0));
+                    ui.label("Language ID"); ui.add(egui::TextEdit::singleline(&mut self.language.language_id).desired_width(80.0));
+                    if ui.button("Start server").clicked() { self.start_language(); }
+                });
+            });
+            ui.label(RichText::new("One explicitly started server per workspace. Java/Kotlin require their own installed server and JDK on the workspace host.").small().color(MUTED));
+        });
+        if self.language.running {
             ui.horizontal_wrapped(|ui| {
-                ui.label("Server");
-                ui.add_enabled(
-                    !self.language.running,
-                    egui::TextEdit::singleline(&mut self.language.program)
-                        .hint_text("rust-analyzer / jdtls / server path")
-                        .desired_width(260.0),
-                );
-                ui.label("Arguments (JSON)");
-                ui.add_enabled(
-                    !self.language.running,
-                    egui::TextEdit::singleline(&mut self.language.args).desired_width(220.0),
-                );
-                if !self.language.running {
-                    if ui.button("Start server").clicked() {
-                        self.start_language();
-                    }
-                } else if ui.button("Stop server").clicked() {
-                    self.request(Operation::LanguageStop, Job::Language(Action::Stop));
+                ui.colored_label(GREEN, format!("{} server", self.language.language_id));
+                ui.checkbox(&mut self.language.automatic, "Automatic sync + diagnostics");
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Stop server"))
+                    .clicked()
+                {
+                    self.stop_language();
+                }
+                let matching = self
+                    .active()
+                    .is_some_and(|doc| self.language.matches(&doc.path));
+                if ui
+                    .add_enabled(!busy && matching, egui::Button::new("Sync now"))
+                    .clicked()
+                {
+                    self.sync_current_language();
+                }
+                let can_query = matching && self.ready();
+                if ui
+                    .add_enabled(
+                        can_query && self.language.supports("completionProvider"),
+                        egui::Button::new("Complete"),
+                    )
+                    .on_hover_text("Ctrl+Space")
+                    .clicked()
+                {
+                    self.request_language_feature(LanguageQueryKind::Completion);
+                }
+                if ui
+                    .add_enabled(
+                        can_query && self.language.supports("definitionProvider"),
+                        egui::Button::new("Definition"),
+                    )
+                    .on_hover_text("F12")
+                    .clicked()
+                {
+                    self.request_language_feature(LanguageQueryKind::Definition);
+                }
+                if ui
+                    .add_enabled(
+                        can_query && self.language.supports("hoverProvider"),
+                        egui::Button::new("Hover"),
+                    )
+                    .on_hover_text("Ctrl/Cmd+K")
+                    .clicked()
+                {
+                    self.request_language_feature(LanguageQueryKind::Hover);
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Refresh events"))
+                    .clicked()
+                {
+                    self.language_request(Operation::LanguageEvents, ActionKind::Events);
                 }
             });
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Language ID");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.language.language_id)
-                        .hint_text("rust / java / kotlin")
-                        .desired_width(85.0),
-                );
-                let document_ready = self.active().is_some_and(|doc| doc.revision.is_some());
-                let synced = self.active().is_some_and(|doc| self.language.synced(doc));
-                if ui
-                    .add_enabled(
-                        self.language.running
-                            && document_ready
-                            && !self.language.language_id.trim().is_empty(),
-                        egui::Button::new("Sync current file"),
-                    )
-                    .clicked()
-                {
-                    self.sync_language();
+        }
+        if let Some(reason) = &self.language.paused_reason {
+            ui.colored_label(AMBER, reason);
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(
+                &mut self.language.view,
+                View::Problems,
+                format!("Problems ({})", self.language.diagnostics.len()),
+            );
+            ui.selectable_value(&mut self.language.view, View::Completion, "Completion");
+            ui.selectable_value(&mut self.language.view, View::Definitions, "Definitions");
+            ui.selectable_value(&mut self.language.view, View::Hover, "Hover");
+            ui.selectable_value(&mut self.language.view, View::Activity, "Protocol details");
+            if busy {
+                ui.spinner();
+            }
+        });
+        ui.separator();
+        match self.language.view {
+            View::Problems => self.problems_view(ui),
+            View::Definitions => {
+                let mut selected = None;
+                egui::ScrollArea::vertical()
+                    .id_salt("definitions")
+                    .show(ui, |ui| {
+                        if self.language.definitions.is_empty() {
+                            ui.label(
+                                RichText::new("Place the cursor on a symbol, then press F12")
+                                    .color(MUTED),
+                            );
+                        }
+                        for location in &self.language.definitions {
+                            if ui
+                                .button(format!(
+                                    "{}:{}:{}",
+                                    location.uri,
+                                    u64::from(location.range.start.line) + 1,
+                                    u64::from(location.range.start.character) + 1
+                                ))
+                                .clicked()
+                            {
+                                selected = Some(location.clone());
+                            }
+                        }
+                    });
+                if let Some(location) = selected {
+                    self.navigate_language(location);
                 }
-                let can_query = self.language.running && synced;
-                if ui
-                    .add_enabled(can_query, egui::Button::new("Hover"))
-                    .clicked()
-                {
-                    self.query_language(LanguageQueryKind::Hover);
+            }
+            View::Completion => {
+                let selected =
+                    completion_rows(ui, self.language.completions.as_mut(), !busy, 150.0);
+                if let Some(index) = selected {
+                    self.accept_completion(index);
                 }
-                if ui
-                    .add_enabled(can_query, egui::Button::new("Definition"))
-                    .clicked()
-                {
-                    self.query_language(LanguageQueryKind::Definition);
-                }
-                if ui
-                    .add_enabled(can_query, egui::Button::new("Completion"))
-                    .clicked()
-                {
-                    self.query_language(LanguageQueryKind::Completion);
-                }
-                if ui
-                    .add_enabled(
-                        self.language.running,
-                        egui::Button::new("Refresh diagnostics / events"),
-                    )
-                    .clicked()
-                {
-                    self.request(Operation::LanguageEvents, Job::Language(Action::Events));
-                }
-                if self.language.running {
-                    ui.colored_label(
-                        if synced { GREEN } else { AMBER },
-                        if synced {
-                            "Draft synced"
+            }
+            View::Hover => {
+                egui::ScrollArea::both().id_salt("hover").show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.language.hover)
+                            .interactive(false)
+                            .frame(false)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            }
+            View::Activity => {
+                egui::ScrollArea::both()
+                    .id_salt("language_output")
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.language.output)
+                                .font(egui::TextStyle::Monospace)
+                                .interactive(false)
+                                .frame(false)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+            }
+        }
+    }
+    fn problems_view(&mut self, ui: &mut egui::Ui) {
+        if self.language.diagnostics.incomplete {
+            ui.colored_label(AMBER, "Some language events were lost or exceeded limits. This problem list may be incomplete; resync or restart to refresh it.");
+        }
+        let mut selected = None;
+        egui::ScrollArea::vertical()
+            .id_salt("diagnostics")
+            .show(ui, |ui| {
+                if self.language.diagnostics.len() == 0 {
+                    ui.label(
+                        RichText::new(if self.language.running {
+                            "No reported problems yet. Diagnostics update while the server runs"
                         } else {
-                            "Sync needed"
-                        },
+                            "Start a language server to see project diagnostics"
+                        })
+                        .color(MUTED),
                     );
                 }
+                for (uri, batch) in &self.language.diagnostics.files {
+                    let known = self
+                        .language
+                        .sync
+                        .opened
+                        .iter()
+                        .find(|(_, ack)| ack.uri == *uri);
+                    let doc =
+                        known.and_then(|(id, _)| self.documents.iter().find(|doc| doc.id == *id));
+                    let current = known.zip(doc).is_some_and(|((_, ack), doc)| {
+                        batch.version == Some(ack.version) && doc.edit_version == ack.edit_version
+                    });
+                    let freshness = if batch.version.is_none() {
+                        "unversioned server result"
+                    } else if current {
+                        "current draft"
+                    } else {
+                        "older or unopened snapshot"
+                    };
+                    let name = doc.map_or(uri.as_str(), |doc| doc.path.as_str());
+                    for diagnostic in &batch.items {
+                        let (severity, color) = match diagnostic.severity {
+                            1 => ("Error", RED),
+                            2 => ("Warning", AMBER),
+                            4 => ("Hint", MUTED),
+                            _ => ("Info", GREEN),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.colored_label(color, severity);
+                            let response =
+                                ui.add(
+                                    egui::Button::new(
+                                        RichText::new(format!(
+                                            "{name}:{}",
+                                            u64::from(diagnostic.range.start.line) + 1
+                                        ))
+                                        .color(if current { GREEN } else { MUTED }),
+                                    )
+                                    .frame(false),
+                                );
+                            if response
+                                .on_hover_text(format!("{freshness}\n{}", diagnostic.source))
+                                .clicked()
+                            {
+                                selected = Some(Location {
+                                    uri: uri.clone(),
+                                    range: diagnostic.range,
+                                });
+                            }
+                            ui.add(egui::Label::new(&diagnostic.message).truncate())
+                                .on_hover_text(format!("{}\n{freshness}", diagnostic.message));
+                            if !current {
+                                ui.label(
+                                    RichText::new(if batch.version.is_none() {
+                                        "unversioned"
+                                    } else {
+                                        "stale"
+                                    })
+                                    .small()
+                                    .color(MUTED),
+                                );
+                            }
+                        });
+                    }
+                }
             });
-        });
-        ui.label(RichText::new("Uses the editor cursor (UTF-16). Results are read-only JSON; changes and diagnostics are refreshed manually. Servers may index or execute project code.").small().color(MUTED));
-        if busy {
-            ui.spinner();
+        if let Some(location) = selected {
+            self.navigate_language(location);
         }
-        egui::ScrollArea::both()
-            .id_salt("language_output")
-            .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.language.output)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .interactive(false)
-                        .frame(false),
-                );
+    }
+    pub(super) fn language_popups(&mut self, ctx: &egui::Context) {
+        if !self.language.completion_popup {
+            return;
+        }
+        if self
+            .language
+            .completions
+            .as_ref()
+            .is_none_or(|menu| !self.query_is_current(&menu.context))
+        {
+            self.language.completion_popup = false;
+            self.language.completions = None;
+            return;
+        }
+        let busy = self.language_busy();
+        let mut visible = true;
+        let mut selected = None;
+        egui::Window::new("Completion")
+            .id(egui::Id::new("completion_menu"))
+            .open(&mut visible)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(620.0)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 105.0))
+            .show(ctx, |ui| {
+                selected = completion_rows(ui, self.language.completions.as_mut(), !busy, 290.0);
+                if busy {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Resolving imports and validating the complete change...");
+                    });
+                }
             });
+        if !visible {
+            self.language.completion_popup = false;
+            self.language.acceptance_sequence = self.language.acceptance_sequence.wrapping_add(1);
+        }
+        if let Some(index) = selected {
+            self.accept_completion(index);
+        }
+    }
+    pub(super) fn language_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.language.completion_popup {
+            if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.language.completion_popup = false;
+                self.language.acceptance_sequence =
+                    self.language.acceptance_sequence.wrapping_add(1);
+                return;
+            }
+            if let Some(menu) = self.language.completions.as_mut() {
+                let count = menu.candidates.len();
+                if count > 0 {
+                    if ctx.input_mut(|input| {
+                        input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                    }) {
+                        menu.selected = (menu.selected + 1) % count;
+                    }
+                    if ctx.input_mut(|input| {
+                        input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                    }) {
+                        menu.selected = (menu.selected + count - 1) % count;
+                    }
+                    if ctx.input_mut(|input| {
+                        input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                    }) {
+                        let index = menu.selected;
+                        self.accept_completion(index);
+                    }
+                }
+            }
+        }
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Space)) {
+            self.request_language_feature(LanguageQueryKind::Completion);
+        }
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F12)) {
+            self.request_language_feature(LanguageQueryKind::Definition);
+        }
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::K)) {
+            self.request_language_feature(LanguageQueryKind::Hover);
+        }
     }
 }
 
-fn utf16_position(text: &str, cursor: (usize, usize)) -> (u32, u32) {
-    let line = cursor.0.saturating_sub(1);
-    let column: usize = text
-        .split('\n')
-        .nth(line)
-        .unwrap_or("")
-        .chars()
-        .take(cursor.1.saturating_sub(1))
-        .map(char::len_utf16)
-        .sum();
-    (
-        line.min(u32::MAX as usize) as u32,
-        column.min(u32::MAX as usize) as u32,
-    )
+fn completion_rows(
+    ui: &mut egui::Ui,
+    menu: Option<&mut CompletionMenu>,
+    enabled: bool,
+    height: f32,
+) -> Option<usize> {
+    let Some(menu) = menu else {
+        ui.label(
+            RichText::new("Press Ctrl+Space in a synchronized file for completions").color(MUTED),
+        );
+        return None;
+    };
+    let mut selected = None;
+    if menu.incomplete || menu.truncated {
+        ui.colored_label(
+            AMBER,
+            "Results are incomplete or capped. Type more, then request completion again",
+        );
+    }
+    if menu.candidates.is_empty() {
+        ui.label("No completion candidates at this position");
+    }
+    egui::ScrollArea::vertical()
+        .id_salt("completion_rows")
+        .max_height(height)
+        .show(ui, |ui| {
+            for (index, candidate) in menu.candidates.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let allowed = enabled && candidate.disabled_reason.is_none();
+                    let response = ui.add_enabled(
+                        allowed,
+                        egui::Button::new(RichText::new(&candidate.label).monospace())
+                            .selected(menu.selected == index)
+                            .min_size(egui::vec2(210.0, 24.0)),
+                    );
+                    if response.clicked() {
+                        menu.selected = index;
+                    }
+                    if response.double_clicked() {
+                        selected = Some(index);
+                    }
+                    if let Some(reason) = &candidate.disabled_reason {
+                        response.on_hover_text(reason);
+                        ui.add(
+                            egui::Label::new(RichText::new(reason).small().color(AMBER)).truncate(),
+                        );
+                    } else if let Some(detail) = &candidate.detail {
+                        ui.add(
+                            egui::Label::new(RichText::new(detail).small().color(MUTED)).truncate(),
+                        );
+                    }
+                });
+            }
+        });
+    ui.horizontal(|ui| {
+        let allowed = enabled
+            && menu
+                .candidates
+                .get(menu.selected)
+                .is_some_and(|candidate| candidate.disabled_reason.is_none());
+        if ui
+            .add_enabled(allowed, egui::Button::new("Apply selected  ·  Enter"))
+            .clicked()
+        {
+            selected = Some(menu.selected);
+        }
+        ui.label(
+            RichText::new("One undo step · changes stay unsaved")
+                .small()
+                .color(MUTED),
+        );
+    });
+    ui.label(RichText::new("Commands never run. Java’s selection callback is skipped; ranking feedback and automatic signature-help follow-up are unavailable.").small().color(MUTED));
+    selected
+}
+
+fn utf16_position(text: &str, cursor: (usize, usize)) -> Result<Position, String> {
+    if cursor.0 == 0 || cursor.1 == 0 {
+        return Err("Invalid editor cursor".into());
+    }
+    let scalar = crate::model::line_start(text, cursor.0)
+        .checked_add(cursor.1 - 1)
+        .ok_or("Editor cursor overflow")?;
+    completion::chars_to_position(text, scalar)
+}
+fn validate_resolved_identity(original: &Value, resolved: &Value) -> Result<(), String> {
+    if !resolved.is_object() {
+        return Err(
+            "The server returned an invalid resolved completion; nothing was applied".into(),
+        );
+    }
+    for key in [
+        "label",
+        "sortText",
+        "filterText",
+        "insertText",
+        "insertTextFormat",
+        "insertTextMode",
+        "textEdit",
+        "commitCharacters",
+    ] {
+        if let Some(expected) = original.get(key) {
+            if resolved.get(key) != Some(expected) {
+                return Err(format!(
+                    "The server changed completion {key} during resolution; nothing was applied"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn safe_relative_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains(['\\', ':', '\0'])
+        && path
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
 #[cfg(test)]
@@ -288,22 +1288,184 @@ mod tests {
     use super::*;
     #[test]
     fn converts_cursor_to_utf16() {
-        assert_eq!(utf16_position("first\nA🐻é.end", (2, 4)), (1, 4));
+        assert_eq!(
+            utf16_position("first\nA🐻é.end", (2, 4)).unwrap(),
+            Position {
+                line: 1,
+                character: 4
+            }
+        );
     }
     #[test]
-    fn typing_after_sync_requires_another_sync() {
-        let mut panel = LanguagePanel::default();
-        let mut doc = Document::new(1, "a.rs".into(), "fn main(){}".into(), "r".into());
-        panel.apply(
-            Action::Sync {
-                document: 1,
-                version: 1,
-                edit_version: 0,
+    fn invalid_crlf_cursor_does_not_fall_back_to_document_start() {
+        assert!(utf16_position("abc\r\n", (1, 5)).is_err());
+        assert!(utf16_position("abc", (1, 99)).is_err());
+    }
+    #[test]
+    fn snapshot_check_rejects_newer_text_and_restart() {
+        let mut panel = LanguagePanel {
+            running: true,
+            session: 5,
+            ..Default::default()
+        };
+        let mut doc = Document::new(1, "A.java".into(), "class A {}".into(), "r".into());
+        let context = QueryContext {
+            session: 5,
+            document: 1,
+            edit_version: 0,
+            source: doc.text.clone(),
+            cursor: Position {
+                line: 0,
+                character: 0,
             },
-            serde_json::json!({"synced":true}),
-        );
-        assert!(panel.synced(&doc));
+        };
+        assert!(panel.valid(&context, std::slice::from_ref(&doc)));
         doc.edit_version += 1;
-        assert!(!panel.synced(&doc));
+        assert!(!panel.valid(&context, std::slice::from_ref(&doc)));
+        doc.edit_version = 0;
+        panel.reset();
+        assert!(!panel.valid(&context, &[doc]));
+    }
+    #[test]
+    fn language_profiles_do_not_cross_streams() {
+        let panel = LanguagePanel {
+            language_id: "java".into(),
+            ..Default::default()
+        };
+        assert!(panel.matches("src/A.java"));
+        assert!(!panel.matches("src/lib.rs"));
+        assert!(!panel.matches("Main.kt"));
+    }
+    #[test]
+    fn completion_is_exactly_one_undo_and_redo_step() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::new(4, "A.java".into(), "old draft".into(), "r".into());
+        crate::editor_state::commit(&ctx, &mut doc, "import X;\nnew draft".into(), 13);
+        let state = egui::TextEdit::load_state(&ctx, egui::Id::new(("editor", 4u64))).unwrap();
+        let after = (state.cursor.char_range().unwrap(), doc.text.clone());
+        let mut undo = state.undoer();
+        let before = undo.undo(&after).unwrap().clone();
+        assert_eq!(before.1, "old draft");
+        assert_eq!(undo.redo(&before).unwrap().1, "import X;\nnew draft");
+        assert!(doc.dirty());
+        assert_eq!(doc.edit_version, 1);
+    }
+    #[test]
+    fn resolve_can_add_imports_and_remove_data_but_cannot_substitute_item() {
+        let original = serde_json::json!({"label":"Thing","insertText":"Thing","data":{"token":1}});
+        let resolved =
+            serde_json::json!({"label":"Thing","insertText":"Thing","additionalTextEdits":[]});
+        assert!(validate_resolved_identity(&original, &resolved).is_ok());
+        let replacement = serde_json::json!({"label":"Other","insertText":"Thing"});
+        assert!(validate_resolved_identity(&original, &replacement).is_err());
+    }
+    #[test]
+    fn explicit_queries_preserve_disabled_automatic_updates() {
+        let mut app = CedarApp::empty();
+        app.state = crate::ConnectionState::Ready;
+        app.language.running = true;
+        app.language.automatic = false;
+        app.language.capabilities = serde_json::json!({"completionProvider":{}});
+        app.documents
+            .push(Document::new(1, "main.rs".into(), "x".into(), "r".into()));
+        app.active_document = Some(1);
+        app.request_language_feature(LanguageQueryKind::Completion);
+        assert!(app.language.intent.is_some());
+        assert!(!app.language.automatic);
+    }
+    #[test]
+    fn cancelled_completion_resolve_does_not_apply() {
+        let mut app = CedarApp::empty();
+        app.language.running = true;
+        app.language.session = 4;
+        app.language.acceptance_sequence = 2;
+        let mut doc = Document::new(1, "Main.java".into(), "ab".into(), "r".into());
+        doc.cursor = (1, 2);
+        app.documents.push(doc);
+        app.active_document = Some(1);
+        let item = serde_json::json!({"label":"abc", "insertText":"abc"});
+        let context = QueryContext {
+            session: 4,
+            document: 1,
+            edit_version: 0,
+            source: "ab".into(),
+            cursor: Position {
+                line: 0,
+                character: 1,
+            },
+        };
+        app.apply_language_action(
+            Action {
+                session: 4,
+                kind: ActionKind::ResolveCompletion {
+                    context,
+                    original: item.clone(),
+                    acceptance: 1,
+                },
+            },
+            item,
+        );
+        assert_eq!(app.documents[0].text, "ab");
+        assert_eq!(app.documents[0].edit_version, 0);
+    }
+    #[test]
+    fn closed_and_older_incarnation_diagnostics_cannot_poison_reopened_file() {
+        let uri = "file:///workspace/Main.java";
+        let mut app = CedarApp::empty();
+        app.language.running = true;
+        app.documents
+            .push(Document::new(1, "Main.java".into(), "x".into(), "r".into()));
+        app.language.sync.acknowledge(
+            1,
+            Acknowledged {
+                version: 10,
+                edit_version: 0,
+                uri: uri.into(),
+            },
+        );
+        let event = |version| serde_json::json!({"events":[{"type":"diagnostics","value":{"uri":uri,"version":version,"diagnostics":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"message":"problem"}]}}],"truncated":false});
+        app.apply_language_events(&event(10));
+        assert_eq!(app.language.diagnostics.len(), 1);
+        app.close_language_document(1);
+        app.documents.clear();
+        app.apply_language_events(&event(10));
+        assert_eq!(app.language.diagnostics.len(), 0);
+        app.documents
+            .push(Document::new(2, "Main.java".into(), "x".into(), "r".into()));
+        app.apply_language_action(
+            Action {
+                session: 0,
+                kind: ActionKind::Sync {
+                    document: 2,
+                    version: 11,
+                    edit_version: 0,
+                },
+            },
+            serde_json::json!({"opened":uri,"version":11}),
+        );
+        app.apply_language_events(&event(10));
+        assert_eq!(app.language.diagnostics.len(), 0);
+        app.apply_language_events(&event(11));
+        assert_eq!(app.language.diagnostics.len(), 1);
+        assert_eq!(app.language.diagnostics.files[uri].version, Some(11));
+    }
+    #[test]
+    fn unsafe_navigation_paths_are_rejected() {
+        for path in [
+            "/etc/passwd",
+            "../secret",
+            "a/../b",
+            "a//b",
+            "C:/file",
+            "file:///x",
+            "a\\b",
+        ] {
+            assert!(!safe_relative_path(path));
+        }
+        assert!(safe_relative_path("src/你好.java"));
     }
 }
+
+#[cfg(test)]
+#[path = "real_java_tests.rs"]
+mod real_java_tests;

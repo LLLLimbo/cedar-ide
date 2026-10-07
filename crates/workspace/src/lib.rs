@@ -93,6 +93,8 @@ impl Workspace {
             | Operation::LanguageChange { .. }
             | Operation::LanguageClose { .. }
             | Operation::LanguageQuery { .. }
+            | Operation::LanguageResolveUri { .. }
+            | Operation::LanguageResolveCompletion { .. }
             | Operation::LanguageEvents
             | Operation::LanguageStop) => self.handle_language(op),
             Operation::Run {

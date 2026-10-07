@@ -24,6 +24,12 @@ with tempfile.TemporaryDirectory(prefix="cedar-lsp-bridge-") as tmp:
     assert call("language_change",ok=False,path="Hello.java",version=2,text="stale")["code"]=="language_error"
     completion=call("language_query",path="Hello.java",line=0,character=0,kind="completion")
     assert completion["value"]["items"][0]["label"]=="hello"
+    resolved=call("language_resolve_completion",item=completion["value"]["items"][0])["value"]
+    assert resolved["additionalTextEdits"][0]["newText"]=="import demo.Hello;\n"
+    uri=(root/"Hello.java").as_uri()
+    assert call("language_resolve_uri",uri=uri)["value"]["path"]=="Hello.java"
+    assert call("language_resolve_uri",ok=False,uri="file:///etc/passwd")["code"]=="invalid_path"
+    assert call("language_resolve_uri",ok=False,uri="https://example.org/file")["code"]=="unsupported_uri"
     assert call("language_query",path="Hello.java",line=0,character=0,kind="hover")["value"]["contents"]["value"]=="mock hover"
     assert call("language_query",path="Hello.java",line=0,character=0,kind="definition")["value"]["uri"].endswith("Hello.java")
     events=call("language_events")["value"]["events"]
@@ -34,4 +40,4 @@ with tempfile.TemporaryDirectory(prefix="cedar-lsp-bridge-") as tmp:
     # Restart in the same workspace proves resources/lifecycle reset.
     call("language_start",program=server,args=[]);call("language_stop")
     p.stdin.close();assert p.wait(timeout=3)==0
-print("PASS: agent-side LSP start/open/change/stale-version/completion/definition/hover/diagnostics/close/stop/restart")
+print("PASS: agent-side LSP start/open/change/stale-version/completion/resolve/safe-navigation/definition/hover/diagnostics/close/stop/restart")

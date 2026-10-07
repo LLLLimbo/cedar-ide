@@ -11,10 +11,14 @@ pub struct Document {
     pub jump_to: Option<usize>,
     pub scroll_to: Option<usize>,
     pub edit_version: u64,
+    pub undo_initialized: bool,
+    pub has_cjk: bool,
 }
 
 impl Document {
     pub fn new(id: u64, path: String, text: String, revision: String) -> Self {
+        let has_cjk =
+            crate::system_fonts::contains_cjk(&path) || crate::system_fonts::contains_cjk(&text);
         Self {
             id,
             path,
@@ -26,6 +30,8 @@ impl Document {
             jump_to: None,
             scroll_to: None,
             edit_version: 0,
+            undo_initialized: false,
+            has_cjk,
         }
     }
     pub fn dirty(&self) -> bool {

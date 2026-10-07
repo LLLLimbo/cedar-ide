@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cedar-protocol",
  "cedar-workspace",
@@ -289,17 +289,20 @@ dependencies = [
 
 [[package]]
 name = "cedar-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "ab_glyph",
  "cedar-client",
  "cedar-protocol",
  "eframe",
  "serde_json",
+ "tempfile",
+ "ttf-parser",
 ]
 
 [[package]]
 name = "cedar-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cedar-protocol",
  "cedar-workspace",
@@ -307,8 +310,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cedar-debugger"
+version = "0.2.0"
+dependencies = [
+ "cedar-language",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "cedar-language"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -318,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -327,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-workspace"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cedar-language",
  "cedar-protocol",

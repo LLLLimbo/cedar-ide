@@ -162,6 +162,63 @@ impl Workspace {
                 .map_err(lsp_error)?;
                 Ok(Payload::Language { value })
             }
+            Operation::LanguageResolveUri { uri } => {
+                if uri.len() > 16 * 1024 {
+                    return Err(error("invalid_uri", "Language URI exceeds limit"));
+                }
+                let parsed = url::Url::parse(&uri)
+                    .map_err(|_| error("invalid_uri", "Malformed language URI"))?;
+                if parsed.scheme() != "file"
+                    || parsed.fragment().is_some()
+                    || parsed.query().is_some()
+                    || parsed.host_str().is_some_and(|host| host != "localhost")
+                {
+                    return Err(error(
+                        "unsupported_uri",
+                        "Only plain local file URIs inside this workspace can be opened",
+                    ));
+                }
+                let full = parsed.to_file_path().map_err(|_| {
+                    error(
+                        "unsupported_uri",
+                        "Cannot convert language URI to a local path",
+                    )
+                })?;
+                let normalized_root = url::Url::from_directory_path(&self.root)
+                    .map_err(|_| error("invalid_path", "Cannot normalize workspace root URI"))?
+                    .to_file_path()
+                    .map_err(|_| error("invalid_path", "Cannot normalize workspace root path"))?;
+                let relative = full
+                    .strip_prefix(&normalized_root)
+                    .map_err(|_| error("invalid_path", "Language URI is outside the workspace"))?;
+                let raw_path = relative
+                    .to_str()
+                    .ok_or_else(|| error("invalid_path", "Language URI path is not UTF-8"))?;
+                #[cfg(windows)]
+                let path = raw_path.replace('\\', "/");
+                #[cfg(not(windows))]
+                let path = raw_path.to_owned();
+                let safe = self.resolve(&path, false)?;
+                if !safe.is_file() {
+                    return Err(error(
+                        "invalid_path",
+                        "Language URI must refer to a regular workspace file",
+                    ));
+                }
+                Ok(Payload::Language {
+                    value: json!({"path": path}),
+                })
+            }
+            Operation::LanguageResolveCompletion { item } => {
+                if item.to_string().len() > MAX_FILE_BYTES {
+                    return Err(error("language_limit", "Completion item exceeds limit"));
+                }
+                let session = self.language.as_ref().ok_or_else(|| {
+                    error("language_not_running", "Start a language server first")
+                })?;
+                let value = session.client.resolve_completion(item).map_err(lsp_error)?;
+                Ok(Payload::Language { value })
+            }
             Operation::LanguageEvents => {
                 let session = self.language.as_ref().ok_or_else(|| {
                     error("language_not_running", "Start a language server first")
@@ -260,5 +317,76 @@ mod tests {
         assert!(uri.starts_with("file:///"));
         assert!(uri.contains("%20%23.java"));
         assert!(!uri.contains("你好"));
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+    #[test]
+    fn resolves_only_regular_files_inside_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("space # λ.java"), "class A {}").unwrap();
+        let mut ws = Workspace::open(dir.path()).unwrap();
+        ws.set_allow_run(true);
+        let uri = url::Url::from_file_path(ws.root.join("space # λ.java"))
+            .unwrap()
+            .to_string();
+        let answer = ws.handle(Operation::LanguageResolveUri { uri }).unwrap();
+        assert!(matches!(answer,Payload::Language{value} if value["path"]=="space # λ.java"));
+        for uri in [
+            "jdt://contents/java/lang/String.class",
+            "https://example.org/evil",
+            "file://external-host/tmp/file",
+            "file:///etc/passwd",
+            "file:///tmp/file?execute=yes",
+        ] {
+            assert!(ws
+                .handle(Operation::LanguageResolveUri { uri: uri.into() })
+                .is_err());
+        }
+        let uri = url::Url::from_directory_path(&ws.root).unwrap().to_string();
+        assert!(ws.handle(Operation::LanguageResolveUri { uri }).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn navigation_rejects_symlinks_even_inside_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.java"), "x").unwrap();
+        std::os::unix::fs::symlink("real.java", dir.path().join("link.java")).unwrap();
+        let mut ws = Workspace::open(dir.path()).unwrap();
+        ws.set_allow_run(true);
+        let uri = url::Url::from_file_path(ws.root.join("link.java"))
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            ws.handle(Operation::LanguageResolveUri { uri })
+                .unwrap_err()
+                .code,
+            "invalid_path"
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_uri_edge_tests {
+    use super::*;
+    #[test]
+    fn literal_backslash_does_not_alias_a_different_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("a")).unwrap();
+        std::fs::write(dir.path().join("a/b.java"), "normal").unwrap();
+        std::fs::write(dir.path().join("a\\b.java"), "different").unwrap();
+        let mut ws = Workspace::open(dir.path()).unwrap();
+        ws.set_allow_run(true);
+        let uri = url::Url::from_file_path(ws.root.join("a\\b.java"))
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            ws.handle(Operation::LanguageResolveUri { uri })
+                .unwrap_err()
+                .code,
+            "invalid_path"
+        );
     }
 }
