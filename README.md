@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第七阶段 B 工程（**0.7.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第七阶段 B 工程（**0.7.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -37,7 +37,7 @@ cargo run -p cedar-app --bin cedar -- examples/demo
 
 Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`，本地连接还要求同目录的 `cedar-agent.exe`；不要只复制前端。缺失或损坏的 agent 会报错，不搜索 PATH 或回退到进程内执行。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.6.2 提交 [`139320e6bb988eb3de4ceecb992d68cd3d0442dd`](https://github.com/LLLLimbo/cedar-ide/commit/139320e6bb988eb3de4ceecb992d68cd3d0442dd) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37662728974)，包括 39 项 Windows 进程基础单元测试与全部 13 项隔离生命周期测试。此前 Linux 生命周期超时在修订后未再出现，原根因仍未确认。7B 在这个基础上接入隔离 agent 的 Windows 异步任务；当前接入还须通过本检查点的精确提交 CI。**Windows Git、同步 Run 和 LSP 仍不启用**，详见[当前报告](docs/TEST_REPORT.md)与[0.6.2 修订报告](docs/TEST_REPORT_HOTFIX_0_6_2.md)。
+公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.6.2 提交 [`139320e6bb988eb3de4ceecb992d68cd3d0442dd`](https://github.com/LLLLimbo/cedar-ide/commit/139320e6bb988eb3de4ceecb992d68cd3d0442dd) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37662728974)，包括 39 项 Windows 进程基础单元测试与全部 13 项隔离生命周期测试。此前 Linux 生命周期超时在修订后未再出现，原根因仍未确认。7B 在这个基础上接入隔离 agent 的 Windows 异步任务；0.7.0 的 Ubuntu CI 已通过，Windows 在两项运行中进程数断言处失败，七项新agent测试未到达；0.7.1保留已知进程终止与整个Job归零要求，只修正系统辅助进程可能额外计数的测试假设，仍须通过精确提交 CI。**Windows Git、同步 Run 和 LSP 仍不启用**，详见[当前报告](docs/TEST_REPORT.md)与[0.6.2 修订报告](docs/TEST_REPORT_HOTFIX_0_6_2.md)。
 
 ## 格式化、引用与大纲
 
@@ -106,6 +106,8 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端可连接 Linux 远程工作
 这些是架构措施，不等于“比 IDEA 节省 X%”。目前没有在同一机器、项目与功能集下完成 IDEA 对照基准。第三阶段历史记录包含一次 112.597 秒 release 前端小样例：CJK、默认恢复开启、信任关闭且无 JVM，前端观察到的 HWM 为 117.97 MiB。它与第二阶段交互不同，不能证明恢复开销、内存改善或 IDEA 相对优势。前端与 Java/Kotlin JVM 读数分别报告，不能拼成同时测得的总占用。本阶段没有新增内存或性能基准。详见 [资源说明](docs/PERFORMANCE.md) 与 [第五阶段测试报告](docs/TEST_REPORT_PHASE5.md)。
 
 ## 验证
+
+0.7.1 对相同本地聚合与最终 release-agent 再次复验通过，Windows 真实重跑仍待精确提交 CI，见[修订报告](docs/TEST_REPORT_HOTFIX_0_7_1.md)。
 
 7B 本地最终验证通过 **493 项 Rust 测试（487 + 6 显式）**、五条 agent 链、两项导出回归、严格 Linux/MSVC Clippy、Linux release 与 release-agent 集成。新增七项真实 Windows agent/bundle 测试已编译并独立审查，仍待本检查点公开 SHA 的 Windows CI 实际运行；详见[7B 报告](docs/TEST_REPORT_PHASE7B.md)。
 

@@ -29,6 +29,12 @@ console processes, preserving redirected streams. GUI executables may still
 show their own windows; this is not a general UI-suppression guarantee. See
 [Microsoft process creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags).
 7B re-runs all primitive tests after this per-child creation-flag change.
+The first 7B Windows run observed an additional live Job member for each console
+fixture. Microsoft's [console design](https://github.com/microsoft/terminal/blob/main/doc/specs/%23492%20-%20Default%20Terminal/spec.md#inbox-console)
+permits a console host even without a visible window; its actual identity was
+not queried. Revision 0.7.1 therefore treats known live fixtures as a lower bound
+while retaining exact zero-member Job cleanup and each held process observation.
+The new agent-task suite still requires a complete exact-commit run.
 
 Git, legacy synchronous Run, persistent LSP and DAP remain outside this Windows
 activation. Their direct backend rejections stay in place, not merely hidden

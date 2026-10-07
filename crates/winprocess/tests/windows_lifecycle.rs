@@ -174,6 +174,20 @@ fn wait_empty_job(command: &WindowsCommand) {
     }
 }
 
+fn assert_job_accounts_for_live_fixtures(command: &WindowsCommand, fixtures: u32) {
+    // CREATE_NO_WINDOW suppresses a console window, not necessarily the OS's
+    // console-server process. Job accounting may include that helper in
+    // addition to our known, independently observed live fixtures. Do not tie
+    // ownership to an undocumented exact helper count. Cleanup still requires
+    // every observed fixture to terminate AND the whole job to reach zero.
+    // https://github.com/microsoft/terminal/blob/main/doc/specs/%23492%20-%20Default%20Terminal/spec.md
+    let active = command.active_processes().unwrap();
+    assert!(
+        active >= fixtures,
+        "job accounts for {active} active processes but {fixtures} fixtures are known live"
+    );
+}
+
 /// An observation-only handle to this fixture's already-running process.
 /// Never use the published PID to terminate or modify a process. Opening while
 /// it is alive gives a stable waitable object even after the PID is recycled.
@@ -415,7 +429,7 @@ fn cancel_terminates_nested_child_and_grandchild_and_is_repeatable() {
     let root = ObservedProcess::from_file(&dir.path().join("root.pid"));
     let child = ObservedProcess::from_file(&dir.path().join("branch.pid"));
     let grandchild = ObservedProcess::from_file(&dir.path().join("leaf.pid"));
-    assert_eq!(command.active_processes().unwrap(), 3);
+    assert_job_accounts_for_live_fixtures(&command, 3);
     command.terminate_tree().unwrap();
     command.terminate_tree().unwrap();
     command.cancel_capture_and_complete().unwrap();
@@ -477,7 +491,7 @@ fn cancels_and_completes_pending_reads_while_writer_is_still_alive() {
     assert!(!stopped.stdout_eof && !stopped.stderr_eof);
     assert!(writer.alive(), "capture cancellation terminated the writer");
     assert_eq!(command.try_exit().unwrap(), None);
-    assert_eq!(command.active_processes().unwrap(), 1);
+    assert_job_accounts_for_live_fixtures(&command, 1);
     command.cancel_capture_and_complete().unwrap();
     command.terminate_tree().unwrap();
     writer.assert_terminated();

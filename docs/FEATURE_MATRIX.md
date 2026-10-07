@@ -1,8 +1,8 @@
-# 功能矩阵与后续验收 · checkpoint 7B / 0.7.0
+# 功能矩阵与后续验收 · checkpoint 7B / 0.7.1
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。第六阶段保留精确协议 4，新增产品版本/后端平台/操作支持发现；不支持跨协议版本协商，能力声明不授予执行信任。第六阶段与 0.6.2 同提交双平台 CI 已通过；后者含 39 项 Windows 基础库单元测试与全部 13 项生命周期测试。7B 接入隔离 agent 的 Windows 异步任务，具体接入仍待本检查点的精确提交 CI；此前 Linux 超时未再出现，但原根因未确认。
+“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。第六阶段保留精确协议 4，新增产品版本/后端平台/操作支持发现；不支持跨协议版本协商，能力声明不授予执行信任。第六阶段与 0.6.2 同提交双平台 CI 已通过；后者含 39 项 Windows 基础库单元测试与全部 13 项生命周期测试。7B 接入隔离 agent 的 Windows 异步任务；0.7.0 Ubuntu通过，Windows两项精确活跃进程数断言失败，新agent测试未到达。0.7.1保留全Job清理要求并修订计数假设，仍待精确提交CI；此前 Linux 超时未再出现，但原根因未确认。
 
 | 领域 | 当前实现 | 尚缺 / 下一阶段验收 |
 |---|---|---|
