@@ -142,8 +142,27 @@ full.
 `.cedar-lock`, held for the object's lifetime. A second process gets `Error::Locked`
 rather than waiting or writing concurrently. The lock file is intentionally not
 unlinked when closing; removing it would permit two independent lock inodes.
-OS process termination releases the advisory lock. Filesystems must implement
-file locking correctly; no attempt is made to break another process's lock.
+Normal `Store` destruction explicitly unlocks its owned file description before
+closing it. Closing the file alone is insufficient on Unix: a concurrent
+fork/exec can temporarily inherit the same open-file description and retain its
+`flock`, even though the descriptor is marked close-on-exec. An immediate reopen
+must not spuriously report a live competing editor during that interval.
+
+The creator process ID is retained only in memory. Only that process may use the
+store or explicitly unlock it. An inherited `Store` rejects operations before
+stale-sequence handling, and its destructor does not unlock the live parent's
+lock. A newly opened store uses an independent description; closing an old
+inherited/duplicated descriptor cannot release the new owner's lock. Failed
+lock contenders never acquire an unlock-owning `Store`.
+
+The destructor is nonpanicking and retries only an interrupted unlock syscall;
+other unlock failures fall back to closing the descriptor. Broken filesystem
+locking can therefore still prevent immediate release. Abrupt termination such
+as SIGKILL bypasses the destructor: the OS releases the lock when its last shared
+open-file description closes, so a surviving inherited descriptor can retain it
+until exec/close. There is no attempt to break another process's lock or bypass
+contention. A failed open remains a visible recovery warning, not a successful
+persistence acknowledgement.
 
 The frontend worker supplies globally monotonic operation sequence values. The
 store retains the highest observed sequence **per identity/path**, allowing a
@@ -171,7 +190,23 @@ have changed, so the frontend must show uncertainty rather than success. A crash
 before acknowledgement can retain either the previous complete record or the
 new complete record; a crash before debounce/write can lose those latest edits.
 
-On Windows, the temporary file is flushed before atomic replacement, but `std`
+On Windows, persistence clears the temporary-file attribute through
+`NamedTempFile::keep`, immediately restores an RAII cleanup guard for the source
+path, flushes the file again, and uses Rust 1.99 `std::fs::rename`. That maintained
+implementation falls back from legacy `MoveFileExW` to `FileRenameInfoEx` with
+POSIX replacement semantics when a compatible destination reader remains open.
+A reader that denies delete sharing, an ACL denial, or an unsupported filesystem
+still produces an explicit error; the old draft remains and there is no success
+acknowledgement. There is no delete-then-rename gap or blanket access-error retry.
+The concurrent-reader test still requires every replacement to succeed and every
+read to return a complete old/new record. A held-reader regression requires the
+old handle to retain its complete old record while new opens see the replacement;
+a separate Windows restrictive-sharing test requires failure, preservation,
+cleanup, and successful newer-sequence retry after the restrictive handle closes.
+See [Rust's rename contract](https://doc.rust-lang.org/std/fs/fn.rename.html) and
+[Microsoft's rename flag semantics](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information).
+
+The Windows temporary file is flushed before atomic replacement, but `std`
 has no portable containing-directory durability barrier in this implementation.
 Consequently Windows does **not** have the same power-loss guarantee claimed by
 the Unix fsync sequence. Even on Unix, storage hardware, mount options, broken
@@ -191,11 +226,13 @@ coordinate cooperating Cedar processes only. A hostile/shared filesystem needs
 an OS account/sandbox boundary and stronger platform-specific directory-handle
 operations; this crate does not claim that protection.
 
-Windows MSVC-target compilation and strict Clippy are checked. Windows runtime,
-ACL behavior, actual cross-process locking/rename under antivirus interference,
-and crash/power-loss semantics have not been exercised here. macOS runtime is
-also unverified. Do not describe those platforms as runtime-validated on the
-basis of the cross-compile.
+Local checks include Windows MSVC-target compilation and strict Clippy. The
+first published phase-3 Windows CI ran the storage tests and exposed the legacy
+open-reader replacement failure described above; the fixed checkpoint must pass
+its own Windows runtime CI before being called runtime-validated. Windows ACL
+behavior, antivirus interference, and hardware power-loss semantics remain
+unverified. macOS runtime is also unverified. A cross-compile alone is not runtime
+validation.
 
 ## Focused verification
 
@@ -209,10 +246,13 @@ cargo clippy -p cedar-recovery --all-targets --target x86_64-pc-windows-msvc --l
 
 The suite covers exact Unicode/base-revision round trips; all SSH identity
 components; no workspace modification; metadata-only startup; new-file revisions;
-atomic replacement under concurrent readers; stale writes/deletes and tombstones;
+atomic replacement under concurrent and held readers; Windows restrictive-share
+failure preservation and retry; stale writes/deletes and tombstones;
 bounded tombstone memory; failed-write retry ordering; restart with old revisions;
-independent subprocess lock contention; actual subprocess termination after a
-durable acknowledgement followed by lock reacquisition and exact restoration;
+independent subprocess lock contention; deterministic held-descriptor and
+fork-before-exec release regressions; inherited-process ownership rejection;
+250 immediate reopens alongside 80 parallel fork/exec launches; actual
+subprocess termination after a durable acknowledgement followed by lock reacquisition and exact restoration;
 corrupt/oversized/truncated records and metadata/payload checksums; parse-valid
 revision/timestamp corruption; injected failed-parent-sync retry coverage; invalid UTF-8; unsupported
 formats/fields; quota/headroom/count exhaustion without eviction; unknown/crash
@@ -221,3 +261,30 @@ hardlink and FIFO attacks; and replacement of an open store root/lock.
 
 All test data is synthetic. No user's workspace, SSH server, credentials, or
 external service is involved.
+
+
+### Lock lifecycle regression found during phase 4
+
+A later parallel full-workspace run exposed intermittent `Locked` failures in
+three tests that reopened a just-dropped store. A held `File::try_clone` reproduced
+the failure deterministically without timing or retries, confirming Unix shared
+open-file-description lifetime as the cause. The owner-PID-gated explicit unlock
+fix changes no disk format or public API. Tests retain real contention, hold an
+actual child in its pre-exec window using raw signal-safe socket I/O, verify
+inherited/stale operations fail closed, and ensure an old descriptor cannot
+unlock a newly acquired store. This was an availability defect; previously
+acknowledged draft contents are not changed by the fix.
+
+
+### Windows open-reader replacement regression
+
+The first public phase-3 Windows CI failed an atomic replacement with OS error 5
+while a concurrent reader was active. The previous `tempfile` 3.27 persistence
+path used only legacy `MoveFileExW`. Microsoft's documented legacy open-target
+restriction is consistent with that failure; Rust 1.99 already implements the
+modern POSIX-semantics fallback. Recovery now uses the maintained standard-library
+rename implementation on Windows, while preserving temporary-attribute clearing,
+flush-before-acknowledgement, cleanup, and error reporting. The strict concurrent
+read/write test was not relaxed or skipped. Its failure cleanup now joins the
+reader before dropping the directory, avoiding a misleading secondary NotFound
+panic during test teardown.

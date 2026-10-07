@@ -1,7 +1,9 @@
 # Cedar IDE · Rust 原生远程开发底座
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第三阶段工程（**0.3.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第三阶段工程（**0.3.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
+
+0.3.1 是恢复可靠性热修复：修正 Unix 子进程短暂继承文件锁导致的假锁定，以及 Windows 并发读取时恢复记录替换失败。没有增加语言功能，协议仍为 3。真实 Windows CI 结果以公开仓库的该提交检查为准；Windows GUI 尚未验收。
 ## 已能实际使用
 
 - 原生 egui/Glow 桌面界面，无 WebView、Electron 或前端 JVM
@@ -58,7 +60,7 @@ Linux 已有真实子进程、独立 agent 和原生界面验证；macOS 未运�
 4. 启动 Cedar，选择 **Remote over SSH**，填写 `user@host` 或 SSH 配置别名、端口、远程绝对目录、agent 可执行路径
 5. 如需 Git、构建命令或语言服务，只对可信工作区启用工具执行
 
-前端与 agent 必须同版本：**0.3.0 使用协议版本 3**，会拒绝不兼容的旧版 agent。此次协议增加 `RunStart` / `RunPoll` / `RunCancel`。
+前端与 agent 必须同版本：**0.3.1 使用协议版本 3**，会拒绝不兼容的旧版 agent。此次协议增加 `RunStart` / `RunPoll` / `RunCancel`。
 
 连接通过 `ssh -T` 的标准输入/输出传输有界 JSON，不开启服务端 TCP 监听。开启严格主机密钥检查，禁用 agent/X11/端口转发，不自动信任主机、不生成密钥、不保存密码。
 
@@ -87,7 +89,7 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端连接 Linux 远程工作区
 bash scripts/verify.sh
 ```
 
-第三阶段完整通过：格式检查、严格全 targets/features Clippy、244 个普通 Rust 测试、额外 1 个独立 agent 进程测试，以及文件、LSP、异步任务三条 Python 黑盒闭环。聚合套件有 4 个显式 opt-in 测试被忽略，其中 agent 测试由脚本随后单独执行；真实 JDT、系统字体和 debugpy 验证属于第二阶段历史证据，未冒充本轮重测。Windows 可按 CI 的 PowerShell 示例运行对应 Cargo 与进程测试。
+第三阶段完整通过：格式检查、严格全 targets/features Clippy、249 个普通 Rust 测试、额外 1 个独立 agent 进程测试，以及文件、LSP、异步任务三条 Python 黑盒闭环。聚合套件有 4 个显式 opt-in 测试被忽略，其中 agent 测试由脚本随后单独执行；真实 JDT、系统字体和 debugpy 验证属于第二阶段历史证据，未冒充本轮重测。Windows 可按 CI 的 PowerShell 示例运行对应 Cargo 与进程测试。
 
 原生 Linux 窗口的崩溃恢复、恢复后的外部变动冲突，以及长命令运行中继续编辑保存另有人工验收。通过范围、截图及未覆盖项见 [第三阶段测试报告](docs/TEST_REPORT.md)；历史报告保存在 [第二阶段](docs/TEST_REPORT_PHASE2.md) 和 [第一阶段](docs/TEST_REPORT_PHASE1.md)。
 

@@ -245,8 +245,28 @@ pub struct Store {
     root: PathBuf,
     directory: File,
     _lock: File,
+    owner_process: u32,
     limits: Limits,
     sequences: HashMap<RecordId, u64>,
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        // Unix flock belongs to the shared open-file description. A concurrent
+        // fork can retain a duplicate until exec even when Rust uses CLOEXEC.
+        // Closing only this File can therefore leave a dead owner's lock held.
+        // An inherited Store must never unlock the still-live parent's lock.
+        if self.owner_process == std::process::id() {
+            loop {
+                match self._lock.unlock() {
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    _ => break,
+                }
+            }
+        }
+        // File close remains the fallback if unlock fails; never unlink the
+        // lock path or unlock a new owner's independently opened description.
+    }
 }
 
 impl Store {
@@ -283,6 +303,7 @@ impl Store {
             root,
             directory,
             _lock: lock,
+            owner_process: std::process::id(),
             limits,
             sequences: HashMap::new(),
         };
@@ -396,6 +417,7 @@ impl Store {
     /// sequence is ignored even after removal. Failed operations reserve their
     /// sequence too; retry with a newer sequence. No old draft is evicted.
     pub fn write(&mut self, sequence: u64, draft: &Draft) -> Result<MutationOutcome> {
+        self.check_owner()?;
         let id = record_id(&draft.workspace, &draft.path)?;
         if !self.accept_sequence(&id, sequence)? {
             return Ok(MutationOutcome::IgnoredStale);
@@ -457,9 +479,7 @@ impl Store {
                 "draft destination appeared during write".into(),
             ));
         }
-        temporary
-            .persist(&destination)
-            .map_err(|error| Error::Io(error.error))?;
+        persist_temporary(temporary, &destination)?;
         self.sync_directory()?;
         Ok(MutationOutcome::Applied)
     }
@@ -472,6 +492,7 @@ impl Store {
         workspace: &WorkspaceIdentity,
         path: &str,
     ) -> Result<MutationOutcome> {
+        self.check_owner()?;
         let id = record_id(workspace, path)?;
         if !self.accept_sequence(&id, sequence)? {
             return Ok(MutationOutcome::IgnoredStale);
@@ -592,7 +613,17 @@ impl Store {
         Ok(())
     }
 
+    fn check_owner(&self) -> Result<()> {
+        if self.owner_process != std::process::id() {
+            return Err(Error::UnsafeStorage(
+                "recovery store belongs to another process; open a new store after fork".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn check_root(&self) -> Result<()> {
+        self.check_owner()?;
         check_directory_chain(&self.root)?;
         let current = fs::symlink_metadata(&self.root)?;
         check_private_directory(&current)?;
@@ -667,6 +698,31 @@ pub fn default_store_path() -> Result<PathBuf> {
             "HOME",
         )
     }
+}
+
+/// Preserve tempfile's cleanup/attribute handling, but use Rust's maintained
+/// Windows rename implementation. tempfile 3.27 uses only legacy MoveFileExW,
+/// which can fail when a destination reader is open despite SHARE_DELETE.
+#[cfg(windows)]
+fn persist_temporary(temporary: tempfile::NamedTempFile, destination: &Path) -> Result<()> {
+    // keep clears FILE_ATTRIBUTE_TEMPORARY before persistence. Re-arm cleanup
+    // for the owned source path so a failed rename cannot accumulate new files.
+    let (file, path) = temporary.keep().map_err(|error| Error::Io(error.error))?;
+    let mut cleanup = tempfile::TempPath::try_from_path(path)?;
+    file.sync_all()?;
+    // Rust 1.99 falls back to FileRenameInfoEx with POSIX_SEMANTICS for an
+    // open, delete-sharing destination. Access restrictions still return errors.
+    fs::rename(&cleanup, destination)?;
+    cleanup.disable_cleanup(true);
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn persist_temporary(temporary: tempfile::NamedTempFile, destination: &Path) -> Result<()> {
+    temporary
+        .persist(destination)
+        .map_err(|error| Error::Io(error.error))?;
+    Ok(())
 }
 
 fn absolute_setting(path: PathBuf, name: &str) -> Result<PathBuf> {
@@ -1007,6 +1063,63 @@ fn same_file(left: &Metadata, right: &Metadata) -> bool {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_drop_releases_lock_with_a_live_duplicated_descriptor() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("recovery");
+        let store = Store::open(&root).unwrap();
+        let duplicate = store._lock.try_clone().unwrap();
+        assert!(matches!(Store::open(&root), Err(Error::Locked)));
+        drop(store);
+        let reopened = Store::open(&root).expect("owner drop must unlock despite a live duplicate");
+        drop(duplicate);
+        // Closing an old duplicate must not release a newer owner's lock.
+        assert!(matches!(Store::open(&root), Err(Error::Locked)));
+        drop(reopened);
+        Store::open(root).unwrap();
+    }
+
+    #[test]
+    fn inherited_store_cannot_operate_or_unlock_its_parent_description() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("recovery");
+        let mut inherited = Store::open(&root).unwrap();
+        let parent_descriptor = inherited._lock.try_clone().unwrap();
+        let workspace = WorkspaceIdentity::Local {
+            root: "/synthetic".into(),
+        };
+        inherited.remove(5, &workspace, "a.txt").unwrap();
+        let draft = Draft {
+            workspace: workspace.clone(),
+            path: "a.txt".into(),
+            text: "draft".into(),
+            base_text: String::new(),
+            base_revision: None,
+            modified_ms: 0,
+        };
+        // Simulate the copied owner PID after fork without invoking Rust heap
+        // destructors inside a multithreaded test runner's post-fork child.
+        inherited.owner_process = std::process::id().wrapping_add(1);
+        assert!(matches!(inherited.list(), Err(Error::UnsafeStorage(_))));
+        for sequence in [4, 6] {
+            assert!(matches!(
+                inherited.remove(sequence, &workspace, "a.txt"),
+                Err(Error::UnsafeStorage(_))
+            ));
+            assert!(matches!(
+                inherited.write(sequence, &draft),
+                Err(Error::UnsafeStorage(_))
+            ));
+        }
+        drop(inherited);
+        assert!(matches!(Store::open(&root), Err(Error::Locked)));
+        parent_descriptor.unlock().unwrap();
+        let reopened = Store::open(&root).unwrap();
+        drop(parent_descriptor);
+        assert!(matches!(Store::open(&root), Err(Error::Locked)));
+        drop(reopened);
+    }
 
     #[test]
     fn reopening_retries_every_ancestor_barrier_after_sync_failure() {

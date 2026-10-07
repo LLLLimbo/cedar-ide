@@ -5,7 +5,7 @@ use cedar_recovery::{
 };
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -685,13 +685,18 @@ fn atomic_replacement_readers_never_observe_a_partial_record() {
     started_receiver
         .recv_timeout(Duration::from_secs(15))
         .unwrap();
+    let mut write_result = Ok(MutationOutcome::Applied);
     for sequence in 3..43 {
-        store
-            .write(sequence, if sequence % 2 == 0 { &a } else { &b })
-            .unwrap();
+        write_result = store.write(sequence, if sequence % 2 == 0 { &a } else { &b });
+        if write_result.is_err() {
+            break;
+        }
     }
+    // Always stop/join before propagating a failure, so cleanup cannot tear
+    // down the directory underneath a still-running reader.
     running.store(false, Ordering::Release);
     reader.join().unwrap();
+    write_result.expect("atomic replacement must succeed with a delete-sharing reader");
     assert!(reads.load(Ordering::Relaxed) > 0);
     assert_eq!(
         fs::read_dir(root.path()).unwrap().count(),
@@ -846,6 +851,7 @@ fn subprocess_entry() {
     };
     let root = PathBuf::from(std::env::var_os("CEDAR_RECOVERY_TEST_ROOT").unwrap());
     match mode.as_str() {
+        "noop" => {}
         "lock" => {
             if matches!(Store::open(root), Err(Error::Locked)) {
                 std::process::exit(0);
@@ -1039,4 +1045,197 @@ fn parse_valid_revision_and_timestamp_damage_is_detected_and_preserved() {
         assert!(store.remove(3, &value.workspace, &value.path).is_err());
         assert_eq!(fs::read(&path).unwrap(), damaged);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn owner_drop_unlocks_while_an_actual_fork_child_holds_inherited_descriptor() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
+    use std::os::unix::process::CommandExt;
+
+    let root = private_tempdir();
+    let store = Store::open(root.path()).unwrap();
+    let (mut parent_signal, child_signal) = UnixStream::pair().unwrap();
+    child_signal
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    child_signal
+        .set_write_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    parent_signal
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    parent_signal
+        .set_write_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let mut command = child_command("noop", root.path());
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    // A pre_exec callback forces the actual fork/exec path. Only raw, async-
+    // signal-safe syscalls run in the child, before CLOEXEC closes the Store FD.
+    unsafe {
+        command.pre_exec(move || {
+            let descriptor = child_signal.as_raw_fd();
+            let ready = b'R';
+            loop {
+                let result = libc::write(descriptor, (&ready as *const u8).cast(), 1);
+                if result == 1 {
+                    break;
+                }
+                let error = std::io::Error::last_os_error();
+                if result < 0 && error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(std::io::Error::from_raw_os_error(libc::EIO));
+            }
+            let mut release = 0u8;
+            loop {
+                let result = libc::read(descriptor, (&mut release as *mut u8).cast(), 1);
+                if result == 1 {
+                    return Ok(());
+                }
+                let error = std::io::Error::last_os_error();
+                if result < 0 && error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(std::io::Error::from_raw_os_error(libc::EIO));
+            }
+        });
+    }
+    // spawn waits for exec, so the parent fork/exec launch runs concurrently
+    // while this thread deterministically exercises the inherited-lock window.
+    let spawning = std::thread::spawn(move || command.spawn());
+    let mut ready = [0u8];
+    let ready_result = parent_signal.read_exact(&mut ready);
+    drop(store);
+    let reopened = Store::open(root.path());
+    // Release and reap even if the assertion below will fail. No sleeps/retries.
+    let release_result = parent_signal.write_all(b"G");
+    drop(parent_signal);
+    let status = spawning.join().unwrap().unwrap().wait().unwrap();
+    ready_result.unwrap();
+    release_result.unwrap();
+    assert_eq!(ready, [b'R']);
+    assert!(status.success());
+    let reopened =
+        reopened.expect("inherited pre-exec descriptor must not retain dropped owner lock");
+    assert!(matches!(Store::open(root.path()), Err(Error::Locked)));
+    drop(reopened);
+    Store::open(root.path()).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn immediate_reopen_survives_parallel_subprocess_fork_exec_stress() {
+    use std::os::unix::process::CommandExt;
+    let root = private_tempdir();
+    let barrier = Arc::new(std::sync::Barrier::new(5));
+    let mut store = Some(Store::open(root.path()).unwrap());
+    let mut spawning = Vec::new();
+    for _ in 0..4 {
+        let root = root.path().to_owned();
+        let start = Arc::clone(&barrier);
+        spawning.push(std::thread::spawn(move || {
+            start.wait();
+            for _ in 0..20 {
+                let mut command = child_command("noop", &root);
+                command.stdout(Stdio::null()).stderr(Stdio::null());
+                // Force fork rather than a platform-dependent posix_spawn path.
+                unsafe {
+                    command.pre_exec(|| Ok(()));
+                }
+                assert!(command.status().unwrap().success());
+            }
+        }));
+    }
+    barrier.wait();
+    let mut failure = None;
+    for iteration in 0..250 {
+        drop(store.take());
+        match Store::open(root.path()) {
+            Ok(reopened) => store = Some(reopened),
+            Err(error) => {
+                failure = Some(format!("immediate reopen {iteration} failed: {error}"));
+                break;
+            }
+        }
+    }
+    for thread in spawning {
+        thread.join().unwrap();
+    }
+    assert!(failure.is_none(), "{}", failure.unwrap_or_default());
+    assert!(matches!(Store::open(root.path()), Err(Error::Locked)));
+    drop(store);
+    Store::open(root.path()).unwrap();
+}
+
+#[test]
+fn atomic_replacement_keeps_an_open_reader_on_the_complete_original_record() {
+    let root = private_tempdir();
+    let mut store = Store::open(root.path()).unwrap();
+    let old = draft("held-reader.txt", "original complete record 你好");
+    let new = draft("held-reader.txt", "replacement complete record 🦀");
+    store.write(1, &old).unwrap();
+    let path = record_path(root.path(), &old);
+    let original_bytes = fs::read(&path).unwrap();
+    let mut held_reader = File::open(&path).unwrap();
+    assert_eq!(store.write(2, &new).unwrap(), MutationOutcome::Applied);
+    let mut held_bytes = Vec::new();
+    held_reader.read_to_end(&mut held_bytes).unwrap();
+    assert_eq!(held_bytes, original_bytes);
+    assert_eq!(
+        store
+            .read(&record_id(&new.workspace, &new.path).unwrap())
+            .unwrap(),
+        new
+    );
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&path).unwrap().file_attributes() & 0x100,
+            0,
+            "persisted file must not retain FILE_ATTRIBUTE_TEMPORARY"
+        );
+    }
+    drop(held_reader);
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+}
+
+#[cfg(windows)]
+#[test]
+fn deny_delete_sharing_returns_error_preserves_old_record_and_allows_newer_retry() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let root = private_tempdir();
+    let mut store = Store::open(root.path()).unwrap();
+    let old = draft("blocked.txt", "original safe record");
+    let new = draft("blocked.txt", "new private draft");
+    store.write(1, &old).unwrap();
+    let path = record_path(root.path(), &old);
+    let original_bytes = fs::read(&path).unwrap();
+    let held_reader = File::options()
+        .read(true)
+        .share_mode(0x1 | 0x2)
+        .open(&path)
+        .unwrap();
+    let result = store.write(2, &new);
+    assert!(
+        matches!(result, Err(Error::Io(error)) if matches!(error.raw_os_error(), Some(5 | 32))),
+        "an explicit delete-sharing restriction must fail, never acknowledge persistence"
+    );
+    assert_eq!(fs::read(&path).unwrap(), original_bytes);
+    assert_eq!(
+        fs::read_dir(root.path()).unwrap().count(),
+        2,
+        "failed temporary is cleaned up"
+    );
+    drop(held_reader);
+    assert_eq!(store.write(2, &new).unwrap(), MutationOutcome::IgnoredStale);
+    assert_eq!(store.write(3, &new).unwrap(), MutationOutcome::Applied);
+    assert_eq!(
+        store
+            .read(&record_id(&new.workspace, &new.path).unwrap())
+            .unwrap(),
+        new
+    );
 }

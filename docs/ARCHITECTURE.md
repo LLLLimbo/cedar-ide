@@ -1,4 +1,4 @@
-# Architecture · phase 3 / 0.3.0
+# Architecture · phase 3 / 0.3.1
 
 Cedar is a native Rust frontend plus a workspace backend. The current wire
 protocol is **3**; incompatible frontend/agent versions fail the handshake.
