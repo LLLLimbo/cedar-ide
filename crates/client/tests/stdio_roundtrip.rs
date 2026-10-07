@@ -91,7 +91,7 @@ mod lifecycle {
         io::{BufReader, Read, Write},
         path::Path,
         process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
-        sync::mpsc,
+        sync::{mpsc, Arc, Mutex},
         thread,
         time::{Duration, Instant},
     };
@@ -101,12 +101,12 @@ mod lifecycle {
             .expect("set CEDAR_AGENT_BIN")
             .into()
     }
-    fn eventually(mut predicate: impl FnMut() -> bool) {
+    fn eventually(context: &str, mut predicate: impl FnMut() -> Result<(), String>) {
         let deadline = Instant::now() + Duration::from_secs(4);
-        while !predicate() {
+        while let Err(detail) = predicate() {
             assert!(
                 Instant::now() < deadline,
-                "lifecycle condition did not complete within 4s"
+                "{context} did not complete within 4s: {detail}"
             );
             thread::sleep(Duration::from_millis(10));
         }
@@ -116,7 +116,7 @@ mod lifecycle {
             program: "sh".into(),
             args: vec![
                 "-c".into(),
-                "sleep 20 & child=$!; printf '%s %s\n' \"$$\" \"$child\" > task-pids; wait".into(),
+                "sleep 20 & child=$!; printf '%s %s\n' \"$$\" \"$child\" > task-pids.tmp && mv task-pids.tmp task-pids; wait".into(),
             ],
             timeout_secs: 30,
         }
@@ -127,14 +127,27 @@ mod lifecycle {
         };
         snapshot["id"].as_u64().unwrap()
     }
-    fn pids(root: &Path) -> Vec<u32> {
+    fn pids(root: &Path, context: &str) -> Vec<u32> {
         let path = root.join("task-pids");
-        eventually(|| fs::read_to_string(&path).is_ok_and(|s| s.split_whitespace().count() == 2));
-        fs::read_to_string(path)
-            .unwrap()
-            .split_whitespace()
-            .map(|s| s.parse().unwrap())
-            .collect()
+        let mut ready = None;
+        eventually(&format!("{context}: PID fixture readiness"), || {
+            let snapshot = fs::read_to_string(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let parsed = snapshot
+                .split_whitespace()
+                .map(str::parse::<u32>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("invalid PID snapshot {snapshot:?}: {error}"))?;
+            // The fixture publishes by rename. Also require its final newline
+            // and retain this exact read, never a second unchecked snapshot:
+            // two tokens alone can accept a partially written second PID.
+            if !snapshot.ends_with('\n') || parsed.len() != 2 || parsed.contains(&0) {
+                return Err(format!("incomplete PID snapshot {snapshot:?}"));
+            }
+            ready = Some(parsed);
+            Ok(())
+        });
+        ready.unwrap()
     }
     fn running(pid: u32) -> bool {
         let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
@@ -143,11 +156,36 @@ mod lifecycle {
         let state = stat.rsplit_once(") ").unwrap().1.chars().next().unwrap();
         !matches!(state, 'Z' | 'X')
     }
-    fn assert_task_stopped(pids: &[u32]) {
-        eventually(|| {
-            pids.iter().all(|pid| !running(*pid))
-                && !Path::new(&format!("/proc/{}", pids[0])).exists()
-        });
+    fn process_diagnostics(pids: &[u32]) -> String {
+        pids.iter()
+            .map(|pid| {
+                format!(
+                    "pid {pid}: stat={:?}; wchan={:?}",
+                    fs::read_to_string(format!("/proc/{pid}/stat")),
+                    fs::read_to_string(format!("/proc/{pid}/wchan"))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+    fn assert_task_stopped(pids: &[u32], context: &str) {
+        eventually(
+            &format!("{context}: task group stopped and leader reaped"),
+            || {
+                if pids.iter().all(|pid| !running(*pid))
+                    && !Path::new(&format!("/proc/{}", pids[0])).exists()
+                {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "running={:?}; leader present={}; {}",
+                        pids.iter().filter(|pid| running(**pid)).collect::<Vec<_>>(),
+                        Path::new(&format!("/proc/{}", pids[0])).exists(),
+                        process_diagnostics(pids)
+                    ))
+                }
+            },
+        );
         // The TaskManager reaps its leader; orphan descendant zombies, if any,
         // are the init process's responsibility, not a reaping guarantee here.
         assert!(
@@ -162,7 +200,7 @@ mod lifecycle {
         let root = tempfile::tempdir().unwrap();
         let mut client = Client::spawn_agent(&agent(), root.path(), true).unwrap();
         let _task = task_id(client.request(live_command()).unwrap());
-        let pids = pids(root.path());
+        let pids = pids(root.path(), "client drop");
         assert!(pids.iter().all(|pid| running(*pid)));
         let start = Instant::now();
         drop(client);
@@ -170,7 +208,7 @@ mod lifecycle {
             start.elapsed() < Duration::from_millis(100),
             "drop waited on the caller thread"
         );
-        assert_task_stopped(&pids);
+        assert_task_stopped(&pids, "client drop");
     }
 
     #[test]
@@ -179,7 +217,7 @@ mod lifecycle {
         let root = tempfile::tempdir().unwrap();
         let mut client = Client::spawn_agent(&agent(), root.path(), true).unwrap();
         let old_id = task_id(client.request(live_command()).unwrap());
-        let pids = pids(root.path());
+        let pids = pids(root.path(), "cancel and reconnect");
         client
             .request(Operation::Write {
                 path: "during.txt".into(),
@@ -197,16 +235,20 @@ mod lifecycle {
         client
             .request(Operation::RunCancel { task_id: old_id })
             .unwrap();
-        eventually(|| {
+        eventually("cancel and reconnect: cancelled snapshot", || {
             let Payload::RunTask { snapshot } = client
                 .request(Operation::RunPoll { task_id: old_id })
                 .unwrap()
             else {
                 panic!("task payload")
             };
-            snapshot["state"] == "cancelled"
+            if snapshot["state"] == "cancelled" {
+                Ok(())
+            } else {
+                Err(snapshot.to_string())
+            }
         });
-        assert_task_stopped(&pids);
+        assert_task_stopped(&pids, "cancel and reconnect");
         drop(client);
         let mut fresh = Client::spawn_agent(&agent(), root.path(), true).unwrap();
         for op in [
@@ -226,7 +268,7 @@ mod lifecycle {
         );
         // The numeric value may be reused in a new agent. UI generation + task
         // ID, not task ID alone, identifies a task across reconnection.
-        eventually(|| {
+        eventually("cancel and reconnect: fresh task succeeded", || {
             let Payload::RunTask { snapshot } = fresh
                 .request(Operation::RunPoll { task_id: new_id })
                 .unwrap()
@@ -234,10 +276,10 @@ mod lifecycle {
                 panic!("task payload")
             };
             if snapshot["state"] != "succeeded" {
-                return false;
+                return Err(snapshot.to_string());
             }
             assert_eq!(snapshot["stdout"], "fresh-session");
-            true
+            Ok(())
         });
         assert!(fresh.is_connected());
     }
@@ -246,6 +288,8 @@ mod lifecycle {
         child: Child,
         input: Option<ChildStdin>,
         output: Option<BufReader<ChildStdout>>,
+        stderr: Arc<Mutex<Vec<u8>>>,
+        stderr_reader: Option<thread::JoinHandle<()>>,
         next_id: u64,
     }
     impl RawAgent {
@@ -261,12 +305,37 @@ mod lifecycle {
                 .unwrap();
             let input = child.stdin.take();
             let output = child.stdout.take().map(BufReader::new);
+            // Drain while the agent is alive so failure diagnostics cannot
+            // fill its pipe and become the reason it cannot exit.
+            let mut pipe = child.stderr.take().unwrap();
+            let stderr = Arc::new(Mutex::new(Vec::new()));
+            let captured = Arc::clone(&stderr);
+            let stderr_reader = thread::spawn(move || {
+                let mut buffer = [0; 1024];
+                loop {
+                    match pipe.read(&mut buffer) {
+                        Ok(0) => return,
+                        Ok(count) => {
+                            let mut bytes = captured.lock().unwrap();
+                            let keep = count.min(16 * 1024 - bytes.len());
+                            bytes.extend_from_slice(&buffer[..keep]);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(error) => panic!("agent stderr capture failed: {error}"),
+                    }
+                }
+            });
             Self {
                 child,
                 input,
                 output,
+                stderr,
+                stderr_reader: Some(stderr_reader),
                 next_id: 0,
             }
+        }
+        fn diagnostics(&self) -> String {
+            String::from_utf8_lossy(&self.stderr.lock().unwrap()).into_owned()
         }
         fn request(&mut self, op: Operation) -> Payload {
             self.next_id += 1;
@@ -292,12 +361,23 @@ mod lifecycle {
             assert_eq!(response.id, self.next_id);
             response.result.unwrap()
         }
-        fn exit(&mut self) -> ExitStatus {
+        fn exit(&mut self, context: &str, task_pids: &[u32]) -> ExitStatus {
             let mut status = None;
-            eventually(|| {
+            eventually(&format!("{context}: agent exit and stderr EOF"), || {
                 status = self.child.try_wait().unwrap();
-                status.is_some()
+                let stderr_finished = self.stderr_reader.as_ref().unwrap().is_finished();
+                if status.is_some() && stderr_finished {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "exit={status:?}; stderr EOF={stderr_finished}; agent: {}; task: {}; stderr={:?}",
+                        process_diagnostics(&[self.child.id()]),
+                        process_diagnostics(task_pids),
+                        self.diagnostics()
+                    ))
+                }
             });
+            self.stderr_reader.take().unwrap().join().unwrap();
             status.unwrap()
         }
     }
@@ -326,20 +406,26 @@ mod lifecycle {
             program: "sh".into(),
             args: vec![
                 "-c".into(),
-                "sleep 2 & child=$!; printf '%s %s\n' \"$$\" \"$child\" > task-pids; wait".into(),
+                "sleep 2 & child=$!; printf '%s %s\n' \"$$\" \"$child\" > task-pids.tmp && mv task-pids.tmp task-pids; wait".into(),
             ],
             timeout_secs: 10,
         }));
-        let pids = pids(root.path());
+        let pids = pids(root.path(), "forced termination");
         agent.child.kill().unwrap();
-        assert!(!agent.exit().success());
+        assert!(!agent.exit("forced termination", &pids).success());
         // No Workspace destructor runs after SIGKILL. This fixture terminates
         // naturally after two seconds, so observing the gap leaves no live task.
         assert!(
             pids.iter().all(|pid| running(*pid)),
             "fixture must expose the forced-kill cleanup gap"
         );
-        eventually(|| pids.iter().all(|pid| !running(*pid)));
+        eventually("forced termination: fixture exited naturally", || {
+            if pids.iter().all(|pid| !running(*pid)) {
+                Ok(())
+            } else {
+                Err(process_diagnostics(&pids))
+            }
+        });
     }
 
     #[test]
@@ -349,7 +435,12 @@ mod lifecycle {
             let root = tempfile::tempdir().unwrap();
             let mut agent = RawAgent::new(root.path());
             task_id(agent.request(live_command()));
-            let pids = pids(root.path());
+            let pids = pids(root.path(), failure);
+            assert!(
+                pids.iter().all(|pid| running(*pid)),
+                "{failure}: task fixture must be live before fault injection: {}",
+                process_diagnostics(&pids)
+            );
             match failure {
                 "eof" => {
                     agent.input.take();
@@ -392,17 +483,10 @@ mod lifecycle {
                 }
                 _ => unreachable!(),
             }
-            let status = agent.exit();
+            let status = agent.exit(failure, &pids);
             assert_eq!(status.success(), failure == "eof", "{failure}: {status}");
-            assert_task_stopped(&pids);
-            let mut diagnostics = String::new();
-            agent
-                .child
-                .stderr
-                .take()
-                .unwrap()
-                .read_to_string(&mut diagnostics)
-                .unwrap();
+            assert_task_stopped(&pids, failure);
+            let diagnostics = agent.diagnostics();
             if failure != "eof" {
                 assert!(
                     diagnostics.contains("protocol stream closed:"),

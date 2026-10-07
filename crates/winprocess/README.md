@@ -1,6 +1,6 @@
 # Cedar Windows process ownership primitives
 
-Checkpoint **7A / 0.6.1** adds an independently testable Windows-only owner and a
+Checkpoint **7A / 0.6.2** adds an independently testable Windows-only owner and a
 portable literal-argv encoder. **Cedar's Windows TaskManager, Git and language
 execution remain disabled.** Nothing in this crate grants workspace trust.
 Windows runtime acceptance is required before any task integration.

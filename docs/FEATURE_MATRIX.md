@@ -1,8 +1,8 @@
-# 功能矩阵与后续验收 · checkpoint 7A / 0.6.1
+# 功能矩阵与后续验收 · checkpoint 7A / 0.6.2
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。第六阶段保留精确协议 4，新增产品版本/后端平台/操作支持发现；不支持跨协议版本协商，能力声明不授予执行信任。第六阶段同提交双平台CI已通过；7A新增独立Windows进程基础库，本地473项Rust、五条agent链、两项导出回归通过，真实Windows新测试待CI，未接入任务。
+“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。第六阶段保留精确协议 4，新增产品版本/后端平台/操作支持发现；不支持跨协议版本协商，能力声明不授予执行信任。第六阶段同提交双平台 CI 已通过；7A 新增独立 Windows 进程基础库，未接入任务。首次 7A CI 的 Windows 碰撞断言与 Linux 生命周期超时失败已记录；0.6.2 修订测试并增强诊断，精确提交的双平台复验仍待完成，见[修订报告](TEST_REPORT_HOTFIX_0_6_2.md)。
 
 | 领域 | 当前实现 | 尚缺 / 下一阶段验收 |
 |---|---|---|
@@ -17,7 +17,7 @@
 | 调试 | 独立异步 DAP 传输；第二阶段真实 Python 断点/栈/变量/继续/停止验证 | IDE 调试 UI/远程桥接、可靠后代进程回收、监听安全、Java/JVM 调试 |
 | 命令运行 | 明确 executable + 字面量 argv；RunStart/Poll/Cancel、实时有界输出、终态区分、运行中继续编辑保存、关闭/重连保护 | 本阶段原生显式 Run/Cancel/重连复核待批准启用信任；交互式 PTY、测试结果树、并行任务、Windows Job Objects；macOS 运行未验收 |
 | 保存的命令配置 | 显式 Load/选择/新建/Save；`cedar.tasks.json` 严格有界格式；字面量参数行与预览；普通编辑器版本检查、单次撤销和恢复；重连显式复核 | 不是完整运行/调试配置系统；无自动发现、预设、环境变量、目录覆盖、变量展开或 autorun；未序列化表单只在当前会话 |
-| Windows进程基础 | 独立cedar-winprocess：原子Job绑定、私有本机管道、完成后才回收的异步I/O、严格argv编码；Windows交叉编译通过 | 实际Windows单元/隔离生命周期CI；之后才考虑隔离agent任务接入；当前Windows执行仍禁用 |
+| Windows进程基础 | 独立cedar-winprocess：原子Job绑定、私有本机管道、完成后才回收的异步I/O、严格argv编码；Windows交叉编译通过 | 首次 CI 已实际通过 38/39 项库单元测试，碰撞断言已修订；13 项隔离生命周期尚未运行，待新提交 CI；当前 Windows 执行仍禁用 |
 | 任务安全 | 配置操作零自动执行；每连接一个异步任务、1–300 秒、每流 256 KiB、8 个历史记录；Linux 普通进程组清理；不自动重试不明结果 | 非 OS 沙箱，恶意逃逸后代可能存活；强杀 agent 不保证任务清理；遗留同步 Run/Git/LSP/DAP 不计入异步任务限额 |
 | 搜索 | 有界文本搜索、结果跳转；语言服务引用查找与工作区边界导航 | 正则、替换、全工作区符号索引 |
 | Git | 可信工作区状态 | diff/hunks/stage/commit/blame/merge、分支/远端管理 |
@@ -37,7 +37,7 @@
 
 ## 建议下一顺序
 
-1. 完成本阶段源码检查点与精确提交 Ubuntu/Windows CI，并完成能力 UI 的信任关闭验收；后续修复须重跑受影响项，保留候选与最终证据的区别
+1. 先完成 0.6.2 精确提交 Ubuntu/Windows CI，实际运行 13 项 Windows 生命周期测试；Linux 原超时若重现，按逐条件诊断定位，不能以放宽期限代替根因分析。之后再接入隔离 agent 的 Windows 异步任务，保持其他执行能力关闭
 2. 远程核心路径：获得狭窄测试批准后验证真实 SSH 认证、严格主机密钥、远程路径引用、断开/重连和不明结果不重放；明确版本/能力边界、实际进程清理和 Windows 前端到 Linux 后端的证据
 3. Windows Job Object 与可取消管道、外部文件监听/冲突体验、多平台编辑与恢复；支持未完成前保持 Windows 本地命令/Git/LSP 禁用
 4. DAP 调试 UI/agent 与真实程序闭环；先解决监听安全和普通后代进程回收，再扩展 PTY、测试树与 JVM 调试

@@ -497,7 +497,7 @@ mod tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::time::{Duration, Instant};
     use windows_sys::Win32::Foundation::{
-        GetHandleInformation, ERROR_ACCESS_DENIED, WAIT_OBJECT_0,
+        GetHandleInformation, ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::Storage::FileSystem::WriteFile;
     use windows_sys::Win32::System::Threading::WaitForSingleObject;
@@ -689,12 +689,62 @@ mod tests {
     fn occupied_name_is_rejected_without_attaching_to_an_existing_pipe() {
         let security = PipeSecurity::for_current_logon().unwrap();
         let name = random_pipe_name().unwrap();
-        let (_read, _write) = capture_pipe(&name, &security).unwrap();
-        let error = match capture_pipe(&name, &security) {
+        let (mut read, write) = capture_pipe(&name, &security).unwrap();
+        let before = b"original bytes buffered before collision";
+        let after = b"original writer still connected after collision";
+        write_pipe(&write, before);
+
+        // Check the server-only path too: rejection must happen before any
+        // ConnectNamedPipe/CreateFileW call can attach to the occupied name.
+        let server_error = match create_server(&name, &security) {
+            Ok(_) => panic!("existing pipe accepted a second server"),
+            Err(error) => error,
+        };
+        let capture_error = match capture_pipe(&name, &security) {
             Ok(_) => panic!("existing pipe was accepted"),
             Err(error) => error,
         };
-        assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+        // FIRST_PIPE_INSTANCE documents ACCESS_DENIED, but this fixture also
+        // occupies its sole allowed instance (nMaxInstances = 1). Windows can
+        // reject that exhausted instance count with PIPE_BUSY first. Accept
+        // only these collision errors, never an arbitrary construction failure.
+        for error in [server_error, capture_error] {
+            assert!(
+                matches!(
+                    error.raw_os_error().map(|code| code as u32),
+                    Some(ERROR_ACCESS_DENIED | ERROR_PIPE_BUSY)
+                ),
+                "unexpected occupied-name error: {error}"
+            );
+        }
+
+        let mut client_pid = 0;
+        // SAFETY: the original server is still owned; pid output is writable.
+        assert_ne!(
+            unsafe { GetNamedPipeClientProcessId(raw(&read.pipe), &mut client_pid) },
+            0
+        );
+        // SAFETY: GetCurrentProcessId has no pointer or ownership arguments.
+        assert_eq!(client_pid, unsafe { GetCurrentProcessId() });
+        write_pipe(&write, after);
+        drop(write);
+
+        // Neither buffered bytes nor the live connection may be stolen. EOF
+        // also proves a failed attempt did not retain an extra writer handle.
+        let mut captured = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            read.capture_round(Stream::Stdout, &mut |_, bytes| {
+                captured.extend_from_slice(bytes)
+            })
+            .unwrap();
+            if read.state == State::Eof {
+                break;
+            }
+            assert!(Instant::now() < deadline, "original pipe did not reach EOF");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(captured, [before.as_slice(), after.as_slice()].concat());
     }
 
     #[test]
