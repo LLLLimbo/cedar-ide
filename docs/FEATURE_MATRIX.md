@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 9C setup fix / 0.8.5
+# 功能矩阵与后续验收 · checkpoint 9C Unicode launch fix / 0.8.6
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 

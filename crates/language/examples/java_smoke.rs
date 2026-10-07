@@ -170,8 +170,8 @@ fn java_executable(argument: Option<&std::ffi::OsString>) -> SmokeResult<PathBuf
 }
 
 // Java 21's java.io parser treats Rust's \\?\ canonical prefix as UNC-like.
-// Keep the executable's native path, but pass verified ordinary local-drive
-// paths to Java-consumed file arguments. This probe does not cover UNC/devices.
+// Keep the executable's native path, but use a verified ordinary local-drive
+// spelling for Java's cwd. This probe does not cover UNC/device paths.
 #[cfg(windows)]
 fn ordinary_windows_local_path(path: &Path) -> SmokeResult<PathBuf> {
     use std::path::{Component, Prefix};
@@ -193,7 +193,7 @@ fn ordinary_windows_local_path(path: &Path) -> SmokeResult<PathBuf> {
     Ok(PathBuf::from(plain))
 }
 
-fn java_path_argument(path: &Path) -> SmokeResult<PathBuf> {
+fn java_working_directory(path: &Path) -> SmokeResult<PathBuf> {
     #[cfg(windows)]
     {
         let canonical = path.canonicalize()?;
@@ -207,6 +207,26 @@ fn java_path_argument(path: &Path) -> SmokeResult<PathBuf> {
     }
     #[cfg(not(windows))]
     Ok(path.to_path_buf())
+}
+
+// Java's Windows native launcher converts argv through the system code page.
+// Its Unicode cwd is handled separately. Keep the selected jar physically under
+// that cwd, but pass only an exact ASCII relative name to the native launcher.
+fn relative_launcher(directory: &Path, launcher: &Path) -> SmokeResult<PathBuf> {
+    let relative = launcher.strip_prefix(directory)?;
+    if relative.as_os_str().is_empty()
+        || !relative.to_str().is_some_and(str::is_ascii)
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        || directory.join(relative).canonicalize()? != launcher.canonicalize()?
+    {
+        return Err(
+            "Equinox launcher must have an exact ASCII relative path inside its distribution"
+                .into(),
+        );
+    }
+    Ok(relative.to_path_buf())
 }
 
 // ProcessConfig inherits its parent's environment. Fail rather than alter a
@@ -477,7 +497,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let root_uri = file_uri(&project)?;
     let document_uri = file_uri(&source)?;
     let mut config = ProcessConfig::new(java);
-    config.working_directory = Some(project);
+    config.working_directory = Some(java_working_directory(&jdtls)?);
     config.args = [
         "-Declipse.application=org.eclipse.jdt.ls.core.id1",
         "-Dosgi.bundles.defaultStartLevel=4",
@@ -494,7 +514,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     .into_iter()
     .map(Into::into)
     .collect();
-    config.args.push(java_path_argument(&jars[0])?.into());
+    config
+        .args
+        .push(relative_launcher(&jdtls, &jars[0])?.into());
     config.args.push("-configuration".into());
     let platform = if cfg!(target_os = "macos") {
         "config_mac"
@@ -507,7 +529,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !configuration.is_dir() {
         return Err(format!("missing JDT LS {platform} directory").into());
     }
-    config.args.push(java_path_argument(&configuration)?.into());
+    config.args.push(file_uri(&configuration)?.into());
     config.args.push("-data".into());
     let options = ClientOptions {
         request_timeout: Duration::from_secs(60),
@@ -523,6 +545,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             "frontend_or_agent_included":false, "initial_project_and_server_data_fresh":true,
             "java_executable":config.program, "jdtls_directory":jdtls,
             "launcher":jars[0], "configuration":configuration,
+            "working_directory":config.working_directory,
+            "launch_representation":"Unicode distribution cwd; ASCII-relative jar; encoded location URLs",
+            "literal_launch_arguments_before_data":config.args,
             "shutdown_grace_secs":options.shutdown_timeout.as_secs(),
             "document_uri":document_uri, "sessions":3, "resolve_imports":resolve_imports
         })
@@ -540,7 +565,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let fresh = !data.exists();
             std::fs::create_dir_all(&data)?;
             let mut session_config = config.clone();
-            session_config.args.push(java_path_argument(&data)?.into());
+            session_config.args.push(file_uri(&data)?.into());
             println!(
                 "{}",
                 json!({"kind":"session_start","session":session,
@@ -552,6 +577,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &root_uri,
                 &document_uri,
                 &source,
+                &data,
                 resolve_imports,
                 session,
                 previous_identity,
@@ -586,6 +612,7 @@ fn run_session(
     root_uri: &str,
     document_uri: &str,
     source: &Path,
+    data_directory: &Path,
     resolve_imports: bool,
     session: &str,
     previous_identity: Option<(u32, u64)>,
@@ -628,6 +655,18 @@ fn run_session(
         {
             return Err("--resolve-imports requires completion resolveProvider=true".into());
         }
+        // Equinox must decode the file URL to this exact physical Unicode
+        // data directory, not silently create a literal percent-escaped path.
+        if !data_directory.join(".metadata").is_dir() {
+            return Err(
+                "JDT did not create metadata in the intended Unicode data directory".into(),
+            );
+        }
+        println!(
+            "{}",
+            json!({"kind":"data_directory_witness","session":session,
+            "data_directory":data_directory,"metadata_in_expected_directory":true})
+        );
         sample_jvm_memory(client.process_id(), "after_initialize", start)?;
         client.did_open(document_uri, "java", 1, SOURCE)?;
         let initial_diagnostics = await_diagnostics(&client, document_uri, 1, true)?;
@@ -777,13 +816,36 @@ mod tests {
 
     const URI: &str = "file:///fixture%20%E9%9B%AA/src/Main.java";
 
+    #[test]
+    fn relative_launcher_preserves_unicode_distribution_and_rejects_other_paths() {
+        let temp = tempfile::Builder::new()
+            .prefix("cedar launcher 雪 ")
+            .tempdir()
+            .unwrap();
+        let plugins = temp.path().join("plugins");
+        std::fs::create_dir(&plugins).unwrap();
+        let jar = plugins.join("launcher.jar");
+        std::fs::write(&jar, b"fixture").unwrap();
+        assert_eq!(
+            relative_launcher(temp.path(), &jar).unwrap(),
+            Path::new("plugins").join("launcher.jar")
+        );
+        let unicode_jar = plugins.join("launcher雪.jar");
+        std::fs::write(&unicode_jar, b"fixture").unwrap();
+        assert!(relative_launcher(temp.path(), &unicode_jar).is_err());
+        assert!(relative_launcher(&plugins, &temp.path().join("outside.jar")).is_err());
+        assert!(relative_launcher(&jar, &jar).is_err());
+        let uri = file_uri(temp.path()).unwrap();
+        assert!(uri.is_ascii() && uri.contains("%E9%9B%AA"));
+    }
+
     #[cfg(windows)]
     #[test]
-    fn java_arguments_strip_only_verified_local_drive_prefixes() {
+    fn java_working_directory_strips_only_verified_local_drive_prefixes() {
         use std::path::{Component, Prefix};
         let temp = tempfile::tempdir().unwrap();
         let canonical = temp.path().canonicalize().unwrap();
-        let argument = java_path_argument(&canonical).unwrap();
+        let argument = java_working_directory(&canonical).unwrap();
         assert!(matches!(argument.components().next(),
             Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))));
         assert_eq!(argument.canonicalize().unwrap(), canonical);

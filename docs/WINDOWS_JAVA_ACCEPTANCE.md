@@ -16,12 +16,18 @@ or establish a Windows runtime pass. The broader gate remains in
   and macOS retain the existing optional Java argument/PATH fallback.
 - Selects `config_win` on Windows (`config_linux`/`config_mac` elsewhere), requires
   that directory and exactly one Equinox launcher JAR, and passes literal argv.
-  Java-consumed JAR/configuration/data paths on Windows use verified ordinary
-  local-drive spellings. Only canonical VerbatimDisk prefixes are stripped;
-  canonical equivalence is rechecked, and UNC/device forms are rejected. The
-  executable keeps its native path. This avoids the Java 21 java.io UNC-like
-  interpretation of Rust's verbatim path prefix; it does not claim UNC/long-path
-  coverage.
+  The child cwd is the verified Unicode JDT distribution, rather than the
+  synthetic project. An exact ASCII-relative launcher path must resolve to the
+  selected JAR. Configuration/data arguments are ASCII percent-encoded file URLs;
+  every physical directory remains Unicode and the LSP root/document URIs still
+  identify the synthetic project. The intended data directory must acquire
+  `.metadata` after initialize in both fresh sessions; the third verifies it
+  remains present alongside restart semantics, not an independent new write.
+  Windows cwd uses a verified ordinary local-drive
+  spelling; canonical equivalence is checked and UNC/device forms rejected.
+  The executable retains its native path. This is a scoped Java-launch recipe,
+  not a change to Cedar's literal UTF-16 process transport or a claim of arbitrary
+  Unicode Java argv, Unicode JDK-home, UNC or long-path support.
 - Rejects inherited `CLIENT_PORT`, `CLIENT_HOST`, `socket.stream.debug`,
   `JDK_JAVA_OPTIONS`, `JAVA_TOOL_OPTIONS` and `_JAVA_OPTIONS` without printing
   their values or mutating global environment. Prepare a clean test parent.
@@ -258,3 +264,32 @@ values when `SetEnvironmentVariable` receives `$null`; this is not absence, whic
 the Rust probe requires. The script and example instructions now remove entries
 with the Environment provider and verify that each entry is absent. These are
 process-local test-parent changes, not persistent user/machine settings.
+
+
+## Java native argv boundary and supported representation
+
+The next Windows attempt (0.8.5) completed verified extraction/move, but Java 21
+replaced `雪` in the absolute `-jar` argument with `?` and exited before JDT
+initialization. OpenJDK 21u's launcher explicitly converts GetCommandLineW through
+CP_ACP before argument parsing; newer 25u/current upstream still has this boundary.
+A different JDK version or file.encoding flag is not a supported fix, and a UTF-8
+argument file is not guaranteed by the Java 21 argument-file contract.
+
+The probe now uses the normal JDT-distribution working directory with an exact
+ASCII-relative JAR and Eclipse-supported file URLs for configuration/data.
+The physical installation, project and data locations retain Unicode/spaces.
+Java gets its cwd through GetCurrentDirectoryW, and the pinned Equinox binaries
+convert file URLs using URI-to-File and decode their installation URL as UTF-8.
+The agent's production workspace cwd is not changed by this example recipe.
+
+Read-only bytecode inspection of the verified archive confirmed these paths in
+`org.eclipse.equinox.launcher_1.8.0.v20260804-1928.jar` and
+`org.eclipse.osgi_3.24.300.v20260721-1251.jar`, including the `-data` to
+`osgi.instance.area` mapping. The full three-session recipe passed on Linux in
+25,986 ms with lazy imports and `.metadata` witnesses in the intended Unicode
+data directories. A native Windows rerun remains mandatory.
+
+Sources: [JDK21 launcher](https://github.com/openjdk/jdk21u/blob/master/src/java.base/share/native/launcher/main.c),
+[Unicode cwd handling](https://github.com/openjdk/jdk21u/blob/master/src/java.base/windows/native/libjava/java_props_md.c),
+[Eclipse runtime location options](https://help.eclipse.org/latest/topic/org.eclipse.platform.doc.isv/reference/misc/runtime-options.html),
+[Equinox location conversion](https://github.com/eclipse-equinox/equinox/blob/master/bundles/org.eclipse.osgi/supplement/src/org/eclipse/osgi/internal/location/LocationHelper.java).
