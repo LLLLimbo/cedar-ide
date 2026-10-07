@@ -1,9 +1,12 @@
 # Cedar Windows process ownership primitives
 
-Checkpoint **7A / 0.6.2** adds an independently testable Windows-only owner and a
-portable literal-argv encoder. **Cedar's Windows TaskManager, Git and language
-execution remain disabled.** Nothing in this crate grants workspace trust.
-Windows runtime acceptance is required before any task integration.
+Checkpoint 7A added an independently testable Windows-only owner and a portable
+literal-argv encoder; revision 0.6.2 passed actual Windows primitive CI, including
+all 13 lifecycle tests. Checkpoint **7B / 0.7.0** adopts it for asynchronous tasks
+in the isolated agent only, and adds CREATE_NO_WINDOW for non-interactive console
+children. Git, legacy synchronous Run and language execution remain disabled on
+Windows. Nothing in this crate grants workspace trust. The new integration and
+creation-flag change require their own exact-commit runtime acceptance.
 
 ## Supported host and launch policy
 

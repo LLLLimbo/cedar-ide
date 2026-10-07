@@ -1,6 +1,6 @@
 # Bounded asynchronous command tasks
 
-`cedar-tasks` supplies the Phase 3 command supervisor. The workspace bridge
+`cedar-tasks` supplies the bounded command supervisor. The workspace bridge
 exposes `RunStart`, `RunPoll`, and `RunCancel`; ordinary file/LSP requests can
 continue between polls while an accepted command is running. This is a direct
 executable runner, not a shell parser, terminal emulator, job scheduler, or OS
@@ -14,12 +14,16 @@ before invoking `TaskManager::start`. Executed programs inherit the agent's
 account permissions and environment and can access resources outside the
 workspace. Setting the working directory does not restrict filesystem access.
 
-The executable and argument vector are passed directly to `std::process::Command`.
-Shell substitutions, pipes, globs, and redirection have no special meaning in
-ordinary arguments. A caller can explicitly select `/bin/sh` with `-c`, in which
-case the caller has deliberately requested shell interpretation. Relative
-program/PATH resolution follows the platform's ordinary process-spawn semantics;
-use an absolute executable path when its identity must be unambiguous.
+On Linux/macOS the executable and argument vector use `std::process::Command`;
+relative program/PATH resolution retains ordinary Unix spawn semantics. Windows
+uses the isolated agent's owned Job launcher and requires an explicit absolute
+UTF-8 path to a native `.exe`. There is no Windows PATH/PATHEXT lookup, relative
+expansion, implicit extension or batch-file translation. Use absolute paths when
+executable identity must be unambiguous.
+
+Shell substitutions, pipes, globs and redirection have no special meaning in
+ordinary native arguments. An explicitly selected `/bin/sh -c` or `cmd.exe`
+requests that shell's own parsing, outside the ordinary literal-argv guarantee.
 
 Stdin is null. Stdout and stderr are separate, nonblocking, bounded byte streams.
 No interactive input, PTY, automatic retry, installation, or privilege change is
@@ -49,7 +53,11 @@ if !snapshot.state.is_terminal() {
 # }
 ```
 
-- `new(root)` canonicalizes a directory and starts one idle supervisor thread
+- `new(root)` uses the InProcess host mode, canonicalizes a directory and starts
+  one idle supervisor thread; Windows rejects this default
+- `with_backend_mode(root, BackendMode::IsolatedAgent)` permits Windows tasks
+  only for a host that controls all process spawning. Cedar's agent chooses this
+  immutable mode in code; it is neither a protocol field nor execution trust
 - `start(program, args, timeout)` accepts one bounded request and returns an ID;
   process launch happens on the supervisor, so `start` never waits for execution
 - `poll(id)` returns the latest full bounded snapshot without consuming output
@@ -73,7 +81,11 @@ connection. No API accepts a server-, adapter-, or user-supplied PID to kill.
 ## States and races
 
 Snapshots contain `id`, `state`, full `stdout`/`stderr`, optional `exit_code`,
-`truncated`, and optional `error`. Serialized states use snake_case:
+`truncated`, and optional `error`. Windows additionally reports optional
+`windows_exit_code: u32`; it is omitted on Unix and defaults to absent when
+reading old snapshots. Windows fills signed `exit_code` only if the native value
+fits i32, preserving high-bit codes in the new field without wrapping. The UI
+prefers the native field. Serialized states use snake_case:
 
 | State | Meaning |
 |---|---|
@@ -88,7 +100,7 @@ Snapshots contain `id`, `state`, full `stdout`/`stderr`, optional `exit_code`,
 | `spawn_failed` | The executable was not successfully spawned |
 
 Each supervisor turn takes a bounded amount of output and observes exit with
-`waitid(WNOWAIT | WNOHANG)`. An already observed output limit or capture failure
+Unix `waitid(WNOWAIT | WNOHANG)` or the owned Windows process handle. An already observed output limit or capture failure
 wins first. Otherwise observed natural exit wins a simultaneous cancellation or
 timeout. If still running, cancellation wins before timeout. Once the supervisor
 chooses a termination cause, repeated cancellation cannot overwrite it.
@@ -147,11 +159,12 @@ the command.
 
 Linux is runtime-tested. macOS uses the available Unix process-group, `fcntl`,
 and `waitid`/`WNOWAIT` interfaces, but has not been runtime-tested in this
-workspace. Windows and other platforms return `unsupported_platform`; Windows
-execution remains disabled until Job Object containment and cancellable pipe
-handling are verified. Windows frontends can use a supported remote agent.
+workspace. Windows tasks require the immutable IsolatedAgent host mode and
+explicit workspace trust; its default in-process manager rejects execution.
+Windows Git, synchronous Run, LSP and DAP remain unavailable. Other unsupported
+platforms still return `unsupported_platform`.
 
-The child starts in its own process group. The supervisor must exclusively own
+On Unix, the child starts in its own process group. The supervisor must exclusively own
 its wait state: do not install a competing global SIGCHLD reaper, ignore SIGCHLD,
 or enable `SA_NOCLDWAIT`. It observes exit without reaping, signals the owned
 group while the unreaped leader still reserves its PID, then waits/reaps. This
@@ -166,7 +179,14 @@ threads that can remain stuck in inherited pipes. If a writer still holds a pipe
 after normal cleanup, the final drain deadline expires, capture is marked
 truncated, and descriptors are dropped.
 
-This is not containment against malicious programs. A descendant can deliberately
+On Windows, suspended creation assigns the process to its kill-on-close Job
+atomically. Natural exit, cancellation, timeout and manager Drop all clean that
+owned job. Pinned overlapped reads are cancelled and completed before storage is
+released. The final task snapshot is published only after the owner is destroyed.
+No PID is used as termination authority. See [Windows ownership](WINDOWS_PROCESSES.md)
+for the host-wide inheritance restriction and exact-commit verification gates.
+
+This is not containment against malicious programs. A Unix descendant can deliberately
 create another session/group, daemonize, or pass a pipe to an unrelated process.
 Such processes can outlive task completion and manager drop. Kernel-level
 uninterruptible operations, a stuck spawn/filesystem, or processes that become
@@ -196,5 +216,6 @@ Unit tests additionally verify serialization, `WNOWAIT` before reaping, lost wai
 ownership, unwind cleanup, a live inherited-writer equivalent with a bounded
 nonblocking drain, real read failure, injected interrupted/would-block reads,
 and bounded error text. Tests use synthetic commands and temporary directories;
-they do not access user servers. macOS runtime and Windows execution are not
-claimed as tested.
+they do not access user servers. macOS runtime remains untested. Windows primitive
+acceptance is recorded separately from the new isolated-agent task tests; consult
+the current [verification report](TEST_REPORT.md) for the exact tested commit.

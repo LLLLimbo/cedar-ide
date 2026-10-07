@@ -16,6 +16,7 @@ mod tasks;
 use cedar_protocol::{
     Entry, Operation, Payload, RemoteError, SearchMatch, MAX_FILE_BYTES, PROTOCOL_VERSION,
 };
+pub use cedar_tasks::BackendMode;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -42,6 +43,8 @@ const MAX_SEARCH_DEPTH: usize = 64;
 #[derive(Debug)]
 pub struct Workspace {
     root: PathBuf,
+    // A host construction choice, never a wire operation or execution grant.
+    backend_mode: BackendMode,
     allow_run: bool,
     language: Option<language::LanguageSession>,
     tasks: Option<cedar_tasks::TaskManager>,
@@ -49,12 +52,23 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, RemoteError> {
+        Self::with_backend_mode(root, BackendMode::InProcess)
+    }
+
+    /// Select the host's process-ownership implementation before serving peers.
+    /// `IsolatedAgent` is only for a controlled-spawning agent host; it does not
+    /// grant workspace execution trust, which must still be enabled separately.
+    pub fn with_backend_mode(
+        root: impl AsRef<Path>,
+        backend_mode: BackendMode,
+    ) -> Result<Self, RemoteError> {
         let root = fs::canonicalize(root).map_err(io_error)?;
         if !root.is_dir() {
             return Err(error("not_directory", "Workspace root must be a directory"));
         }
         Ok(Self {
             root,
+            backend_mode,
             allow_run: false,
             language: None,
             tasks: None,
@@ -75,7 +89,7 @@ impl Workspace {
             Operation::Hello => Ok(Payload::Hello {
                 protocol: PROTOCOL_VERSION,
                 root: self.root.to_string_lossy().into_owned(),
-                agent: Some(capabilities::agent_info()),
+                agent: Some(capabilities::agent_info(self.backend_mode)),
             }),
             Operation::List { path } => self.list(&path),
             Operation::Read { path } => self.read(&path),

@@ -69,6 +69,10 @@ def main():
         capabilities = set(info['capabilities'])
         if info['os'] in ('linux', 'macos'):
             assert TASKS | {'run', 'git_status'} <= capabilities
+        elif info['os'] == 'windows':
+            # The executable is the isolated agent, never an in-process host.
+            assert TASKS <= capabilities
+            assert not {'run', 'git_status'} & capabilities
         else:
             assert not (TASKS | {'run', 'git_status'}) & capabilities
         if info['os'] == 'windows':

@@ -541,13 +541,21 @@ impl CedarApp {
                     .changed();
             });
         }
+        let windows_agent = self
+            .agent_info
+            .as_ref()
+            .is_some_and(|agent| agent.os == "windows");
         ui.horizontal(|ui| {
             ui.label("Executable");
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(&mut self.profiles.draft.program)
                         .id(egui::Id::new("task_program"))
-                        .hint_text("cargo")
+                        .hint_text(if windows_agent {
+                            r"C:\Tools\cargo.exe"
+                        } else {
+                            "cargo"
+                        })
                         .desired_width((ui.available_width() - 110.0).max(100.0)),
                 )
                 .changed();
@@ -559,6 +567,13 @@ impl CedarApp {
                 )
                 .changed();
         });
+        if windows_agent {
+            ui.label(
+                RichText::new("Windows: use an absolute path to a native .exe; PATH lookup and batch files are unavailable")
+                    .small()
+                    .color(MUTED),
+            );
+        }
         ui.label(
             RichText::new("Literal arguments, in order (empty rows are empty arguments)")
                 .small()

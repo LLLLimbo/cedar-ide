@@ -111,9 +111,7 @@ impl RunPanel {
             },
             task.stderr,
             state_label(task.state),
-            task.exit_code
-                .map(|code| format!(" · exit {code}"))
-                .unwrap_or_default(),
+            task_exit_label(&task),
             if task.truncated {
                 " · output truncated"
             } else {
@@ -130,6 +128,15 @@ impl RunPanel {
         self.next_poll = now + POLL_SECONDS;
         self.snapshot = Some(task);
         Ok(())
+    }
+}
+fn task_exit_label(task: &TaskSnapshot) -> String {
+    if let Some(code) = task.windows_exit_code {
+        format!(" · exit {code} (0x{code:08X})")
+    } else {
+        task.exit_code
+            .map(|code| format!(" · exit {code}"))
+            .unwrap_or_default()
     }
 }
 fn state_label(state: TaskState) -> &'static str {
@@ -466,6 +473,7 @@ mod tests {
             } else {
                 None
             },
+            windows_exit_code: None,
             truncated: false,
             error: None,
         }
@@ -477,6 +485,30 @@ mod tests {
         Action {
             epoch,
             kind: Kind::Start,
+        }
+    }
+    #[test]
+    fn native_windows_exit_codes_keep_all_bits_and_legacy_snapshots_still_render() {
+        let mut panel = RunPanel::default();
+        for code in [0, 259, 0x8000_0001, 0xffff_ffff] {
+            let mut snapshot = task(1, TaskState::Failed, "");
+            snapshot.windows_exit_code = Some(code);
+            snapshot.exit_code = i32::try_from(code).ok();
+            panel.accept(start(0), value(snapshot), 0.0).unwrap();
+            assert!(panel
+                .output
+                .contains(&format!("exit {code} (0x{code:08X})")));
+        }
+        let mut legacy = value(task(1, TaskState::Failed, "legacy"));
+        legacy.as_object_mut().unwrap().remove("windows_exit_code");
+        legacy["exit_code"] = (-9).into();
+        panel.accept(start(0), legacy.clone(), 0.0).unwrap();
+        assert!(panel.output.ends_with("Failed · exit -9"));
+        let before = panel.output.clone();
+        for invalid in [serde_json::json!(-1), serde_json::json!(4_294_967_296_u64)] {
+            legacy["windows_exit_code"] = invalid;
+            assert!(panel.accept(start(0), legacy.clone(), 0.0).is_err());
+            assert_eq!(panel.output, before);
         }
     }
     #[test]

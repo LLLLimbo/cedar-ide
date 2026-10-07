@@ -35,6 +35,15 @@ jobs:
         run: |
           $env:CEDAR_WINPROCESS_FIXTURE_BIN = "$PWD/target/release/cedar-winprocess-fixture.exe"
           cargo test -p cedar-winprocess --features fixtures --test windows_lifecycle --locked -- --ignored --test-threads=1
+      - name: Windows isolated-agent tasks and bundled Local
+        timeout-minutes: 8
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:CEDAR_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
+          $env:CEDAR_WINPROCESS_FIXTURE_BIN = "$PWD/target/release/cedar-winprocess-fixture.exe"
+          $env:CEDAR_CLIENT_BUNDLE_PROBE_BIN = "$PWD/target/release/cedar-client-bundle-probe.exe"
+          cargo test -p cedar-client --features fixtures --test windows_tasks --locked -- --ignored --test-threads=1
       - name: Agent and tool protocol chains (Unix)
         if: runner.os != 'Windows'
         run: |

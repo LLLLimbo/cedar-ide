@@ -1,19 +1,75 @@
-# Windows process ownership · checkpoint 7A
+# Windows process ownership · checkpoints 7A / 7B
 
 ## Scope and staged activation
 
-`cedar-winprocess` is a standalone primitive crate. Checkpoint 7A deliberately
-leaves existing Windows task/Git/language capability predicates and direct
-backend rejection unchanged. First validate the primitive on actual Windows;
-then a separate checkpoint can integrate asynchronous tasks in an isolated
-agent. Git, legacy synchronous Run, persistent LSP stdin and DAP ownership each
-need their own adoption and verification.
+The standalone `cedar-winprocess` primitive passed actual Windows CI at
+[`139320e6bb988eb3de4ceecb992d68cd3d0442dd`](https://github.com/LLLLimbo/cedar-ide/commit/139320e6bb988eb3de4ceecb992d68cd3d0442dd):
+39 library tests and all 13 explicitly selected lifecycle tests passed in
+[the same-commit Ubuntu/Windows run](https://github.com/LLLLimbo/cedar-ide/actions/runs/37662728974).
+That establishes the primitive gate, not acceptance of the new task integration.
+The earlier Linux integration timeout did not recur; its original cause remains
+unconfirmed after fixture hardening and added diagnostics.
 
-The next Windows Local design uses the exact bundled sibling cedar-agent.exe,
-not PATH/cwd discovery or a fallback to trusted in-process execution. An internal
-host mode will distinguish InProcess from IsolatedAgent, never a peer-supplied
-protocol field. This migration is **not implemented** in 7A. It must preserve
-explicit allow_run and immutable capability/generation handling.
+Checkpoint 7B integrates **only asynchronous RunStart/Poll/Cancel** in an isolated
+agent. `BackendMode` is an immutable host declaration, not a serialized capability,
+CLI switch, workspace setting or source of execution trust. `Workspace::open`
+and `TaskManager::new` retain the InProcess default, which rejects Windows tasks.
+The agent executable explicitly selects IsolatedAgent in code. Direct task
+requests check trust and host support before creating the lazy supervisor;
+capability advertisement uses the same host predicate.
+
+Windows Local connects through the exact `cedar-agent.exe` sibling of the
+frontend executable. A missing or invalid bundle is an error: there is no PATH,
+working-directory, environment override or in-process fallback. The existing
+process client owns the agent transport and reaper. Both bundled executables are
+required; building only the frontend is insufficient for local Windows editing.
+The backend selection does not change draft identity or grant `allow_run`.
+The bundled agent and task launcher use CREATE_NO_WINDOW for their stdio-only
+console processes, preserving redirected streams. GUI executables may still
+show their own windows; this is not a general UI-suppression guarantee. See
+[Microsoft process creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags).
+7B re-runs all primitive tests after this per-child creation-flag change.
+
+Git, legacy synchronous Run, persistent LSP and DAP remain outside this Windows
+activation. Their direct backend rejections stay in place, not merely hidden
+controls. An unrelated broad-inheritance spawn in the agent could otherwise
+inherit a temporary task writer. These services need their own ownership and
+cancellable-I/O adoption before they can share this host.
+
+Windows task programs must be explicit absolute UTF-8 paths to native `.exe`
+files. There is no PATH/PATHEXT lookup, implicit extension, relative expansion or
+batch-file translation. Literal arguments follow the native encoder contract;
+an explicitly selected shell still applies that shell's own parsing rules.
+The command editor shows this Windows-agent requirement. Unix command lookup
+is unchanged.
+
+## Task supervision and exit reporting
+
+The common controller owns one active record, eight completed records, bounded
+raw output and cancellation state. A WindowsCommand lives only on the supervisor
+thread. It is created suspended with its job assigned, then cancellation/deadline
+is checked again before resume. A cancellation racing a subsequent resume may
+still briefly execute code; no automatic retry is permitted.
+
+Natural root exit is observed before cancellation/timeout precedence is chosen.
+Every terminal path terminates the job, including natural exit with surviving
+descendants, then performs a bounded final drain and completes outstanding I/O.
+The owner is destroyed before the controller publishes the terminal snapshot.
+The usual 256-KiB stream caps, 250-ms drain budget and 300-second task limit remain;
+exceptional OS operations can still delay cleanup.
+
+`TaskSnapshot.windows_exit_code` is an additive optional unsigned 32-bit field.
+Windows retains every native code there; the legacy signed `exit_code` is filled
+only when the value fits i32. It is absent for high-bit Windows codes, not wrapped.
+Old protocol-4 readers can ignore the new field; new readers accept old snapshots
+without it. Unix serialization is unchanged. The UI prefers the native value and
+shows decimal and hexadecimal. Success uses native zero; a signaled process that
+returns 259 has completed with a nonzero status. Cancellation/timeout causes stay
+separate from the OS termination code.
+
+The current checkpoint still needs its own exact-commit agent-task CI, including
+malformed transport, owner death, output limits and the colocated Local bundle.
+Primitive CI is not inherited as proof of this new supervisor or frontend route.
 
 ## Atomic launch and immutable ownership
 

@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第七阶段 A 工程（**0.6.2**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第七阶段 B 工程（**0.7.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -35,9 +35,9 @@ cargo build --release --workspace --locked
 cargo run -p cedar-app --bin cedar -- examples/demo
 ```
 
-Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
+Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`，本地连接还要求同目录的 `cedar-agent.exe`；不要只复制前端。缺失或损坏的 agent 会报错，不搜索 PATH 或回退到进程内执行。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的第六阶段提交 [`f5a0c84f731f66c2f003513e52857fcbf77199a0`](https://github.com/LLLLimbo/cedar-ide/commit/f5a0c84f731f66c2f003513e52857fcbf77199a0) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37649215721)。7A 新增独立 Windows 进程所有权基础库；首次公开 CI 暴露了 Windows 碰撞错误码断言过窄，以及尚未复现的 Linux 生命周期超时。0.6.2 修正前者并增强后者的测试准备与诊断，保留原期限和清理要求；新提交的双平台 CI 待验收。**Windows 任务/Git/LSP 仍不启用**，详见[修订报告](docs/TEST_REPORT_HOTFIX_0_6_2.md)与[原 7A 报告](docs/TEST_REPORT_PHASE7A.md)。
+公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.6.2 提交 [`139320e6bb988eb3de4ceecb992d68cd3d0442dd`](https://github.com/LLLLimbo/cedar-ide/commit/139320e6bb988eb3de4ceecb992d68cd3d0442dd) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37662728974)，包括 39 项 Windows 进程基础单元测试与全部 13 项隔离生命周期测试。此前 Linux 生命周期超时在修订后未再出现，原根因仍未确认。7B 在这个基础上接入隔离 agent 的 Windows 异步任务；当前接入还须通过本检查点的精确提交 CI。**Windows Git、同步 Run 和 LSP 仍不启用**，详见[当前报告](docs/TEST_REPORT.md)与[0.6.2 修订报告](docs/TEST_REPORT_HOTFIX_0_6_2.md)。
 
 ## 格式化、引用与大纲
 
@@ -71,7 +71,7 @@ Linux 已验证：收到精确备份确认后强制结束进程，重启可恢�
 
 每个连接同时运行一个异步命令，超时为 1–300 秒，stdout/stderr 各上限 256 KiB。UI 最快每 250ms 轮询一次完整有界快照，区分 Running、Cancelling、Succeeded、Failed、Cancelled、Timed out 等状态。点击 Cancel 只是请求取消，仍须等待终态；自然结束可能先发生。运行中关闭或重连会要求 **Cancel-and-wait**，终态后再重试原操作。断线造成结果不明时明确提示，绝不自动重跑命令。
 
-Linux 已有真实子进程、独立 agent 和原生界面验证；macOS 未运行。Windows 本地命令执行暂时禁用，等待 Job Object 和可取消管道实现；Windows 前端可使用支持该功能的远程 agent。进程组清理不是抵抗恶意进程逃逸的沙箱。完整状态、界限和清理保证见 [命令任务设计](docs/RUN_TASKS.md)。
+Linux 已有真实子进程、独立 agent 和原生界面验证；macOS 未运行。Windows Local 通过同目录的独立 agent 运行异步任务，要求明确的原生 `.exe` 绝对路径，例如 `C:\Tools\cargo.exe`；不搜索 PATH/PATHEXT、不补扩展名、不接受 `.bat`/`.cmd` 包装文件。Windows 任务保留完整 u32 退出码并显示十进制与十六进制，默认进程内后端仍拒绝执行。Windows 前端也可使用支持该功能的远程 agent。Windows 新接入须独立验收，进程组/Job 清理不是恶意代码沙箱。完整状态、界限和清理保证见 [命令任务设计](docs/RUN_TASKS.md)与[Windows 进程边界](docs/WINDOWS_PROCESSES.md)。
 
 ## 远程开发
 
@@ -85,13 +85,13 @@ Linux 已有真实子进程、独立 agent 和原生界面验证；macOS 未运�
 
 连接通过 `ssh -T` 的标准输入/输出传输有界 JSON，agent 不开启 TCP 监听。即使 localhost 也要求严格主机密钥检查；禁用 agent/X11/端口/隧道转发、本地命令、复用连接与自动记录主机密钥。覆盖可能关闭 stdin、后台化或禁止命令会话的 SSH 配置。仅为旧客户端忽略三个新增选项别名，安全开关不会被忽略；参数设计最低支持 OpenSSH 7.6，但旧版本运行待验收。用户的 ProxyJump/ProxyCommand 路由仍受支持，不把 SSH 配置当作沙箱；不自动信任主机、不生成密钥、不保存密码。
 
-SSH 远程 shell 目前要求 POSIX；Windows 前端连接 Linux 远程工作区是主要 Windows 路径。远程 JDK/语言服务器和命令运行在服务器端。已验证真实 stdio agent 的文件、LSP、异步任务及配置协议链，并以真实管道覆盖超时、坏帧、错误响应 ID、stderr 洪泛、失去写入确认和子进程退出。客户端后台回收器给予直接子进程最多两秒的正常退出机会，再尝试终止并回收；这不保证远程进程或逃逸后代已清理。**尚未通过真实 SSH 服务器完成认证连通性或断网恢复测试**；临时认证测试仍等待专门批准，没有创建测试密钥或服务器。重连不接管旧 agent 的任务 ID，也不重跑不明结果的命令。远程仍是核心验收要求，具体证据与下一道门槛见[远程验证](docs/REMOTE_VALIDATION.md)。
+SSH 远程 shell 目前要求 POSIX；Windows 前端可连接 Linux 远程工作区，本地 Windows 则使用捆绑的 stdio agent。远程 JDK/语言服务器和命令运行在服务器端。已验证真实 stdio agent 的文件、LSP、异步任务及配置协议链，并以真实管道覆盖超时、坏帧、错误响应 ID、stderr 洪泛、失去写入确认和子进程退出。客户端后台回收器给予直接子进程最多两秒的正常退出机会，再尝试终止并回收；这不保证远程进程或逃逸后代已清理。**尚未通过真实 SSH 服务器完成认证连通性或断网恢复测试**；临时认证测试仍等待专门批准，没有创建测试密钥或服务器。重连不接管旧 agent 的任务 ID，也不重跑不明结果的命令。远程仍是核心验收要求，具体证据与下一道门槛见[远程验证](docs/REMOTE_VALIDATION.md)。
 
 ## 信任与平台边界
 
 - Git status 也可能通过仓库配置触发过滤器，所以与命令、语言服务器一起要求显式信任
 - 工作目录和进程组不是 OS 沙箱；可信工具拥有执行账户的权限，恶意自行脱离进程组的程序可能继续运行
-- Windows 本地命令、Git 和语言服务器启动暂时禁用；普通本地编辑不受影响，真实 Windows/macOS 编辑与恢复仍待验收
+- Windows 异步命令仅允许隔离 agent 后端；Git、同步 Run 和语言服务器启动仍禁用。Windows Local 的普通编辑也依赖同目录 agent；真实 Windows/macOS GUI 与恢复交互仍待验收
 - 路径访问拒绝绝对路径、越界和符号链接；无法抵抗所有恶意并发文件系统修改
 - 保存会做晚期版本复核，但无法对不合作的外部写入者提供文件系统级原子 compare-and-swap
 - 普通文件的 Windows 替换路径已改用 Rust 1.99 的 `std::fs::rename`，兼容 delete-sharing 读句柄；不绕过只读或共享限制、不先删除目标、不自动重试。第五阶段同提交真实 Windows CI 已通过该回归，Windows GUI 仍未验收，见[保存边界](docs/WORKSPACE_SAVE.md)
@@ -106,6 +106,8 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端连接 Linux 远程工作区
 这些是架构措施，不等于“比 IDEA 节省 X%”。目前没有在同一机器、项目与功能集下完成 IDEA 对照基准。第三阶段历史记录包含一次 112.597 秒 release 前端小样例：CJK、默认恢复开启、信任关闭且无 JVM，前端观察到的 HWM 为 117.97 MiB。它与第二阶段交互不同，不能证明恢复开销、内存改善或 IDEA 相对优势。前端与 Java/Kotlin JVM 读数分别报告，不能拼成同时测得的总占用。本阶段没有新增内存或性能基准。详见 [资源说明](docs/PERFORMANCE.md) 与 [第五阶段测试报告](docs/TEST_REPORT_PHASE5.md)。
 
 ## 验证
+
+7B 本地最终验证通过 **493 项 Rust 测试（487 + 6 显式）**、五条 agent 链、两项导出回归、严格 Linux/MSVC Clippy、Linux release 与 release-agent 集成。新增七项真实 Windows agent/bundle 测试已编译并独立审查，仍待本检查点公开 SHA 的 Windows CI 实际运行；详见[7B 报告](docs/TEST_REPORT_PHASE7B.md)。
 
 ```sh
 bash scripts/verify.sh
@@ -132,9 +134,9 @@ bash scripts/verify.sh
 | cedar-tasks | 有界异步命令监督、输出捕获、取消和普通子进程组清理 |
 | cedar-language | LSP 客户端/生命周期/有界 JSON-RPC；DAP 基础封包 |
 | cedar-debugger | 有界异步 DAP 进程传输，尚未接入 UI 或远程 agent |
-| cedar-winprocess | Windows Job/句柄/异步管道基础库；7A未接入任务或能力广告 |
+| cedar-winprocess | Windows Job/句柄/异步管道基础库；7A独立验收，7B仅由隔离agent任务监督器使用 |
 
-更多：[功能矩阵](docs/FEATURE_MATRIX.md)、[架构](docs/ARCHITECTURE.md)、[语言服务](docs/LANGUAGE_SERVICES.md)、[Kotlin 验证](docs/KOTLIN_VALIDATION.md)、[调试](docs/DEBUGGING.md)、[前端恢复与命令交互](crates/app/RECOVERY_AND_COMMANDS.md)。第五阶段增加显式命令配置、普通文件 Windows 替换修复与远程故障边界验证；第六阶段增加协议 4 内的后端能力发现与单次握手快照；7A先独立验证Windows进程所有权，不直接开放未测执行能力。格式化、引用与大纲的安全边界见 [重构路线](docs/REFACTORING_ROADMAP.md)。多文件重命名仍暂缓，先解决无版本跨文件结果、跨文档撤销与文件资源操作遗漏的安全问题。完整重构、项目模型和大量 IDEA 功能仍待实现。
+更多：[功能矩阵](docs/FEATURE_MATRIX.md)、[架构](docs/ARCHITECTURE.md)、[语言服务](docs/LANGUAGE_SERVICES.md)、[Kotlin 验证](docs/KOTLIN_VALIDATION.md)、[调试](docs/DEBUGGING.md)、[前端恢复与命令交互](crates/app/RECOVERY_AND_COMMANDS.md)。第五阶段增加显式命令配置、普通文件 Windows 替换修复与远程故障边界验证；第六阶段增加协议 4 内的后端能力发现与单次握手快照；7A 已完成 Windows 进程基础库的真实 CI 验收；7B 接入隔离 agent 的异步任务，并为这层接入单独验证传输故障、后代清理与本地 bundle。格式化、引用与大纲的安全边界见 [重构路线](docs/REFACTORING_ROADMAP.md)。多文件重命名仍暂缓，先解决无版本跨文件结果、跨文档撤销与文件资源操作遗漏的安全问题。完整重构、项目模型和大量 IDEA 功能仍待实现。
 
 ## 打包已验证检查点
 

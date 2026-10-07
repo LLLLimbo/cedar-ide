@@ -1,9 +1,10 @@
-# Architecture · phase 5 / 0.5.0
+# Architecture · checkpoint 7B / 0.7.0
 
 Cedar is a native Rust frontend plus a workspace backend. The current wire
 protocol remains **4**. The handshake requires an exact protocol match, not an
-application-version match; there is no general capability negotiation. Phase 5
-reuses the existing file and asynchronous-task operations.
+application-version match. Bounded operation capabilities are discovered within
+that protocol; unsupported protocol versions are still rejected. Checkpoint 7B
+reuses the existing asynchronous-task operations for an isolated Windows agent.
 The frontend has no embedded browser or JVM. Language servers and build tools
 can still need a JVM or other runtime on the workspace machine.
 
@@ -21,9 +22,10 @@ same identity, while canonical-root changes still reject dirty reconnects.
 Seven no-network regressions cover these boundaries. Save acknowledgements
 refer to the exact submitted snapshot and never replace newer typing.
 
-`cedar-client` selects an in-process `Workspace` for local files or a child-process
-transport for SSH. SSH starts the same `cedar-agent --root ...` exercised by
-integration tests. The agent remains a sequential, bounded-frame stdio server;
+`cedar-client` selects an in-process `Workspace` for non-Windows local files,
+the exact bundled sibling agent for Windows Local, or an SSH child-process
+transport. Windows Local has no PATH/cwd/environment or in-process fallback.
+SSH starts the same `cedar-agent --root ...` exercised by integration tests. The agent remains a sequential, bounded-frame stdio server;
 it does not open a listening socket. Each workspace owns one optional language
 server and a lazily created asynchronous command manager. File operations,
 language-server filesystem access and command execution stay on that machine.
@@ -117,8 +119,8 @@ leader exit. Lost wait ownership fails closed without signaling a cached PID.
 The final drain is bounded; escaped descendants and other malicious behavior
 still require OS isolation. Manager drop waits for ordinary owned-child cleanup,
 not an OS-enforced shutdown deadline. Linux is runtime-tested, macOS is not.
-Windows local execution remains unsupported pending Job Object containment and
-cancellable pipes. See [RUN_TASKS.md](RUN_TASKS.md).
+Windows asynchronous tasks require the isolated agent host and owned Job/pipe
+implementation; in-process tasks, Git, synchronous Run and LSP remain disabled. See [RUN_TASKS.md](RUN_TASKS.md).
 
 ## Explicit workspace task profiles
 
@@ -154,10 +156,11 @@ Load, selection, creation, Save, Discard, restore and reconnect never dispatch
 workspace reconnect requires explicit retained-draft review or Load, retaining
 the original SHA for later conflict detection. Different workspace identities
 do not inherit profiles. Trust is independently granted to the connection and
-is never recovered from configuration. The frontend gate permits a Windows
-frontend with a supported SSH backend while keeping local Windows execution
-disabled; agent-side trust/platform checks remain authoritative. Synthetic gate
-coverage does not establish real Windows-to-Linux SSH interoperability.
+is never recovered from configuration. Frontend controls require the complete
+advertised task lifecycle and separate connection trust. The backend additionally
+requires the immutable Windows IsolatedAgent host mode; peer fields cannot grant
+it. Synthetic gate coverage does not establish real Windows-to-Linux SSH
+interoperability or native GUI acceptance.
 See [TASK_PROFILES.md](TASK_PROFILES.md).
 
 ## Process transport ownership and fault bounds
@@ -347,13 +350,23 @@ the UI. Project models, build tools and adapters should remain off the UI thread
 and preferably agent-side. No IntelliJ plugin or complete-feature compatibility
 is promised.
 
-## Windows ownership foundation (7A, not activated)
+## Windows ownership and isolated tasks (7A / 7B)
 
-The independent cedar-winprocess crate adds atomic suspended Job creation,
-owned stdio capture, joined overlapped cancellation and literal UTF-16 argv
-encoding. It is not a TaskManager backend and changes no Windows capability
-advertisement. Its supported host is an isolated, controlled-spawning process;
-exact HANDLE_LIST does not constrain unrelated broad-inheritance spawns.
-Same-commit Windows lifecycle CI must pass before a separate isolated-agent
-integration checkpoint. Git/legacy Run/LSP/DAP need independent adoption. See
-[WINDOWS_PROCESSES.md](WINDOWS_PROCESSES.md).
+The independent cedar-winprocess crate supplies atomic suspended Job creation,
+owned stdio capture, completed overlapped cancellation and literal UTF-16 argv
+encoding. Its 0.6.2 primitive passed actual same-commit Windows CI, including all
+13 lifecycle tests. Checkpoint 7B adds a shared task controller with separate
+Unix and Windows executors; the Windows owner stays on the supervisor thread and
+is destroyed before the terminal record is published.
+
+Windows Local launches only its exact bundled sibling agent. BackendMode defaults
+to InProcess, which still rejects Windows tasks; only agent host code selects
+IsolatedAgent. Trust remains independent. Native programs require absolute UTF-8
+.exe paths, with no shell or PATH/PATHEXT fallback. Native unsigned exit codes
+use an optional additive snapshot field while old readers retain compatibility.
+
+Exact HANDLE_LIST does not constrain unrelated broad-inheritance spawns. Windows
+Git, synchronous Run and LSP therefore stay unreachable at their backend guards.
+They, DAP and future PTY integration require separate ownership design. The new
+agent-task and Local-bundle paths need their own exact-commit CI; primitive
+acceptance is not integration acceptance. See [WINDOWS_PROCESSES.md](WINDOWS_PROCESSES.md).

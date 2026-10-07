@@ -4,7 +4,7 @@
 //! invocation exits within five seconds, including descendants and crash owners.
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::{self, Command, Stdio};
 use std::sync::{Arc, Barrier};
@@ -62,19 +62,29 @@ fn run() -> io::Result<()> {
             publish_pid(Path::new(argument(&args, 1)?))?;
             idle();
         }
-        "tree-live" | "tree-exit" => {
+        "tree-live" | "tree-exit" | "tree-flood" => {
             let dir = Path::new(argument(&args, 1)?);
             let _branch = spawn_fixture("branch", dir)?;
             wait_for_file(&dir.join("leaf.pid"))?;
             wait_for_file(&dir.join("branch.pid"))?;
             println!("root-ready");
             io::stdout().flush()?;
-            // Every tree readiness marker follows the corresponding process's
-            // final pipe I/O, so reader closure cannot simulate tree cleanup.
+            // Tree-live/tree-exit readiness follows final pipe I/O, so reader
+            // closure cannot simulate their cleanup. Tree-flood writes again
+            // only after an explicit test-owned release gate; descendants idle.
             publish_pid(&dir.join("root.pid"))?;
             fs::write(dir.join("tree.ready"), b"ready")?;
             if args[0] == "tree-exit" {
+                // Optional test-owned gate permits opening observation handles
+                // while all three processes are known live before natural exit.
+                if let Some(gate) = args.get(2) {
+                    wait_for_file(Path::new(gate))?;
+                }
                 exit_with_code(23);
+            }
+            if args[0] == "tree-flood" {
+                wait_for_file(Path::new(argument(&args, 2)?))?;
+                flood(1024 * 1024)?;
             }
             idle();
         }
@@ -104,6 +114,57 @@ fn run() -> io::Result<()> {
         "exit" => {
             let code: u32 = argument(&args, 1)?.parse().map_err(invalid_argument)?;
             exit_with_code(code);
+        }
+        "null-stdin" => {
+            let mut input = Vec::new();
+            io::stdin().read_to_end(&mut input)?;
+            if !input.is_empty() {
+                return Err(invalid_argument("task stdin was not null"));
+            }
+            println!("stdin-eof");
+        }
+        #[cfg(windows)]
+        "no-console" => {
+            // SAFETY: GetConsoleWindow takes no pointers or ownership and only
+            // queries this synthetic process's associated console window.
+            // https://learn.microsoft.com/en-us/windows/console/getconsolewindow
+            let window = unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() };
+            if !window.is_null() {
+                return Err(io::Error::other("stdio task has a console window"));
+            }
+            println!("console-window:null");
+            eprintln!("console-stderr-ready");
+        }
+        "split-utf8" => {
+            // Cross actual write boundaries in both streams, then publish the
+            // final suffix before exit so terminal snapshots must finish drain.
+            io::stdout().write_all(&[0xe9])?;
+            io::stderr().write_all(&[0xf0, 0x9f])?;
+            io::stdout().flush()?;
+            io::stderr().flush()?;
+            thread::sleep(Duration::from_millis(40));
+            io::stdout().write_all(&[0x9b, 0xaa])?;
+            io::stderr().write_all(&[0x9a, 0x80])?;
+            println!("-stdout-final");
+            eprintln!("-stderr-final");
+        }
+        "exact-streams" => {
+            let out: usize = argument(&args, 1)?.parse().map_err(invalid_argument)?;
+            let err: usize = argument(&args, 2)?.parse().map_err(invalid_argument)?;
+            if out.max(err) > 2 * 1024 * 1024 {
+                return Err(invalid_argument("stream limit exceeded"));
+            }
+            let writer = thread::spawn(move || -> io::Result<()> {
+                let mut stdout = io::stdout().lock();
+                write_bytes(&mut stdout, out, b'O')?;
+                stdout.flush()
+            });
+            let mut stderr = io::stderr().lock();
+            write_bytes(&mut stderr, err, b'E')?;
+            stderr.flush()?;
+            writer
+                .join()
+                .map_err(|_| io::Error::other("stdout thread panicked"))??;
         }
         #[cfg(windows)]
         "probe-sentinel" => probe_sentinel(argument(&args, 1)?)?,

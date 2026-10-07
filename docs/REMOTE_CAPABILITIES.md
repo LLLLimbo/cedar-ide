@@ -60,15 +60,20 @@ a task supervisor or tool. Advertisement is identical with execution trust on
 or off. Support is not availability of an installed third-party tool.
 
 - Filesystem operations are advertised on supported workspace platforms
-- GitStatus, legacy Run and asynchronous tasks currently use Linux/macOS
-  process implementations and are omitted on other platforms
+- GitStatus and legacy Run use Linux/macOS implementations and remain omitted
+  on Windows
+- Asynchronous tasks use Linux/macOS implementations or the Windows isolated
+  agent. Windows InProcess hosts omit all three task capabilities; direct
+  requests are independently rejected. BackendMode is immutable host code, not
+  a wire field, request option or consequence of execution trust
 - Language startup follows its separate implementation guard, currently disabled
   on Windows. Non-Windows compilation is not native-platform acceptance
 - No PTY/terminal capability is advertised; Cedar has no such protocol operation
 
 The frontend uses capabilities rather than `frontend_is_windows || uses_ssh`
-guesses. A Windows frontend can use a capable Linux backend. A Linux frontend
-must not offer unsupported command startup against a Windows backend.
+guesses. A Windows frontend can use a capable Linux backend. A frontend
+offers Windows task startup only when the backend advertises the complete task
+lifecycle. The reported OS supplies a command-entry hint, not authorization.
 
 Effective execution still requires a ready connection, complete operation-family
 support, explicit workspace execution trust and the existing action/session

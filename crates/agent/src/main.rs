@@ -1,4 +1,4 @@
-use cedar_workspace::Workspace;
+use cedar_workspace::{BackendMode, Workspace};
 use std::io;
 use std::path::PathBuf;
 
@@ -35,7 +35,10 @@ fn run() -> Result<(), String> {
         }
     }
     let root = root.ok_or("--root PATH is required (use --help for usage)")?;
-    let mut workspace = Workspace::open(root).map_err(|e| e.to_string())?;
+    // This binary controls all process spawning. Host mode is fixed in code,
+    // independent of peer requests and the explicit execution-trust flag.
+    let mut workspace = Workspace::with_backend_mode(root, BackendMode::IsolatedAgent)
+        .map_err(|e| e.to_string())?;
     workspace.set_allow_run(allow_run);
     let stdin = io::stdin();
     let stdout = io::stdout();

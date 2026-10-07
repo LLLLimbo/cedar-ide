@@ -34,8 +34,8 @@ use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapAlloc, HeapFree};
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess,
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
-    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT,
+    INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
     PROCESS_SYNCHRONIZE, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
     STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
@@ -89,7 +89,11 @@ impl ProcessOwner {
                 null(),
                 null(),
                 1,
-                CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
+                // This is a non-interactive stdio task. Console executables
+                // must not allocate/inherit a visible console behind the IDE.
+                // GUI executables can still show their own application UI.
+                // https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+                CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
                 null(),
                 cwd.as_ptr(),
                 &startup.StartupInfo,

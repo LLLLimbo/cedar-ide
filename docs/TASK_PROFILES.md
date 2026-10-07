@@ -33,7 +33,7 @@ Project profiles are plaintext and may be committed to source control. Do not pu
 
 Load, selection, New profile, Save, Discard, recovery, and reconnection never run a command. Repeated Run clicks while a start/task is pending do not create another task. No presets or project-discovery commands are implemented in this slice.
 
-Trust is an independent connection setting, never stored in the file. Trust-off connections can load and save profiles. Local Windows execution remains disabled pending verified Job Object/cancellable-pipe support; Windows frontends can still send commands to supported Linux SSH backends. Agent-side trust and platform checks remain authoritative.
+Trust is an independent connection setting, never stored in the file. Trust-off connections can load and save profiles. Windows Local uses the exact bundled sibling cedar-agent.exe, with asynchronous tasks only in that isolated host. Programs must be absolute paths to native .exe files; bare cargo, relative paths and .bat/.cmd wrappers are rejected instead of searched or translated. Windows Git, legacy synchronous Run and LSP remain unavailable. Windows frontends can also send commands to supported Linux SSH backends. Agent-side trust and platform checks remain authoritative.
 
 ## Drafts, conflicts, and reconnects
 

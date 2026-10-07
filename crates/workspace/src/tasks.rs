@@ -20,6 +20,14 @@ impl Workspace {
                 "Command tasks require explicit workspace execution trust",
             ));
         }
+        // Check every lifecycle operation before even allocating a supervisor.
+        // Trust cannot promote an in-process Windows host into an isolated one.
+        if !self.backend_mode.supports_tasks() {
+            return Err(error(
+                "unsupported_platform",
+                "Command tasks are unavailable in this host; Windows requires an isolated cedar-agent",
+            ));
+        }
         match op {
             Operation::RunStart {
                 program,
@@ -27,7 +35,10 @@ impl Workspace {
                 timeout_secs,
             } => {
                 if self.tasks.is_none() {
-                    self.tasks = Some(TaskManager::new(&self.root).map_err(task_error)?);
+                    self.tasks = Some(
+                        TaskManager::with_backend_mode(&self.root, self.backend_mode)
+                            .map_err(task_error)?,
+                    );
                 }
                 let manager = self.tasks.as_ref().expect("manager inserted above");
                 let id = manager
@@ -67,21 +78,89 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn new_workspaces_do_not_start_task_supervisors_and_untrusted_requests_fail() {
-        let root = tempfile::tempdir().unwrap();
-        let mut ws = Workspace::open(root.path()).unwrap();
-        assert!(ws.tasks.is_none());
-        for op in [
+    use crate::BackendMode;
+
+    fn task_operations() -> [Operation; 3] {
+        [
             Operation::RunStart {
-                program: "nonexistent".into(),
-                args: vec![],
+                program: std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                args: vec!["--list".into()],
                 timeout_secs: 1,
             },
             Operation::RunPoll { task_id: 1 },
             Operation::RunCancel { task_id: 1 },
-        ] {
+        ]
+    }
+
+    #[test]
+    fn new_workspaces_do_not_start_task_supervisors_and_untrusted_requests_fail() {
+        let root = tempfile::tempdir().unwrap();
+        for backend_mode in [BackendMode::InProcess, BackendMode::IsolatedAgent] {
+            let mut ws = Workspace::with_backend_mode(root.path(), backend_mode).unwrap();
+            assert!(ws.tasks.is_none());
+            for op in task_operations() {
+                assert_eq!(ws.handle(op).unwrap_err().code, "run_disabled");
+                assert!(ws.tasks.is_none());
+                assert_eq!(ws.backend_mode, backend_mode);
+            }
+        }
+    }
+
+    #[test]
+    fn peer_fields_cannot_promote_host_mode_or_execution_trust() {
+        let root = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::open(root.path()).unwrap();
+        for operation in task_operations() {
+            let mut wire = serde_json::to_value(operation).unwrap();
+            wire["backend_mode"] = serde_json::json!("isolated_agent");
+            wire["allow_run"] = serde_json::json!(true);
+            let op = serde_json::from_value(wire).unwrap();
             assert_eq!(ws.handle(op).unwrap_err().code, "run_disabled");
+            assert_eq!(ws.backend_mode, BackendMode::InProcess);
+            assert!(!ws.allow_run);
+            assert!(ws.tasks.is_none());
+        }
+        assert!(serde_json::from_value::<Operation>(serde_json::json!({
+            "type": "set_backend_mode", "backend_mode": "isolated_agent"
+        }))
+        .is_err());
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[test]
+    fn trusted_in_process_host_rejects_entire_task_lifecycle_without_a_supervisor() {
+        let root = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::open(root.path()).unwrap();
+        ws.set_allow_run(true);
+        for op in task_operations() {
+            let mut wire = serde_json::to_value(op).unwrap();
+            wire["backend_mode"] = serde_json::json!("isolated_agent");
+            let op = serde_json::from_value(wire).unwrap();
+            assert_eq!(ws.handle(op).unwrap_err().code, "unsupported_platform");
+            assert!(ws.tasks.is_none());
+            assert_eq!(ws.backend_mode, BackendMode::InProcess);
+        }
+        ws.set_allow_run(false);
+        for op in task_operations() {
+            assert_eq!(ws.handle(op).unwrap_err().code, "run_disabled");
+            assert!(ws.tasks.is_none());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn isolated_host_poll_and_cancel_do_not_allocate_a_supervisor() {
+        let root = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::with_backend_mode(root.path(), BackendMode::IsolatedAgent).unwrap();
+        ws.set_allow_run(true);
+        for op in [
+            Operation::RunPoll { task_id: 1 },
+            Operation::RunCancel { task_id: 1 },
+        ] {
+            assert_eq!(ws.handle(op).unwrap_err().code, "unknown_task");
             assert!(ws.tasks.is_none());
         }
     }

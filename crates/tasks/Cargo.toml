@@ -12,6 +12,9 @@ thiserror.workspace = true
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+cedar-winprocess = { path = "../winprocess" }
+
 [dev-dependencies]
 tempfile.workspace = true
 serde_json.workspace = true

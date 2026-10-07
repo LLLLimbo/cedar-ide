@@ -4,7 +4,10 @@ use cedar_protocol::{
     read_frame, supports_capability, write_frame, Operation, Payload, Request, Response,
     LANGUAGE_SESSION_CAPABILITIES, PROTOCOL_VERSION, RUN_TASK_CAPABILITIES,
 };
+#[cfg(not(windows))]
 use cedar_workspace::Workspace;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::{
     io::{self, BufReader, Read},
     path::{Path, PathBuf},
@@ -13,6 +16,12 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+// The bundled agent has only redirected stdio and must not open a console
+// window when launched by the GUI. This does not change other transports.
+// https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionSpec {
@@ -37,6 +46,7 @@ pub struct Client {
     handshake: Payload,
 }
 enum Backend {
+    #[cfg(not(windows))]
     Local(Box<Workspace>),
     Process(ProcessClient),
 }
@@ -44,16 +54,23 @@ impl Client {
     pub fn connect(spec: ConnectionSpec) -> Result<Self, String> {
         match spec {
             ConnectionSpec::Local { root, allow_run } => {
-                let mut workspace = Workspace::open(root).map_err(|e| e.to_string())?;
-                workspace.set_allow_run(allow_run);
-                let handshake = workspace
-                    .handle(Operation::Hello)
-                    .map_err(|e| e.to_string())?;
-                validate_handshake(&handshake)?;
-                Ok(Self {
-                    backend: Backend::Local(Box::new(workspace)),
-                    handshake,
-                })
+                #[cfg(windows)]
+                {
+                    Self::connect_bundled_windows_agent(&root, allow_run)
+                }
+                #[cfg(not(windows))]
+                {
+                    let mut workspace = Workspace::open(root).map_err(|e| e.to_string())?;
+                    workspace.set_allow_run(allow_run);
+                    let handshake = workspace
+                        .handle(Operation::Hello)
+                        .map_err(|e| e.to_string())?;
+                    validate_handshake(&handshake)?;
+                    Ok(Self {
+                        backend: Backend::Local(Box::new(workspace)),
+                        handshake,
+                    })
+                }
             }
             ConnectionSpec::Ssh {
                 host,
@@ -68,6 +85,32 @@ impl Client {
                 Self::from_command(cmd)
             }
         }
+    }
+    #[cfg(windows)]
+    fn connect_bundled_windows_agent(root: &Path, allow_run: bool) -> Result<Self, String> {
+        let executable = std::env::current_exe().map_err(|e| {
+            format!("bundled_agent_missing: cannot locate this executable's bundled cedar-agent.exe: {e}")
+        })?;
+        let agent = bundled_windows_agent_path(&executable)?;
+        if !agent.is_file() {
+            return Err(format!(
+                "bundled_agent_missing: bundled cedar-agent.exe is missing at {}; restore it beside this executable",
+                agent.display()
+            ));
+        }
+        let mut cmd = Command::new(&agent);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.arg("--root").arg(root);
+        if allow_run {
+            cmd.arg("--allow-run");
+        }
+        let process = ProcessClient::spawn_bundled_agent(cmd)?;
+        Self::from_process(process).map_err(|e| {
+            format!(
+                "bundled_agent_start_failed: bundled cedar-agent.exe at {} could not establish a workspace connection: {e}",
+                agent.display()
+            )
+        })
     }
     /// Use a separately deployed local agent, also useful for process-isolated integration tests.
     pub fn spawn_agent(agent: &Path, root: &Path, allow_run: bool) -> Result<Self, String> {
@@ -105,6 +148,7 @@ impl Client {
         }
         self.require_capabilities(&op)?;
         match &mut self.backend {
+            #[cfg(not(windows))]
             Backend::Local(ws) => ws.handle(op).map_err(|e| e.to_string()),
             Backend::Process(p) => p.request(op),
         }
@@ -139,10 +183,24 @@ impl Client {
     }
     pub fn is_connected(&self) -> bool {
         match &self.backend {
+            #[cfg(not(windows))]
             Backend::Local(_) => true,
             Backend::Process(p) => p.connected,
         }
     }
+}
+
+// Derive exactly one candidate. No PATH, cwd, environment override, build-tree
+// search or fallback may move Windows Local into a different spawning host.
+#[cfg(any(windows, test))]
+fn bundled_windows_agent_path(executable: &Path) -> Result<PathBuf, String> {
+    if !executable.is_absolute() {
+        return Err("bundled_agent_missing: the current executable path must be absolute".into());
+    }
+    let directory = executable.parent().ok_or_else(|| {
+        "bundled_agent_missing: the current executable has no bundle directory".to_owned()
+    })?;
+    Ok(directory.join("cedar-agent.exe"))
 }
 
 fn validate_handshake(handshake: &Payload) -> Result<(), String> {
@@ -278,15 +336,28 @@ impl ProcessClient {
     fn spawn(cmd: Command) -> Result<Self, String> {
         Self::spawn_with_grace(cmd, CLOSE_GRACE)
     }
-    fn spawn_with_grace(mut cmd: Command, grace: Duration) -> Result<Self, String> {
+    fn spawn_with_grace(cmd: Command, grace: Duration) -> Result<Self, String> {
+        Self::spawn_with_grace_and_error(cmd, grace, |e| {
+            format!("spawn_failed: {e}. Install OpenSSH and deploy cedar-agent first.")
+        })
+    }
+    #[cfg(windows)]
+    fn spawn_bundled_agent(cmd: Command) -> Result<Self, String> {
+        Self::spawn_with_grace_and_error(cmd, CLOSE_GRACE, |e| e.to_string()).map_err(|e| {
+            format!("bundled_agent_start_failed: could not start bundled cedar-agent.exe: {e}")
+        })
+    }
+    fn spawn_with_grace_and_error(
+        mut cmd: Command,
+        grace: Duration,
+        spawn_error: impl FnOnce(io::Error) -> String,
+    ) -> Result<Self, String> {
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| {
-                format!("spawn_failed: {e}. Install OpenSSH and deploy cedar-agent first.")
-            })?;
+            .map_err(spawn_error)?;
         let mut stdin = child.stdin.take().ok_or("missing stdin")?;
         let stdout = child.stdout.take().ok_or("missing stdout")?;
         let mut err = child.stderr.take().ok_or("missing stderr")?;
@@ -512,6 +583,44 @@ mod transport_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_bundle_resolver_uses_only_the_exact_executable_sibling() {
+        // Synthetic paths make this independent of Cargo's deps directory and
+        // of whether an agent happens to be installed anywhere on this host.
+        let base = std::env::temp_dir().join("cedar-synthetic-install");
+        for directory in [base.join("bin"), base.join("spaces and Unicode λ")] {
+            for executable in ["cedar.exe", "renamed-client.exe", "fixture.exe"] {
+                assert_eq!(
+                    bundled_windows_agent_path(&directory.join(executable)).unwrap(),
+                    directory.join("cedar-agent.exe")
+                );
+            }
+        }
+        // A binary under deps must never reach up to a parent build directory.
+        assert_eq!(
+            bundled_windows_agent_path(&base.join("deps/cedar-test.exe")).unwrap(),
+            base.join("deps/cedar-agent.exe")
+        );
+    }
+
+    #[test]
+    fn windows_bundle_resolver_rejects_relative_or_parentless_executable_paths() {
+        for executable in [
+            Path::new(""),
+            Path::new("cedar.exe"),
+            Path::new("bin/cedar.exe"),
+        ] {
+            assert!(bundled_windows_agent_path(executable)
+                .unwrap_err()
+                .starts_with("bundled_agent_missing:"));
+        }
+        let root = std::env::temp_dir().ancestors().last().unwrap().to_owned();
+        assert!(bundled_windows_agent_path(&root)
+            .unwrap_err()
+            .starts_with("bundled_agent_missing:"));
+    }
+
     #[test]
     fn ssh_is_strict_and_no_forwarding() {
         let args = ssh_arguments("user@host", 22, "/work", "cedar-agent", false).unwrap();
@@ -561,6 +670,7 @@ mod tests {
         assert!(ssh_arguments("host", 0, "/work", "cedar-agent", false).is_err());
         assert!(ssh_arguments("host", 22, "/work\n", "cedar-agent", false).is_err());
     }
+    #[cfg(not(windows))]
     #[test]
     fn local_connection_retains_validated_metadata_without_granting_execution_trust() {
         let root = tempfile::tempdir().unwrap();
@@ -611,6 +721,7 @@ mod tests {
         assert!(client.is_connected());
         assert_eq!(serde_json::to_value(client.handshake()).unwrap(), snapshot);
     }
+    #[cfg(not(windows))]
     #[test]
     fn local_errors_dont_disconnect() {
         let root = tempfile::tempdir().unwrap();
