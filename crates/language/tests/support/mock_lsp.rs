@@ -322,6 +322,10 @@ mod windows_fixture {
                 idle();
             }
             "win-tree-blocked" | "win-tree-exit" | "win-stdout-eof-tree" => {
+                if mode == "win-stdout-eof-tree" {
+                    exclude_original_stdout_from_inheritance();
+                    fs::write(dir.join("stdout-noninheritable.ready"), b"verified").unwrap();
+                }
                 let descendant = if mode == "win-stdout-eof-tree" {
                     "win-descendant-stderr"
                 } else {
@@ -465,6 +469,27 @@ mod windows_fixture {
         loop {
             thread::sleep(Duration::from_secs(1));
         }
+    }
+
+    fn exclude_original_stdout_from_inheritance() {
+        use windows_sys::Win32::Foundation::{
+            GetHandleInformation, SetHandleInformation, HANDLE_FLAG_INHERIT,
+        };
+        let handle = io::stdout().as_raw_handle();
+        assert!(!handle.is_null() && handle as isize != -1);
+        // SAFETY: this synthetic root owns its live inherited stdout handle.
+        // No child has been spawned yet. Change only this handle's inheritance
+        // bit, not permissions, buffering or process-wide standard-handle state.
+        // Rust Command broadly inherits inheritable handles: stdout(NUL) alone
+        // does not exclude this original pipe handle as an unrelated handle.
+        assert_ne!(
+            unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) },
+            0
+        );
+        let mut flags = 0;
+        // SAFETY: same live handle and a writable DWORD output.
+        assert_ne!(unsafe { GetHandleInformation(handle, &mut flags) }, 0);
+        assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
     }
 
     fn close_standard_handle(handle: RawHandle) {

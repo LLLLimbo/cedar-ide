@@ -116,8 +116,25 @@ fn root_exit_kills_descendants_retaining_both_pipes() {
 fn stdout_eof_kills_live_root_and_stderr_holding_descendants() {
     let dir = temp();
     let rpc = launch("win-stdout-eof-tree", dir.path(), true);
+    assert_eq!(
+        fs::read(dir.path().join("stdout-noninheritable.ready")).unwrap(),
+        b"verified"
+    );
+    for name in ["root", "child", "grandchild"] {
+        let error = OpenOptions::new()
+            .write(true)
+            .open(dir.path().join(format!("{name}.lock")))
+            .unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32),
+            "{name} must still own its exclusive lifetime file before stdout closes"
+        );
+    }
     fs::write(dir.path().join("go"), b"go").unwrap();
-    assert!(matches!(terminal(&rpc), Error::Closed(_)));
+    assert!(
+        matches!(terminal(&rpc), Error::Closed(reason) if reason.contains("server stdout reached EOF"))
+    );
     drop(rpc);
     assert_dead(dir.path(), true);
 }

@@ -12,6 +12,7 @@ thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 cedar-winprocess = { path = "../winprocess" }
+windows-sys = { version = "=0.61.2", optional = true, features = ["Win32_Foundation"] }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -23,7 +24,7 @@ required-features = ["test-server"]
 
 [features]
 # A deterministic protocol fixture, never needed in production builds.
-test-server = []
+test-server = ["dep:windows-sys"]
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }

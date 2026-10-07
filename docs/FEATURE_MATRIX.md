@@ -1,8 +1,8 @@
-# 功能矩阵与后续验收 · checkpoint 9B / 0.8.2
+# 功能矩阵与后续验收 · checkpoint 9B fixture fix / 0.8.3
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。协议仍为精确版本 4，能力声明不授予执行信任。0.7.1 的同提交 Ubuntu/Windows CI 已通过，Windows 实际执行全部 13 项进程生命周期及 7 项隔离 agent/bundle 测试。第八阶段磁盘对比/干净标签重载已通过同提交双平台 CI；9A 新增可取消 stdin 基础层；9B 接入独占进程的语言传输和 12 项原生验收，Windows IDE LSP 仍禁用，须实际 CI 和真实 Java 验证。此前 Linux 超时未再出现，但原根因未确认。
+“已实现”指当前代码中有可执行路径，不等于所有平台、真实 SSH 或生产项目均已验收。协议仍为精确版本 4，能力声明不授予执行信任。0.7.1 的同提交 Ubuntu/Windows CI 已通过，Windows 实际执行全部 13 项进程生命周期及 7 项隔离 agent/bundle 测试。第八阶段磁盘对比/干净标签重载已通过同提交双平台 CI；9A 新增可取消 stdin 基础层；9B 实际 Windows 已通过21项进程生命周期和11/12项传输验收；0.8.3修正 stdout EOF 夹具的多余句柄继承后待新 CI。Windows IDE LSP 仍禁用，须实际 CI、agent和真实 Java 验证。此前 Linux 超时未再出现，但原根因未确认。
 
 | 领域 | 当前实现 | 尚缺 / 下一阶段验收 |
 |---|---|---|
