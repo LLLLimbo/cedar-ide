@@ -12,6 +12,8 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# Handle native exit codes explicitly; exception rendering must not echo raw VM output.
+$PSNativeCommandUseErrorActionPreference = $false
 if (-not $IsWindows) { throw 'This acceptance script requires native Windows.' }
 if ([string]::IsNullOrWhiteSpace($ScratchRoot)) { throw 'Set an explicit test scratch root.' }
 if ([string]::IsNullOrWhiteSpace($Java)) {
@@ -51,6 +53,7 @@ $scratch = [IO.Path]::GetFullPath((Join-Path $ScratchRoot ('cedar-windows-java-'
 if ($scratch -match '[^\x00-\x7F]') { throw 'Use an ASCII ScratchRoot for native tar staging; runtime Unicode acceptance stays enabled.' }
 if ([string]::IsNullOrWhiteSpace($EvidencePath)) { $EvidencePath = Join-Path $ScratchRoot 'cedar-windows-java-acceptance.txt' }
 $EvidencePath = [IO.Path]::GetFullPath($EvidencePath)
+$CrashEvidencePath = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-java-crash-diagnostics.json'
 Set-Content -LiteralPath $EvidencePath -Value 'Cedar Windows Java acceptance; missing dependencies or any failed stage fail this run.'
 function Record([string] $Text) {
     Write-Output $Text
@@ -59,6 +62,8 @@ function Record([string] $Text) {
 $failure = $null
 $stage = 'scratch creation'
 $created = $false
+$probeReport = Join-Path $scratch 'owned-java-probe-private.json'
+$javaTranscript = Join-Path $scratch 'real-java-private.txt'
 try {
     New-Item -ItemType Directory -Path $scratch | Out-Null
     $created = $true
@@ -84,7 +89,7 @@ try {
         if ($line -match '^(JAVA_VERSION|IMPLEMENTOR|IMPLEMENTOR_VERSION|JAVA_RUNTIME_VERSION|OS_ARCH)=') { Record $line }
     }
     $stage = 'Java executable verification'
-    & $Java -version 2>&1 | Tee-Object -FilePath $EvidencePath -Append
+    & $Java -version *> (Join-Path $scratch 'java-version-private.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Selected Java executable failed.' }
     $archiveUrl = 'https://download.eclipse.org/jdtls/milestones/1.61.0/jdt-language-server-1.61.0-202609031315.tar.gz'
     $expectedSha256 = '338e7e73d61836651ba2453919a0d34fa763eb4e7c03342092309bffb8934c64'
@@ -130,8 +135,20 @@ try {
     Record ("equinox_launcher=" + $launchers[0].Name + '; sha256=' + $launcherHash.ToLowerInvariant())
     # Preserve all upstream notices in the extraction. No JDK/JDT binary is
     # copied into source, release artifacts or the repository's product bundle.
+    $stage = 'owned JVM raw stdio diagnostic matrix'
+    $probeRoot = Join-Path $scratch 'owned-java-probes'
+    New-Item -ItemType Directory -Path $probeRoot | Out-Null
+    # Child output can contain fatal VM environment/register dumps. Never stream
+    # it to the console or a public artifact, even if ErrorFile creation fails.
+    & cargo run --target $target -p cedar-language --example windows_java_probe --locked -- $Java $probeRoot $distribution 1> $probeReport 2> (Join-Path $scratch 'owned-java-probe-stderr-private.txt')
+    if ($LASTEXITCODE -ne 0) { throw 'Owned JVM diagnostic driver could not complete collection.' }
+    # Driver completion is not a claim that its child cases succeeded. Keep the
+    # real JDT assertions as the acceptance gate and capture its own fatal log.
+    $realErrors = Join-Path $scratch 'real-jdt-errors'
+    New-Item -ItemType Directory -Path $realErrors | Out-Null
+    $env:CEDAR_JAVA_ERROR_DIR = $realErrors
     $stage = 'real Java semantic and lifecycle assertions'
-    & cargo run --target $target -p cedar-language --example java_smoke --locked -- $distribution $Java --resolve-imports 2>&1 | Tee-Object -FilePath $EvidencePath -Append
+    & cargo run --target $target -p cedar-language --example java_smoke --locked -- $distribution $Java --resolve-imports *> $javaTranscript
     if ($LASTEXITCODE -ne 0) { throw 'Real Windows Java acceptance failed.' }
 }
 catch {
@@ -141,6 +158,20 @@ finally {
     # This unique directory is exclusively generated test data. The example
     # joins owned process cleanup before returning; deletion must then succeed.
     if ($created) {
+        # Preserve only whitelisted fatal headers/frames and hashes before
+        # deleting scratch. Never upload raw hs_err, environment or minidumps.
+        try {
+            $collectorArgs = @('scripts/collect_java_crash.py', '--root', $scratch, '--output', $CrashEvidencePath)
+            if (Test-Path -LiteralPath $probeReport -PathType Leaf) { $collectorArgs += @('--probe-report', $probeReport) }
+            if (Test-Path -LiteralPath $javaTranscript -PathType Leaf) { $collectorArgs += @('--java-transcript', $javaTranscript) }
+            & python @collectorArgs
+            if ($LASTEXITCODE -ne 0) { throw 'JVM crash diagnostic collection was incomplete; inspect the JSON status.' }
+        }
+        catch {
+            if ($null -eq $failure) { $stage = 'sanitized crash evidence collection'; $failure = $_ }
+            else { Add-Content -LiteralPath $EvidencePath -Value ('Crash evidence collection also failed: ' + $_.Exception.Message) }
+        }
+        if (Test-Path -LiteralPath 'Env:CEDAR_JAVA_ERROR_DIR') { Remove-Item -LiteralPath 'Env:CEDAR_JAVA_ERROR_DIR' }
         if ($null -eq $failure) { $stage = 'generated dependency cleanup' }
         try {
             Remove-Item -LiteralPath $scratch -Recurse -Force

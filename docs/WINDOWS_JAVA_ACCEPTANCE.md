@@ -293,3 +293,21 @@ Sources: [JDK21 launcher](https://github.com/openjdk/jdk21u/blob/master/src/java
 [Unicode cwd handling](https://github.com/openjdk/jdk21u/blob/master/src/java.base/windows/native/libjava/java_props_md.c),
 [Eclipse runtime location options](https://help.eclipse.org/latest/topic/org.eclipse.platform.doc.isv/reference/misc/runtime-options.html),
 [Equinox location conversion](https://github.com/eclipse-equinox/equinox/blob/master/bundles/org.eclipse.osgi/supplement/src/org/eclipse/osgi/internal/location/LocationHelper.java).
+
+## JVM crash diagnostic checkpoint
+
+The exact 0.8.6 native run reached the relative-JAR launch, then exited 1 before
+initialization with a partial LSP header and MiniDumpWriteDump error 0x80070006.
+This is not a semantic pass or an established transport fault. Version 0.8.7 adds
+an owned six-case raw stdio JVM matrix and explicit ASCII ErrorFile destinations
+to capture the primary fatal reason. The matrix is diagnostic only; the real
+three-session JDT assertions remain the acceptance gate.
+
+All raw VM output is redirected into generated private scratch, including the
+probe JSON and real-Java transcript. Only the bounded whitelist collector's JSON
+and controlled stage metadata are uploaded. It reconstructs fatal categories and
+frames plus typed statuses, omitting raw hex/output, environment, registers and
+memory. Collection runs before scratch cleanup; failures/partial results are
+reported explicitly. No minidumps or raw hs_err files are uploaded. A diagnostic
+case's successful collection never substitutes for its child exit/cleanup result.
+See [the diagnostic checkpoint report](TEST_REPORT_PHASE9C_DIAGNOSTIC.md).

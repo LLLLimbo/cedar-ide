@@ -229,6 +229,33 @@ fn relative_launcher(directory: &Path, launcher: &Path) -> SmokeResult<PathBuf> 
     Ok(relative.to_path_buf())
 }
 
+// Diagnostic-only opt-in from the isolated CI parent. Never use a Unicode
+// native ErrorFile argument or upload a minidump/raw process-memory report.
+fn crash_report_arguments(directory: &Path) -> SmokeResult<Vec<std::ffi::OsString>> {
+    if !directory.is_absolute() || !directory.is_dir() {
+        return Err("CEDAR_JAVA_ERROR_DIR must name an existing absolute directory".into());
+    }
+    let directory = java_working_directory(directory)?;
+    let text = directory.to_str().ok_or("crash directory must be ASCII")?;
+    if !text.is_ascii()
+        || text
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b'%')
+    {
+        return Err(
+            "crash directory must be ASCII without control characters or template escapes".into(),
+        );
+    }
+    Ok(vec![
+        format!(
+            "-XX:ErrorFile={}",
+            directory.join("hs_err_pid%p.log").display()
+        )
+        .into(),
+        "-XX:-CreateCoredumpOnCrash".into(),
+    ])
+}
+
 // ProcessConfig inherits its parent's environment. Fail rather than alter a
 // possibly multithreaded process or allow launcher/socket environment injection.
 fn check_launch_environment() -> SmokeResult<()> {
@@ -509,11 +536,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         "java.base/java.util=ALL-UNNAMED",
         "--add-opens",
         "java.base/java.lang=ALL-UNNAMED",
-        "-jar",
     ]
     .into_iter()
     .map(Into::into)
     .collect();
+    if let Some(directory) = std::env::var_os("CEDAR_JAVA_ERROR_DIR") {
+        config
+            .args
+            .extend(crash_report_arguments(Path::new(&directory))?);
+    }
+    config.args.push("-jar".into());
     config
         .args
         .push(relative_launcher(&jdtls, &jars[0])?.into());
@@ -815,6 +847,26 @@ mod tests {
     use super::*;
 
     const URI: &str = "file:///fixture%20%E9%9B%AA/src/Main.java";
+
+    #[test]
+    fn crash_report_arguments_are_scoped_ascii_and_disable_memory_dumps() {
+        let temp = tempfile::tempdir().unwrap();
+        if temp.path().to_str().is_some_and(str::is_ascii) {
+            let args = crash_report_arguments(temp.path()).unwrap();
+            assert_eq!(args.len(), 2);
+            assert!(args[0].to_str().unwrap().ends_with("hs_err_pid%p.log"));
+            assert_eq!(args[1], "-XX:-CreateCoredumpOnCrash");
+        } else {
+            assert!(crash_report_arguments(temp.path()).is_err());
+        }
+        for leaf in ["雪", "template%p"] {
+            let path = temp.path().join(leaf);
+            std::fs::create_dir(&path).unwrap();
+            assert!(crash_report_arguments(&path).is_err());
+        }
+        assert!(crash_report_arguments(Path::new("relative")).is_err());
+        assert!(crash_report_arguments(&temp.path().join("missing")).is_err());
+    }
 
     #[test]
     fn relative_launcher_preserves_unicode_distribution_and_rejects_other_paths() {

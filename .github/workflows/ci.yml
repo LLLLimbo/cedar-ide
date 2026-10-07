@@ -15,6 +15,7 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: python scripts/test_public_export.py
+      - run: python scripts/test_java_crash_collection.py
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-targets --all-features --locked
         timeout-minutes: 15
@@ -59,7 +60,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-java-acceptance-evidence
-          path: ${{ runner.temp }}/cedar-windows-java-acceptance.txt
+          path: |
+            ${{ runner.temp }}/cedar-windows-java-acceptance.txt
+            ${{ runner.temp }}/cedar-java-crash-diagnostics.json
           if-no-files-found: ignore
       - name: Agent and tool protocol chains (Unix)
         if: runner.os != 'Windows'
