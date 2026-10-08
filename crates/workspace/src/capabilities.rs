@@ -9,6 +9,9 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
     if cfg!(any(target_os = "linux", target_os = "macos")) {
         capabilities.extend(["git_status", "run"]);
     }
+    if super::git_read::platform_supported(backend_mode) {
+        capabilities.extend(["git_changes", "git_diff"]);
+    }
     if backend_mode.supports_tasks() {
         capabilities.extend(["run_start", "run_poll", "run_cancel"]);
     }
@@ -75,6 +78,14 @@ mod tests {
     fn execution_operations() -> Vec<Operation> {
         vec![
             Operation::GitStatus,
+            Operation::GitChanges {
+                git_executable: "must-not-be-inspected".into(),
+            },
+            Operation::GitDiff {
+                git_executable: "must-not-be-inspected".into(),
+                path: "file".into(),
+                kind: cedar_protocol::GitDiffKind::Staged,
+            },
             Operation::Run {
                 program: "nonexistent-cedar-test-tool".into(),
                 args: vec![],
@@ -191,6 +202,8 @@ mod tests {
                 let name = operation.capability_name().unwrap();
                 let supported = if name.starts_with("language_") {
                     language_operation_supported(name)
+                } else if name == "git_changes" || name == "git_diff" {
+                    super::super::git_read::platform_supported(backend_mode)
                 } else if RUN_TASK_CAPABILITIES.contains(&name) {
                     task_platform
                 } else {

@@ -41,6 +41,11 @@ pub struct CaptureProgress {
 /// Larger protocol frames must be submitted as successive chunks.
 pub const MAX_STDIN_WRITE_BYTES: usize = 64 * 1024;
 
+/// Crate policy bound for an explicit child environment, including all entry
+/// terminators and the final NUL (two NULs for an empty block). This is 2 MiB
+/// of UTF-16 storage, not an operating-system limit or a limit on inheritance.
+pub const MAX_ENVIRONMENT_UTF16_UNITS: usize = 1024 * 1024;
+
 /// Completion is reported exactly once, either by begin or by a later poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "Account for every completed byte before sending another chunk"]

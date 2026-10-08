@@ -38,6 +38,8 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
     assert_eq!(
         info.capabilities,
         [
+            "git_changes",
+            "git_diff",
             "language_change",
             "language_close",
             "language_document_symbols",
@@ -79,6 +81,14 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
             distribution: String::new(),
             data_directory: String::new(),
         },
+        Operation::GitChanges {
+            git_executable: String::new(),
+        },
+        Operation::GitDiff {
+            git_executable: String::new(),
+            path: "not-opened".into(),
+            kind: cedar_protocol::GitDiffKind::Unstaged,
+        },
     ] {
         assert_eq!(untrusted.request(op).unwrap_err().code, "run_disabled");
     }
@@ -107,6 +117,24 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
     let mut in_process = Workspace::open(root.path()).unwrap();
     in_process.set_allow_run(true);
     let local = metadata(in_process.handle(Operation::Hello).unwrap());
+    for capability in ["git_changes", "git_diff"] {
+        assert!(!local.supports(capability));
+    }
+    for operation in [
+        Operation::GitChanges {
+            git_executable: String::new(),
+        },
+        Operation::GitDiff {
+            git_executable: String::new(),
+            path: "not-opened".into(),
+            kind: cedar_protocol::GitDiffKind::Unstaged,
+        },
+    ] {
+        assert_eq!(
+            in_process.handle(operation).unwrap_err().code,
+            "unsupported_platform"
+        );
+    }
     for cap in RUN_TASK_CAPABILITIES
         .iter()
         .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)

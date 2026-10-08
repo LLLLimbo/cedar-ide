@@ -5,6 +5,7 @@ pub mod completion;
 mod connection_cancel_tests;
 mod disk_review;
 mod editor_state;
+mod git_ui;
 mod interrupted_save;
 #[cfg(test)]
 mod interrupted_save_process_tests;
@@ -177,6 +178,7 @@ enum Job {
         query: String,
     },
     Git,
+    GitRead(git_ui::Action),
     ProfilesLoad {
         epoch: u64,
     },
@@ -236,6 +238,7 @@ pub struct CedarApp {
     search_truncated: bool,
     search_request: u64,
     git_output: String,
+    git_state: git_ui::GitPanel,
     profiles: profile_ui::Profiles,
     run_state: run_ui::RunPanel,
     language: language_ui::LanguagePanel,
@@ -332,6 +335,7 @@ impl CedarApp {
             search_truncated: false,
             search_request: 0,
             git_output: "Refresh to read workspace Git status".into(),
+            git_state: git_ui::GitPanel::default(),
             profiles: profile_ui::Profiles::default(),
             run_state: run_ui::RunPanel::default(),
             language: language_ui::LanguagePanel::default(),
@@ -367,9 +371,12 @@ impl CedarApp {
         versions
     }
     fn mutation_pending(&self) -> bool {
-        self.pending
-            .values()
-            .any(|job| matches!(job, Job::Save { .. } | Job::Git | Job::Language(_)))
+        self.pending.values().any(|job| {
+            matches!(
+                job,
+                Job::Save { .. } | Job::Git | Job::GitRead(_) | Job::Language(_)
+            )
+        })
     }
     fn active(&self) -> Option<&Document> {
         self.documents
@@ -398,6 +405,7 @@ impl CedarApp {
             }
         };
         self.recovery.restoring_generation = None;
+        self.reset_git(self.workspace_key.as_ref() != Some(&form.key()));
         self.dismiss_disk_review();
         self.run_state.reset();
         self.profiles.disconnected();
@@ -428,6 +436,7 @@ impl CedarApp {
             return;
         }
         self.dismiss_disk_review();
+        self.reset_git(false);
         self.worker = None;
         self.disk_review.outstanding = None;
         self.agent_info = None;
@@ -471,6 +480,7 @@ impl CedarApp {
 
     fn disconnected(&mut self, message: String) {
         self.retain_interrupted_saves();
+        self.reset_git(false);
         self.dismiss_disk_review();
         self.run_state.disconnected();
         self.profiles.disconnected();
@@ -673,7 +683,7 @@ impl CedarApp {
                         self.documents.clear();
                         self.active_document = None;
                         self.search_results.clear();
-                        self.git_output = "Refresh to read workspace Git status".into();
+                        self.reset_git(true);
                         self.run_state.output = "Command output will appear here".into();
                     }
                     self.profiles.connected(recovery_ui::identity(&form, &root));
@@ -715,6 +725,20 @@ impl CedarApp {
         let Some(job) = self.pending.remove(&event.id) else {
             return;
         };
+        if let Job::GitRead(action) = job {
+            // A stale view must not hide a current transport failure. Conversely,
+            // a late Git result/error cannot replace a newer selection or config.
+            if !event.connected {
+                self.disconnected(
+                    event.result.err().unwrap_or_else(|| {
+                        "The connection closed while reading Git changes".into()
+                    }),
+                );
+            } else {
+                self.apply_git_read(event.id, action, event.result);
+            }
+            return;
+        }
         if let Job::InterruptedSaveCheck { ticket } = job {
             if self.interrupted_save_check.outstanding == Some(event.id) {
                 self.interrupted_save_check.outstanding = None;
@@ -1235,7 +1259,7 @@ impl CedarApp {
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui.selectable_label(self.tools_open && self.tool == Tool::Search, "Search").clicked() { self.tool = Tool::Search; self.tools_open = true; }
-                        if ui.selectable_label(self.tools_open && self.tool == Tool::Git, "Git").clicked() { self.tool = Tool::Git; self.tools_open = true; if self.backend_supports("git_status") && self.execution_trusted() { self.git(); } }
+                        if ui.selectable_label(self.tools_open && self.tool == Tool::Git, "Git").clicked() { self.tool = Tool::Git; self.tools_open = true; }
                         if ui.selectable_label(self.tools_open && self.tool == Tool::Run, "Run").clicked() { self.tool = Tool::Run; self.tools_open = true; }
                         if ui.selectable_label(self.tools_open && self.tool == Tool::Language, "LSP").clicked() { self.tool = Tool::Language; self.tools_open = true; }
                     });
@@ -1251,7 +1275,7 @@ impl CedarApp {
             .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0)).show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui.selectable_label(self.tool == Tool::Search, "PROJECT SEARCH").clicked() { self.tool = Tool::Search; }
-                    if ui.selectable_label(self.tool == Tool::Git, "GIT STATUS").clicked() { self.tool = Tool::Git; }
+                    if ui.selectable_label(self.tool == Tool::Git, "GIT CHANGES").clicked() { self.tool = Tool::Git; }
                     if ui.selectable_label(self.tool == Tool::Run, "COMMANDS").clicked() { self.tool = Tool::Run; }
                     if ui.selectable_label(self.tool == Tool::Language, "LANGUAGE").clicked() { self.tool = Tool::Language; }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1282,16 +1306,7 @@ impl CedarApp {
                         });
                         if let Some((path, line)) = open { self.open(path, Some(line)); }
                     }
-                    Tool::Git => {
-                        let allowed = self.active_form.as_ref().is_some_and(|form| form.allow_run);
-                        ui.horizontal(|ui| {
-                            if ui.add_enabled(self.backend_supports("git_status") && allowed, egui::Button::new("Refresh status")).clicked() { self.git(); }
-                            ui.label(RichText::new("Porcelain status · requires trusted command permission").small().color(MUTED));
-                        });
-                        if !allowed { ui.colored_label(AMBER, "Enable trusted command execution and reconnect. Git may execute repository-configured filters."); }
-                        if self.ready() && !self.backend_supports("git_status") { ui.colored_label(AMBER, self.unsupported_message("git_status")); }
-                        egui::ScrollArea::both().id_salt("git_output").show(ui, |ui| { ui.add(egui::TextEdit::multiline(&mut self.git_output).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY).interactive(false).frame(false)); });
-                    }
+                    Tool::Git => self.git_panel(ui),
                     Tool::Run => self.run_panel(ui),
                 }
             });

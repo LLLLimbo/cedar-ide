@@ -10,6 +10,7 @@
 //! permissions, not merely workspace access.
 
 mod capabilities;
+mod git_read;
 #[cfg(feature = "windows-java-gc-diagnostic")]
 mod java_gc_diagnostic;
 mod java_launch;
@@ -199,6 +200,9 @@ impl Workspace {
                     return Err(error("run_disabled", "Git status can execute repository-configured programs; enable workspace execution trust (--allow-run) first"));
                 }
                 self.git_status()
+            }
+            op @ (Operation::GitChanges { .. } | Operation::GitDiff { .. }) => {
+                self.handle_git_read(op)
             }
             op @ (Operation::LanguageStart { .. }
             | Operation::LanguageStartJava { .. }
@@ -832,6 +836,13 @@ struct CommandResult {
     timed_out: bool,
     truncated: bool,
 }
+struct RawCommandResult {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    exit_code: Option<i32>,
+    timed_out: bool,
+    truncated: bool,
+}
 #[derive(Default)]
 struct Capture {
     bytes: Vec<u8>,
@@ -844,7 +855,23 @@ struct Capture {
 /// setsid()/daemonization can escape a process group. Windows execution is
 /// disabled until job-object containment and cancellable pipe readers exist.
 /// Only Linux and macOS provide the currently verified wait/kill implementation.
-fn run_bounded(mut command: Command, timeout: Duration) -> Result<CommandResult, RemoteError> {
+fn run_bounded(command: Command, timeout: Duration) -> Result<CommandResult, RemoteError> {
+    let result = run_bounded_raw(command, timeout)?;
+    Ok(CommandResult {
+        stdout: String::from_utf8_lossy(&result.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
+        exit_code: result.exit_code,
+        timed_out: result.timed_out,
+        truncated: result.truncated,
+    })
+}
+
+// Strict identity protocols consume bytes; legacy command callers retain their
+// existing lossy display behavior through the wrapper above.
+fn run_bounded_raw(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<RawCommandResult, RemoteError> {
     if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err(error("unsupported_platform", "Local command execution and Git status require the Linux/macOS process-containment implementation; use a Linux or macOS workspace agent over SSH"));
     }
@@ -934,9 +961,9 @@ fn run_bounded(mut command: Command, timeout: Duration) -> Result<CommandResult,
     let status = status_result.map_err(io_error)?;
     let out = stdout.lock().unwrap();
     let err = stderr.lock().unwrap();
-    Ok(CommandResult {
-        stdout: String::from_utf8_lossy(&out.bytes).into_owned(),
-        stderr: String::from_utf8_lossy(&err.bytes).into_owned(),
+    Ok(RawCommandResult {
+        stdout: out.bytes.clone(),
+        stderr: err.bytes.clone(),
         exit_code: status.code(),
         timed_out,
         truncated: truncated || out.truncated || err.truncated || out.read_error || err.read_error,

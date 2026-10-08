@@ -6,6 +6,7 @@ IntelliJ IDEA 的完整替代品。请从本项目对应提交的 GitHub Actions
 
 ## 运行前提
 
+隔离 agent 的 Job 机制要求 Windows 10 / Server 2016 及以上；不提供旧系统无隔离回退。
 本包依赖 **Microsoft Visual C++ v14 x64 运行库**及 Windows UCRT。
 已验证的两个可执行文件都导入 `VCRUNTIME140.dll` 和 `api-ms-win-crt-*`；
 因此“解压运行”不表示可以在没有这些运行库的全新系统上直接启动。
@@ -37,6 +38,20 @@ IntelliJ IDEA 的完整替代品。请从本项目对应提交的 GitHub Actions
 最近一次确认备份之后的输入仍可能丢失。关闭会话备份不会删除已有副本。
 程序不会自动把解压目录当成你的项目，也不会自动运行项目命令。
 
+## 可选 Git 变更查看
+
+Git 面板可显式刷新状态，并查看单个文件的 **Staged** / **Unstaged** 差异；
+它读取磁盘和索引，不包含未保存草稿，不会把补丁应用到编辑器。
+需要你另行安装 Git 2.45+，填写工作区主机上的原生绝对路径，例如
+`C:\Program Files\Git\cmd\git.exe`，然后点击 **Refresh status**。
+Git 不随包分发，也不自动安装或后台轮询。
+
+这些操作仍要求明确的工作区执行信任，因为仓库的 clean/process 过滤器可能
+执行程序、写文件或访问网络。界面不提供暂存、提交、重置或抓取操作，这不等于
+对仓库辅助程序的沙箱。第一版仅支持普通仓库根目录；linked worktree、裸仓库和
+子模块不在范围内，重命名按删除/新增显示。全局/系统 Git 配置被禁用，结果可能
+与终端中的个人设置不同。边界与配置见 [GIT_VIEWS.md](GIT_VIEWS.md)。
+
 ## 可选 Java 支持
 
 普通文本编辑不需要 Java。Java 语言服务需要你另行安装 JDK 21+ 和 Eclipse
@@ -55,7 +70,7 @@ Java 最大堆为 512 MiB，但 JVM 总内存可以明显高于这个数字。�
 
 Stop 会区分自然退出与超过宽限后的强制清理；**forced / grace_expired** 不是
 正常退出。清理未验证时界面会阻止重启，须先检查错误并重新连接。
-Maven/Gradle 导入、JDK class-file 查看、Windows Git、同步 Run、通用 Windows
+Maven/Gradle 导入、JDK class-file 查看、同步 Run、通用 Windows
 LSP 和完整调试界面仍未提供。异步命令使用明确的原生 `.exe` 绝对路径。
 
 ## 验证与来源

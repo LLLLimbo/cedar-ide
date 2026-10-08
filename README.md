@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十四阶段 Windows 开发包工程（**0.14.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十五阶段显式 Git 变更查看工程（**0.15.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -18,6 +18,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - **异步命令任务**：显式 executable + 字面量参数行、实时有界输出、状态与取消；命令运行时仍能打开、编辑和保存文件
 - **保存的命令配置**：显式加载/编辑/保存工作区 `cedar.tasks.json`，保留空参数、中文和 shell 字面量；复用编辑器版本冲突与恢复路径，加载/保存/重连都不自动运行
 - 项目文本搜索与跳转；Git、命令和语言服务均要求显式工作区信任
+- **显式 Git 变更查看**：配置工作区主机上的 Git 2.45+，刷新结构化状态、查看单文件暂存/未暂存差异；不自动轮询，不提供提交/暂存/重置/抓取，差异不会改动草稿
 - agent 侧真实 LSP：启动、初始化、文件同步、补全/定义/悬浮请求、诊断事件、停止与重启
 - 350ms 防抖自动同步、自动诊断列表、F12 定义跳转、类型悬浮、Ctrl+Space 补全
 - **安全格式化预览**：只读 Before / After，显式 Apply / Cancel；校验精确草稿版本后单次撤销事务，不自动保存
@@ -38,11 +39,11 @@ cargo run -p cedar-app --bin cedar -- examples/demo
 
 Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`，本地连接还要求同目录的 `cedar-agent.exe`；不要只复制前端。缺失或损坏的 agent 会报错，不搜索 PATH 或回退到进程内执行。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.9.0 提交 [`270119b45eea1d37581a497e1bbe9a2d4ba3764a`](https://github.com/LLLLimbo/cedar-ide/commit/270119b45eea1d37581a497e1bbe9a2d4ba3764a) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37727806345)：正常 Windows 隔离 agent 的专用 Java/JDT 路径与真实编辑器事务通过；Stop 如实报告超时后的强制清理，不冒充自然退出。0.10.0 显式、只读的[断线保存核对](docs/INTERRUPTED_SAVES.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37736569381)，两端九项实际进程故障用例全部执行通过；保留后续输入和 Undo，不自动重放写入。0.11.0 的有界[连接与读取取消](docs/CONNECTION_CANCELLATION.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37741303276)。0.11.1 的 CPU 计时窗口修正也已通过[精确提交验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37744067995)。0.12.0 的[两次长观察基线](docs/LONG_JAVA_BASELINE.md)已通过[原生双平台验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37749233834)。0.13.0 一次固定、非发布版的[GC 数值诊断](docs/GC_DIAGNOSTIC_CONTROL.md)已通过[同提交原生验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37758115385)：实际 G1，末次 GC 后堆占用 378 MiB、容量 512 MiB；它不是最终空闲存活对象量，生产堆和收集器设置不变。**Windows Git、同步 Run 和通用 LSP 仍不启用**。Java 配置见[使用说明](docs/WINDOWS_JAVA_SETUP.md)；原生 GUI 与真实 SSH 仍待独立验收，当前证据见[测试报告](docs/TEST_REPORT.md)。
+公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.9.0 提交 [`270119b45eea1d37581a497e1bbe9a2d4ba3764a`](https://github.com/LLLLimbo/cedar-ide/commit/270119b45eea1d37581a497e1bbe9a2d4ba3764a) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37727806345)：正常 Windows 隔离 agent 的专用 Java/JDT 路径与真实编辑器事务通过；Stop 如实报告超时后的强制清理，不冒充自然退出。0.10.0 显式、只读的[断线保存核对](docs/INTERRUPTED_SAVES.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37736569381)，两端九项实际进程故障用例全部执行通过；保留后续输入和 Undo，不自动重放写入。0.11.0 的有界[连接与读取取消](docs/CONNECTION_CANCELLATION.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37741303276)。0.11.1 的 CPU 计时窗口修正也已通过[精确提交验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37744067995)。0.12.0 的[两次长观察基线](docs/LONG_JAVA_BASELINE.md)已通过[原生双平台验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37749233834)。0.13.0 一次固定、非发布版的[GC 数值诊断](docs/GC_DIAGNOSTIC_CONTROL.md)已通过[同提交原生验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37758115385)：实际 G1，末次 GC 后堆占用 378 MiB、容量 512 MiB；它不是最终空闲存活对象量，生产堆和收集器设置不变。0.15.0 增加有界、显式的[Git 状态与单文件差异](docs/GIT_VIEWS.md)，原生同提交验收仍待完成；旧 `git_status` 仍不在 Windows 开放。**同步 Run 和通用 Windows LSP 仍不启用**。Java 配置见[使用说明](docs/WINDOWS_JAVA_SETUP.md)；原生 GUI 与真实 SSH 仍待独立验收，当前证据见[测试报告](docs/TEST_REPORT.md)。
 
 ## Windows 开发包
 
-0.14.0 增加版本化的解压运行 ZIP，包含正常发行版前端/agent、逐文件 SHA256 清单、许可证和[中文入门](docs/WINDOWS_QUICKSTART.zh-CN.md)。包与精确源码/CI 运行关联，原生 CI 从中文空格路径解压后验证信任关闭的文件操作。0.14.0 已通过[精确提交双平台与原生解压验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37762972011)。0.14.1 补充实际需要的 Microsoft Visual C++ v14 x64 运行库说明和官方下载链接；本包不自动安装运行库。当前是未签名开发版，原生 GUI 与真实 SSH 未因此获得验收。见[分发与验证范围](docs/WINDOWS_BUNDLE.md)。
+0.14.0 增加版本化的解压运行 ZIP，包含正常发行版前端/agent、逐文件 SHA256 清单、许可证和[中文入门](docs/WINDOWS_QUICKSTART.zh-CN.md)。包与精确源码/CI 运行关联，原生 CI 从中文空格路径解压后验证信任关闭的文件操作。0.14.0 已通过[精确提交双平台与原生解压验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37762972011)。0.14.1 补充实际需要的 Microsoft Visual C++ v14 x64 运行库说明和官方下载链接，已通过[修订版同提交验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37765260416)；本包不自动安装运行库。当前是未签名开发版，原生 GUI 与真实 SSH 未因此获得验收。见[分发与验证范围](docs/WINDOWS_BUNDLE.md)。
 
 ## 磁盘对比与重载
 
@@ -102,7 +103,7 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端可连接 Linux 远程工作
 
 - Git status 也可能通过仓库配置触发过滤器，所以与命令、语言服务器一起要求显式信任
 - 工作目录和进程组不是 OS 沙箱；可信工具拥有执行账户的权限，恶意自行脱离进程组的程序可能继续运行
-- Windows 异步命令和专用 Java/JDT 路径仅允许隔离 agent 后端；Git、同步 Run 和通用语言服务器启动仍禁用。Windows Local 的普通编辑也依赖同目录 agent；真实 Windows/macOS GUI 与恢复交互仍待验收
+- Windows 异步命令、专用 Java/JDT 和新 Git 变更查看路径仅允许隔离 agent 后端；旧 GitStatus、同步 Run 和通用语言服务器启动仍禁用。Windows Local 的普通编辑也依赖同目录 agent；真实 Windows/macOS GUI 与恢复交互仍待验收
 - 路径访问拒绝绝对路径、越界和符号链接；无法抵抗所有恶意并发文件系统修改
 - 保存会做晚期版本复核，但无法对不合作的外部写入者提供文件系统级原子 compare-and-swap
 - 普通文件的 Windows 替换路径已改用 Rust 1.99 的 `std::fs::rename`，兼容 delete-sharing 读句柄；不绕过只读或共享限制、不先删除目标、不自动重试。第五阶段同提交真实 Windows CI 已通过该回归，Windows GUI 仍未验收，见[保存边界](docs/WORKSPACE_SAVE.md)

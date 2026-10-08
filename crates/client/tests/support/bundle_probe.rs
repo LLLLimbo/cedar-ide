@@ -257,6 +257,8 @@ mod portable {
             return Err("metadata");
         };
         let mut expected_capabilities = vec![
+            "git_changes",
+            "git_diff",
             "list",
             "read",
             "write",

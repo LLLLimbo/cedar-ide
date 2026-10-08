@@ -45,7 +45,7 @@ be enabled explicitly with `set_allow_run(true)`.
   Nonblocking pipe readers have bounded drain/cancellation. Callers must not
   install a competing SIGCHLD reaper or `SA_NOCLDWAIT`.
   A program that deliberately detaches into another session can escape this group.
-- Other platforms, including Windows: local command execution and Git status
+- Other platforms, including Windows: legacy synchronous command execution and Git status
   return `unsupported_platform`, even with execution trust enabled. Each needs
   a verified containment implementation; Windows requires job-object process-tree
   containment and cancellable pipe capture. The Windows frontend can still use a
@@ -69,3 +69,49 @@ Stable error codes include `invalid_path`, `not_found`, `not_directory`,
 `invalid_command`, `invalid_timeout`, `command_failed`, `command_timeout`,
 `output_limit`, `git_error`, `unsupported_platform`, and `io_error`. Messages provide diagnostic detail;
 clients should branch on codes rather than message text.
+
+## Explicit Git changes and selected-file diff
+
+`GitChanges` and `GitDiff` are additive capability-gated operations. They require
+execution trust before inspecting either the executable or repository. Linux and
+macOS support both host modes; Windows supports an isolated agent only. Hello
+advertises implementation support without probing tools. Legacy `GitStatus` is
+unchanged. Select an existing absolute Git executable on the workspace host
+(native `.exe` on Windows); Git 2.45 or later with the actual `--no-lazy-fetch`
+option is required. Windows currently accepts local-drive paths only.
+
+Only a workspace-root ordinary non-bare repository with a real `.git` directory
+is supported. Linked worktrees, shared commondir repositories, object alternates,
+ancestor discovery, and symlink/reparse metadata are rejected. Inspection visits
+at most 32,768 metadata entries and never follows metadata links. A request has
+one ten-second deadline covering version/layout preflights, fresh status, and
+diff, plus owned-process cleanup. Each output stream is bounded to 256 KiB;
+status is bounded to 4,096 entries and 4,096 bytes per path. Malformed, truncated
+or non-UTF-8 output fails, rather than appearing clean or successfully partial.
+
+Status uses strict NUL-delimited porcelain v2. Rename detection is disabled, so
+a rename appears as add/delete. Untracked files, conflicts, submodules, symlinks,
+and unsupported paths have no diff action. Selected staged/unstaged diff first
+rechecks exact eligibility from fresh status within the same deadline. Deleted
+parents are supported, while lexical traversal, `.git`, existing directories,
+symlinks and Windows reparse points are rejected. Cached diffs support unborn
+branches; binary files receive Git's ordinary summary, never a forced text or
+binary patch. These actions view disk and index, not unsaved editor buffers;
+they do not stage, write, reset, fetch, apply patches or adopt editor baselines.
+
+Every subprocess receives a private environment with inherited `GIT_*` names
+removed case-insensitively using native ordinal Unicode comparison on Windows,
+while retained OS strings remain unchanged. Global/system configuration and system/global
+attributes are suppressed; locale, literal paths, no replace objects, no lazy
+fetch, no optional locks and no prompting are fixed. fsmonitor, untracked cache,
+diff index refresh, hooks, external diff and textconv are disabled. Suppressing
+global/system configuration intentionally can change normal CLI behavior, such
+as global `autocrlf` or filter settings. Repository clean/process filters can
+still execute, write and access the network with full account authority. These
+read-only actions and path checks are operational protections, not a sandbox
+against trusted filters or concurrent filesystem changes.
+
+On Windows the handler owns a separate kill-on-close job, bounded capture and
+exact process wait. It terminates descendants after root exit or a control
+limit, joins pending pipe I/O, and finishes ownership before publishing a result.
+It does not use or interfere with user Run tasks or Java language sessions.

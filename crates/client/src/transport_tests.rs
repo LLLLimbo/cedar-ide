@@ -626,6 +626,14 @@ fn start_java_language() -> Operation {
 fn advanced_operations() -> Vec<Operation> {
     vec![
         Operation::GitStatus,
+        Operation::GitChanges {
+            git_executable: "/never-executed/git".into(),
+        },
+        Operation::GitDiff {
+            git_executable: "/never-executed/git".into(),
+            path: "fixture.txt".into(),
+            kind: cedar_protocol::GitDiffKind::Unstaged,
+        },
         start_task(),
         Operation::RunPoll { task_id: 1 },
         Operation::RunCancel { task_id: 1 },

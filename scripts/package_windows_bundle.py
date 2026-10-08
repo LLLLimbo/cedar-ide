@@ -33,6 +33,7 @@ SOURCE_FILES = {
     "THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
     "docs/WINDOWS_QUICKSTART.zh-CN.md": "WINDOWS_QUICKSTART.zh-CN.md",
     "docs/WINDOWS_JAVA_SETUP.md": "WINDOWS_JAVA_SETUP.md",
+    "docs/GIT_VIEWS.md": "GIT_VIEWS.md",
 }
 # Exact notice names currently collected by collect_licenses.py. Adding a new
 # upstream notice deliberately requires reviewing this allowlist.

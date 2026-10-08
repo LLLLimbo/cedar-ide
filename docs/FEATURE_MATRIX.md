@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 14 / 0.14.1
+# 功能矩阵与后续验收 · checkpoint 15 / 0.15.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -18,10 +18,10 @@
 | 命令运行 | 明确 executable + 字面量 argv；RunStart/Poll/Cancel、实时有界输出、终态区分、运行中继续编辑保存、关闭/重连保护 | 本阶段原生显式 Run/Cancel/重连复核待批准启用信任；Windows 0.7.1 隔离 agent 实际 CI 已通过，原生 GUI 待验收；交互式 PTY、测试结果树、并行任务；macOS 运行未验收 |
 | 保存的命令配置 | 显式 Load/选择/新建/Save；`cedar.tasks.json` 严格有界格式；字面量参数行与预览；普通编辑器版本检查、单次撤销和恢复；重连显式复核 | 不是完整运行/调试配置系统；无自动发现、预设、环境变量、目录覆盖、变量展开或 autorun；未序列化表单只在当前会话 |
 | Windows进程基础 | 原子Job绑定、私有本机管道、完成后回收的异步I/O、严格argv、固定64KiB owned stdin；0.8.3的48单元+21生命周期+12语言传输全部实际通过 | 0.8.12直接真实Java三会话与3项agent语言夹具已通过；0.8.15真实agent/编辑器三会话已通过；0.8.16真实任务并发/强制所有者清理已通过；不等同GUI或恶意代码沙箱 |
-| Windows本地后端 | 同目录精确cedar-agent.exe；固定IsolatedAgent模式、信任独立、异步任务三项能力；绝对原生.exe路径；完整u32退出码 | 无PATH/PATHEXT或batch解析；缺失bundle无回退；Git/同步Run/通用LSP/DAP仍禁用；新增专用Java/JDT正常路径已通过0.9.0 CI；原生 Windows GUI 待验收；LSP Job底层已验证，直接真实Java和非分发agent并发夹具已通过；0.8.15真实agent/编辑器已通过；0.8.16任务并发已通过；0.9.0正式Java路径已通过 |
+| Windows本地后端 | 同目录精确cedar-agent.exe；固定IsolatedAgent模式、信任独立、异步任务三项能力；绝对原生.exe路径；完整u32退出码 | 无PATH/PATHEXT或batch解析；缺失bundle无回退；旧GitStatus/同步Run/通用LSP/DAP仍禁用；新增显式Git变更/单文件diff待0.15同提交原生验收；新增专用Java/JDT正常路径已通过0.9.0 CI；原生 Windows GUI 待验收；LSP Job底层已验证，直接真实Java和非分发agent并发夹具已通过；0.8.15真实agent/编辑器已通过；0.8.16任务并发已通过；0.9.0正式Java路径已通过 |
 | 任务安全 | 配置操作零自动执行；每连接一个异步任务、1–300 秒、每流 256 KiB、8 个历史记录；Linux 普通进程组清理；不自动重试不明结果 | 非 OS 沙箱，恶意逃逸后代可能存活；Unix 强杀 agent 不保证任务清理；Windows 已验证 Job 随所有者退出清理；遗留同步 Run/Git/LSP/DAP 不计入异步任务限额 |
 | 搜索 | 有界文本搜索、结果跳转；语言服务引用查找与工作区边界导航 | 正则、替换、全工作区符号索引 |
-| Git | 可信工作区状态 | diff/hunks/stage/commit/blame/merge、分支/远端管理 |
+| Git | 可信工作区显式状态与单文件 staged/unstaged diff；明确Git 2.45+路径；根目录/字面量路径/有界进程；旧agent保留状态回退 | 0.15新路径原生验收待完成；过滤器仍可执行代码；无后台轮询/暂存/提交/重置/抓取；linked worktree、子模块、冲突diff、blame/merge、分支/远端管理尚缺 |
 | 插件 | Rust crate 扩展边界 | 稳定插件 ABI/协议、权限、生命周期、市场；无 IDEA 插件兼容承诺 |
 | 企业功能 | 无 | 数据库、Spring、Web、容器、应用服务器、Profiler、协作等需分别设计 |
 | 性能 | 懒加载、按需重绘、有界读取/输出/传输/恢复存储 | 无本阶段新内存基准；历史短时前端读数与 JVM 分开；同项目可复现基线、远程延迟、长会话泄漏、生产项目回归、完整进程树核算 |

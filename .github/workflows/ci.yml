@@ -120,9 +120,20 @@ jobs:
           python3 scripts/task_bridge_smoke.py target/release/cedar-agent
           cargo build --manifest-path examples/task-profiles-demo/Cargo.toml --offline --locked
           python3 scripts/task_profiles_smoke.py target/release/cedar-agent examples/task-profiles-demo/target/debug/cedar-task-profile-demo
+      - name: Real Git changes and selected-file diff (Unix)
+        timeout-minutes: 3
+        if: runner.os != 'Windows'
+        run: python3 scripts/git_views_smoke.py --agent "$PWD/target/release/cedar-agent" --git "$(command -v git)"
       - name: Default-feature Windows shipping binaries
         if: runner.os == 'Windows'
         run: cargo build --release -p cedar-app -p cedar-agent --bin cedar --bin cedar-agent --locked
+      - name: Real Git changes and selected-file diff (Windows)
+        timeout-minutes: 3
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $GitExecutable = (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source
+          python scripts/git_views_smoke.py --agent "$PWD/target/release/cedar-agent.exe" --git $GitExecutable
       - name: Verify extracted Windows development bundle
         timeout-minutes: 3
         if: runner.os == 'Windows'

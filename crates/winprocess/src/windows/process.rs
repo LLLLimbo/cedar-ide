@@ -10,6 +10,7 @@
 //! and Nested Jobs documentation. In particular, attribute *values* must remain
 //! valid until DeleteProcThreadAttributeList, not merely until CreateProcessW.
 
+use super::environment::EnvironmentBlock;
 use super::handles::{adopt, raw, ChildStdio};
 use crate::command_line::{encode_command_line, validate_executable_text};
 use crate::{LaunchSpec, ProcessExit};
@@ -34,10 +35,10 @@ use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapAlloc, HeapFree};
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess,
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT,
-    INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_JOB_LIST, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
 /// Owns the root's handles and its private job, never the borrowed stdio handles.
@@ -56,8 +57,12 @@ pub(crate) struct ProcessOwner {
 }
 
 impl ProcessOwner {
-    pub(crate) fn create_suspended(spec: &LaunchSpec, stdio: &ChildStdio) -> io::Result<Self> {
-        Self::create_checked(spec, stdio, |_| Ok(()))
+    pub(crate) fn create_suspended(
+        spec: &LaunchSpec,
+        stdio: &ChildStdio,
+        environment: Option<&EnvironmentBlock>,
+    ) -> io::Result<Self> {
+        Self::create_checked(spec, stdio, environment, |_| Ok(()))
     }
 
     // The private hook provides a failure/unwind seam after handle ownership but
@@ -65,6 +70,7 @@ impl ProcessOwner {
     fn create_checked(
         spec: &LaunchSpec,
         stdio: &ChildStdio,
+        environment: Option<&EnvironmentBlock>,
         before_validation: impl FnOnce(&mut Self) -> io::Result<()>,
     ) -> io::Result<Self> {
         let (application, cwd, mut command_line) = validated_launch(spec)?;
@@ -79,10 +85,16 @@ impl ProcessOwner {
         startup.StartupInfo.hStdError = raw(&stdio.stderr);
         startup.lpAttributeList = attributes.as_ptr();
         let mut info = PROCESS_INFORMATION::default();
+        let (environment_pointer, environment_flags) = environment.map_or((null(), 0), |block| {
+            (block.as_ptr().cast::<c_void>(), CREATE_UNICODE_ENVIRONMENT)
+        });
         // SAFETY: application/cwd are absolute UTF-16 NUL-terminated buffers;
         // command_line is mutable, bounded, and NUL-terminated. STARTUPINFOEXW's
         // prefix and cb match EXTENDED_STARTUPINFO_PRESENT. Both attribute value
         // arrays, their job/stdio handles, and the aligned list remain live.
+        // An explicit environment is validated, sorted, double-NUL UTF-16 and
+        // borrowed through this call with CREATE_UNICODE_ENVIRONMENT. A null
+        // pointer preserves the existing inherited-environment behavior.
         // TRUE is required for HANDLE_LIST; null security attributes make the
         // returned process/thread handles non-inheritable. No breakaway flag.
         let created = unsafe {
@@ -96,8 +108,11 @@ impl ProcessOwner {
                 // must not allocate/inherit a visible console behind the IDE.
                 // GUI executables can still show their own application UI.
                 // https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
-                CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
-                null(),
+                CREATE_SUSPENDED
+                    | EXTENDED_STARTUPINFO_PRESENT
+                    | CREATE_NO_WINDOW
+                    | environment_flags,
+                environment_pointer,
                 cwd.as_ptr(),
                 &startup.StartupInfo,
                 &mut info,
@@ -682,7 +697,7 @@ mod tests {
     #[test]
     fn unresumed_creation_is_owned_confined_and_drop_joins_it() {
         let stdio = null_stdio();
-        let mut owner = ProcessOwner::create_suspended(&self_spec(), &stdio).unwrap();
+        let mut owner = ProcessOwner::create_suspended(&self_spec(), &stdio, None).unwrap();
         let observer = owner.observation_handle().unwrap();
         assert_eq!(owner.try_exit().unwrap(), None);
         assert_eq!(owner.active_processes().unwrap(), 1);
@@ -696,7 +711,7 @@ mod tests {
     #[test]
     fn observation_handle_can_wait_and_query_but_not_terminate_or_inherit() {
         let stdio = null_stdio();
-        let owner = ProcessOwner::create_suspended(&self_spec(), &stdio).unwrap();
+        let owner = ProcessOwner::create_suspended(&self_spec(), &stdio, None).unwrap();
         let observer = owner.observation_handle().unwrap();
         let mut flags = 0;
         // SAFETY: observer is a live owned process handle, flags is writable.
@@ -727,7 +742,7 @@ mod tests {
         let stdio = null_stdio();
         let mut observer = None;
         let mut actual_job = None;
-        let result = ProcessOwner::create_checked(&self_spec(), &stdio, |owner| {
+        let result = ProcessOwner::create_checked(&self_spec(), &stdio, None, |owner| {
             observer = Some(owner.observation_handle()?);
             // Keep the real job open. The owner now checks/terminates an empty
             // different job, simulating an unexpectedly unassigned root without
@@ -747,7 +762,7 @@ mod tests {
     fn error_after_creation_preserves_error_and_joins_before_return() {
         let stdio = null_stdio();
         let mut observer = None;
-        let result = ProcessOwner::create_checked(&self_spec(), &stdio, |owner| {
+        let result = ProcessOwner::create_checked(&self_spec(), &stdio, None, |owner| {
             observer = Some(owner.observation_handle()?);
             Err(io::Error::from_raw_os_error(1234))
         });
@@ -760,7 +775,7 @@ mod tests {
         let stdio = null_stdio();
         let mut observer = None;
         let caught = catch_unwind(AssertUnwindSafe(|| {
-            let _ = ProcessOwner::create_checked(&self_spec(), &stdio, |owner| {
+            let _ = ProcessOwner::create_checked(&self_spec(), &stdio, None, |owner| {
                 observer = Some(owner.observation_handle()?);
                 panic!("injected failure after taking process ownership");
             });
@@ -772,7 +787,7 @@ mod tests {
     #[test]
     fn unexpected_suspend_count_fails_closed_and_joins() {
         let stdio = null_stdio();
-        let mut owner = ProcessOwner::create_suspended(&self_spec(), &stdio).unwrap();
+        let mut owner = ProcessOwner::create_suspended(&self_spec(), &stdio, None).unwrap();
         // SAFETY: the thread is owned and suspended; this deliberate extra
         // suspension exercises the failure branch without executing the child.
         assert_eq!(unsafe { SuspendThread(raw(&owner.child.thread)) }, 1);
@@ -789,7 +804,7 @@ mod tests {
     fn signaled_exit_preserves_259_and_all_u32_bits() {
         let stdio = null_stdio();
         for code in [259, 0x8000_0000, 0xC000_0005, u32::MAX] {
-            let mut owner = ProcessOwner::create_suspended(&self_spec(), &stdio).unwrap();
+            let mut owner = ProcessOwner::create_suspended(&self_spec(), &stdio, None).unwrap();
             assert_eq!(owner.try_exit().unwrap(), None);
             // SAFETY: terminate the actual owned process HANDLE. The child need
             // never run to exercise every native exit-code bit and the 259 trap.
@@ -806,7 +821,7 @@ mod tests {
     #[test]
     fn initial_resume_succeeds_once_and_cannot_be_repeated() {
         let stdio = null_stdio();
-        let mut owner = ProcessOwner::create_suspended(&self_spec(), &stdio).unwrap();
+        let mut owner = ProcessOwner::create_suspended(&self_spec(), &stdio, None).unwrap();
         owner.resume().unwrap();
         assert!(owner.resume().is_err());
         // --list is finite, writes only to NUL, and runs no tests.
@@ -816,7 +831,7 @@ mod tests {
     #[test]
     fn termination_before_resume_prevents_any_future_resume() {
         let stdio = null_stdio();
-        let mut owner = ProcessOwner::create_suspended(&self_spec(), &stdio).unwrap();
+        let mut owner = ProcessOwner::create_suspended(&self_spec(), &stdio, None).unwrap();
         owner.terminate_tree().unwrap();
         assert!(owner.resume().is_err());
         assert_eq!(owner.wait_exit().unwrap().code, ERROR_PROCESS_ABORTED);
@@ -831,7 +846,7 @@ mod tests {
             unsafe { SetHandleInformation(raw(&stdio.stdout), HANDLE_FLAG_INHERIT, 0) },
             0
         );
-        let error = ProcessOwner::create_suspended(&self_spec(), &stdio)
+        let error = ProcessOwner::create_suspended(&self_spec(), &stdio, None)
             .err()
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
@@ -848,7 +863,9 @@ mod tests {
             arguments: Vec::new(),
             cwd: temp.path().to_owned(),
         };
-        let error = ProcessOwner::create_suspended(&spec, &stdio).err().unwrap();
+        let error = ProcessOwner::create_suspended(&spec, &stdio, None)
+            .err()
+            .unwrap();
         assert!(error.raw_os_error().is_some());
         check_stdio_inheritance(&stdio).unwrap();
     }

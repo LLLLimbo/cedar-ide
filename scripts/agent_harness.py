@@ -31,9 +31,9 @@ class Agent:
         self.stderr = bytearray()
         self.counter = 0
 
-    def call(self, kind, *, timeout=20, ok=True, **fields):
+    def call(self, operation, *, timeout=20, ok=True, **fields):
         self.counter += 1
-        frame = json.dumps({'id': self.counter, 'op': {'type': kind, **fields}}).encode() + b'\n'
+        frame = json.dumps({'id': self.counter, 'op': {'type': operation, **fields}}).encode() + b'\n'
         assert len(frame) <= MAX_FRAME
         self.process.stdin.write(frame)
         self.process.stdin.flush()
@@ -41,13 +41,13 @@ class Agent:
         while b'\n' not in self.buffer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(f'{kind}: no agent response within {timeout}s')
+                raise TimeoutError(f'{operation}: no agent response within {timeout}s')
             for key, _ in self.selector.select(remaining):
                 chunk = os.read(key.fileobj.fileno(), 65536)
                 if not chunk:
                     self.selector.unregister(key.fileobj)
                     if key.data == 'stdout':
-                        raise RuntimeError(f'Agent EOF during {kind}: {self.stderr.decode(errors="replace")}')
+                        raise RuntimeError(f'Agent EOF during {operation}: {self.stderr.decode(errors="replace")}')
                 elif key.data == 'stdout':
                     self.buffer.extend(chunk)
                     if len(self.buffer) > MAX_FRAME:
@@ -61,7 +61,7 @@ class Agent:
         assert response['id'] == self.counter, response
         result = response['result']
         if ('Ok' in result) != ok:
-            raise AgentError(kind, result)
+            raise AgentError(operation, result)
         return result.get('Ok', result.get('Err'))
 
     def close(self):

@@ -38,6 +38,13 @@ impl CedarApp {
         }
     }
     pub(super) fn operation_problem(&self, operation: &Operation) -> Option<String> {
+        if matches!(
+            operation,
+            Operation::GitChanges { .. } | Operation::GitDiff { .. }
+        ) && !self.typed_git_supported()
+        {
+            return Some(self.unsupported_message("git_changes/git_diff"));
+        }
         if matches!(operation, Operation::RunStart { .. }) && !self.backend_run_supported() {
             return Some(self.unsupported_message("run_start/run_poll/run_cancel"));
         }
@@ -65,6 +72,8 @@ impl CedarApp {
                 | Operation::LanguageStart { .. }
                 | Operation::LanguageStartJava { .. }
                 | Operation::GitStatus
+                | Operation::GitChanges { .. }
+                | Operation::GitDiff { .. }
         ) && !self.execution_trusted()
         {
             return Some("Command execution is disabled for this connection. Enable trust and reconnect only for a workspace you trust".into());

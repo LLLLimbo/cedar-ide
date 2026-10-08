@@ -11,8 +11,11 @@ use cedar_winprocess::{
     CaptureProgress, LaunchSpec, ProcessExit, StdinCancelOutcome, StdinWriteProgress, Stream,
     WindowsCommand, MAX_STDIN_WRITE_BYTES,
 };
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -385,6 +388,206 @@ fn decode_hex(text: &str) -> String {
         })
         .collect();
     String::from_utf8(bytes).unwrap()
+}
+
+fn environment_hex(text: &OsStr) -> String {
+    text.encode_wide()
+        .map(|unit| format!("{unit:04x}"))
+        .collect()
+}
+
+fn environment_line(name: &OsStr, value: Option<&OsStr>) -> String {
+    format!(
+        "env:{}:{}\n",
+        environment_hex(name),
+        value
+            .map(environment_hex)
+            .unwrap_or_else(|| "missing".into())
+    )
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn explicit_environment_is_literal_complete_and_does_not_mutate_the_parent() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    let before: BTreeMap<_, _> = std::env::vars_os().collect();
+    let mut environment = vec![
+        (
+            OsString::from("CEDAR_ENV_LITERAL"),
+            OsString::from("%PATH% ! ^ & | < > $(literal)\n=\"quotes\""),
+        ),
+        (OsString::from("雪_ä"), OsString::from("雪🚀")),
+        (OsString::from("CEDAR_ENV_EMPTY"), OsString::new()),
+        (
+            OsString::from("CEDAR_ENV_SURROGATE"),
+            OsString::from_wide(&[0xd800, 65, 0xdc00]),
+        ),
+        (
+            OsString::from_wide(&[0xd800, 65]),
+            OsString::from("surrogate name"),
+        ),
+    ];
+    // Retain only the system root explicitly; the fixture locator is known to
+    // exist in the parent and must not leak into the child replacement block.
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        environment.push((OsString::from("SystemRoot"), root));
+    }
+    let mut args = vec!["inspect-environment".into()];
+    let mut expected = String::new();
+    for (name, value) in &environment {
+        args.push(environment_hex(name));
+        expected.push_str(&environment_line(name, Some(value)));
+    }
+    let folded = OsStr::new("cedar_env_literal");
+    args.push(environment_hex(folded));
+    expected.push_str(&environment_line(folded, Some(&environment[0].1)));
+    let absent = OsStr::new("CEDAR_WINPROCESS_FIXTURE_BIN");
+    assert!(std::env::var_os(absent).is_some());
+    args.push(environment_hex(absent));
+    expected.push_str(&environment_line(absent, None));
+    expected.push_str("environment-stdin-eof\n");
+
+    let mut command = WindowsCommand::spawn_suspended_with_environment(
+        &spec(dir.path(), args),
+        environment.iter().map(|(name, value)| (name, value)),
+    )
+    .unwrap();
+    assert_eq!(command.active_processes().unwrap(), 1);
+    assert_eq!(
+        command.poll_stdin_write().unwrap(),
+        StdinWriteProgress::Closed
+    );
+    let root = ObservedProcess(command.observation_handle().unwrap());
+    command.resume().unwrap();
+    let mut output = Output::default();
+    assert_eq!(output.complete(&mut command).code, 0);
+    assert_eq!(output.stdout, expected.as_bytes());
+    assert_eq!(output.stderr, b"environment-stderr-ready\n");
+    wait_empty_job(&command);
+    drop(command);
+    root.assert_terminated();
+    assert!(
+        before == std::env::vars_os().collect(),
+        "parent environment changed"
+    );
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn existing_nul_and_piped_constructors_still_inherit_the_environment() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    let name = OsStr::new("CEDAR_WINPROCESS_FIXTURE_BIN");
+    let parent_value = std::env::var_os(name).unwrap();
+    let expected = environment_line(name, Some(&parent_value)) + "environment-stdin-eof\n";
+    let launch_spec = spec(
+        dir.path(),
+        vec!["inspect-environment".into(), environment_hex(name)],
+    );
+    for piped in [false, true] {
+        let mut command = if piped {
+            WindowsCommand::spawn_suspended_with_piped_stdin(&launch_spec)
+        } else {
+            WindowsCommand::spawn_suspended(&launch_spec)
+        }
+        .unwrap();
+        command.close_stdin().unwrap();
+        command.resume().unwrap();
+        let mut output = Output::default();
+        assert_eq!(output.complete(&mut command).code, 0);
+        assert_eq!(output.stdout, expected.as_bytes());
+        assert_eq!(output.stderr, b"environment-stderr-ready\n");
+        wait_empty_job(&command);
+    }
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn empty_environment_stays_empty_and_explicit_environments_retain_owned_cleanup() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    let before: BTreeMap<_, _> = std::env::vars_os().collect();
+    let name = OsStr::new("CEDAR_WINPROCESS_FIXTURE_BIN");
+    let mut command = WindowsCommand::spawn_suspended_with_environment(
+        &spec(
+            dir.path(),
+            vec!["inspect-environment".into(), environment_hex(name)],
+        ),
+        std::iter::empty::<(OsString, OsString)>(),
+    )
+    .unwrap();
+    command.resume().unwrap();
+    let mut output = Output::default();
+    assert_eq!(output.complete(&mut command).code, 0);
+    assert_eq!(
+        output.stdout,
+        (environment_line(name, None) + "environment-stdin-eof\n").as_bytes()
+    );
+    wait_empty_job(&command);
+    drop(command);
+
+    let marker = dir.path().join("must-not-run");
+    let command = WindowsCommand::spawn_suspended_with_environment(
+        &spec(dir.path(), vec!["marker".into(), text_path(&marker)]),
+        [("CEDAR_ENV", "suspended")],
+    )
+    .unwrap();
+    assert_eq!(command.active_processes().unwrap(), 1);
+    let root = ObservedProcess(command.observation_handle().unwrap());
+    drop(command);
+    root.assert_terminated();
+    assert!(
+        !marker.exists(),
+        "explicit environment bypassed suspended ownership"
+    );
+
+    let mut command = WindowsCommand::spawn_suspended_with_environment(
+        &spec(dir.path(), vec!["tree-live".into(), text_path(dir.path())]),
+        [("CEDAR_ENV", "running")],
+    )
+    .unwrap();
+    command.resume().unwrap();
+    wait_file(&dir.path().join("tree.ready"));
+    let root = ObservedProcess(command.observation_handle().unwrap());
+    let child = ObservedProcess::from_file(&dir.path().join("branch.pid"));
+    let grandchild = ObservedProcess::from_file(&dir.path().join("leaf.pid"));
+    assert_job_accounts_for_live_fixtures(&command, 3);
+    drop(command);
+    root.assert_terminated();
+    child.assert_terminated();
+    grandchild.assert_terminated();
+    assert!(
+        before == std::env::vars_os().collect(),
+        "parent environment changed"
+    );
+}
+
+#[test]
+#[ignore = "requires real Windows and CEDAR_WINPROCESS_FIXTURE_BIN"]
+fn invalid_explicit_environment_cannot_execute_a_fixture() {
+    let _watchdog = Watchdog::start();
+    let dir = TempDir::new().unwrap();
+    let marker = dir.path().join("must-not-run");
+    let launch_spec = spec(dir.path(), vec!["marker".into(), text_path(&marker)]);
+    let before: BTreeMap<_, _> = std::env::vars_os().collect();
+    for environment in [
+        vec![("", "value")],
+        vec![("PATH", "one"), ("path", "two")],
+        vec![("name", "value\0suffix")],
+    ] {
+        assert_eq!(
+            WindowsCommand::spawn_suspended_with_environment(&launch_spec, environment)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+    assert!(!marker.exists());
+    assert!(
+        before == std::env::vars_os().collect(),
+        "parent environment changed"
+    );
 }
 
 #[test]

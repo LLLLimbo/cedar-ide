@@ -1,4 +1,5 @@
 mod command;
+mod environment;
 mod handles;
 mod pipes;
 mod process;

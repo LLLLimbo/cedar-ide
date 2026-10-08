@@ -60,6 +60,8 @@ fn run() -> io::Result<()> {
                 println!("arg:{}", hex(arg.as_bytes()));
             }
         }
+        #[cfg(windows)]
+        "inspect-environment" => inspect_environment(&args[1..])?,
         "idle" => {
             println!("idle-stdout-ready");
             eprintln!("idle-stderr-ready");
@@ -209,6 +211,45 @@ fn run() -> io::Result<()> {
 
 fn invalid_argument(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, error.to_string())
+}
+
+#[cfg(windows)]
+fn inspect_environment(names: &[String]) -> io::Result<()> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    // The argv encoder accepts UTF-8. Hex UTF-16 name arguments let this
+    // fixture also observe unpaired surrogate names/values without loss.
+    // Query only the requested variables; never print the host environment.
+    for name in names {
+        let (chunks, remainder) = name.as_bytes().as_chunks::<4>();
+        if name.is_empty() || !remainder.is_empty() {
+            return Err(invalid_argument("environment name must be UTF-16 hex"));
+        }
+        let units: Vec<u16> = chunks
+            .iter()
+            .map(|chunk| {
+                let text = std::str::from_utf8(chunk).map_err(invalid_argument)?;
+                u16::from_str_radix(text, 16).map_err(invalid_argument)
+            })
+            .collect::<io::Result<_>>()?;
+        let value = env::var_os(OsString::from_wide(&units))
+            .map(|value| {
+                value
+                    .encode_wide()
+                    .map(|unit| format!("{unit:04x}"))
+                    .collect::<String>()
+            })
+            .unwrap_or_else(|| "missing".into());
+        println!("env:{name}:{value}");
+    }
+    let mut byte = [0];
+    if io::stdin().read(&mut byte)? != 0 {
+        return Err(invalid_argument("environment fixture expected stdin EOF"));
+    }
+    println!("environment-stdin-eof");
+    eprintln!("environment-stderr-ready");
+    Ok(())
 }
 
 fn hex(bytes: &[u8]) -> String {

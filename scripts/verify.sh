@@ -24,3 +24,4 @@ python3 scripts/task_bridge_smoke.py "$CEDAR_AGENT_BIN"
 cargo build --manifest-path examples/task-profiles-demo/Cargo.toml --offline --locked
 fixture_target="$(cargo metadata --manifest-path examples/task-profiles-demo/Cargo.toml --no-deps --format-version 1 --offline --locked | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 python3 scripts/task_profiles_smoke.py "$CEDAR_AGENT_BIN" "$fixture_target/debug/cedar-task-profile-demo"
+python3 scripts/git_views_smoke.py --agent "$CEDAR_AGENT_BIN" --git "$(command -v git)"

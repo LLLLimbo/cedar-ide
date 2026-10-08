@@ -131,6 +131,15 @@ pub enum Operation {
         limit: usize,
     },
     GitStatus,
+    /// Explicit trusted read view. The program is on the workspace host.
+    GitChanges {
+        git_executable: String,
+    },
+    GitDiff {
+        git_executable: String,
+        path: String,
+        kind: GitDiffKind,
+    },
     LanguageStart {
         program: String,
         args: Vec<String>,
@@ -216,6 +225,8 @@ impl Operation {
             Self::Write { .. } => "write",
             Self::Search { .. } => "search",
             Self::GitStatus => "git_status",
+            Self::GitChanges { .. } => "git_changes",
+            Self::GitDiff { .. } => "git_diff",
             Self::LanguageStart { .. } => "language_start",
             Self::LanguageStartJava { .. } => "language_start_java",
             Self::LanguageOpen { .. } => "language_open",
@@ -275,6 +286,14 @@ pub enum Payload {
     GitStatus {
         text: String,
     },
+    GitChanges {
+        entries: Vec<GitChange>,
+    },
+    GitDiff {
+        path: String,
+        kind: GitDiffKind,
+        text: String,
+    },
     Language {
         value: serde_json::Value,
     },
@@ -289,6 +308,34 @@ pub enum Payload {
         truncated: bool,
     },
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitDiffKind {
+    Staged,
+    Unstaged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitChangeKind {
+    File,
+    Untracked,
+    Conflict,
+    Unsupported,
+}
+
+/// Exact repository-relative path, separate from any escaped display label.
+/// Capability flags describe a bounded read action, never execution permission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitChange {
+    pub path: String,
+    pub index: char,
+    pub worktree: char,
+    pub kind: GitChangeKind,
+    pub can_diff_staged: bool,
+    pub can_diff_unstaged: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
     pub path: String,
@@ -366,6 +413,40 @@ pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn typed_git_requests_preserve_literal_paths_and_require_new_capabilities() {
+        let path = "src/-雪 [literal]\nfile.txt";
+        let op = Operation::GitDiff {
+            git_executable: "C:\\Program Files\\Git\\cmd\\git.exe".into(),
+            path: path.into(),
+            kind: GitDiffKind::Staged,
+        };
+        let value = serde_json::to_value(&op).unwrap();
+        assert_eq!(value["type"], "git_diff");
+        assert_eq!(value["kind"], "staged");
+        let decoded: Operation = serde_json::from_value(value).unwrap();
+        assert!(
+            matches!(decoded, Operation::GitDiff { path: actual, kind: GitDiffKind::Staged, .. } if actual == path)
+        );
+        assert_eq!(op.capability_name(), Some("git_diff"));
+        assert_eq!(
+            Operation::GitChanges {
+                git_executable: "/usr/bin/git".into()
+            }
+            .capability_name(),
+            Some("git_changes")
+        );
+        assert!(!supports_capability(None, "git_changes"));
+        assert!(!supports_capability(None, "git_diff"));
+        for kind in ["commit", "reset", "HEAD~1", "--cached", ""] {
+            assert!(serde_json::from_value::<Operation>(serde_json::json!({
+                "type": "git_diff", "git_executable": "/usr/bin/git",
+                "path": "file.txt", "kind": kind
+            }))
+            .is_err());
+        }
+    }
+
     #[test]
     fn protocol_round_trip() {
         let req = Request {

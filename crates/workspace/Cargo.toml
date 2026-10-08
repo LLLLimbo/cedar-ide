@@ -7,7 +7,7 @@ rust-version.workspace = true
 
 [features]
 # Nonshipping acceptance fixture only; normal constructors never use this path.
-windows-language-validation = ["dep:windows-sys"]
+windows-language-validation = []
 # Fixed, nonshipping GC evidence only; independent of language-validation hooks.
 windows-java-gc-diagnostic = []
 
@@ -24,4 +24,5 @@ tempfile.workspace = true
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", optional = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
+cedar-winprocess = { path = "../winprocess" }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Threading"] }

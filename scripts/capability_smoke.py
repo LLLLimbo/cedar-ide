@@ -48,6 +48,8 @@ def main():
             # Support claims do not grant permission, even via direct protocol.
             for operation, fields in [
                 ('git_status', {}),
+                ('git_changes', {'git_executable': ''}),
+                ('git_diff', {'git_executable': '', 'path': 'not-opened', 'kind': 'unstaged'}),
                 ('run', {'program': 'cedar-no-such-tool', 'args': [], 'timeout_secs': 1}),
                 ('run_start', {'program': 'cedar-no-such-tool', 'args': [], 'timeout_secs': 1}),
                 ('run_poll', {'task_id': 1}),
@@ -68,10 +70,10 @@ def main():
             trusted.close()
         capabilities = set(info['capabilities'])
         if info['os'] in ('linux', 'macos'):
-            assert TASKS | {'run', 'git_status'} <= capabilities
+            assert TASKS | {'run', 'git_status', 'git_changes', 'git_diff'} <= capabilities
         elif info['os'] == 'windows':
             # The executable is the isolated agent, never an in-process host.
-            assert TASKS <= capabilities
+            assert TASKS | {'git_changes', 'git_diff'} <= capabilities
             assert not {'run', 'git_status'} & capabilities
         else:
             assert not (TASKS | {'run', 'git_status'}) & capabilities

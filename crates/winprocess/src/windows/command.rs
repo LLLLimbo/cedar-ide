@@ -1,10 +1,11 @@
+use super::environment::EnvironmentBlock;
 use super::pipes::{CapturePipes, PreparedStdio};
 use super::process::ProcessOwner;
 use super::stdin::{self, PendingWrite};
 use crate::{
     CaptureProgress, LaunchSpec, ProcessExit, StdinCancelOutcome, StdinWriteProgress, Stream,
 };
-use std::{fmt, io};
+use std::{ffi::OsStr, fmt, io};
 
 /// One owned, atomically job-assigned Windows process and its output captures.
 ///
@@ -36,17 +37,48 @@ impl WindowsCommand {
     /// The executable and cwd must be existing absolute UTF-8 native paths;
     /// executables must have an explicit .exe extension. No shell/PATH lookup.
     /// Task stdin remains NUL; no parent write endpoint exists in this mode.
+    /// The child inherits the calling process's environment.
     pub fn spawn_suspended(spec: &LaunchSpec) -> io::Result<Self> {
-        Self::spawn_prepared(spec, PreparedStdio::new()?)
+        Self::spawn_prepared(spec, PreparedStdio::new()?, None)
+    }
+
+    /// NUL-stdin variant with a complete, explicit child environment.
+    /// No variables are implicitly inherited, added, expanded, or removed.
+    /// The caller supplies any required system variables and owns policy.
+    /// Owned or borrowed key/value pairs are copied without Unicode loss.
+    ///
+    /// Names must be nonempty and contain neither NUL nor '=' (including
+    /// hidden drive entries such as '=C:'); values must be NUL-free. Names
+    /// that compare equal under Windows case-insensitive ordinal comparison
+    /// are rejected. The sorted, double-NUL UTF-16 block is bounded by
+    /// [`crate::MAX_ENVIRONMENT_UTF16_UNITS`], including terminators.
+    /// Validation precedes stdio/process creation. The parent's environment
+    /// is never modified, and job-before-resume ownership is unchanged.
+    pub fn spawn_suspended_with_environment<I, K, V>(
+        spec: &LaunchSpec,
+        environment: I,
+    ) -> io::Result<Self>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        let environment = EnvironmentBlock::new(environment)?;
+        Self::spawn_prepared(spec, PreparedStdio::new()?, Some(&environment))
     }
 
     /// Explicit piped-stdin variant, with the same job-before-resume invariant.
     /// Adds one bounded overlapped writer; it does not enable any IDE service.
+    /// The child inherits the calling process's environment.
     pub fn spawn_suspended_with_piped_stdin(spec: &LaunchSpec) -> io::Result<Self> {
-        Self::spawn_prepared(spec, PreparedStdio::with_piped_stdin()?)
+        Self::spawn_prepared(spec, PreparedStdio::with_piped_stdin()?, None)
     }
 
-    fn spawn_prepared(spec: &LaunchSpec, stdio: PreparedStdio) -> io::Result<Self> {
+    fn spawn_prepared(
+        spec: &LaunchSpec,
+        stdio: PreparedStdio,
+        environment: Option<&EnvironmentBlock>,
+    ) -> io::Result<Self> {
         let PreparedStdio {
             child,
             capture,
@@ -54,7 +86,7 @@ impl WindowsCommand {
         } = stdio;
         // The process owner borrows stdio only for creation. On failure, child
         // writers close before capture drops and completes any pending I/O.
-        let process = match ProcessOwner::create_suspended(spec, &child) {
+        let process = match ProcessOwner::create_suspended(spec, &child, environment) {
             Ok(process) => process,
             Err(error) => {
                 // Destructured locals otherwise drop in reverse binding order.
