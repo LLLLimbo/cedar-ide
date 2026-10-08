@@ -26,6 +26,8 @@ mod replace;
 mod run_ui;
 mod syntax;
 mod system_fonts;
+#[cfg(test)]
+mod tab_focus_tests;
 pub mod task_profiles;
 pub mod text_edits;
 mod worker;
@@ -1682,6 +1684,11 @@ impl CedarApp {
                     }
                 });
             });
+        let activate = activate.filter(|_| {
+            ui.is_enabled()
+                && !self.navigation.blocks_editor()
+                && !self.foreign_modal_owns_input(ui.ctx())
+        });
         if let Some(id) = activate {
             self.navigation_changed();
             self.active_document = Some(id);
@@ -1839,6 +1846,19 @@ impl CedarApp {
                         }
                     });
                 });
+        }
+        if let Some(id) = activate.filter(|id| {
+            Some(*id) == self.active_document
+                && ui.is_enabled()
+                && !self.navigation.blocks_editor()
+                && !self.foreign_modal_owns_input(ui.ctx())
+        }) {
+            // A native click can deliver press and release in one frame. Focus
+            // after TextEdit handles that outside press, or it surrenders focus.
+            // This local intent never survives into later Find/Replace input.
+            ui.ctx()
+                .memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", id))));
+            ui.ctx().request_repaint();
         }
     }
 
