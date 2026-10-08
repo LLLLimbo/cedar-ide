@@ -653,6 +653,47 @@ class CrashCollectionTests(unittest.TestCase):
                     self.assertEqual(source['errors'], ['invalid_field_correction_change_result'])
                 self.assertNotIn('SECRET_', json.dumps(report))
 
+    def test_correction_hover_is_bounded_private_and_cannot_replace_diagnostic_failure(self):
+        original = {**self.agent_diagnostics_fixture(), 'session': 2,
+                    'phase': 'correction', 'result': 'timeout', 'matching_batches': 0}
+        for result in ('matched', 'no_match', 'request_error'):
+            expected = {'kind': 'windows_java_correction_hover', 'session': 2,
+                        'result': result, 'elapsed_ms': 60000, 'elapsed_saturated': False}
+            private = {**expected, 'uri': 'file:///SECRET_PATH/Main.java',
+                       'hover': {'contents': 'SECRET_HOVER'}, 'error': 'SECRET_ERROR',
+                       'source': 'SECRET_SOURCE', 'success': True, 'correction_diagnostics': True}
+            report = collector.collect(self.root, agent_transcript=self.agent_source([original, private]))
+            self.assertEqual(report['status'], 'complete')
+            self.assertEqual(report['acceptance_result'], 'not_evaluated')
+            self.assertEqual(report['agent_transcript']['evidence']['records'], [original, expected])
+            self.assertNotIn('SECRET_', json.dumps(report))
+
+        fixture = {'kind': 'windows_java_correction_hover', 'session': 2,
+                   'result': 'matched', 'elapsed_ms': 0, 'elapsed_saturated': False}
+        invalid = {
+            'session': (0, 4, True, 1.0, 'SECRET_SESSION'),
+            'result': ('timeout', 'SECRET_RESULT', None, True, ['matched']),
+            'elapsed_ms': (-1, 300001, True, 1.0, 'SECRET_TIME'),
+            'elapsed_saturated': (0, 1, None, 'SECRET_BOOLEAN'),
+        }
+        for field, values in invalid.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    report = collector.collect(self.root, agent_transcript=self.agent_source([
+                        {**fixture, field: value}]))
+                    self.assertEqual(report['status'], 'error')
+                    source = report['agent_transcript']
+                    errors = ['invalid_field_' + field]
+                    if field == 'session':
+                        errors.append('missing_session')
+                    self.assertEqual(source['errors'], errors)
+                    self.assertNotIn(field, source['evidence']['records'][0])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+        maximum = {**fixture, 'elapsed_ms': 300000, 'elapsed_saturated': True}
+        report = collector.collect(self.root, agent_transcript=self.agent_source([maximum]))
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['agent_transcript']['evidence']['records'], [maximum])
+
     def test_agent_diagnostic_enums_and_saturation_are_strict(self):
         for field, invalid_values in (
                 ('phase', ('SECRET_PHASE', 'fresh_data', 1, True, None, ['initial'])),

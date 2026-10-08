@@ -138,6 +138,57 @@ pub(super) enum DiagnosticResult {
     Closed,
 }
 
+pub(super) struct DiagnosticWaitFailure {
+    pub message: String,
+    pub result: DiagnosticResult,
+}
+impl DiagnosticWaitFailure {
+    /// The caller uses this only after the correction wait has already failed.
+    /// A successful diagnostic probe never changes that original failure.
+    pub fn with_timeout_probe(self, probe: impl FnOnce()) -> String {
+        if self.result == DiagnosticResult::Timeout {
+            probe();
+        }
+        self.message
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CorrectionHoverResult {
+    Matched,
+    NoMatch,
+    RequestError,
+}
+
+/// Failure-only observation of the unique version-5 variable. Never stores the
+/// hover payload or error text, and is not an alternative diagnostics verdict.
+#[derive(Serialize)]
+pub(super) struct CorrectionHoverEvidence {
+    kind: &'static str,
+    session: u32,
+    result: CorrectionHoverResult,
+    elapsed_ms: u32,
+    elapsed_saturated: bool,
+}
+impl CorrectionHoverEvidence {
+    pub fn observed(session: u32, outcome: &CheckResult<Value>, milliseconds: u128) -> Self {
+        Self {
+            kind: "windows_java_correction_hover",
+            session,
+            result: match outcome {
+                Ok(value) if hover_has_tokens(value, &["int", "correctedOnly"]) => {
+                    CorrectionHoverResult::Matched
+                }
+                Ok(_) => CorrectionHoverResult::NoMatch,
+                Err(_) => CorrectionHoverResult::RequestError,
+            },
+            elapsed_ms: milliseconds.min(300_000) as u32,
+            elapsed_saturated: milliseconds > 300_000,
+        }
+    }
+}
+
 const DIAGNOSTIC_COUNTER_LIMIT: u32 = 65_535;
 fn add_diagnostic_count(counter: &mut u32, saturated: &mut bool, amount: usize) {
     let remaining = (DIAGNOSTIC_COUNTER_LIMIT - *counter) as usize;
@@ -718,14 +769,85 @@ pub(super) fn parse_task_identity(bytes: &[u8]) -> CheckResult<(u32, u64)> {
 }
 
 pub(super) fn hover_has_source_variable(value: &Value) -> bool {
+    hover_has_tokens(value, &["String", "greeting"])
+}
+
+fn hover_has_tokens(value: &Value, expected: &[&str]) -> bool {
     let Some(contents) = value.get("contents") else {
         return false;
     };
     let text = language_results::hover_text(&json!({"contents": contents}));
-    ["String", "greeting"].iter().all(|expected| {
+    expected.iter().all(|expected| {
         text.split(|ch: char| !ch.is_alphanumeric() && ch != '_' && ch != '$')
             .any(|word| word == *expected)
     })
+}
+
+#[test]
+fn correction_hover_requires_the_unique_corrected_variable_and_never_retains_payloads() {
+    for contents in [
+        json!("int correctedOnly"),
+        json!({"kind":"markdown","value":"```java\nint correctedOnly\n```"}),
+        json!([{"language":"java","value":"int correctedOnly"}]),
+    ] {
+        let receipt = CorrectionHoverEvidence::observed(
+            2,
+            &Ok(json!({"contents":contents,"private":"private payload sentinel"})),
+            12,
+        );
+        assert_eq!(receipt.result, CorrectionHoverResult::Matched);
+        let serialized = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(serialized.as_object().unwrap().len(), 5);
+        assert_eq!(serialized["elapsed_ms"], 12);
+        assert!(!serialized.to_string().contains("private"));
+    }
+    for value in [
+        Value::Null,
+        json!({"contents":null}),
+        json!({"contents":"String greeting"}),
+        json!({"contents":"int broken"}),
+        json!({"contents":"print correctedOnly"}),
+        json!({"contents":"int correctedOnlyExtra"}),
+        json!({"contents":"int $correctedOnly"}),
+        json!({"private":"int correctedOnly"}),
+    ] {
+        assert_eq!(
+            CorrectionHoverEvidence::observed(2, &Ok(value), 0).result,
+            CorrectionHoverResult::NoMatch
+        );
+    }
+    let receipt =
+        CorrectionHoverEvidence::observed(2, &Err("private error sentinel".into()), u128::MAX);
+    assert_eq!(receipt.result, CorrectionHoverResult::RequestError);
+    assert_eq!(receipt.elapsed_ms, 300_000);
+    assert!(receipt.elapsed_saturated);
+    assert!(!serde_json::to_string(&receipt).unwrap().contains("private"));
+}
+
+#[test]
+fn correction_probe_runs_only_after_timeout_and_cannot_replace_the_original_failure() {
+    for result in [
+        DiagnosticResult::Timeout,
+        DiagnosticResult::RequestError,
+        DiagnosticResult::MalformedEvents,
+        DiagnosticResult::Truncated,
+        DiagnosticResult::Lagged,
+        DiagnosticResult::Closed,
+    ] {
+        let mut probes = 0;
+        let failure: Result<(), DiagnosticWaitFailure> = Err(DiagnosticWaitFailure {
+            message: "original correction failure".into(),
+            result,
+        });
+        let outcome = failure.map_err(|failure| failure.with_timeout_probe(|| probes += 1));
+        assert_eq!(outcome, Err("original correction failure".into()));
+        assert_eq!(probes, usize::from(result == DiagnosticResult::Timeout));
+    }
+    let matched: Result<(), DiagnosticWaitFailure> = Ok(());
+    assert_eq!(
+        matched.map_err(|failure| failure.with_timeout_probe(|| panic!("probe after success"))),
+        Ok(())
+    );
 }
 
 #[test]

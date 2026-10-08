@@ -117,6 +117,11 @@ AGENT_TRANSCRIPT_FIELDS = {
            'result': ('matched', 'timeout', 'request_error', 'malformed_events', 'truncated', 'lagged', 'closed'),
            'counters_saturated': 'bool', 'elapsed_saturated': 'bool',
            'elapsed_ms': ('integer_range', 0, 300000)},
+    'windows_java_correction_hover': {
+        'session': ('integer_range', 1, 3),
+        'result': ('matched', 'no_match', 'request_error'),
+        'elapsed_ms': ('integer_range', 0, 300000), 'elapsed_saturated': 'bool',
+    },
     'windows_java_cleanup': dict.fromkeys((
         'agent_exit_zero', 'source_unchanged', 'observed_roots_exited', 'synthetic_root_removed',
         'success', 'primary_failed', 'cleanup_failed'), 'bool')

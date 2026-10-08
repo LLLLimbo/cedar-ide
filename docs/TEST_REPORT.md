@@ -1,4 +1,4 @@
-# Verification report · Independent Windows Git acceptance / 0.15.3 · 2026-10-08
+# Verification report · Windows Git fixture repair and Java witness / 0.15.4 · 2026-10-08
 
 This checkpoint lets the normal Windows shipping rebuild and actual Git acceptance
 run after an unrelated runtime-suite failure, provided their own build prerequisites
@@ -123,3 +123,65 @@ Local verification for this CI-only change: package regressions ran 29 tests
 (28 passed, one native-only skip), export regressions passed two, workflow parsing
 and explicit prerequisite checks passed, and diff checks passed. Rust and probe
 source remain byte-identical to 0.15.2; native CI performs the full rebuild.
+
+
+## 0.15.4 failure-only buffer witness
+
+The real-agent Java editor fixture now makes one existing standard hover request
+at the fixed synthetic correctedOnly declaration only after the correction wait
+has already timed out. Its allowlisted receipt contains a fixed result enum,
+session and bounded timing. A matching corrected variable can establish that JDT
+has the changed buffer; it cannot establish why diagnostics were absent or turn
+the failed acceptance into success. No raw response, source, path or error is
+published. Non-timeout failures and successful waits do not run the probe.
+
+The rapid apply/undo/redo/correction sequence, original 60-second diagnostic wait,
+existing feature request deadline, owned cleanup, source-preservation checks and
+outer watchdog are unchanged. This is diagnostic instrumentation, not a Java fix
+or retry of the edit. Normal production binaries have no new operation or option.
+The independent Git workflow conditions from 0.15.3 remain in place.
+
+Local app tests passed 337, with 14 explicit process cases ignored. This includes
+two new tests for timeout-only gating, original failure retention, exact synthetic
+hover tokens and privacy. Strict host and MSVC app checks passed. The collector
+ran 72 tests: 70 passed and two platform-only cases were skipped. Export tests
+passed two; formatting and whitespace checks passed. Independent review found
+no blocker in the diagnostic, sanitizer or cleanup path. These local checks do
+not reproduce the intermittent native failure; exact native CI remains required.
+
+
+## Native 0.15.3 Git result and fixture repair
+
+Exact public commit
+[`f62a3cb4470d233f2603a41f2a241c995ba3b3a3`](https://github.com/LLLLimbo/cedar-ide/commit/f62a3cb4470d233f2603a41f2a241c995ba3b3a3)
+[passed Ubuntu and failed Windows](https://github.com/LLLLimbo/cedar-ide/actions/runs/37783653025).
+Windows used Git 2.55.0.windows.5 and reached the actual Git probe after the
+normal shipping rebuild. It failed in the missing-promisor-object fixture after
+815 assertions with a non-assertion exception; bundle verification was skipped.
+Java passed on this run, which does not resolve its intermittent notification bug.
+
+The fixture directly deleted its generated loose Git object, which is read-only.
+Windows rejects deletion while that attribute is set; the previous generic
+exception receipt did not retain an error number, so it cannot prove the exact
+native exception retrospectively. The fixture now verifies the same regular,
+single-link object and exact compressed bytes before and after changing only
+that generated file's writable bit, then deletes it before baseline snapshots.
+No recursive permissions change or production Git guard is involved. The probe
+still requires missing-object failure, no restored object and unchanged complete
+repository snapshots. Fixed substages and bounded OS error integers make any
+remaining failure distinguishable without exporting paths or exception text.
+
+This is a fixture correction, not evidence that the production no-fetch boundary
+failed or passed. Actual native Git acceptance and all required gates remain
+necessary before distributing the updated Windows bundle.
+
+The fixture repair passed six focused tests, including single-file scope, changed
+identity/bytes rejection and private-error redaction. On Windows the read-only
+fixture test first requires the original unlink to fail with error 5, then
+verifies the repair. The full final-script Linux normal-release-agent Git smoke
+passed 1,283 assertions and 16 typed entries, including missing-promisor failure,
+no object restoration, unchanged repositories, bounded cleanup and task
+independence. Its Windows-only forced-agent-death flag is correctly false on
+Linux. Package tests passed 28 with one native-only skip; export tests passed two.
+The new six-test fixture suite is required on both CI platforms. Independent
+review found no blocker; actual Windows results remain pending.

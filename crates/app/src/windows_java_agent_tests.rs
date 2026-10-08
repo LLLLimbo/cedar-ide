@@ -666,7 +666,7 @@ fn await_diagnostics(
     uri: &str,
     session: u32,
     phase: DiagnosticPhase,
-) -> CheckResult<()> {
+) -> Result<(), DiagnosticWaitFailure> {
     let started = Instant::now();
     let deadline = started + Duration::from_secs(60);
     let mut receipt = DiagnosticEvidence::new(session, phase);
@@ -691,7 +691,36 @@ fn await_diagnostics(
         "{}",
         serde_json::to_string(&receipt).expect("typed diagnostic evidence")
     );
-    outcome
+    outcome.map_err(|message| DiagnosticWaitFailure {
+        message,
+        result: receipt.result,
+    })
+}
+
+fn probe_correction_hover(agent: &mut RawAgent, session: u32) {
+    let started = Instant::now();
+    // Only called after the original correction timeout is recorded. Use the
+    // existing feature request deadline and owned request worker; a shorter
+    // harness deadline would abandon the protocol pipes during cleanup.
+    let outcome = checked(|| {
+        let cursor = marker_range(&corrected_source(), "correctedOnly").start;
+        language(
+            agent,
+            Operation::LanguageQuery {
+                path: SOURCE_PATH.into(),
+                line: cursor.line,
+                character: cursor.character,
+                kind: LanguageQueryKind::Hover,
+            },
+            FEATURE_TIMEOUT,
+        )
+    });
+    let receipt =
+        CorrectionHoverEvidence::observed(session, &outcome, started.elapsed().as_millis());
+    println!(
+        "{}",
+        serde_json::to_string(&receipt).expect("typed correction hover evidence")
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -799,7 +828,8 @@ fn run_semantics(
     )?;
     unchanged(&source)?;
     stage.set(FailureStage::Diagnostics);
-    await_diagnostics(agent, &uri, record.session, DiagnosticPhase::Initial)?;
+    await_diagnostics(agent, &uri, record.session, DiagnosticPhase::Initial)
+        .map_err(|failure| failure.message)?;
     record.exact_diagnostics = true;
     unchanged(&source)?;
     if record.session == 2 {
@@ -975,7 +1005,9 @@ fn run_semantics(
     )?;
     record.correction_change_result = CorrectionChangeResult::Acknowledged;
     record.correction_change_acknowledged = true;
-    await_diagnostics(agent, &uri, record.session, DiagnosticPhase::Correction)?;
+    await_diagnostics(agent, &uri, record.session, DiagnosticPhase::Correction).map_err(
+        |failure| failure.with_timeout_probe(|| probe_correction_hover(agent, record.session)),
+    )?;
     record.correction_diagnostics = true;
     unchanged(&source)?;
     stage.set(FailureStage::Close);

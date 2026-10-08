@@ -38,6 +38,7 @@ import zlib
 MAX_FRAME = 8 * 1024 * 1024
 REQUEST_SECONDS = 16
 STAGE = "arguments"
+SUBSTAGE = "none"
 ASSERTIONS = 0
 
 
@@ -50,6 +51,27 @@ def require(condition, code):
     ASSERTIONS += 1
     if not condition:
         raise Failure(code)
+
+
+def failure_record(error):
+    """No exception message, filename, command, environment or raw class name."""
+    kinds = ((Failure, "assertion"), (PermissionError, "permission_error"),
+             (FileNotFoundError, "file_not_found"), (OSError, "os_error"),
+             (subprocess.TimeoutExpired, "subprocess_timeout"),
+             (UnicodeError, "unicode_error"), (ValueError, "value_error"),
+             (KeyError, "key_error"), (TypeError, "type_error"))
+    kind = next((name for category, name in kinds if isinstance(error, category)),
+                "unexpected_exception")
+
+    def number(name):
+        value = getattr(error, name, None) if isinstance(error, OSError) else None
+        return value if type(value) is int and 0 <= value <= 0x7fffffff else 0
+
+    return {"result": "FAIL", "suite": "normal_agent_real_git_views",
+            "stage": STAGE, "substage": SUBSTAGE,
+            "code": str(error) if isinstance(error, Failure) else "acceptance_failed",
+            "exception_kind": kind, "os_errno": number("errno"),
+            "winerror": number("winerror"), "assertions": ASSERTIONS}
 
 
 def clean_environment():
@@ -612,6 +634,41 @@ def check_unborn_and_bounds(binary, git, base):
         agent.call("git_changes", git_executable=str(git), error="git_repository_unsupported")
 
 
+def remove_verified_fixture_blob(path, expected_stat, expected_bytes):
+    """Delete one identity-checked generated blob before read-view snapshots.
+
+    Git creates read-only loose objects. Windows DeleteFile rejects those until
+    the read-only attribute is cleared. This changes only the already verified
+    fixture file, never a repository permission policy or a recursive tree.
+    """
+    global SUBSTAGE
+
+    def verify():
+        current = path.lstat()
+        require(stat.S_ISREG(current.st_mode) and current.st_nlink == 1 and
+                os.path.samestat(expected_stat, current) and
+                current.st_size == expected_stat.st_size < 4096 and
+                current.st_mtime_ns == expected_stat.st_mtime_ns,
+                "promisor_remove_identity")
+        with path.open("rb") as stream:
+            require(os.path.samestat(current, os.fstat(stream.fileno())),
+                    "promisor_remove_open_identity")
+            require(stream.read(4096) == expected_bytes, "promisor_remove_bytes")
+        return current
+
+    SUBSTAGE = "verify_remove_identity"
+    before = verify()
+    SUBSTAGE = "clear_fixture_readonly"
+    path.chmod(stat.S_IMODE(before.st_mode) | stat.S_IWRITE)
+    SUBSTAGE = "verify_writable_identity"
+    after = verify()
+    require(bool(after.st_mode & stat.S_IWRITE), "promisor_remove_not_writable")
+    SUBSTAGE = "remove_fixture_blob"
+    path.unlink()
+    SUBSTAGE = "verify_blob_absent"
+    require(not os.path.lexists(path), "promisor_blob_not_removed")
+
+
 def check_missing_promisor_object(binary, git, base):
     """A missing promised blob must fail without fetching or writing objects.
 
@@ -620,8 +677,9 @@ def check_missing_promisor_object(binary, git, base):
     the combined no-lazy-fetch/disabled-transport boundary; it does not loosen
     either protection or contact any external host to test them independently.
     """
-    global STAGE
+    global STAGE, SUBSTAGE
     STAGE = "missing_promisor_object"
+    SUBSTAGE = "create_repositories"
     name = "promisor missing 你好.txt"
     original = b"PROMISOR_BASE\n"
     fixture = Fixture(base / "promisor repository", git)
@@ -633,6 +691,7 @@ def check_missing_promisor_object(binary, git, base):
 
     # Derive only this generated blob's identity; accept SHA-1 or SHA-256 repos.
     # Check its bounded loose-object contents before removing the owned copy.
+    SUBSTAGE = "verify_generated_blob"
     content = b"blob " + str(len(original)).encode("ascii") + b"\0" + original
     identities = [hashlib.sha1(content).hexdigest(), hashlib.sha256(content).hexdigest()]
     candidates = [(identity, fixture.root / ".git/objects" / identity[:2] / identity[2:])
@@ -641,15 +700,23 @@ def check_missing_promisor_object(binary, git, base):
     require(len(candidates) == 1, "promisor_blob_identity")
     identity, missing = candidates[0]
     source = backing.root / ".git/objects" / identity[:2] / identity[2:]
+    missing_stat, missing_bytes = None, None
     for path in (missing, source):
-        require(path.is_file() and path.stat().st_size < 4096, "promisor_blob_source")
+        metadata = path.lstat()
+        require(stat.S_ISREG(metadata.st_mode) and metadata.st_size < 4096,
+                "promisor_blob_source")
+        with path.open("rb") as stream:
+            compressed = stream.read(4096)
         decoder = zlib.decompressobj()
-        require(decoder.decompress(path.read_bytes(), 4096) == content and decoder.eof and
+        require(decoder.decompress(compressed, 4096) == content and decoder.eof and
                 not decoder.unused_data, "promisor_blob_contents")
+        if path == missing:
+            missing_stat, missing_bytes = metadata, compressed
 
     # Configure a real partial clone relationship entirely through local config;
     # never clone/fetch or use an external URL. The backing commit keeps the blob
     # reachable, so an accidental permitted lazy fetch could restore it.
+    SUBSTAGE = "configure_promisor"
     for key, value in (("core.repositoryFormatVersion", "1"),
                        ("extensions.partialClone", "origin"),
                        ("remote.origin.url", backing.root.as_uri()),
@@ -657,23 +724,29 @@ def check_missing_promisor_object(binary, git, base):
                        ("remote.origin.promisor", "true"),
                        ("remote.origin.partialCloneFilter", "blob:none")):
         fixture.command("config", "--local", key, value)
+    SUBSTAGE = "edit_generated_worktree"
     fixture.write(name, b"PROMISOR_EDIT\n")
-    missing.unlink()
-    require(not missing.exists(), "promisor_blob_not_removed")
+    remove_verified_fixture_blob(missing, missing_stat, missing_bytes)
+    SUBSTAGE = "snapshot_before_view"
     before, backing_before = fixture.snapshot(), backing.snapshot()
     with Agent(binary, fixture.root) as agent:
+        SUBSTAGE = "read_typed_status"
         entries = changes(agent, git)
         require(set(entries) == {name} and entries[name]["kind"] == "file" and
                 entries[name]["can_diff_unstaged"], "promisor_status_eligible")
+        SUBSTAGE = "require_missing_object_error"
         agent.call("git_diff", git_executable=str(git), path=name, kind="unstaged",
                    error="git_error")
+        SUBSTAGE = "readback_after_error"
         hello(agent, fixture.root)
         readback(agent, fixture, name)
+    SUBSTAGE = "verify_no_fetch_or_mutation"
     require(not missing.exists(), "promisor_blob_restored")
     # Whole-tree snapshots also catch new packfiles, refs, lockfiles or metadata
     # writes even if Git restored an object in a different on-disk representation.
     require(fixture.snapshot() == before, "promisor_repository_mutation")
     require(backing.snapshot() == backing_before, "promisor_backing_mutation")
+    SUBSTAGE = "none"
 
 
 def check_filter_ownership(binary, git, base):
@@ -811,7 +884,5 @@ if __name__ == "__main__":
     except BaseException as error:
         if isinstance(error, SystemExit):
             raise
-        code = str(error) if isinstance(error, Failure) else "acceptance_failed"
-        print(json.dumps({"result": "FAIL", "suite": "normal_agent_real_git_views",
-                          "stage": STAGE, "code": code, "assertions": ASSERTIONS}, sort_keys=True))
+        print(json.dumps(failure_record(error), sort_keys=True))
         sys.exit(1)

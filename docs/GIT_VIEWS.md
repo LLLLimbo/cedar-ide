@@ -101,3 +101,7 @@ The 0.15.2 Git step was skipped after a recurring Java correction-notification
 timeout. Version 0.15.3 collects independent Windows Git evidence after its own
 normal-build prerequisite even if Java fails; the overall job remains failed and
 no bundle is delivered until every required gate passes.
+
+The 0.15.3 Windows Git probe executed but failed in the missing-promisor fixture. Its generated loose object was read-only; 0.15.4 adjusts only that verified
+synthetic object's writable bit before deletion and retains all no-fetch checks.
+Actual Windows Git acceptance remains pending the corrected native run.

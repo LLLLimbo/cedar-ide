@@ -23,6 +23,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: python scripts/test_public_export.py
       - run: python scripts/test_windows_bundle.py
+      - run: python scripts/test_git_views_smoke.py
       - run: python scripts/test_java_crash_collection.py
       - run: python scripts/test_process_tree_baseline.py
       - run: python scripts/test_gc_control_collection.py

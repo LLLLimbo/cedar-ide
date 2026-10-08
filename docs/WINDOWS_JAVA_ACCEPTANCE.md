@@ -394,6 +394,22 @@ The 0.8.14 first real-agent editor session passed, but the fresh-data session
 failed at correction; the new evidence distinguishes acknowledgement, transport
 and diagnostic predicate failures without inferring a timeout from a stage name.
 
+### Failure-only corrected-buffer observation
+
+After an exact correction diagnostic timeout, the real-agent editor fixture
+issues one standard hover request at the synthetic `correctedOnly` declaration.
+The `windows_java_correction_hover` receipt contains only the session, a fixed
+`matched` / `no_match` / `request_error` result and bounded elapsed time. A match
+witnesses the corrected variable in JDT's buffer; it does not identify why push
+diagnostics were absent. Raw hover contents, paths, source and errors remain private.
+
+This observation uses the existing 60-second feature request deadline and
+75-second harness envelope. It runs after the original 60-second diagnostic
+timeout, which remains the failing acceptance result even if hover succeeds.
+It neither repeats the edit nor changes the rapid apply/undo/redo sequence, and
+it adds no protocol operation or diagnostic refresh command. Owned cleanup and
+source preservation checks still run after the observation fails or completes.
+
 
 ## 0.8.16 finite real-task ownership gate
 
