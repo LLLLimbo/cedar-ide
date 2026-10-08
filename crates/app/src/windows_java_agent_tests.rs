@@ -304,7 +304,7 @@ fn run_semantics(
     record: &mut SessionEvidence,
     stage: &Cell<FailureStage>,
 ) -> CheckResult<()> {
-    let source = root.join("src/Main.java");
+    let source = root.join(SOURCE_PATH);
     let mut args = args.to_vec();
     args.push(directory_url(data)?);
     stage.set(FailureStage::Initialize);
@@ -363,7 +363,7 @@ fn run_semantics(
     let opened = language(
         agent,
         Operation::LanguageOpen {
-            path: "src/Main.java".into(),
+            path: SOURCE_PATH.into(),
             language_id: "java".into(),
             version: 1,
             text: SOURCE.into(),
@@ -393,7 +393,7 @@ fn run_semantics(
     let definition = language(
         agent,
         Operation::LanguageQuery {
-            path: "src/Main.java".into(),
+            path: SOURCE_PATH.into(),
             line: cursor.line,
             character: cursor.character,
             kind: LanguageQueryKind::Definition,
@@ -409,7 +409,7 @@ fn run_semantics(
         FEATURE_TIMEOUT,
     )?;
     require(
-        confined["path"] == "src/Main.java",
+        confined["path"] == SOURCE_PATH,
         "definition URI did not resolve to the source",
     )?;
     record.exact_definition = true;
@@ -418,7 +418,7 @@ fn run_semantics(
     let response = language(
         agent,
         Operation::LanguageQuery {
-            path: "src/Main.java".into(),
+            path: SOURCE_PATH.into(),
             line: cursor.line,
             character: cursor.character,
             kind: LanguageQueryKind::Completion,
@@ -515,7 +515,7 @@ fn run_semantics(
     let changed = language(
         agent,
         Operation::LanguageChange {
-            path: "src/Main.java".into(),
+            path: SOURCE_PATH.into(),
             version: 5,
             text: corrected_source(),
         },
@@ -534,7 +534,7 @@ fn run_semantics(
     language(
         agent,
         Operation::LanguageClose {
-            path: "src/Main.java".into(),
+            path: SOURCE_PATH.into(),
         },
         FEATURE_TIMEOUT,
     )?;
@@ -672,8 +672,9 @@ fn real_windows_agent_java_editor_transactions() -> CheckResult<()> {
             .prefix("cedar agent editor 雪 ")
             .tempdir())?);
         let root = ordinary_path(fixture.as_ref().unwrap().path())?;
-        io(fs::create_dir_all(root.join("src")))?;
-        io(fs::create_dir_all(root.join(".settings")))?;
+        let project = root.join(PROJECT_DIR);
+        io(fs::create_dir_all(project.join("src")))?;
+        io(fs::create_dir_all(project.join(".settings")))?;
         io(fs::write(
             root.join(".cedar-windows-language-validation"),
             "cedar-windows-language-validation-v1\n",
@@ -682,10 +683,10 @@ fn real_windows_agent_java_editor_transactions() -> CheckResult<()> {
             root.join(".cedar-windows-java-validation"),
             "cedar-windows-java-validation-v1\n",
         ))?;
-        io(fs::write(root.join(".project"), "<?xml version=\"1.0\"?><projectDescription><name>cedar-editor-smoke</name><projects/><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name><arguments/></buildCommand></buildSpec><natures><nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>"))?;
-        io(fs::write(root.join(".classpath"), "<?xml version=\"1.0\"?><classpath><classpathentry kind=\"src\" path=\"src\"/><classpathentry kind=\"con\" path=\"org.eclipse.jdt.launching.JRE_CONTAINER\"/><classpathentry kind=\"output\" path=\"bin\"/></classpath>"))?;
-        io(fs::write(root.join(".settings/org.eclipse.jdt.core.prefs"), "eclipse.preferences.version=1\norg.eclipse.jdt.core.compiler.codegen.targetPlatform=21\norg.eclipse.jdt.core.compiler.compliance=21\norg.eclipse.jdt.core.compiler.source=21\norg.eclipse.jdt.core.compiler.problem.unusedLocal=warning\n"))?;
-        io(fs::write(root.join("src/Main.java"), SOURCE))?;
+        io(fs::write(project.join(".project"), "<?xml version=\"1.0\"?><projectDescription><name>cedar-editor-smoke</name><projects/><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name><arguments/></buildCommand></buildSpec><natures><nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>"))?;
+        io(fs::write(project.join(".classpath"), "<?xml version=\"1.0\"?><classpath><classpathentry kind=\"src\" path=\"src\"/><classpathentry kind=\"con\" path=\"org.eclipse.jdt.launching.JRE_CONTAINER\"/><classpathentry kind=\"output\" path=\"bin\"/></classpath>"))?;
+        io(fs::write(project.join(".settings/org.eclipse.jdt.core.prefs"), "eclipse.preferences.version=1\norg.eclipse.jdt.core.compiler.codegen.targetPlatform=21\norg.eclipse.jdt.core.compiler.compliance=21\norg.eclipse.jdt.core.compiler.source=21\norg.eclipse.jdt.core.compiler.problem.unusedLocal=warning\n"))?;
+        io(fs::write(root.join(SOURCE_PATH), SOURCE))?;
         let mut command = Command::new(binary);
         command
             .arg("--synthetic-root")
@@ -707,14 +708,15 @@ fn real_windows_agent_java_editor_transactions() -> CheckResult<()> {
             "nonshipping profile changed normal Hello capability evidence",
         )?;
         for (session, mode, name) in [
-            (1, SessionMode::Initial, "jdt data initial 雪"),
-            (2, SessionMode::FreshData, "jdt data restart 雪"),
-            (3, SessionMode::ReusedData, "jdt data restart 雪"),
+            (1, SessionMode::Initial, INITIAL_DATA_DIR),
+            (2, SessionMode::FreshData, RESTART_DATA_DIR),
+            (3, SessionMode::ReusedData, RESTART_DATA_DIR),
         ] {
             stage.set(FailureStage::Setup);
             let mut record = SessionEvidence::new(session, mode);
             let data = root.join(name);
             let semantics = checked(|| {
+                validate_fixture_layout(&root, &data)?;
                 require(
                     data.exists() == (session == 3),
                     "fresh/reused data directory precondition failed",
@@ -739,7 +741,7 @@ fn real_windows_agent_java_editor_transactions() -> CheckResult<()> {
             } else {
                 Err("protocol pipes unavailable after bounded request failure".into())
             };
-            let disk = unchanged(&root.join("src/Main.java"));
+            let disk = unchanged(&root.join(SOURCE_PATH));
             record.source_unchanged = disk.is_ok();
             println!(
                 "{}",
@@ -797,7 +799,7 @@ fn real_windows_agent_java_editor_transactions() -> CheckResult<()> {
     }
     let source_unchanged = fixture
         .as_ref()
-        .is_some_and(|temp| unchanged(&temp.path().join("src/Main.java")).is_ok());
+        .is_some_and(|temp| unchanged(&temp.path().join(SOURCE_PATH)).is_ok());
     if fixture.is_some() && !source_unchanged {
         failure_stage.get_or_insert(FailureStage::FixtureCleanup);
         cleanup_errors.push("source bytes changed before fixture removal".into());

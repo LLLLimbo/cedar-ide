@@ -1,4 +1,4 @@
-# Verification report · checkpoint 9D agent/editor preparation / 0.8.13 · 2026-10-08
+# Verification report · checkpoint 9D agent/editor fixture layout / 0.8.14 · 2026-10-08
 
 This checkpoint adds an opt-in real Windows Java acceptance path through the
 nonshipping agent host and the actual headless editor transaction/history code.
@@ -18,6 +18,27 @@ Independent retained root handles observed natural exit0 in all three sessions;
 shutdown took 638, 565 and 1,037 ms. Source bytes remained unchanged and the
 intended data-directory witnesses were present. This establishes the direct
 transport path; it does not establish an editor, GUI or authenticated SSH path.
+
+## 0.8.13 native result and fixture correction
+
+Exact public [`930c212c4955d7391279bb65bc29fb76720759ed`](https://github.com/LLLLimbo/cedar-ide/commit/930c212c4955d7391279bb65bc29fb76720759ed)
+[passed Ubuntu CI but failed Windows real-agent acceptance](https://github.com/LLLLimbo/cedar-ide/actions/runs/37718954907).
+The direct Java probe again passed all three semantic sessions with natural
+exit0. The agent initialized its first Java session in 4,606 ms, but did not
+satisfy exact initial source diagnostics. No editor semantic success is claimed.
+Cleanup independently observed Java exit0 after 984 ms, agent exit0, unchanged
+source and generated-root removal. Cleanup operations completed, while the
+overall acceptance receipt remained unsuccessful.
+
+The generated agent fixture placed its Eclipse project above the JDT workspace
+data directory. [Eclipse's project-location contract](https://help.eclipse.org/latest/rtopic/org.eclipse.platform.doc.isv/reference/api/org/eclipse/core/resources/IWorkspace.html#validateProjectLocationURI(org.eclipse.core.resources.IProject,java.net.URI))
+forbids a project location that contains the platform working directory.
+Version 0.8.14 puts the generated project and JDT data in sibling directories
+under the same confined synthetic root, matching the passing direct layout.
+Document paths change to project with spaces 雪/src/Main.java. Exact source, URI/range,
+diagnostic, transaction and lifecycle assertions and deadlines are retained.
+The next native run must confirm this correction; no runtime cause or successful
+editor result is inferred solely from the static layout rule.
 
 ## New agent/editor acceptance
 

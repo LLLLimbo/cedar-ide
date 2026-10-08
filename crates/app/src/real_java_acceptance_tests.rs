@@ -9,7 +9,28 @@ use serde_json::{json, Value};
 use std::cell::Cell;
 
 pub(super) const SOURCE: &str = "public class Main {\n    public static void main(String[] args) {\n        String greeting = \"Hello Cedar\";\n        System.out.println(greeting);\n        int broken = \"oops\";\n    }\n}\n";
+pub(super) const PROJECT_DIR: &str = "project with spaces 雪";
+pub(super) const SOURCE_PATH: &str = "project with spaces 雪/src/Main.java";
+pub(super) const INITIAL_DATA_DIR: &str = "jdt data initial 雪";
+pub(super) const RESTART_DATA_DIR: &str = "jdt data restart 雪";
 pub(super) type CheckResult<T> = Result<T, String>;
+
+pub(super) fn validate_fixture_layout(
+    root: &std::path::Path,
+    data: &std::path::Path,
+) -> CheckResult<()> {
+    let project = root.join(PROJECT_DIR);
+    // Eclipse forbids project locations that contain its workspace (-data).
+    // Both remain inside the synthetic agent root, as distinct sibling areas.
+    if data.parent() != Some(root)
+        || data.starts_with(&project)
+        || project.starts_with(data)
+        || root.join(SOURCE_PATH) != project.join("src/Main.java")
+    {
+        return Err("synthetic Java project and JDT data must be distinct siblings".into());
+    }
+    Ok(())
+}
 
 pub(super) fn corrected_source() -> String {
     SOURCE.replace("int broken = \"oops\";", "int correctedOnly = 42;")
@@ -132,7 +153,7 @@ pub(super) fn editor_transaction(
     app.language.acceptance_sequence = 1;
     let mut doc = Document::new(
         1,
-        "src/Main.java".into(),
+        SOURCE_PATH.into(),
         SOURCE.into(),
         "synthetic-original".into(),
     );
@@ -376,6 +397,24 @@ pub(super) struct CleanupEvidence {
 #[cfg(windows)]
 #[path = "windows_java_agent_tests.rs"]
 mod windows;
+
+#[test]
+fn generated_java_layout_keeps_project_and_server_data_separate() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    for name in [INITIAL_DATA_DIR, RESTART_DATA_DIR] {
+        let data = root.join(name);
+        validate_fixture_layout(root, &data).unwrap();
+        assert!(!root.join(SOURCE_PATH).starts_with(&data));
+    }
+    for invalid in [
+        root.to_path_buf(),
+        root.join(PROJECT_DIR),
+        root.join(PROJECT_DIR).join(INITIAL_DATA_DIR),
+    ] {
+        assert!(validate_fixture_layout(root, &invalid).is_err());
+    }
+}
 
 #[test]
 fn exact_java_witnesses_reject_unrelated_stale_and_empty_results() {

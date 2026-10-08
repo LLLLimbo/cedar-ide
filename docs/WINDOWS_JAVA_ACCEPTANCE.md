@@ -370,3 +370,14 @@ text, source payloads, paths and raw diagnostics are omitted. The PowerShell
 consumer requires three ordered successful sessions and one successful cleanup
 receipt, rejecting zero selected tests. The native test and outer CI budgets
 remain failure boundaries, never substitutes for cleanup evidence.
+
+
+### 0.8.14 generated project layout correction
+
+The synthetic agent root is a container: `project with spaces 雪/` holds the Eclipse project and
+source; the fresh/reused JDT data directories are siblings of that project directory. This
+avoids Eclipse's prohibition on a project containing its workspace directory.
+Protocol document paths are `project with spaces 雪/src/Main.java`; location confinement, exact
+semantic checks, source preservation and lifecycle deadlines remain unchanged.
+The 0.8.13 public native run failed initial diagnostics while natural root/agent
+cleanup passed. The corrected layout still requires a new exact native verdict.
