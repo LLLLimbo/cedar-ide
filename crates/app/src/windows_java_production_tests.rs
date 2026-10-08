@@ -5,10 +5,56 @@ use crate::java_language::{JavaStopOutcome, StopReason, StopStatus};
 use cedar_client::Client;
 use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
 
-// Optional, test-only observation. The enclosing acceptance script supplies an
-// exclusively created file in its generated scratch directory. Marker failures
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ObservationProfile {
+    Quick,
+    ResourceBaseline,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ResourcePhase {
+    Starting,
+    JavaInitialized,
+    SemanticReadyIdle,
+    QueryWorkload,
+    CorrectionReadyIdle,
+    Closing,
+    Cleanup,
+    Complete,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ResourceLatency {
+    JavaInitialize,
+    OpenExactDiagnostics,
+    DefinitionConfinedUri,
+    Completion,
+    DeferredImportResolve,
+    EditorApplyUndoRedo,
+    CorrectionExactDiagnostics,
+    StopVerifiedRootExit,
+}
+
+#[derive(serde::Serialize)]
+struct PhaseMarker {
+    phase: ResourcePhase,
+    elapsed_ms: u128,
+}
+
+#[derive(serde::Serialize)]
+struct LatencyMarker {
+    latency: ResourceLatency,
+    elapsed_ms: u128,
+    duration_ns: u128,
+}
+
+// Test-only observation. The enclosing sampler exclusively creates this file in
+// its generated scratch directory. Never create it here: the long baseline must
+// refuse startup when instrumentation was not prepared. Later marker failures
 // make the resource report incomplete; they do not change semantic acceptance.
-fn resource_phase(started: Instant, phase: &'static str) -> bool {
+fn resource_marker(marker: &impl serde::Serialize) -> bool {
     use std::io::Write;
     let Some(path) = std::env::var_os("CEDAR_RESOURCE_PHASE_PATH") else {
         return false;
@@ -16,12 +62,33 @@ fn resource_phase(started: Instant, phase: &'static str) -> bool {
     let Ok(mut file) = fs::OpenOptions::new().append(true).open(path) else {
         return false;
     };
-    writeln!(
-        file,
-        "{}",
-        serde_json::json!({"phase": phase, "elapsed_ms": started.elapsed().as_millis()})
-    )
-    .is_ok()
+    let Ok(line) = serde_json::to_string(marker) else {
+        return false;
+    };
+    writeln!(file, "{line}").is_ok()
+}
+
+fn resource_phase(started: Instant, phase: ResourcePhase) -> bool {
+    resource_marker(&PhaseMarker {
+        phase,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn resource_latency(
+    profile: ObservationProfile,
+    started: Instant,
+    operation_started: Instant,
+    latency: ResourceLatency,
+) {
+    if profile == ObservationProfile::ResourceBaseline {
+        let finished = Instant::now();
+        resource_marker(&LatencyMarker {
+            latency,
+            elapsed_ms: finished.duration_since(started).as_millis(),
+            duration_ns: finished.duration_since(operation_started).as_nanos(),
+        });
+    }
 }
 
 fn client_language(client: &mut Client, op: Operation) -> CheckResult<Value> {
@@ -98,10 +165,20 @@ fn require_java_capabilities(client: &Client) -> CheckResult<()> {
 #[test]
 #[ignore = "requires native Windows, installed JDT/Java and exact normal CEDAR_AGENT_BIN; run serially"]
 fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
+    normal_agent_java_acceptance(ObservationProfile::Quick)
+}
+
+#[test]
+#[ignore = "requires native Windows, installed JDT/Java, exact normal CEDAR_AGENT_BIN and sampler marker file; run serially"]
+fn real_windows_normal_agent_java_resource_baseline() -> CheckResult<()> {
+    normal_agent_java_acceptance(ObservationProfile::ResourceBaseline)
+}
+
+fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> {
     println!();
     let _watchdog = Watchdog::start_with_timeout(Duration::from_secs(240));
     let started = Instant::now();
-    resource_phase(started, "starting");
+    let instrumentation_ready = resource_phase(started, ResourcePhase::Starting);
     let mut fixture: Option<tempfile::TempDir> = None;
     let mut client: Option<Client> = None;
     let mut observed: Option<RootObservation> = None;
@@ -113,6 +190,10 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
     let mut cleanup_errors = Vec::new();
     let mut source_path: Option<PathBuf> = None;
     let primary = checked(|| {
+        require(
+            profile == ObservationProfile::Quick || instrumentation_ready,
+            "resource baseline requires the sampler's existing writable marker file",
+        )?;
         let distribution = environment_path("CEDAR_JDTLS_HOME")?;
         let java = environment_path("CEDAR_JAVA")?;
         let binary = environment_path("CEDAR_AGENT_BIN")?;
@@ -186,6 +267,7 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         require_java_capabilities(client)?;
         record.java_capabilities = true;
         stage.set(FailureStage::Initialize);
+        let initialize_started = Instant::now();
         let initialized = client_language(client, start_operation()?)?;
         require(
             initialized["started"] == true,
@@ -201,13 +283,20 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         record.root_observed_live = true;
         verify_java_image(observed.as_ref().unwrap(), &java)?;
         record.root_identity_verified = true;
-        resource_phase(started, "java_initialized");
+        resource_latency(
+            profile,
+            started,
+            initialize_started,
+            ResourceLatency::JavaInitialize,
+        );
+        resource_phase(started, ResourcePhase::JavaInitialized);
         require(
             data.join(".metadata").is_dir(),
             "normal recipe did not use the selected external data directory",
         )?;
         unchanged(&source)?;
         stage.set(FailureStage::Open);
+        let open_started = Instant::now();
         let opened = client_language(
             client,
             Operation::LanguageOpen {
@@ -232,17 +321,29 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         production_diagnostics(client, &uri, DiagnosticPhase::Initial)?;
         record.semantic_diagnostics = true;
         unchanged(&source)?;
-        if resource_phase(started, "semantic_ready_idle") {
+        resource_latency(
+            profile,
+            started,
+            open_started,
+            ResourceLatency::OpenExactDiagnostics,
+        );
+        if resource_phase(started, ResourcePhase::SemanticReadyIdle)
+            || profile == ObservationProfile::ResourceBaseline
+        {
             // Defined observation interval after exact diagnostics, not a claim
             // that JDT indexing or other background work has fully settled.
-            thread::sleep(Duration::from_secs(2));
+            thread::sleep(Duration::from_secs(match profile {
+                ObservationProfile::Quick => 2,
+                ObservationProfile::ResourceBaseline => 30,
+            }));
         }
-        resource_phase(started, "query_workload");
+        resource_phase(started, ResourcePhase::QueryWorkload);
         let cursor = completion::byte_to_position(
             SOURCE,
             SOURCE.rfind("greeting").ok_or("fixture reference")? + 3,
         )?;
         stage.set(FailureStage::Definition);
+        let definition_started = Instant::now();
         let definition = client_language(
             client,
             Operation::LanguageQuery {
@@ -265,7 +366,14 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         )?;
         record.exact_definition = true;
         unchanged(&source)?;
+        resource_latency(
+            profile,
+            started,
+            definition_started,
+            ResourceLatency::DefinitionConfinedUri,
+        );
         stage.set(FailureStage::Completion);
+        let completion_started = Instant::now();
         let response = client_language(
             client,
             Operation::LanguageQuery {
@@ -302,7 +410,14 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
             "normal completion did not defer its import",
         )?;
         unchanged(&source)?;
+        resource_latency(
+            profile,
+            started,
+            completion_started,
+            ResourceLatency::Completion,
+        );
         stage.set(FailureStage::Resolve);
+        let resolve_started = Instant::now();
         let resolved = client_language(
             client,
             Operation::LanguageResolveCompletion {
@@ -322,6 +437,13 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         )?;
         record.deferred_import_resolve = true;
         unchanged(&source)?;
+        resource_latency(
+            profile,
+            started,
+            resolve_started,
+            ResourceLatency::DeferredImportResolve,
+        );
+        let editor_started = Instant::now();
         editor_transaction(original, resolved, &stage, |version, document| {
             unchanged(&source)?;
             let changed = client_language(
@@ -343,7 +465,14 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         })?;
         record.actual_editor_apply_undo_redo = true;
         record.versions_2_3_4_synced = true;
+        resource_latency(
+            profile,
+            started,
+            editor_started,
+            ResourceLatency::EditorApplyUndoRedo,
+        );
         stage.set(FailureStage::Correction);
+        let correction_started = Instant::now();
         let corrected = client_language(
             client,
             Operation::LanguageChange {
@@ -363,6 +492,18 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         production_diagnostics(client, &uri, DiagnosticPhase::Correction)?;
         record.correction_diagnostics = true;
         unchanged(&source)?;
+        resource_latency(
+            profile,
+            started,
+            correction_started,
+            ResourceLatency::CorrectionExactDiagnostics,
+        );
+        if profile == ObservationProfile::ResourceBaseline {
+            resource_phase(started, ResourcePhase::CorrectionReadyIdle);
+            // A second fixed observation window, not an indexing-settled claim.
+            thread::sleep(Duration::from_secs(30));
+            resource_phase(started, ResourcePhase::Closing);
+        }
         stage.set(FailureStage::Close);
         client_language(
             client,
@@ -379,7 +520,7 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
     if primary.is_err() {
         failure_stage = Some(stage.get());
     }
-    resource_phase(started, "cleanup");
+    resource_phase(started, ResourcePhase::Cleanup);
     if server_started {
         stage.set(FailureStage::Stop);
         let stop = checked(|| {
@@ -388,6 +529,7 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
                 client.is_connected(),
                 "normal Client disconnected before Stop",
             )?;
+            let stop_started = Instant::now();
             let outcome =
                 JavaStopOutcome::parse(&client_language(client, Operation::LanguageStop)?)?;
             record.stop_status = match outcome.status {
@@ -420,7 +562,14 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
             require(
                 outcome.status != StopStatus::Error,
                 "normal Java stop reported cleanup errors",
-            )
+            )?;
+            resource_latency(
+                profile,
+                started,
+                stop_started,
+                ResourceLatency::StopVerifiedRootExit,
+            );
+            Ok(())
         });
         if let Err(error) = stop {
             failure_stage.get_or_insert(stage.get());
@@ -510,7 +659,7 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         "{}",
         serde_json::to_string(&record).expect("typed normal Java evidence")
     );
-    resource_phase(started, "complete");
+    resource_phase(started, ResourcePhase::Complete);
     match primary {
         Err(error) => Err(format!(
             "normal Java primary failure: {error}; cleanup failures: {cleanup_errors:?}"

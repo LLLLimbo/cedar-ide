@@ -3,7 +3,7 @@
 # Real Windows JDT LS acceptance. External test dependencies are never bundled.
 # Run from repository root in an isolated CI/test process, not inside an agent.
 # CI supplies a twelve-minute process-tree deadline for the direct, editor and
-# forced-owner workloads. A direct caller must supply
+# forced-owner and two fixed long-observation workloads. A direct caller must supply
 # its own enclosing deadline; forced cancellation is failure, never cleanup proof.
 [CmdletBinding()]
 param(
@@ -60,6 +60,31 @@ Set-Content -LiteralPath $EvidencePath -Value 'Cedar Windows Java acceptance; mi
 function Record([string] $Text) {
     Write-Output $Text
     Add-Content -LiteralPath $EvidencePath -Value $Text
+}
+function Assert-ProductionReceipt([object[]] $Receipts) {
+    $production = @($Receipts | Where-Object { $_.kind -ceq 'windows_java_production' })
+    if ($production.Count -ne 1) { throw 'Expected exactly one normal-agent Java acceptance receipt.' }
+    $record = $production[0]
+    if ($record.route -cne 'normal_agent_client' -or $record.primary_failed -or $record.cleanup_failed -or
+        $record.failure_stage -cne 'none' -or $record.elapsed_saturated -or
+        $null -eq $record.root_exit_code -or $record.stop_status -cnotin @('graceful', 'forced')) {
+        throw 'Production Java route did not establish bounded semantics and verified owned cleanup.'
+    }
+    foreach ($field in @('java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected',
+        'root_observed_live', 'root_identity_verified', 'semantic_diagnostics', 'exact_definition',
+        'real_completion', 'deferred_import_resolve', 'actual_editor_apply_undo_redo', 'versions_2_3_4_synced',
+        'correction_acknowledged', 'correction_diagnostics', 'source_unchanged', 'stop_outcome_verified',
+        'cleanup_joined', 'root_handle_signaled', 'client_reaped', 'synthetic_root_removed', 'success')) {
+        if (-not $record.$field) { throw 'Production Java semantic or ownership witness is incomplete.' }
+    }
+    if ($record.stop_status -ceq 'graceful' -and ($record.root_exit_code -ne 0 -or
+        $record.stop_reason -cne 'root_exited' -or -not $record.shutdown_response_received -or
+        -not $record.exit_frame_completed)) {
+        throw 'Production Java graceful label lacks matching protocol and root-exit evidence.'
+    }
+    if ($record.stop_status -ceq 'forced' -and $record.stop_reason -cnotin @('grace_expired', 'aborted')) {
+        throw 'Production Java forced label lacks a matching termination reason.'
+    }
 }
 $failure = $null
 $stage = 'scratch creation'
@@ -199,6 +224,45 @@ try {
     if ($editorExitCode -ne 0 -or $forcedExitCode -ne 0 -or $productionExitCode -ne 0) {
         throw 'Real Windows Java editor, forced-owner or production-route acceptance failed.'
     }
+    # Two separately observed, unchanged-recipe baselines. Each raw transcript
+    # stays inside generated scratch and must independently prove the same normal
+    # production semantics and cleanup. Resource values are not pass thresholds.
+    $longReports = @()
+    for ($trial = 1; $trial -le 2; $trial++) {
+        $stage = "long observation baseline trial $trial"
+        $trialRoot = Join-Path $scratch ("long-idle-trial-$trial")
+        New-Item -ItemType Directory -Path $trialRoot | Out-Null
+        $trialTranscript = Join-Path $trialRoot 'agent-transcript-private.txt'
+        $trialReport = Join-Path (Split-Path $EvidencePath -Parent) ("cedar-java-long-idle-trial-$trial.json")
+        $trialReceipt = Join-Path (Split-Path $EvidencePath -Parent) ("cedar-java-long-idle-acceptance-$trial.json")
+        $trialExitCode = 1
+        $trialCollectorExitCode = 1
+        try {
+            & python scripts/measure_process_tree.py --driver $testDrivers[0].executable `
+                --agent $env:CEDAR_AGENT_BIN --java $Java --workload long_idle_baseline --trial $trial `
+                --phase-file (Join-Path $trialRoot 'phases-private.jsonl') `
+                --transcript $trialTranscript --output $trialReport --source-commit $sha
+            $trialExitCode = $LASTEXITCODE
+        }
+        finally {
+            # This collector reconstructs bounded typed receipts; never upload
+            # the private transcript, JVM output or marker file itself.
+            & python scripts/collect_java_crash.py --root $trialRoot --output $trialReceipt --agent-transcript $trialTranscript
+            $trialCollectorExitCode = $LASTEXITCODE
+        }
+        Record ("baseline_trial=$trial; test_exit_code=$trialExitCode; collector_exit_code=$trialCollectorExitCode")
+        if ($trialExitCode -ne 0 -or $trialCollectorExitCode -ne 0) {
+            throw 'Long observation baseline or its sanitized receipt collection failed.'
+        }
+        $trialCollected = Get-Content -LiteralPath $trialReceipt -Raw | ConvertFrom-Json
+        Assert-ProductionReceipt -Receipts @($trialCollected.agent_transcript.evidence.records)
+        $longReports += $trialReport
+        Record ("PASS: long observation trial $trial preserved normal Java semantics and owned cleanup.")
+    }
+    $stage = 'compare unchanged-recipe long observation trials'
+    $comparisonReport = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-java-long-idle-comparison.json'
+    & python scripts/measure_process_tree.py compare --trial-1 $longReports[0] --trial-2 $longReports[1] --output $comparisonReport
+    if ($LASTEXITCODE -ne 0) { throw 'Long observation reports were malformed or not comparable.' }
 }
 catch {
     $failure = $_
@@ -275,29 +339,7 @@ finally {
                     'task_cap_not_reached', 'source_unchanged', 'synthetic_root_removed', 'success')) {
                     if (-not $record.$field) { throw 'Forced-owner cleanup witness is incomplete.' }
                 }
-                $production = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_production' })
-                if ($production.Count -ne 1) { throw 'Expected exactly one normal-agent Java acceptance receipt.' }
-                $record = $production[0]
-                if ($record.route -cne 'normal_agent_client' -or $record.primary_failed -or $record.cleanup_failed -or
-                    $record.failure_stage -cne 'none' -or $record.elapsed_saturated -or
-                    $null -eq $record.root_exit_code -or $record.stop_status -cnotin @('graceful', 'forced')) {
-                    throw 'Production Java route did not establish bounded semantics and verified owned cleanup.'
-                }
-                foreach ($field in @('java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected',
-                    'root_observed_live', 'root_identity_verified', 'semantic_diagnostics', 'exact_definition',
-                    'real_completion', 'deferred_import_resolve', 'actual_editor_apply_undo_redo', 'versions_2_3_4_synced',
-                    'correction_acknowledged', 'correction_diagnostics', 'source_unchanged', 'stop_outcome_verified',
-                    'cleanup_joined', 'root_handle_signaled', 'client_reaped', 'synthetic_root_removed', 'success')) {
-                    if (-not $record.$field) { throw 'Production Java semantic or ownership witness is incomplete.' }
-                }
-                if ($record.stop_status -ceq 'graceful' -and ($record.root_exit_code -ne 0 -or
-                    $record.stop_reason -cne 'root_exited' -or -not $record.shutdown_response_received -or
-                    -not $record.exit_frame_completed)) {
-                    throw 'Production Java graceful label lacks matching protocol and root-exit evidence.'
-                }
-                if ($record.stop_status -ceq 'forced' -and $record.stop_reason -cnotin @('grace_expired', 'aborted')) {
-                    throw 'Production Java forced label lacks a matching termination reason.'
-                }
+                Assert-ProductionReceipt -Receipts @($collected.agent_transcript.evidence.records)
                 if ($cleanup[0].sessions_completed -ne 3 -or -not $cleanup[0].success -or
                     $cleanup[0].primary_failed -or $cleanup[0].cleanup_failed -or
                     $cleanup[0].failure_stage -cne 'none' -or -not $cleanup[0].agent_exit_zero -or
@@ -333,4 +375,4 @@ if ($null -ne $failure) {
     Record ('FAIL during ' + $stage + ': ' + $failure.Exception.Message)
     throw $failure
 }
-Record 'PASS: direct Java, fixture ownership and normal-agent Java editor assertions completed; generated dependency scratch was removed.'
+Record 'PASS: direct Java, fixture ownership, normal-agent editor and two unchanged-recipe long observation runs completed; generated dependency scratch was removed.'

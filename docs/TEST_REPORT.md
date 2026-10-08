@@ -1,62 +1,58 @@
-# Verification report · CPU observation timing / 0.11.1 · 2026-10-08
+# Verification report · longer Java observation / 0.12.0 · 2026-10-08
 
-This checkpoint repairs the observational CPU timing introduced in 0.11.0.
-It does not change the Java launch recipe, heap ceiling, semantic workload,
-shutdown policy or connection cancellation behavior. Exact native CI is pending.
+This checkpoint adds exactly two fixed longer observation trials of the existing
+512 MiB normal production Java recipe. Local verification passed; exact native
+CI for the two longer trials is pending. No production heap, collector, protocol or trust setting changes.
 
-## Verified public baseline
+## Verified baseline
 
-Exact public 0.11.0 commit
-[`c257571ed3a39e3683ae3aeec535d4bcf457e9dc`](https://github.com/LLLLimbo/cedar-ide/commit/c257571ed3a39e3683ae3aeec535d4bcf457e9dc)
-[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37741303276).
-Each platform actually ran eight public client cancellation cases, one isolated
-resource-count regression, three app process cancellation cases and nine
-interrupted-save cases. All prior Java, editor, task and owned-cleanup gates passed.
-The native Windows observer test suite passed 17 cases with one Linux-only skip.
+Public 0.11.1 commit
+[`7b00948868417b13b2aeb3a8b67a056f4c0b81de`](https://github.com/LLLLimbo/cedar-ide/commit/7b00948868417b13b2aeb3a8b67a056f4c0b81de)
+[passed exact Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37744067995).
+The native observer suite passed 33 cases with one platform skip. All previous
+cancellation, interrupted-save, Java/editor, task and ownership gates passed.
 
-The sanitized process-tree artifact had 107 samples, no reported observation
-issues, and a successful driver exit. Its maximum same-sweep summed working set
-was 825.99 MiB, including 802.79 MiB for the JVM at that peak. The defined two-second
-post-diagnostics interval had an observed maximum of 652.77 MiB. These are
-resident working sets of a debug headless test driver, release agent, JVM and
-observed descendants; shared pages may be double-counted. They are not a release
-GUI footprint, settled-idle guarantee or IntelliJ IDEA comparison.
+The schema-2 artifact verified 429 positive CPU intervals with consistent
+midpoint and timing bounds, QPC resolution of 100 ns, and CPU read spans from
+5.5 microseconds to 1.27 milliseconds. CPU is explicitly estimated per process;
+its sum is not one exact shared-window tree measurement. No values were clipped.
+The observed summed working-set peak was 849.18 MiB for the debug headless driver,
+release agent, JVM and observed descendants. That differs from the earlier
+brief run but establishes no optimization or regression. All four observed
+instances exited. Production Java Stop remained honestly forced after its grace
+expired; this is not a natural-exit claim.
 
-Production Java Stop remained accurately forced with grace_expired and root
-exit 1067, completed protocol witnesses, joined cleanup and verified client reap.
-This is not a natural production-exit claim.
+## New experiment
 
-## CPU timing limitation and repair
+The [longer baseline](LONG_JAVA_BASELINE.md) retains all normal-route semantic,
+source and owned-cleanup assertions. Each of two separate runs adds fixed
+30-second observations after initial and corrected diagnostics, eight typed
+interaction latencies and final-ten-second sampled-window summaries. It does
+not extend the existing watchdogs or wait until an apparent idle state occurs.
 
-The old report contained a 487.45% JVM CPU estimate on a four-logical-CPU host.
-That sample used a 234 ms interval between sweep starts, although the current
-sweep took 78 ms. Per-process CPU counters were queried later in each sweep,
-so that denominator did not represent the counters' own observation interval.
-CPython 3.12 on Windows also used a coarse clock for monotonic_ns.
-The old CPU peak is not evidence of JVM capacity above four CPUs.
+Each trial must independently produce exactly one complete sanitized production
+receipt. The observation report can explicitly remain incomplete; CPU or memory
+values are not product pass thresholds. Comparison checks same-version inputs
+and reports two observations, not a tuning or statistical percentile claim.
 
-The repair uses high-resolution per-counter observation brackets, explicit
-timing uncertainty and clearly labeled sums of process estimates. It does not
-clip CPU readings to an assumed machine capacity. Memory accounting remains a
-same-sweep sum with the existing identity and missing-observation checks.
-Details and interpretation are in [the resource baseline](RESOURCE_BASELINE.md).
-
-The same two-second workload is retained for the corrected native measurement.
-Longer idle and memory/latency experiments are separate future work; this
-checkpoint makes no memory-optimization or heap-tuning claim.
-
-The preceding sealed local report is retained in
-[the 0.11.0 report](TEST_REPORT_PHASE11.md). Its later native result is stated
-above rather than rewriting the historical report.
+The preceding local report is retained in [the CPU repair report](TEST_REPORT_PHASE11_CPU.md).
 
 ## Local verification
 
-The final version passed 637 aggregate Rust tests plus 19 explicit process
+Rust 1.99.0 passed 637 aggregate cases and 19 explicitly executed process
 acceptance cases (656 total), five Python agent smoke chains, strict host and
-MSVC cross-target workspace checks, formatting and the optimized build.
-The repaired observer passed 34 tests, independently rerun by review: native
-Linux child-tree sampling, simulated Windows counter placement, delayed sweeps,
-preemption, uncertainty, invalid timing, phase boundaries, privacy and failure
-status. Export tests passed two; the Java evidence collector passed 62 with two
-native-only skips. Cross-checking and simulation do not replace the pending
-exact-commit Windows resource observation.
+MSVC cross-target workspace checks, formatting and the optimized build. The
+observer/comparison suite passed 63 cases, including actual native Python
+executable fingerprinting, sampled-window edge/gap handling, elapsed-weighted
+CPU integration, bounded input hashing, hostile metadata and failure-code
+preservation. Export tests passed two; the existing Java evidence collector
+passed 62 with two native-only skips.
+
+A Windows-specific fingerprint issue was corrected before publication: CPython
+path stat can infer executable permission bits while handle fstat does not.
+Checks compare regular-file type and stable device/inode/size/mtime. Because
+Windows path-stat ctime can mean birthtime while handle fstat returns ChangeTime,
+ctime stability is checked separately within each API. Identity and change
+protection are retained rather than discarded to accommodate the differences.
+The actual Windows executable witness and both real Java long trials still
+require the exact native CI run. No new local Java experiment was performed.

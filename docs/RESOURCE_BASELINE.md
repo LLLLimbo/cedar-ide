@@ -3,7 +3,9 @@
 `scripts/windows_java_acceptance.ps1` records resources during its existing
 normal-agent Java acceptance run. It builds the library test executable before
 sampling, then runs that executable once beneath `measure_process_tree.py`.
-There is no additional JVM launch, resource threshold, or capability gate.
+The quick report does not add a JVM launch, resource threshold, or capability gate.
+The separate [long-window baseline](LONG_JAVA_BASELINE.md) adds exactly two
+unchanged-recipe trials after the existing acceptance cases.
 The original test result and existing typed semantic/lifecycle receipts still
 decide acceptance. An incomplete observer report does not change a passing test
 into a resource failure.
@@ -135,7 +137,7 @@ is null. Summaries expose the number of valid samples behind each maximum.
 Values in incomplete reports are partial observations, not a complete baseline.
 
 The observer limits itself to 64 admitted processes, 1,600 samples, 32,768
-enumerated system processes, 8 KiB of markers and a 270-second run deadline.
+enumerated system processes, 8 KiB of markers and a 270-second deadline for each observed run.
 The existing production test watchdog is 240 seconds and the containing CI
 step is twelve minutes. A sampler deadline can terminate only its directly
 owned test driver. Its report marks that failure incomplete and makes no

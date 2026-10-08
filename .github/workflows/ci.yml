@@ -97,6 +97,11 @@ jobs:
             ${{ runner.temp }}/cedar-windows-java-acceptance.txt
             ${{ runner.temp }}/cedar-java-crash-diagnostics.json
             ${{ runner.temp }}/cedar-process-tree-baseline.json
+            ${{ runner.temp }}/cedar-java-long-idle-trial-1.json
+            ${{ runner.temp }}/cedar-java-long-idle-trial-2.json
+            ${{ runner.temp }}/cedar-java-long-idle-acceptance-1.json
+            ${{ runner.temp }}/cedar-java-long-idle-acceptance-2.json
+            ${{ runner.temp }}/cedar-java-long-idle-comparison.json
           if-no-files-found: ignore
       - name: Agent and tool protocol chains (Unix)
         if: runner.os != 'Windows'

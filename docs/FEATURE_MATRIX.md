@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 11 / 0.11.1
+# 功能矩阵与后续验收 · checkpoint 12 / 0.12.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -39,7 +39,7 @@
 
 ## 建议下一顺序
 
-1. 0.10.0显式断线保存核对已通过双平台验证；0.11.0慢连接/只读请求取消已通过原生双平台CI；进程树工作集观测已获得，CPU计时窗口修正待0.11.1验证。内存/空闲CPU基线应包括完整进程树与JVM，无同项目等价条件不声称优于IDEA。
+1. 0.10.0显式断线保存核对已通过双平台验证；0.11.0慢连接/只读请求取消已通过原生双平台CI；进程树工作集观测已获得，0.11.1 CPU计时窗口修正也已验证。0.12.0固定两次长观察基线待原生验收，生产512MiB设置不变。内存/空闲CPU基线应包括完整进程树与JVM，无同项目等价条件不声称优于IDEA。
 2. [Windows Java LSP](WINDOWS_JAVA_SETUP.md)：专用 Java 正常 agent/Client 路径已开放并通过真实语言服务、编辑事务、任务独立性及强制退出清理验证；仍需显式执行信任。通用 Windows LSP 不支持，原生 GUI 与真实 SSH 验证仍单独待完成。初始顺序请求仍有启动阻塞，Stop 可能如实报告超时后强制清理，须明确披露或另做异步生命周期协议
 3. 远程核心路径：获得狭窄测试批准后验证真实 SSH 认证、严格主机密钥、远程路径引用、断开/重连和不明结果不重放；明确版本/能力边界、实际进程清理和 Windows 前端到 Linux 后端的证据。此门槛与语言服务工作并行推进准备，不以 stdio 测试替代
 4. DAP 调试 UI/agent 与真实程序闭环；先解决监听安全和普通后代进程回收，再扩展 PTY、测试树与 JVM 调试

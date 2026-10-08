@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Synthetic identity, accounting, privacy and native observation checks."""
 import ctypes
+import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -486,7 +488,538 @@ class MarkerTests(unittest.TestCase):
         self.assertEqual(baseline.phase_events(self.path), ([], ['phase_limit']))
 
 
+class LongMarkerTests(MarkerTests):
+    @staticmethod
+    def markers():
+        events = []
+        for phase in baseline.LONG_PHASES:
+            events.append({'phase': phase, 'elapsed_ms': len(events) * 10})
+            for latency, during in zip(baseline.LATENCIES, baseline.LATENCY_PHASES):
+                if during == phase:
+                    events.append({'latency': latency, 'elapsed_ms': len(events) * 10,
+                                   'duration_ns': 123_456_789})
+        return events
+
+    def test_fixed_latency_sequence_and_nanosecond_precision(self):
+        self.path.write_text(''.join(json.dumps(event) + '\n' for event in self.markers()))
+        phases, latencies, issues = baseline.marker_events(self.path, 'long_idle_baseline')
+        self.assertFalse(issues)
+        self.assertEqual([event['phase'] for event in phases], list(baseline.LONG_PHASES))
+        self.assertEqual([event['latency'] for event in latencies], list(baseline.LATENCIES))
+        self.assertEqual(latencies[0]['duration_ns'], 123_456_789)
+        self.assertEqual(baseline.phase_events(self.path), ([], ['phase_invalid']))
+
+    def test_unknown_fields_types_bounds_duplicates_and_order_are_rejected(self):
+        mutations = []
+        for value in ('SECRET_TEXT', True, 1.25, -1, 300_000_000_001):
+            item = self.markers()
+            item[1]['duration_ns'] = value
+            mutations.append(item)
+        for field, value in (('latency', 'SECRET_OPERATION'), ('environment', 'SECRET_ENV'),
+                             ('elapsed_ms', -1)):
+            item = self.markers()
+            item[1][field] = value
+            mutations.append(item)
+        item = self.markers()
+        item[1], item[3] = item[3], item[1]
+        mutations.append(item)
+        item = self.markers()
+        item.insert(2, item[1])
+        mutations.append(item)
+        item = self.markers()
+        item[1], item[2] = item[2], item[1]
+        item[1]['elapsed_ms'], item[2]['elapsed_ms'] = 10, 20
+        mutations.append(item)
+        for events in mutations:
+            self.path.write_text(''.join(json.dumps(event) + '\n' for event in events))
+            result = baseline.marker_events(self.path, 'long_idle_baseline')
+            self.assertEqual(result, ([], [], ['phase_invalid']))
+            self.assertNotIn('SECRET', json.dumps(result))
+        self.path.write_text('{"phase":"SECRET","phase":"starting","elapsed_ms":0}\n')
+        self.assertEqual(baseline.phase_events(self.path), ([], ['phase_invalid']))
+
+
+class LongWindowTests(unittest.TestCase):
+    @staticmethod
+    def events(duration=30_000):
+        return [{'phase': 'semantic_ready_idle', 'elapsed_ms': 1234},
+                {'phase': 'query_workload', 'elapsed_ms': 1234 + duration},
+                {'phase': 'correction_ready_idle', 'elapsed_ms': 42_000},
+                {'phase': 'closing', 'elapsed_ms': 42_000 + duration}]
+
+    @staticmethod
+    def rows(phase='semantic_ready_idle', duration=30_000, offset=100_000):
+        backend = FakeBackend()
+        backend.cpu_rates = {100: 0, 101: 0.01, 102: 0.1}
+        backend.read_span = {pid: 1_000_000 for pid in backend.entries}
+        sampler = baseline.Sampler(backend, 100, {
+            'headless_driver': '/PRIVATE/driver', 'agent': '/PRIVATE/agent', 'jvm': '/PRIVATE/java'},
+            resolution_ns=1, origin_ns=0)
+        rows = []
+        for elapsed in range(offset, offset + duration + 201, 200):
+            backend.clock.now = elapsed * 1_000_000
+            observed_phase = phase if elapsed <= offset + duration else baseline.LONG_PHASES[baseline.LONG_PHASES.index(phase) + 1]
+            row = sampler.sample(observed_phase)
+            row.update(sweep_start_elapsed_ns=elapsed * 1_000_000,
+                       sweep_end_elapsed_ns=backend.clock.now)
+            rows.append(row)
+        sampler.close()
+        return rows
+
+    def window(self, rows, events=None):
+        return baseline.idle_windows(rows, self.events() if events is None else events, 200)['semantic_ready_idle']
+
+    def test_final_ten_seconds_use_sampler_domain_and_actual_coverage(self):
+        window = self.window(self.rows())
+        self.assertEqual(window['status'], 'observed')
+        self.assertEqual(window['observed_marker_duration_ms'], 30_000)
+        self.assertEqual(window['observed_end_elapsed_ns'], 130_003_000_000)
+        self.assertEqual(window['requested_start_elapsed_ns'], 120_003_000_000)
+        self.assertEqual(window['first_sample_elapsed_ns'], 120_200_000_000)
+        self.assertEqual(window['observed_sample_span_ns'], 9_803_000_000)
+        self.assertEqual(window['stable_samples'], 50)
+        self.assertEqual(window['maximum_unsampled_gap_ns'], 197_000_000)
+        self.assertEqual(window['trailing_phase_observation_gap_ns'], 200_000_000)
+        self.assertEqual(window['rss_bytes']['tree']['median'], 303)
+        for item in window['cpu']['processes']:
+            self.assertEqual(item['status'], 'observed')
+            self.assertEqual(item['interval_count'], 49)
+            self.assertGreaterEqual(item['first_read_elapsed_ns'], window['requested_start_elapsed_ns'])
+            self.assertLessEqual(item['last_read_elapsed_ns'], window['observed_end_elapsed_ns'])
+        self.assertEqual(window['cpu']['tree']['sum_of_independent_process_estimates_percent_one_core'], 11)
+        self.assertEqual(window['cpu']['by_role']['jvm']['sum_of_independent_process_estimates_percent_one_core'], 10)
+
+    def test_unstable_sweeps_inside_and_outside_window(self):
+        rows = self.rows()
+        rows[-1]['phase'] = 'semantic_ready_idle'
+        rows[-1]['phase_stable'] = False
+        rows[-1]['observed_phase_after_sweep'] = 'query_workload'
+        self.assertEqual(self.window(rows)['status'], 'observed')
+        rows[-20]['phase_stable'] = False
+        window = self.window(rows)
+        self.assertEqual(window['status'], 'unknown')
+        self.assertEqual(window['unstable_samples'], 1)
+        self.assertIsNone(window['rss_bytes']['tree']['median'])
+
+    def test_missing_short_and_unfinished_windows_stay_unknown(self):
+        for rows, events in (([], self.events()), (self.rows(duration=5000), self.events()),
+                             (self.rows(), []), (self.rows(), self.events(duration=29_999))):
+            window = self.window(rows, events)
+            self.assertEqual(window['status'], 'unknown')
+            self.assertIsNone(window['rss_bytes']['tree']['median'])
+            self.assertIsNone(window['cpu']['tree']['sum_of_independent_cpu_deltas_ns'])
+        empty = self.window([])
+        self.assertIsNone(empty['observed_sample_span_ns'])
+        self.assertIsNone(empty['maximum_unsampled_gap_ns'])
+
+    def test_large_sampling_and_trailing_gaps_are_unknown(self):
+        rows = self.rows()
+        del rows[-20:-17]
+        window = self.window(rows)
+        self.assertEqual(window['status'], 'unknown')
+        self.assertEqual(window['maximum_unsampled_gap_ns'], 797_000_000)
+        self.assertIsNone(window['rss_bytes']['tree']['median'])
+        rows = self.rows()
+        rows[-1]['sweep_start_elapsed_ns'] += 5_000_000_000
+        rows[-1]['sweep_end_elapsed_ns'] += 5_000_000_000
+        self.assertEqual(self.window(rows)['status'], 'unknown')
+        self.assertEqual(self.window(rows)['trailing_phase_observation_gap_ns'], 5_200_000_000)
+        self.assertEqual(self.window(self.rows()[:-1])['status'], 'unknown')
+
+    def test_missing_rss_or_cpu_is_not_filled_from_other_samples(self):
+        rows = self.rows()
+        rows[-20]['aggregate']['rss_bytes'] = None
+        rows[-20]['processes'][-1]['cpu_interval'] = baseline.empty_cpu_interval('unavailable')
+        window = self.window(rows)
+        self.assertEqual(window['status'], 'observed')
+        self.assertEqual(window['rss_bytes']['tree']['unknown_samples'], 1)
+        self.assertIsNone(window['rss_bytes']['tree']['median'])
+        self.assertEqual(window['rss_bytes']['by_role']['jvm']['median'], 102)
+        self.assertEqual(window['cpu']['processes'][-1]['discontinuities'], 1)
+        self.assertEqual(window['cpu']['processes'][-1]['status'], 'unknown')
+        self.assertGreater(window['cpu']['processes'][-1]['observed_cpu_delta_ns'], 0)
+        self.assertIsNone(window['cpu']['tree']['sum_of_independent_cpu_deltas_ns'])
+        rows = self.rows()
+        rows[-2]['processes'][-1]['cpu_interval'] = baseline.empty_cpu_interval('unavailable')
+        window = self.window(rows)
+        self.assertEqual(window['cpu']['processes'][-1]['unknown_samples'], 1)
+        self.assertIsNone(window['cpu']['processes'][-1]['percent_one_core'])
+
+    def test_integrated_counter_evidence_retains_independent_intervals(self):
+        rows = self.rows()
+        for row in rows[-26:-1]:
+            value = row['processes'][-1]['cpu_interval']
+            value['cpu_delta_ns'] *= 2
+        window = self.window(rows)
+        jvm = window['cpu']['processes'][-1]
+        self.assertEqual(jvm['observed_cpu_delta_ns'], 1_480_000_000)
+        self.assertEqual(jvm['observed_interval_elapsed_ns'], 9_800_000_000)
+        self.assertAlmostEqual(jvm['percent_one_core'], 100 * 1.48 / 9.8)
+        self.assertLess(jvm['percent_lower_from_timing'], jvm['percent_one_core'])
+        self.assertGreater(jvm['percent_upper_from_timing'], jvm['percent_one_core'])
+        self.assertNotEqual(window['cpu']['processes'][0]['first_read_elapsed_ns'], jvm['first_read_elapsed_ns'])
+
+    def test_both_idle_phases_are_reported_individually(self):
+        rows = self.rows() + self.rows('correction_ready_idle', offset=200_000)
+        windows = baseline.idle_windows(rows, self.events(), 200)
+        self.assertEqual(set(windows), set(baseline.IDLE_PHASES))
+        self.assertTrue(all(window['status'] == 'observed' for window in windows.values()))
+        self.assertNotEqual(windows['semantic_ready_idle']['observed_end_elapsed_ns'],
+                            windows['correction_ready_idle']['observed_end_elapsed_ns'])
+
+    def test_variable_length_counter_intervals_are_weighted_by_elapsed_time(self):
+        rows = self.rows()
+        # Merge alternating adjacent intervals into one longer interval. The
+        # retained counter increments represent 100% on long intervals, 0% on
+        # short ones, so averaging per-sample percentages would be incorrect.
+        retained = []
+        index = 0
+        while index < len(rows) - 1:
+            row = copy.deepcopy(rows[index])
+            if index > 0 and index % 3 == 2:
+                previous = rows[index - 1]['processes'][-1]['cpu_interval']
+                current = row['processes'][-1]['cpu_interval']
+                for key in ('previous_read_start_elapsed_ns', 'previous_read_end_elapsed_ns'):
+                    current[key] = previous[key]
+                current['elapsed_ns'] += previous['elapsed_ns']
+                current['elapsed_min_ns'] += previous['elapsed_min_ns']
+                current['elapsed_max_ns'] += previous['elapsed_max_ns']
+                current['cpu_delta_ns'] = current['elapsed_ns']
+                row['processes'][-1]['cpu_percent_one_core'] = 100
+            elif index > 0:
+                row['processes'][-1]['cpu_interval']['cpu_delta_ns'] = 0
+                row['processes'][-1]['cpu_percent_one_core'] = 0
+            if index % 3 != 1:
+                retained.append(row)
+            index += 1
+        retained.append(rows[-1])
+        # Other roles have discontinuities because this fixture merged only
+        # the JVM's endpoints. Its own independent integrated estimate remains
+        # available even while whole-tree integration is correctly unknown.
+        window = self.window(retained)
+        jvm = window['cpu']['processes'][-1]
+        self.assertEqual(jvm['status'], 'observed')
+        self.assertAlmostEqual(jvm['percent_one_core'], 100 * jvm['observed_cpu_delta_ns'] / jvm['observed_interval_elapsed_ns'])
+        rates = [row['processes'][-1]['cpu_percent_one_core'] for row in retained
+                 if row['phase'] == 'semantic_ready_idle'
+                 and row['sweep_start_elapsed_ns'] >= window['first_sample_elapsed_ns']]
+        self.assertGreater(abs(jvm['percent_one_core'] - sum(rates) / len(rates)), 10)
+
+
+class FingerprintBoundsTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='cedar-fingerprint-bounds-')
+        self.addCleanup(temporary.cleanup)
+        self.path = Path(temporary.name, 'SECRET-binary')
+        self.path.write_bytes(b'input')
+        self.args = SimpleNamespace(driver=self.path, agent=self.path, java=self.path)
+
+    def assert_unavailable(self, result):
+        fingerprints, issues = result
+        self.assertEqual(issues, ['input_fingerprint_unavailable'] * 3)
+        self.assertTrue(all(item == {'sha256': None, 'bytes': None} for item in fingerprints.values()))
+        self.assertNotIn('SECRET', json.dumps(result))
+
+    def test_native_python_executable_fingerprint_is_valid_and_matching(self):
+        executable = Path(sys.executable)
+        args = SimpleNamespace(driver=executable, agent=executable, java=executable)
+        fingerprints, issues = baseline.input_fingerprints(args)
+        self.assertFalse(issues)
+        expected = {'sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
+                    'bytes': executable.stat().st_size}
+        self.assertEqual(fingerprints, {role: expected for role in baseline.ROLES[:3]})
+
+    def test_windows_path_execute_bits_do_not_invalidate_same_handle_identity(self):
+        real_stat, real_fstat = os.stat, os.fstat
+
+        def executable_mode(info, executable):
+            copied = {key: getattr(info, key) for key in ('st_dev', 'st_ino', 'st_mode',
+                                                         'st_size', 'st_mtime_ns', 'st_ctime_ns')}
+            copied['st_mode'] = (copied['st_mode'] & ~0o111) | (0o111 if executable else 0)
+            return SimpleNamespace(**copied)
+
+        with mock.patch.object(baseline.os, 'stat', side_effect=lambda path: executable_mode(real_stat(path), True)), \
+                mock.patch.object(baseline.os, 'fstat', side_effect=lambda fd: executable_mode(real_fstat(fd), False)):
+            fingerprints, issues = baseline.input_fingerprints(self.args)
+        self.assertFalse(issues)
+        self.assertTrue(all(item['sha256'] == hashlib.sha256(b'input').hexdigest()
+                            and item['bytes'] == 5 for item in fingerprints.values()))
+
+    def test_windows_path_birthtime_and_handle_changetime_can_differ_but_must_be_stable(self):
+        real_stat = os.stat
+        calls = []
+
+        def birthtime_stat(path):
+            info = real_stat(path)
+            copied = {key: getattr(info, key) for key in ('st_dev', 'st_ino', 'st_mode',
+                                                         'st_size', 'st_mtime_ns', 'st_ctime_ns')}
+            # Simulate Windows 3.12 path stat exposing a different historical
+            # creation time while handle fstat retains its current ChangeTime.
+            copied['st_ctime_ns'] -= 1_000_000_000
+            return SimpleNamespace(**copied)
+
+        with mock.patch.object(baseline.os, 'stat', side_effect=birthtime_stat):
+            fingerprints, issues = baseline.input_fingerprints(self.args)
+        self.assertFalse(issues)
+        self.assertTrue(all(item['sha256'] == hashlib.sha256(b'input').hexdigest()
+                            and item['bytes'] == 5 for item in fingerprints.values()))
+
+        def changed_path_ctime(path):
+            info = birthtime_stat(path)
+            calls.append(path)
+            if len(calls) % 2 == 0:
+                info.st_ctime_ns += 1
+            return info
+
+        with mock.patch.object(baseline.os, 'stat', side_effect=changed_path_ctime):
+            self.assert_unavailable(baseline.input_fingerprints(self.args))
+
+    def test_oversized_inputs_are_rejected_before_open(self):
+        with mock.patch.object(baseline, 'MAX_INPUT_FILE_BYTES', 4), \
+                mock.patch.object(baseline.os, 'open', side_effect=AssertionError('must not open')):
+            self.assert_unavailable(baseline.input_fingerprints(self.args))
+
+    def test_nonregular_inputs_are_rejected_before_open(self):
+        self.args.driver = self.args.agent = self.args.java = self.path.parent
+        with mock.patch.object(baseline.os, 'open', side_effect=AssertionError('must not open')):
+            self.assert_unavailable(baseline.input_fingerprints(self.args))
+        if hasattr(os, 'mkfifo'):
+            fifo = self.path.parent / 'SECRET-pipe'
+            os.mkfifo(fifo)
+            self.args.driver = self.args.agent = self.args.java = fifo
+            with mock.patch.object(baseline.os, 'open', side_effect=AssertionError('must not open')):
+                self.assert_unavailable(baseline.input_fingerprints(self.args))
+
+    def test_mutating_size_identity_or_mtime_invalidates_fingerprint(self):
+        real_fstat = os.fstat
+        for field in ('st_size', 'st_ino', 'st_dev', 'st_mtime_ns', 'st_ctime_ns'):
+            calls = []
+
+            def changing_stat(descriptor):
+                info = real_fstat(descriptor)
+                calls.append(descriptor)
+                if len(calls) % 2:
+                    return info
+                copied = {key: getattr(info, key) for key in ('st_dev', 'st_ino', 'st_mode',
+                                                             'st_size', 'st_mtime_ns', 'st_ctime_ns')}
+                copied[field] += 1
+                return SimpleNamespace(**copied)
+
+            with self.subTest(field=field), mock.patch.object(baseline.os, 'fstat', side_effect=changing_stat):
+                self.assert_unavailable(baseline.input_fingerprints(self.args))
+
+    def test_growing_input_read_is_capped_at_initial_size_plus_one(self):
+        reads = []
+
+        class GrowingSource:
+            def __init__(self, descriptor, mode):
+                self.descriptor = descriptor
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *arguments):
+                os.close(self.descriptor)
+
+            def fileno(self):
+                return self.descriptor
+
+            def read(self, count):
+                reads.append(count)
+                return b'x' * count
+
+        with mock.patch.object(baseline.os, 'fdopen', side_effect=GrowingSource):
+            self.assert_unavailable(baseline.input_fingerprints(self.args))
+        self.assertEqual(reads, [len(b'input') + 1] * 3)
+
+    def test_path_replacement_during_read_is_rejected(self):
+        real_stat = os.stat
+        calls = []
+
+        def changed_path(path):
+            info = real_stat(path)
+            calls.append(path)
+            if len(calls) % 2:
+                return info
+            copied = {key: getattr(info, key) for key in ('st_dev', 'st_ino', 'st_mode',
+                                                         'st_size', 'st_mtime_ns', 'st_ctime_ns')}
+            copied['st_ino'] += 1
+            return SimpleNamespace(**copied)
+
+        with mock.patch.object(baseline.os, 'stat', side_effect=changed_path):
+            self.assert_unavailable(baseline.input_fingerprints(self.args))
+
+
+class ComparisonTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='cedar-private-comparison-')
+        self.addCleanup(temporary.cleanup)
+        self.paths = [Path(temporary.name, f'SECRET-trial-{trial}.json') for trial in (1, 2)]
+        rows = LongWindowTests.rows() + LongWindowTests.rows('correction_ready_idle', offset=200_000)
+        windows = baseline.idle_windows(rows, LongWindowTests.events(), 200)
+        self.reports = []
+        for trial in (1, 2):
+            self.reports.append({
+                'schema_version': 2, 'purpose': 'observational_process_tree_baseline',
+                'platform': 'windows', 'status': 'complete', 'driver_exit_code': 0, 'timed_out': False,
+                'metadata': {'trial': trial, 'source_commit': 'a' * 40,
+                             'workload': 'long_idle_baseline', 'test': baseline.LONG_TEST,
+                             'driver_build': 'cargo_test_debug', 'agent_build': 'release',
+                             'java_heap_limit_mib': 512, 'java_recipe': 'production_java_xmx512m_unchanged',
+                             'jdt_version': '1.61.0', 'jdt_archive_sha256': baseline.JDT_SHA256,
+                             'jdt_metadata_basis': 'pinned_expected_archive_verified_by_enclosing_acceptance_script',
+                             'input_fingerprint_basis': 'sha256_files_before_launch_not_loaded_image_attestation',
+                             'project_cache': 'fresh_generated_project_and_jdt_data', 'os_file_cache': 'uncontrolled',
+                             'logical_cpu_count': 4, 'python_version': [3, 12, 1],
+                             'input_files': {role: {'sha256': hashlib.sha256(role.encode()).hexdigest(), 'bytes': 42}
+                                             for role in baseline.ROLES[:3]}},
+                'measurement': {'interval_ms': 200, 'timeout_seconds': 270, 'clock': 'time.perf_counter_ns',
+                                'clock_resolution_ns': 100, 'cpu_counter_unit_ns': 100,
+                                'cpu': 'per_process_read_midpoint_estimate_percent_of_one_logical_core',
+                                'cpu_aggregation': 'sum_of_process_estimates_not_same_window_tree_cpu'},
+                'latency_events': [event for event in LongMarkerTests.markers() if 'latency' in event],
+                'idle_window_summary': copy.deepcopy(windows)})
+
+    def compare(self):
+        for path, report in zip(self.paths, self.reports):
+            path.write_text(json.dumps(report))
+        return baseline.compare_reports(*self.paths)
+
+    def test_same_binary_comparison_keeps_both_observations_and_no_change_claim(self):
+        report = self.compare()
+        self.assertEqual(report['status'], 'observed')
+        self.assertTrue(report['same_input_files_and_source'])
+        self.assertEqual([trial['trial'] for trial in report['trials']], [1, 2])
+        self.assertEqual(report['interpretation'], 'descriptive_observations_no_optimization_or_regression_claim')
+        public = json.dumps(report)
+        for secret in ('SECRET', 'PRIVATE', 'p95', 'regression_percent', 'pid'):
+            self.assertNotIn(secret, public)
+
+    def test_different_input_source_workload_dependencies_or_observer_are_not_comparable(self):
+        mutations = [('metadata', 'source_commit', 'b' * 40), ('metadata', 'java_heap_limit_mib', 256),
+                     ('metadata', 'jdt_archive_sha256', 'f' * 64), ('metadata', 'workload', 'normal_acceptance'),
+                     ('metadata', 'test', baseline.PRODUCTION_TEST), ('metadata', 'trial', 1),
+                     ('metadata', 'python_version', [3, 13, 0]), ('metadata', 'logical_cpu_count', 8),
+                     ('measurement', 'interval_ms', 400), ('measurement', 'timeout_seconds', 240),
+                     ('measurement', 'clock', 'time.monotonic_ns'), ('measurement', 'clock_resolution_ns', 1000000)]
+        original = copy.deepcopy(self.reports[1])
+        for section, field, value in mutations:
+            self.reports[1] = copy.deepcopy(original)
+            self.reports[1][section][field] = value
+            self.assertEqual(self.compare()['status'], 'not_comparable', field)
+        self.reports[1] = copy.deepcopy(original)
+        self.reports[1]['metadata']['input_files']['agent']['sha256'] = 'f' * 64
+        self.assertEqual(self.compare()['status'], 'not_comparable')
+        self.reports[1] = copy.deepcopy(original)
+        self.reports[1]['metadata']['input_files']['jvm']['bytes'] = 43
+        self.assertEqual(self.compare()['status'], 'not_comparable')
+
+    def test_partial_or_failed_observation_is_not_a_resource_failure_or_zero(self):
+        self.reports[1]['status'] = 'incomplete'
+        self.reports[1]['idle_window_summary'] = baseline.idle_windows([], [], 200)
+        self.reports[1]['latency_events'] = []
+        report = self.compare()
+        self.assertEqual(report['status'], 'observation_incomplete')
+        self.assertTrue(report['same_input_files_and_source'])
+        self.assertTrue(report['trials'][0]['observation_complete'])
+        self.assertFalse(report['trials'][1]['observation_complete'])
+        self.assertIsNone(report['trials'][1]['idle_window_summary']['semantic_ready_idle']['rss_bytes']['tree']['median'])
+
+    def test_hostile_nested_text_numbers_and_duplicate_fields_never_escape(self):
+        for value in ('SECRET_PATH', True, float('nan'), float('inf'), -1, 10**1000):
+            self.reports[1]['idle_window_summary']['semantic_ready_idle']['rss_bytes']['tree']['median'] = value
+            report = self.compare()
+            self.assertEqual(report['status'], 'not_comparable')
+            self.assertNotIn('SECRET', json.dumps(report, allow_nan=False))
+        self.paths[1].write_text('{"schema_version":2,"schema_version":2}')
+        self.assertEqual(baseline.compare_reports(*self.paths)['status'], 'not_comparable')
+
+    def test_unrelated_text_is_not_copied_and_latency_extras_are_rejected(self):
+        self.reports[1]['issues'] = ['SECRET_EXCEPTION']
+        self.reports[1]['metadata']['path'] = 'SECRET_PATH'
+        self.reports[1]['idle_window_summary']['semantic_ready_idle']['extra'] = {'SECRET': 'SECRET'}
+        report = self.compare()
+        self.assertEqual(report['status'], 'observed')
+        self.assertNotIn('SECRET', json.dumps(report))
+        self.reports[1]['latency_events'][0]['text'] = 'SECRET_MESSAGE'
+        self.assertEqual(self.compare()['status'], 'not_comparable')
+
+    def test_input_files_are_hashed_without_paths_and_unavailable_is_null(self):
+        files = []
+        for index in range(3):
+            path = self.paths[0].parent / f'SECRET-binary-{index}'
+            path.write_bytes(bytes([index]) * (index + 100))
+            files.append(path)
+        args = SimpleNamespace(driver=files[0], agent=files[1], java=files[2])
+        fingerprints, issues = baseline.input_fingerprints(args)
+        self.assertFalse(issues)
+        for index, role in enumerate(baseline.ROLES[:3]):
+            self.assertEqual(fingerprints[role], {'sha256': hashlib.sha256(files[index].read_bytes()).hexdigest(),
+                                                'bytes': index + 100})
+        self.assertNotIn('SECRET', json.dumps(fingerprints))
+        files[2].unlink()
+        fingerprints, issues = baseline.input_fingerprints(args)
+        self.assertEqual(issues, ['input_fingerprint_unavailable'])
+        self.assertEqual(fingerprints['jvm'], {'sha256': None, 'bytes': None})
+
+    def test_compare_cli_preserves_incomplete_observation_and_rejects_mismatch(self):
+        output = self.paths[0].parent / 'comparison.json'
+        self.reports[1]['status'] = 'incomplete'
+        self.compare()
+        argv = ['measure_process_tree.py', 'compare', '--trial-1', str(self.paths[0]),
+                '--trial-2', str(self.paths[1]), '--output', str(output)]
+        with mock.patch.object(baseline.sys, 'argv', argv):
+            self.assertEqual(baseline.main(), 0)
+        self.assertEqual(json.loads(output.read_text())['status'], 'observation_incomplete')
+        self.reports[1]['metadata']['source_commit'] = 'b' * 40
+        self.compare()
+        with mock.patch.object(baseline.sys, 'argv', argv):
+            self.assertEqual(baseline.main(), 1)
+        self.assertEqual(json.loads(output.read_text())['status'], 'not_comparable')
+
+
 class RunFailureTests(unittest.TestCase):
+    def test_long_workload_selects_only_exact_fixed_test_and_hashes_before_launch(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-resource-long-route-') as root:
+            args = SimpleNamespace(driver='/PRIVATE/driver', agent='/PRIVATE/agent',
+                                   java='/PRIVATE/java', source_commit='a' * 40,
+                                   interval_ms=200, timeout_seconds=270,
+                                   workload='long_idle_baseline', trial=2,
+                                   phase_file=str(Path(root, 'phases')),
+                                   transcript=str(Path(root, 'private')),
+                                   output=str(Path(root, 'report.json')))
+            backend = FakeBackend()
+            child = mock.Mock(pid=100, returncode=42)
+            child.poll.return_value = 42
+            order = []
+
+            def fingerprint(arguments):
+                order.append('hash')
+                return {}, []
+
+            def launch(command, **kwargs):
+                order.append('launch')
+                self.assertEqual(command, [args.driver, baseline.LONG_TEST, '--exact',
+                                           '--ignored', '--nocapture', '--test-threads=1'])
+                Path(args.phase_file).write_text(''.join(json.dumps(event) + '\n'
+                                                         for event in LongMarkerTests.markers()))
+                return child
+
+            factory = 'Windows' if sys.platform == 'win32' else 'Linux'
+            with mock.patch.object(baseline, factory, return_value=backend), \
+                    mock.patch.object(baseline, 'input_fingerprints', side_effect=fingerprint), \
+                    mock.patch.object(baseline.subprocess, 'Popen', side_effect=launch), \
+                    mock.patch.object(baseline.time, 'perf_counter_ns', backend.clock):
+                self.assertEqual(baseline.run(args), 42)
+            self.assertEqual(order, ['hash', 'launch'])
+            report = json.loads(Path(args.output).read_text())
+            self.assertEqual(report['metadata']['workload'], 'long_idle_baseline')
+            self.assertEqual(report['metadata']['trial'], 2)
+            self.assertEqual([event['latency'] for event in report['latency_events']], list(baseline.LATENCIES))
+            self.assertEqual(set(report['phase_summary']), set(baseline.LONG_PHASES))
+            self.assertEqual(report['idle_window_summary']['semantic_ready_idle']['status'], 'unknown')
+            self.assertNotIn('PRIVATE', json.dumps(report))
+
     def test_run_uses_perf_counter_for_elapsed_sweep_and_pacing_and_preserves_exit(self):
         with tempfile.TemporaryDirectory(prefix='cedar-resource-clock-') as root:
             args = SimpleNamespace(driver='/PRIVATE/driver', agent='/PRIVATE/agent',
