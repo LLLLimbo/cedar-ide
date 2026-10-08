@@ -9,6 +9,8 @@ rust-version.workspace = true
 [features]
 # Enables a separate fixture binary, never a cedar-agent CLI or capability flag.
 windows-language-validation = ["cedar-workspace/windows-language-validation"]
+# A separate fixed diagnostic host; never changes the normal agent's behavior.
+windows-java-gc-diagnostic = ["cedar-workspace/windows-java-gc-diagnostic"]
 # Marked synthetic roots only; never included in the ordinary agent CLI.
 interrupted-save-validation = []
 
@@ -32,3 +34,8 @@ required-features = ["windows-language-validation"]
 name = "cedar-agent-interrupted-save-validation"
 path = "tests/support/interrupted_save_validation.rs"
 required-features = ["interrupted-save-validation"]
+
+[[bin]]
+name = "cedar-agent-java-gc-diagnostic"
+path = "tests/support/java_gc_diagnostic.rs"
+required-features = ["windows-java-gc-diagnostic"]

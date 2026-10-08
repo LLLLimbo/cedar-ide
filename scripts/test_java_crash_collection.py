@@ -185,6 +185,10 @@ class CrashCollectionTests(unittest.TestCase):
             'failure_stage': 'none', 'elapsed_ms': 1500, 'elapsed_saturated': False,
         }
 
+    def agent_gc_control_fixture(self):
+        return {**self.agent_production_fixture(), 'kind': 'windows_java_gc_control',
+                'route': 'diagnostic_agent_normal_client'}
+
     def link(self, target, path, directory=False):
         try:
             path.symlink_to(target, target_is_directory=directory)
@@ -497,13 +501,14 @@ class CrashCollectionTests(unittest.TestCase):
 
     def test_agent_records_do_not_expand_direct_java_transcript_schema(self):
         agent = self.agent_source(self.agent_fixture() + [self.agent_diagnostics_fixture()]
-                                  + self.agent_lifecycle_fixtures() + [self.agent_production_fixture()])
+                                  + self.agent_lifecycle_fixtures() + [self.agent_production_fixture(),
+                                                                     self.agent_gc_control_fixture()])
         java = self.private_source('private-java.txt', '{"kind":"fixture_cleanup","removed":true}\n')
         report = collector.collect(self.root, java_transcript=agent, agent_transcript=java)
         self.assertEqual(report['status'], 'complete')
         self.assertEqual(report['java_transcript']['evidence']['records'], [])
         self.assertEqual(report['agent_transcript']['evidence']['records'], [])
-        self.assertEqual(report['java_transcript']['evidence']['omitted_other_json_records'], 8)
+        self.assertEqual(report['java_transcript']['evidence']['omitted_other_json_records'], 9)
         self.assertEqual(report['agent_transcript']['evidence']['omitted_other_json_records'], 1)
 
     def test_agent_session_numbers_require_bounded_integers(self):
@@ -825,6 +830,73 @@ class CrashCollectionTests(unittest.TestCase):
                         self.assertEqual(source['errors'], ['invalid_field_' + field])
                     self.assertNotIn('SECRET_', json.dumps(report))
 
+    def test_gc_control_receipt_is_distinct_and_keeps_forced_shutdown_a_failure(self):
+        natural = self.agent_gc_control_fixture()
+        forced = {**natural, 'success': False, 'cleanup_failed': True,
+                  'stop_status': 'forced', 'stop_reason': 'grace_expired',
+                  'root_exit_code': 1, 'failure_stage': 'root_exit'}
+        records = [{**record, 'pid': 314, 'creation_time_100ns_since_1601': 133700000000000000,
+                    'selection_path': 'C:\\SECRET_PRIVATE\\selection.json',
+                    'log_path': 'C:\\SECRET_PRIVATE\\cedar-gc-314.log',
+                    'raw_log': 'SECRET_LOG', 'heap': 'SECRET_RAW_HEAP',
+                    'root_image': 'C:\\SECRET_PRIVATE\\java.exe'} for record in (natural, forced)]
+        selection = {'kind': 'cedar_gc_control_selection', 'pid': 314,
+                     'selection_path': 'SECRET_PRIVATE_SELECTION'}
+        path = self.agent_source(records + [selection])
+        report = collector.collect(self.root, agent_transcript=path)
+        evidence = report['agent_transcript']['evidence']
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['acceptance_result'], 'not_evaluated')
+        self.assertEqual(evidence['records'], [natural, forced])
+        self.assertEqual(evidence['omitted_other_json_records'], 1)
+        for forbidden in ('SECRET_', 'pid', 'creation_time_100ns_since_1601', 'selection_path',
+                          'root_image', 'raw_log', 'log_path', 'heap', 'normal_agent_client'):
+            self.assertNotIn(forbidden, json.dumps(report))
+
+    def test_gc_control_and_shipping_routes_cannot_be_mixed(self):
+        for fixture, good, bad in (
+                (self.agent_production_fixture(), 'normal_agent_client', 'diagnostic_agent_normal_client'),
+                (self.agent_gc_control_fixture(), 'diagnostic_agent_normal_client', 'normal_agent_client')):
+            for route in (good, bad, 'SECRET_ROUTE', None, True, 1, []):
+                with self.subTest(kind=fixture['kind'], route=route):
+                    path = self.agent_source([{**fixture, 'route': route}])
+                    report = collector.collect(self.root, agent_transcript=path)
+                    source = report['agent_transcript']
+                    self.assertEqual(report['status'], 'complete' if route == good else 'error')
+                    if route == good:
+                        self.assertEqual(source['evidence']['records'][0], fixture)
+                    else:
+                        self.assertNotIn('route', source['evidence']['records'][0])
+                        self.assertEqual(source['errors'], ['invalid_field_route'])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+        missing = self.agent_gc_control_fixture()
+        del missing['route']
+        report = collector.collect(self.root, agent_transcript=self.agent_source([missing]))
+        self.assertEqual(report['status'], 'error')
+        self.assertEqual(report['agent_transcript']['errors'], ['missing_gc_control_route'])
+
+    def test_gc_control_receipt_retains_exact_field_types_and_bounds(self):
+        fixture = self.agent_gc_control_fixture()
+        for field, value in fixture.items():
+            if type(value) is bool:
+                for invalid in (0, 1, None, 'SECRET_BOOL'):
+                    with self.subTest(field=field, value=invalid):
+                        report = collector.collect(self.root, agent_transcript=self.agent_source([
+                            {**fixture, field: invalid}]))
+                        self.assertEqual(report['status'], 'error')
+                        self.assertNotIn(field, report['agent_transcript']['evidence']['records'][0])
+                        self.assertEqual(report['agent_transcript']['errors'], ['invalid_field_' + field])
+        for field, invalid in (('root_exit_code', 2 ** 32), ('root_exit_code', True),
+                               ('elapsed_ms', 300001), ('elapsed_ms', -1),
+                               ('failure_stage', 'owner_death'), ('stop_status', 'SECRET_STATUS'),
+                               ('stop_reason', 'SECRET_REASON')):
+            with self.subTest(field=field, value=invalid):
+                report = collector.collect(self.root, agent_transcript=self.agent_source([
+                    {**fixture, field: invalid}]))
+                self.assertEqual(report['status'], 'error')
+                self.assertNotIn(field, report['agent_transcript']['evidence']['records'][0])
+                self.assertEqual(report['agent_transcript']['errors'], ['invalid_field_' + field])
+
     def test_agent_production_exit_code_and_elapsed_time_have_exact_bounds(self):
         for field, maximum, nullable in (('root_exit_code', 2 ** 32 - 1, True),
                                          ('elapsed_ms', 300000, False)):
@@ -1036,6 +1108,102 @@ class CrashCollectionTests(unittest.TestCase):
         report = collector.collect(self.root)
         self.assertEqual(report['files'], [])
         self.assertEqual(report['issues'][0]['reason'], 'symlink_or_reparse_point')
+
+    def assert_gc_namespace_private(self, report):
+        rendered = json.dumps(report).lower()
+        for private in ('cedar-gc', '987654321', 'secret_gc'):
+            self.assertNotIn(private, rendered)
+        self.assertEqual([item['relative_filename'] for item in report['files']],
+                         ['distribution/hs_err_pid314.log'])
+        self.assertEqual(report['files'][0]['status'], 'collected')
+
+    def test_enclosing_crash_scan_excludes_gc_files_and_directory_contents(self):
+        self.log(name='distribution/hs_err_pid314.log')
+        distribution = self.root / 'distribution'
+        for name in ('cedar-gc-987654321.log', 'CEDAR-GC-987654321.log.0',
+                     'CeDaR-gC-987654321.log.1'):
+            (distribution / name).write_text('SECRET_GC_RAW_LOG')
+        private_directory = distribution / 'CeDaR-Gc-987654321-directory'
+        private_directory.mkdir()
+        (private_directory / 'hs_err_pid987654321.log').write_text('SECRET_GC_NESTED')
+        real_scandir = collector.os.scandir
+
+        def guarded_scandir(path):
+            self.assertNotEqual(Path(path), private_directory)
+            return real_scandir(path)
+
+        with mock.patch.object(collector.os, 'scandir', side_effect=guarded_scandir):
+            report = collector.collect(self.root)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['issues'], [])
+        self.assert_gc_namespace_private(report)
+
+    def test_enclosing_crash_scan_excludes_gc_dangling_file_and_directory_links(self):
+        self.log(name='distribution/hs_err_pid314.log')
+        distribution = self.root / 'distribution'
+        outside_file = self.base / 'private-file'
+        outside_file.write_text('SECRET_GC_LINKED_LOG')
+        outside_directory = self.base / 'private-directory'
+        outside_directory.mkdir()
+        (outside_directory / 'hs_err_pid987654321.log').write_text('SECRET_GC_LINKED_DIRECTORY')
+        self.link(self.base / 'missing-target', distribution / 'cedar-gc-987654321.log')
+        self.link(outside_file, distribution / 'CEDAR-GC-987654321.log.0')
+        self.link(outside_directory, distribution / 'CeDaR-Gc-987654321-directory', directory=True)
+        report = collector.collect(self.root)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['issues'], [])
+        self.assert_gc_namespace_private(report)
+
+    def test_enclosing_crash_scan_skips_gc_namespace_before_windows_reparse_metadata(self):
+        self.log(name='distribution/hs_err_pid314.log')
+        distribution = self.root / 'distribution'
+        private_file = distribution / 'CeDaR-Gc-987654321.log'
+        private_file.write_text('SECRET_GC_REPARSE_FILE')
+        private_directory = distribution / 'CEDAR-GC-987654321-directory'
+        private_directory.mkdir()
+        real_lstat = Path.lstat
+        private_metadata_calls = []
+
+        def reparse_lstat(path, *args, **kwargs):
+            if path in (private_file, private_directory):
+                private_metadata_calls.append(path)
+                mode = stat.S_IFDIR if path == private_directory else stat.S_IFREG
+                return SimpleNamespace(st_mode=mode | 0o600, st_file_attributes=0x400)
+            return real_lstat(path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'lstat', autospec=True, side_effect=reparse_lstat):
+            report = collector.collect(self.root)
+        self.assertEqual(private_metadata_calls, [])
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['issues'], [])
+        self.assert_gc_namespace_private(report)
+
+    def test_enclosing_crash_scan_skips_gc_stat_errors_without_hiding_other_errors(self):
+        self.log(name='distribution/hs_err_pid314.log')
+        distribution = self.root / 'distribution'
+        private = distribution / 'CEDAR-GC-987654321.log.1'
+        private.write_text('SECRET_GC_STAT_ERROR')
+        ordinary = distribution / 'ordinary-unreadable'
+        ordinary.write_text('unavailable')
+        real_lstat = Path.lstat
+        private_metadata_calls = []
+
+        def failed_lstat(path, *args, **kwargs):
+            if path == private:
+                private_metadata_calls.append(path)
+                raise PermissionError(13, 'SECRET_GC_STAT_ERROR', str(path))
+            if path == ordinary:
+                raise PermissionError(13, 'ordinary stat error', str(path))
+            return real_lstat(path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'lstat', autospec=True, side_effect=failed_lstat):
+            report = collector.collect(self.root)
+        self.assertEqual(private_metadata_calls, [])
+        self.assertEqual(report['status'], 'error')
+        self.assertEqual(len(report['issues']), 1)
+        self.assertEqual(report['issues'][0]['reason'], 'stat_failed')
+        self.assertEqual(report['issues'][0]['relative_filename'], 'distribution/ordinary-unreadable')
+        self.assert_gc_namespace_private(report)
 
     def test_root_and_root_ancestor_symlinks_are_rejected(self):
         linked = self.base / 'linked-root'

@@ -1,58 +1,58 @@
-# Verification report · longer Java observation / 0.12.0 · 2026-10-08
+# Verification report · fixed GC diagnostic control / 0.13.0 · 2026-10-08
 
-This checkpoint adds exactly two fixed longer observation trials of the existing
-512 MiB normal production Java recipe. Local verification passed; exact native
-CI for the two longer trials is pending. No production heap, collector, protocol or trust setting changes.
+This checkpoint adds one opt-in nonshipping diagnostic control, retaining the
+production 512 MiB heap recipe and collector selection. Local verification passed; the exact native diagnostic run is pending. The control records GC-point numeric evidence;
+it does not tune the product or infer unused heap from resident memory.
 
 ## Verified baseline
 
-Public 0.11.1 commit
-[`7b00948868417b13b2aeb3a8b67a056f4c0b81de`](https://github.com/LLLLimbo/cedar-ide/commit/7b00948868417b13b2aeb3a8b67a056f4c0b81de)
-[passed exact Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37744067995).
-The native observer suite passed 33 cases with one platform skip. All previous
-cancellation, interrupted-save, Java/editor, task and ownership gates passed.
+Exact public 0.12.0 commit
+[`69044092d4c4f8532cad4ff2513f770af716afeb`](https://github.com/LLLLimbo/cedar-ide/commit/69044092d4c4f8532cad4ff2513f770af716afeb)
+[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37749233834).
+Both ordinary long trials passed all semantics/editor/source and cleanup checks,
+with graceful root exit 0 and verified client reap. All eight stage latencies
+were present in each. The native observer suite passed 62 tests with one platform
+skip; previous cancellation/save/task/Java gates remained green.
 
-The schema-2 artifact verified 429 positive CPU intervals with consistent
-midpoint and timing bounds, QPC resolution of 100 ns, and CPU read spans from
-5.5 microseconds to 1.27 milliseconds. CPU is explicitly estimated per process;
-its sum is not one exact shared-window tree measurement. No values were clipped.
-The observed summed working-set peak was 849.18 MiB for the debug headless driver,
-release agent, JVM and observed descendants. That differs from the earlier
-brief run but establishes no optimization or regression. All four observed
-instances exited. Production Java Stop remained honestly forced after its grace
-expired; this is not a natural-exit claim.
+All four final windows had 50 stable RSS samples, about 9.82 seconds of observed
+coverage, no unknown RSS samples and documented gaps within the 400 ms allowance.
+Tree working-set medians were 791.36/778.96 MiB after initial diagnostics and
+840.30/819.04 MiB after correction. Independent-window CPU estimates were
+2.865/4.615% and then 0.159/0.318% of one logical core. This is a debug headless
+driver/release agent/JVM observation, not a GUI footprint, settled-state guarantee
+or IDEA comparison. Low observed CPU plus retained resident memory does not
+establish unused committed Java heap.
 
-## New experiment
+## Diagnostic boundary
 
-The [longer baseline](LONG_JAVA_BASELINE.md) retains all normal-route semantic,
-source and owned-cleanup assertions. Each of two separate runs adds fixed
-30-second observations after initial and corrected diagnostics, eight typed
-interaction latencies and final-ten-second sampled-window summaries. It does
-not extend the existing watchdogs or wait until an apparent idle state occurs.
+The [fixed control](GC_DIAGNOSTIC_CONTROL.md) uses a separate constructor/binary
+and distinct receipt, with exact synthetic opt-in markers and ordinary execution
+trust. Normal constructors and shipping CLI remain isolated under all features.
+The shared production launch recipe file is unchanged; only the diagnostic path
+adds the fixed private file-logging option. Logging overhead is explicit.
 
-Each trial must independently produce exactly one complete sanitized production
-receipt. The observation report can explicitly remain incomplete; CPU or memory
-values are not product pass thresholds. Comparison checks same-version inputs
-and reports two observations, not a tuning or statistical percentile claim.
+The sampler verifies the retained JVM identity. Its exact private-witness digest
+binds the numeric collector's selected log reads before and after collection.
+The general crash scan excludes private GC names before even reporting rejected
+metadata. Only bounded numeric/enumerated data and digests are published.
+Natural zero exit and full semantic cleanup are required independently of log
+observations; partial observations remain partial and trigger no tuning.
 
-The preceding local report is retained in [the CPU repair report](TEST_REPORT_PHASE11_CPU.md).
+The preceding local report is preserved in [the long baseline report](TEST_REPORT_PHASE12.md).
 
 ## Local verification
 
-Rust 1.99.0 passed 637 aggregate cases and 19 explicitly executed process
-acceptance cases (656 total), five Python agent smoke chains, strict host and
-MSVC cross-target workspace checks, formatting and the optimized build. The
-observer/comparison suite passed 63 cases, including actual native Python
-executable fingerprinting, sampled-window edge/gap handling, elapsed-weighted
-CPU integration, bounded input hashing, hostile metadata and failure-code
-preservation. Export tests passed two; the existing Java evidence collector
-passed 62 with two native-only skips.
+Rust 1.99.0 passed 649 aggregate tests plus 19 explicitly executed process
+acceptance cases (668 total), five Python agent smoke chains, formatting, strict
+whole-workspace host/MSVC checks and the optimized build. The default-feature
+Windows shipping app/agent cross-check also passed. The focused diagnostic-host
+subset passed nine workspace and three CLI tests; Windows-only controls remain
+for native execution. The shared production java_launch.rs is byte-identical.
 
-A Windows-specific fingerprint issue was corrected before publication: CPython
-path stat can infer executable permission bits while handle fstat does not.
-Checks compare regular-file type and stable device/inode/size/mtime. Because
-Windows path-stat ctime can mean birthtime while handle fstat returns ChangeTime,
-ctime stability is checked separately within each API. Identity and change
-protection are retained rather than discarded to accommodate the differences.
-The actual Windows executable witness and both real Java long trials still
-require the exact native CI run. No new local Java experiment was performed.
+The GC collector passed 36 tests; the sampler passed 79; the crash collector
+passed 69 with two native-only skips; export tests passed two. Independent review
+confirmed digest handoff binding, enclosing-scan filename privacy, fixed-default
+isolation and the partial-observation limits. Exact-commit native Windows must
+still execute the one diagnostic control and verify its matched identity,
+semantic/lifecycle receipt and actual numeric GC output. No local Java control
+was run.

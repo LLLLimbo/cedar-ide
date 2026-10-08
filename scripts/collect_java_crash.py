@@ -34,6 +34,9 @@ LIMITS = {
     'transcript_line_characters': 64 * 1024,
 }
 LOG_NAME = re.compile(r'hs_err_pid[^/\\]*\.log\Z', re.IGNORECASE)
+# GC control logs and every rotation/directory variant stay wholly private.
+# Their dedicated collector exports numeric evidence without PID-bearing names.
+GC_PRIVATE_PREFIX = 'cedar-gc'
 FATAL_HEADER = 'A fatal error has been detected by the Java Runtime Environment:'
 EXCEPTION = re.compile(
     r'(?P<name>EXCEPTION_[A-Z_]+|SIG[A-Z0-9]+)'
@@ -152,6 +155,13 @@ AGENT_TRANSCRIPT_FIELDS = {
                              'definition', 'completion', 'resolve', 'apply', 'undo', 'redo',
                              'sync', 'correction', 'close', 'stop', 'root_exit', 'agent_exit',
                              'fixture_cleanup')},
+}
+# The diagnostic route shares bounded semantic witnesses with the shipping
+# acceptance, but has its own kind and one exact route. Never expand the shipping
+# route namespace or publish the private GC selection/PID/log paths here.
+AGENT_TRANSCRIPT_FIELDS['windows_java_gc_control'] = {
+    **AGENT_TRANSCRIPT_FIELDS['windows_java_production'],
+    'route': ('diagnostic_agent_normal_client',),
 }
 
 
@@ -557,6 +567,8 @@ def sanitize_transcript(data, limits, schema=TRANSCRIPT_FIELDS):
             continue
         kind = value['kind']
         record = {'kind': kind} | safe_fields(value, schema[kind], errors)
+        if kind == 'windows_java_gc_control' and 'route' not in value:
+            errors.add('missing_gc_control_route')
         if 'session' in schema[kind] and 'session' not in record:
             errors.add('missing_session')
         report['records'].append(record)
@@ -641,6 +653,11 @@ def collect(root, limits=None, probe_report=None, java_transcript=None, agent_tr
                         stopped = True
                         break
                     entries_seen += 1
+                    # Filter before metadata or any path-bearing issue. Even a
+                    # dangling link, reparse point, unreadable entry or directory
+                    # in this namespace must not reveal the JVM PID indirectly.
+                    if entry.name.lower().startswith(GC_PRIVATE_PREFIX):
+                        continue
                     path = directory / entry.name
                     matches = bool(LOG_NAME.fullmatch(entry.name))
                     try:

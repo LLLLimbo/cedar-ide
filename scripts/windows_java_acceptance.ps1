@@ -9,7 +9,8 @@
 param(
     [string] $Java = "",
     [string] $ScratchRoot = $env:RUNNER_TEMP,
-    [string] $EvidencePath = ""
+    [string] $EvidencePath = "",
+    [switch] $GcDiagnosticControl
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -61,11 +62,16 @@ function Record([string] $Text) {
     Write-Output $Text
     Add-Content -LiteralPath $EvidencePath -Value $Text
 }
-function Assert-ProductionReceipt([object[]] $Receipts) {
-    $production = @($Receipts | Where-Object { $_.kind -ceq 'windows_java_production' })
-    if ($production.Count -ne 1) { throw 'Expected exactly one normal-agent Java acceptance receipt.' }
+function Assert-ProductionReceipt(
+    [object[]] $Receipts,
+    [ValidateSet('windows_java_production', 'windows_java_gc_control')]
+    [string] $Kind = 'windows_java_production'
+) {
+    $expectedRoute = if ($Kind -ceq 'windows_java_gc_control') { 'diagnostic_agent_normal_client' } else { 'normal_agent_client' }
+    $production = @($Receipts | Where-Object { $_.kind -ceq $Kind })
+    if ($production.Count -ne 1) { throw 'Expected exactly one receipt for the selected Java acceptance route.' }
     $record = $production[0]
-    if ($record.route -cne 'normal_agent_client' -or $record.primary_failed -or $record.cleanup_failed -or
+    if ($record.route -cne $expectedRoute -or $record.primary_failed -or $record.cleanup_failed -or
         $record.failure_stage -cne 'none' -or $record.elapsed_saturated -or
         $null -eq $record.root_exit_code -or $record.stop_status -cnotin @('graceful', 'forced')) {
         throw 'Production Java route did not establish bounded semantics and verified owned cleanup.'
@@ -84,6 +90,9 @@ function Assert-ProductionReceipt([object[]] $Receipts) {
     }
     if ($record.stop_status -ceq 'forced' -and $record.stop_reason -cnotin @('grace_expired', 'aborted')) {
         throw 'Production Java forced label lacks a matching termination reason.'
+    }
+    if ($Kind -ceq 'windows_java_gc_control' -and $record.stop_status -cne 'graceful') {
+        throw 'A forced exit cannot satisfy the diagnostic control natural-shutdown requirement.'
     }
 }
 $failure = $null
@@ -263,6 +272,78 @@ try {
     $comparisonReport = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-java-long-idle-comparison.json'
     & python scripts/measure_process_tree.py compare --trial-1 $longReports[0] --trial-2 $longReports[1] --output $comparisonReport
     if ($LASTEXITCODE -ne 0) { throw 'Long observation reports were malformed or not comparable.' }
+    if ($GcDiagnosticControl) {
+        # This checkpoint opts into one diagnostic host invocation. The ordinary
+        # script defaults to no GC diagnostic; no shipping launch flag changes.
+        $stage = 'single fixed GC diagnostic control setup'
+        $gcBinary = [IO.Path]::GetFullPath('target/release/cedar-agent-java-gc-diagnostic.exe')
+        if (-not (Test-Path -LiteralPath $gcBinary -PathType Leaf)) {
+            throw 'Build the separate fixed GC diagnostic host before opting in.'
+        }
+        $shippingHash = (Get-FileHash -LiteralPath $env:CEDAR_AGENT_BIN -Algorithm SHA256).Hash
+        $gcMarker = Join-Path $distribution '.cedar-windows-java-gc-diagnostic-distribution'
+        $markerBytes = [Text.Encoding]::UTF8.GetBytes("cedar-windows-java-gc-diagnostic-distribution-v1`nsynthetic-data-only`n")
+        $markerStream = [IO.File]::Open($gcMarker, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $markerStream.Write($markerBytes, 0, $markerBytes.Length) }
+        finally { $markerStream.Dispose() }
+        $gcRoot = Join-Path $scratch 'gc-control-private'
+        New-Item -ItemType Directory -Path $gcRoot | Out-Null
+        $gcTranscript = Join-Path $gcRoot 'agent-transcript-private.txt'
+        $gcSelection = Join-Path $distribution '.cedar-java-gc-selection-private.json'
+        $gcResourceReport = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-java-gc-control-resources.json'
+        $gcReceiptReport = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-java-gc-control-acceptance.json'
+        $gcNumericReport = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-java-gc-control-numeric.json'
+        $gcExitCode = 1
+        $gcReceiptExitCode = 1
+        try {
+            $stage = 'single fixed GC diagnostic control execution'
+            & python scripts/measure_process_tree.py --driver $testDrivers[0].executable `
+                --agent $gcBinary --java $Java --workload gc_diagnostic_control `
+                --gc-owned-root $distribution --gc-selection $gcSelection `
+                --phase-file (Join-Path $gcRoot 'phases-private.jsonl') `
+                --transcript $gcTranscript --output $gcResourceReport --source-commit $sha
+            $gcExitCode = $LASTEXITCODE
+        }
+        finally {
+            & python scripts/collect_java_crash.py --root $gcRoot --output $gcReceiptReport --agent-transcript $gcTranscript
+            $gcReceiptExitCode = $LASTEXITCODE
+            $afterShippingHash = (Get-FileHash -LiteralPath $env:CEDAR_AGENT_BIN -Algorithm SHA256).Hash
+            if ($afterShippingHash -cne $shippingHash) {
+                throw 'The diagnostic control changed the shipping agent artifact.'
+            }
+        }
+        Record ("gc_control_test_exit=$gcExitCode; gc_control_receipt_exit=$gcReceiptExitCode; shipping_agent_unchanged=true")
+        if ($gcExitCode -ne 0 -or $gcReceiptExitCode -ne 0) {
+            throw 'The single diagnostic control or sanitized semantic receipt failed.'
+        }
+        $gcCollected = Get-Content -LiteralPath $gcReceiptReport -Raw | ConvertFrom-Json
+        Assert-ProductionReceipt -Receipts @($gcCollected.agent_transcript.evidence.records) -Kind windows_java_gc_control
+        $gcObserved = Get-Content -LiteralPath $gcResourceReport -Raw | ConvertFrom-Json
+        $corroboration = $gcObserved.gc_selection_corroboration
+        if ($corroboration.status -cne 'corroborated' -or -not $corroboration.identity_corroborated -or
+            $corroboration.selection_sha256 -cnotmatch '^[a-f0-9]{64}$') {
+            throw 'Owned sampler identity did not corroborate the private GC selection witness.'
+        }
+        $stage = 'bounded numeric GC evidence collection'
+        # The exact witness digest binds this reopen to the sampler's retained
+        # JVM identity. Raw files and collector stderr remain private scratch.
+        & python scripts/collect_gc_control.py --owned-root $distribution --selection $gcSelection `
+            --expected-selection-sha256 $corroboration.selection_sha256 `
+            1> $gcNumericReport 2> (Join-Path $gcRoot 'collector-stderr-private.txt')
+        $gcNumericExitCode = $LASTEXITCODE
+        $gcNumbers = Get-Content -LiteralPath $gcNumericReport -Raw | ConvertFrom-Json
+        if (-not $gcNumbers.selection_binding_verified -or
+            $gcNumbers.selection_sha256 -cne $corroboration.selection_sha256 -or
+            $gcNumbers.status -cnotin @('complete', 'partial') -or
+            ($gcNumbers.status -ceq 'complete' -and $gcNumericExitCode -ne 0) -or
+            ($gcNumbers.status -ceq 'partial' -and $gcNumericExitCode -ne 1) -or
+            $gcNumbers.collector -cnotin @('g1', 'serial', 'parallel', 'zgc', 'shenandoah', 'epsilon', 'unknown') -or
+            $gcNumbers.heap_observation -cnotin @('observed_gc_points', 'not_observed')) {
+            throw 'GC numeric evidence was rejected or did not retain the exact corroborated witness.'
+        }
+        Record ('GC diagnostic numeric status=' + $gcNumbers.status + '; collector=' + $gcNumbers.collector +
+            '; heap_observation=' + $gcNumbers.heap_observation + '; no_tuning_conclusion=true')
+    }
 }
 catch {
     $failure = $_

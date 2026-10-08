@@ -20,6 +20,8 @@ import subprocess
 import sys
 import time
 
+import collect_gc_control as gc_control
+
 ROLES = ('headless_driver', 'agent', 'jvm', 'other_descendant')
 PHASES = ('starting', 'java_initialized', 'semantic_ready_idle', 'query_workload',
           'cleanup', 'complete')
@@ -29,7 +31,8 @@ LATENCIES = ('java_initialize', 'open_exact_diagnostics', 'definition_confined_u
              'correction_exact_diagnostics', 'stop_verified_root_exit')
 LATENCY_PHASES = ('starting', 'java_initialized', *('query_workload',) * 5, 'cleanup')
 IDLE_PHASES = ('semantic_ready_idle', 'correction_ready_idle')
-WORKLOADS = ('normal_acceptance', 'long_idle_baseline')
+LONG_WORKLOADS = ('long_idle_baseline', 'gc_diagnostic_control')
+WORKLOADS = ('normal_acceptance', *LONG_WORKLOADS)
 JDT_SHA256 = '338e7e73d61836651ba2453919a0d34fa763eb4e7c03342092309bffb8934c64'
 LIVE_METRICS = ('rss_bytes', 'threads', 'handles')
 CPU_SUM = 'cpu_percent_one_core_sum_of_process_estimates'
@@ -49,6 +52,9 @@ PRODUCTION_TEST = ('language_ui::real_java_tests::acceptance::windows::productio
                    'real_windows_normal_agent_java_editor_acceptance')
 LONG_TEST = ('language_ui::real_java_tests::acceptance::windows::production::'
              'real_windows_normal_agent_java_resource_baseline')
+GC_TEST = ('language_ui::real_java_tests::acceptance::windows::production::'
+           'real_windows_java_gc_diagnostic_control')
+GC_SELECTION_FILE = '.cedar-java-gc-selection-private.json'
 ISSUES = frozenset(('discovery_failed', 'discovery_limit', 'identity_or_cpu_unavailable',
                    'descendant_unavailable', 'image_unavailable', 'identity_changed',
                    'liveness_unavailable', 'sample_raced_exit', 'sample_unavailable',
@@ -303,7 +309,7 @@ def marker_events(path, workload='normal_acceptance'):
         return [], [], ['phase_unavailable']
     if len(data) > MAX_MARKER_BYTES:
         return [], [], ['phase_limit']
-    phases = LONG_PHASES if workload == 'long_idle_baseline' else PHASES
+    phases = LONG_PHASES if workload in LONG_WORKLOADS else PHASES
     events, latencies, previous_elapsed = [], [], 0
     try:
         # A partial final write is retried next sample.
@@ -321,7 +327,7 @@ def marker_events(path, workload='normal_acceptance'):
                 if len(events) >= len(phases) or value['phase'] != phases[len(events)]:
                     raise ValueError()
                 events.append(value)
-            elif (workload == 'long_idle_baseline'
+            elif (workload in LONG_WORKLOADS
                   and set(value) == {'latency', 'elapsed_ms', 'duration_ns'}):
                 if (len(latencies) >= len(LATENCIES)
                         or value['latency'] != LATENCIES[len(latencies)]
@@ -552,6 +558,64 @@ class Sampler:
         for process in self.processes:
             self.backend.close(process)
 
+    def corroborate_gc_selection(self, root, selection_path, root_info):
+        """Use retained identities before handle closure; publish no raw witness fields.
+
+        The private driver witness attests natural/protocol cleanup. This check
+        independently corroborates its selected identity and observed exit only.
+        It does not authenticate the witness or establish a GC/acceptance pass.
+        """
+        if self.backend.handle_metric != 'windows_process_handle_count':
+            return gc_selection_status('platform_unsupported')
+        try:
+            selection, _, _, selection_sha256 = gc_control.read_selection(
+                root, selection_path, root_info, gc_control.LIMITS)
+        except (OSError, ValueError, TypeError, RecursionError):
+            return gc_selection_status('selection_rejected')
+        candidates = [process for process in self.processes if process.role == 'jvm']
+        if len(candidates) != 1:
+            return gc_selection_status('jvm_count_mismatch')
+        process = candidates[0]
+        if (process.pid != selection['pid']
+                or process.created != selection['creation_time_100ns_since_1601']
+                or self.roles.get(process.image) != 'jvm'):
+            return gc_selection_status('jvm_identity_mismatch')
+        # The driver may have completed between the final sample and poll.
+        # Refresh only this retained identity, with no PID reopen or adoption.
+        # These teardown reads never enter the CPU/idle sample calculations.
+        try:
+            self.backend.read(process, {})
+        except (OSError, ValueError, ObservationError):
+            return gc_selection_status('jvm_exit_unobserved')
+        if not process.exited:
+            return gc_selection_status('jvm_exit_unobserved')
+        return gc_selection_status('corroborated', selection_sha256)
+
+
+def gc_selection_status(status, selection_sha256=None):
+    return {'status': status, 'identity_corroborated': status == 'corroborated',
+            'selection_sha256': selection_sha256}
+
+
+def prepare_gc_selection(owned_root, selection_path):
+    """Pin the checked directory before launch; only the driver creates the file."""
+    root, selection = Path(owned_root), Path(selection_path)
+    if '..' in root.parts or '..' in selection.parts:
+        raise ValueError()
+    root = root.absolute()
+    if not selection.is_absolute():
+        selection = root / selection
+    if selection.parent != root or selection.name != GC_SELECTION_FILE:
+        raise ValueError()
+    root_info = gc_control.check_components(root)
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError()
+    try:
+        selection.lstat()
+    except FileNotFoundError:
+        return root, selection, root_info
+    raise ValueError()
+
 
 def summary(samples, phases=PHASES):
     result = {}
@@ -742,8 +806,10 @@ def idle_windows(samples, events, interval_ms):
 def run(args):
     workload = getattr(args, 'workload', 'normal_acceptance')
     trial = getattr(args, 'trial', None)
-    phases = LONG_PHASES if workload == 'long_idle_baseline' else PHASES
-    test = LONG_TEST if workload == 'long_idle_baseline' else PRODUCTION_TEST
+    gc_diagnostic = workload == 'gc_diagnostic_control'
+    phases = LONG_PHASES if workload in LONG_WORKLOADS else PHASES
+    test = (GC_TEST if gc_diagnostic else
+            LONG_TEST if workload == 'long_idle_baseline' else PRODUCTION_TEST)
     backend = Windows() if sys.platform == 'win32' else Linux()
     resolution_ns = math.ceil(time.get_clock_info('perf_counter').resolution * 1e9)
     fingerprints, fingerprint_issues = input_fingerprints(args)
@@ -774,7 +840,7 @@ def run(args):
                         'handles': backend.handle_metric,
                         'discovery': 'sampled_descendants_short_lived_children_may_be_missed',
                         'idle': ('thirty_seconds_after_initial_and_correction_diagnostics_background_work_may_continue'
-                                 if workload == 'long_idle_baseline' else
+                                 if workload in LONG_WORKLOADS else
                                  'two_seconds_after_exact_initial_diagnostics_background_work_may_continue'),
                         'excludes': ['sampler', 'cargo_and_compiler', 'gui_rendering', 'ssh',
                                      'earlier_acceptance_runs', 'system_services']},
@@ -782,12 +848,26 @@ def run(args):
         'idle_window_summary': {},
         'driver_exit_code': None, 'timed_out': False,
     }
+    if gc_diagnostic:
+        report['purpose'] = 'observational_gc_diagnostic_control'
+        report['metadata'].update(
+            diagnostic_only=True, shipping_agent_used=False,
+            java_recipe='diagnostic_gc_logging_xmx512m_unchanged_heap_and_collector',
+            java_launch='single_nonshipping_diagnostic_agent_normal_client_run',
+            java_logging_argument=gc_control.LOGGING_ARGUMENT,
+            logging_provenance='fixed_nonshipping_host_argument_private_owned_jvm_log',
+            interpretation='logging_io_and_diagnostic_host_may_change_cpu_rss_and_latency_no_shipping_comparison')
+        report['gc_selection_corroboration'] = gc_selection_status('not_checked')
     issues = set(fingerprint_issues)
     sampler = None
     child = None
+    gc_selection = None
     start = time.perf_counter_ns()
     env = os.environ.copy()
     env.pop('CEDAR_RESOURCE_PHASE_PATH', None)
+    # Inherited diagnostic selectors must never affect normal shipping runs.
+    env.pop('CEDAR_GC_DIAGNOSTIC_AGENT_BIN', None)
+    env.pop('CEDAR_GC_SELECTION_PATH', None)
     try:
         # Exclusive marker creation avoids reusing another run's readiness.
         with open(args.phase_file, 'xb'):
@@ -796,6 +876,14 @@ def run(args):
     except OSError:
         issues.add('phase_setup_failed')
     try:
+        if gc_diagnostic:
+            try:
+                gc_selection = prepare_gc_selection(args.gc_owned_root, args.gc_selection)
+            except (OSError, ValueError, TypeError):
+                report['gc_selection_corroboration'] = gc_selection_status('selection_setup_rejected')
+                raise ValueError() from None
+            env['CEDAR_GC_DIAGNOSTIC_AGENT_BIN'] = str(Path(args.agent).absolute())
+            env['CEDAR_GC_SELECTION_PATH'] = str(gc_selection[1])
         with open(args.transcript, 'ab', buffering=0) as transcript:
             child = subprocess.Popen([args.driver, test, '--exact',
                                       '--ignored', '--nocapture', '--test-threads=1'],
@@ -863,14 +951,20 @@ def run(args):
             roles = {p.role for p in sampler.processes}
             if not {'headless_driver', 'agent', 'jvm'} <= roles:
                 issues.add('required_role_not_observed')
+            if gc_diagnostic:
+                report['gc_selection_corroboration'] = sampler.corroborate_gc_selection(*gc_selection)
             sampler.close()
+        elif gc_diagnostic and gc_selection is not None:
+            report['gc_selection_corroboration'] = gc_selection_status('sampler_unavailable')
+    if gc_diagnostic and not report['gc_selection_corroboration']['identity_corroborated']:
+        issues.add('gc_selection_not_corroborated')
     if [event['phase'] for event in report['phase_events']] != list(phases):
         issues.add('phase_witness_incomplete')
     report['phase_summary'] = summary(report['samples'], phases)
     idle = report['phase_summary']['semantic_ready_idle']
     if idle[CPU_SUM]['valid_samples'] < 2:
         issues.add('idle_interval_incomplete')
-    if workload == 'long_idle_baseline':
+    if workload in LONG_WORKLOADS:
         if [event['latency'] for event in report['latency_events']] != list(LATENCIES):
             issues.add('latency_witness_incomplete')
         report['idle_window_summary'] = idle_windows(report['samples'], report['phase_events'], args.interval_ms)
@@ -1032,9 +1126,16 @@ def compare_reports(first, second):
     return result
 
 
+class PrivateArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        # argparse's default invalid-argument errors echo private input paths.
+        print('Process-tree observation arguments are invalid.', file=sys.stderr)
+        raise SystemExit(2)
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == 'compare':
-        parser = argparse.ArgumentParser(description='Compare two fixed unchanged long idle observations.')
+        parser = PrivateArgumentParser(description='Compare two fixed unchanged long idle observations.')
         for name in ('trial-1', 'trial-2', 'output'):
             parser.add_argument('--' + name, required=True)
         args = parser.parse_args(sys.argv[2:])
@@ -1045,20 +1146,27 @@ def main():
             print('Process-tree comparison could not save its sanitized report.', file=sys.stderr)
             return 1
         return 1 if report['status'] == 'not_comparable' else 0
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = PrivateArgumentParser(description=__doc__)
     for name in ('driver', 'agent', 'java', 'phase-file', 'transcript', 'output', 'source-commit'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--interval-ms', type=int, default=200, choices=range(100, 1001))
     parser.add_argument('--timeout-seconds', type=int, default=270, choices=range(5, 301))
     parser.add_argument('--workload', choices=WORKLOADS, default='normal_acceptance')
     parser.add_argument('--trial', type=int, choices=(1, 2))
+    parser.add_argument('--gc-owned-root')
+    parser.add_argument('--gc-selection')
     args = parser.parse_args()
     if not re.fullmatch('[a-f0-9]{40,64}', args.source_commit):
         parser.error('source commit must be a full lowercase hexadecimal identifier')
     if (args.workload == 'long_idle_baseline') != (args.trial is not None):
-        parser.error('a long idle observation requires a fixed trial number; normal acceptance has no trial number')
-    if args.workload == 'long_idle_baseline' and args.timeout_seconds != 270:
+        parser.error('only a long idle baseline observation has a fixed trial number')
+    if args.workload in LONG_WORKLOADS and args.timeout_seconds != 270:
         parser.error('the long idle observation has a fixed 270-second observer deadline')
+    if args.workload == 'gc_diagnostic_control':
+        if args.gc_owned_root is None or args.gc_selection is None or sys.platform != 'win32':
+            parser.error('the Windows GC control requires its owned root and private selection path')
+    elif args.gc_owned_root is not None or args.gc_selection is not None:
+        parser.error('GC selection arguments are exclusive to the diagnostic control')
     if sys.platform not in ('win32', 'linux'):
         parser.error('only native Windows and Linux observation are supported')
     try:

@@ -8,6 +8,8 @@ rust-version.workspace = true
 [features]
 # Nonshipping acceptance fixture only; normal constructors never use this path.
 windows-language-validation = ["dep:windows-sys"]
+# Fixed, nonshipping GC evidence only; independent of language-validation hooks.
+windows-java-gc-diagnostic = []
 
 [dependencies]
 cedar-language = { path = "../language" }

@@ -10,11 +10,20 @@
 //! permissions, not merely workspace access.
 
 mod capabilities;
+#[cfg(feature = "windows-java-gc-diagnostic")]
+mod java_gc_diagnostic;
 mod java_launch;
 #[cfg(feature = "windows-language-validation")]
 mod java_validation;
 mod language;
 mod tasks;
+
+#[cfg(feature = "windows-java-gc-diagnostic")]
+pub use java_gc_diagnostic::{
+    WINDOWS_JAVA_GC_DIAGNOSTIC_DISTRIBUTION_MARKER,
+    WINDOWS_JAVA_GC_DIAGNOSTIC_DISTRIBUTION_MARKER_CONTENTS, WINDOWS_JAVA_GC_DIAGNOSTIC_MARKER,
+    WINDOWS_JAVA_GC_DIAGNOSTIC_MARKER_CONTENTS, WINDOWS_JAVA_GC_DIAGNOSTIC_OPTION,
+};
 
 #[cfg(feature = "windows-language-validation")]
 pub use java_validation::{
@@ -59,6 +68,8 @@ pub struct Workspace {
     windows_language_validation: bool,
     #[cfg(feature = "windows-language-validation")]
     windows_java_validation: Option<java_validation::JavaValidationProfile>,
+    #[cfg(feature = "windows-java-gc-diagnostic")]
+    windows_java_gc_diagnostic: Option<java_gc_diagnostic::JavaGcDiagnosticProfile>,
     language: Option<language::LanguageSession>,
     tasks: Option<cedar_tasks::TaskManager>,
 }
@@ -87,6 +98,8 @@ impl Workspace {
             windows_language_validation: false,
             #[cfg(feature = "windows-language-validation")]
             windows_java_validation: None,
+            #[cfg(feature = "windows-java-gc-diagnostic")]
+            windows_java_gc_diagnostic: None,
             language: None,
             tasks: None,
         })
@@ -142,6 +155,21 @@ impl Workspace {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Nonshipping fixed GC diagnostic host for a newly marked synthetic root.
+    ///
+    /// Uses the ordinary Java operation and production recipe, with exactly one
+    /// bounded GC log option. The selected distribution must separately opt in
+    /// before the single launch attempt. This grants no execution trust and does
+    /// not enable the generic language or Java validation fixture paths.
+    #[cfg(feature = "windows-java-gc-diagnostic")]
+    pub fn for_windows_java_gc_diagnostic(root: impl AsRef<Path>) -> Result<Self, RemoteError> {
+        let mut workspace = Self::with_backend_mode(root, BackendMode::IsolatedAgent)?;
+        workspace.windows_java_gc_diagnostic = Some(
+            java_gc_diagnostic::JavaGcDiagnosticProfile::new(&workspace.root)?,
+        );
+        Ok(workspace)
     }
 
     /// Explicitly allow arbitrary programs with the current account's authority.

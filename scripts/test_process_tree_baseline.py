@@ -3,6 +3,7 @@
 import ctypes
 import copy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -47,6 +48,7 @@ class FakeBackend:
         self.read_span = {}
         self.after_read = {}
         self.cpu_rates = {}
+        self.exited = set()
 
     def scan(self):
         return self.entries.copy()
@@ -64,6 +66,8 @@ class FakeBackend:
             raise baseline.ObservationError(self.errors[process.pid])
         if self.entries[process.pid][2] != process.created:
             raise baseline.ObservationError('identity_changed')
+        if process.pid in self.exited:
+            process.exited = True
         pid = process.pid
         self.clock.advance(self.before_read.get(pid, 0))
         start = self.clock()
@@ -539,6 +543,137 @@ class LongMarkerTests(MarkerTests):
         self.assertEqual(baseline.phase_events(self.path), ([], ['phase_invalid']))
 
 
+class GcSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='cedar-gc-PRIVATE-')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name, 'owned')
+        self.root.mkdir()
+        self.path = self.root / baseline.GC_SELECTION_FILE
+        self.prepared = baseline.prepare_gc_selection(self.root, self.path)
+        self.selection = {
+            'schema_version': 1, 'kind': 'cedar_gc_control_selection', 'pid': 102,
+            'creation_time_100ns_since_1601': 12, 'root_exit_code': 0,
+            **dict.fromkeys(baseline.gc_control.SELECTION_TRUE_FIELDS, True),
+        }
+        self.path.write_text(json.dumps(self.selection), encoding='utf-8')
+        self.backend = FakeBackend()
+        self.sampler = baseline.Sampler(self.backend, 100, {
+            'headless_driver': '/PRIVATE/driver', 'agent': '/PRIVATE/agent', 'jvm': '/PRIVATE/java'},
+            resolution_ns=1)
+        self.addCleanup(self.sampler.close)
+        self.sampler.sample('cleanup')
+        self.backend.exited.add(102)
+
+    def corroborate(self):
+        return self.sampler.corroborate_gc_selection(*self.prepared)
+
+    def test_exact_owned_identity_exit_is_corroborated_before_handle_close(self):
+        self.assertFalse(self.sampler.processes[-1].exited)
+        result = self.corroborate()
+        self.assertEqual(result, {'status': 'corroborated', 'identity_corroborated': True,
+                                  'selection_sha256': hashlib.sha256(self.path.read_bytes()).hexdigest()})
+        self.assertTrue(self.sampler.processes[-1].exited)
+        self.assertEqual(self.backend.closed, [])
+        self.assertEqual(set(result), {'status', 'identity_corroborated', 'selection_sha256'})
+        for secret in ('PRIVATE', 'pid', 'creation_time', str(self.path)):
+            self.assertNotIn(secret, json.dumps(result))
+
+    def test_wrong_pid_or_creation_never_corroborates(self):
+        for field in ('pid', 'creation_time_100ns_since_1601'):
+            value = dict(self.selection)
+            value[field] += 1
+            self.path.write_text(json.dumps(value), encoding='utf-8')
+            self.assertEqual(self.corroborate(),
+                             {'status': 'jvm_identity_mismatch', 'identity_corroborated': False,
+                              'selection_sha256': None})
+
+    def test_wrong_image_never_corroborates_even_if_role_is_forged(self):
+        self.sampler.processes[-1].image = '/PRIVATE/OTHER_JAVA'
+        self.assertEqual(self.corroborate()['status'], 'jvm_identity_mismatch')
+
+    def test_missing_or_duplicate_jvm_is_rejected(self):
+        jvm = self.sampler.processes.pop()
+        self.assertEqual(self.corroborate()['status'], 'jvm_count_mismatch')
+        self.sampler.processes.extend([jvm, copy.copy(jvm)])
+        self.assertEqual(self.corroborate()['status'], 'jvm_count_mismatch')
+
+    def test_live_or_unverifiable_retained_identity_never_counts_as_exited(self):
+        self.backend.exited.clear()
+        self.assertEqual(self.corroborate()['status'], 'jvm_exit_unobserved')
+        self.backend.errors[102] = 'PRIVATE_HOSTILE_ERROR'
+        result = self.corroborate()
+        self.assertEqual(result['status'], 'jvm_exit_unobserved')
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        self.backend.errors.clear()
+        self.backend.entries[102] = (101, 4, 123)
+        self.assertEqual(self.corroborate()['status'], 'jvm_exit_unobserved')
+
+    def test_linux_identity_units_cannot_corroborate_windows_witness(self):
+        self.backend.handle_metric = 'linux_open_file_descriptor_count'
+        self.assertEqual(self.corroborate()['status'], 'platform_unsupported')
+
+    def test_malformed_duplicate_extra_and_false_witness_are_private_rejections(self):
+        malformed = [b'PRIVATE_BROKEN_JSON', b'{"pid":102,"pid":102}', b'[]', b'']
+        for field, value in (('pid', True), ('creation_time_100ns_since_1601', 'PRIVATE'),
+                             ('schema_version', True), ('kind', 'PRIVATE'),
+                             ('root_exit_code', 1), ('extra', 'PRIVATE')):
+            malformed.append(json.dumps({**self.selection, field: value}).encode())
+        malformed.extend(json.dumps({**self.selection, field: False}).encode()
+                         for field in baseline.gc_control.SELECTION_TRUE_FIELDS)
+        for content in malformed:
+            self.path.write_bytes(content)
+            result = self.corroborate()
+            self.assertEqual(result, {'status': 'selection_rejected', 'identity_corroborated': False,
+                                      'selection_sha256': None})
+            self.assertNotIn('PRIVATE', json.dumps(result))
+
+    def test_selection_and_pinned_root_replacement_are_rejected(self):
+        self.path.unlink()
+        self.assertEqual(self.corroborate()['status'], 'selection_rejected')
+        self.root.rename(self.root.with_name('old'))
+        self.root.mkdir()
+        self.path.write_text(json.dumps(self.selection), encoding='utf-8')
+        self.assertEqual(self.corroborate()['status'], 'selection_rejected')
+
+    def test_preparation_requires_absent_direct_owned_filename_without_creating_it(self):
+        with self.assertRaises(ValueError):
+            baseline.prepare_gc_selection(self.root, self.path)
+        self.path.unlink()
+        prepared = baseline.prepare_gc_selection(self.root, baseline.GC_SELECTION_FILE)
+        self.assertEqual(prepared[1], self.path)
+        self.assertFalse(self.path.exists())
+        for path in (self.root / 'PRIVATE_WRONG_NAME', self.root / 'nested' / baseline.GC_SELECTION_FILE,
+                     self.root.parent / baseline.GC_SELECTION_FILE,
+                     self.root / 'nested' / '..' / baseline.GC_SELECTION_FILE):
+            with self.assertRaises(ValueError):
+                baseline.prepare_gc_selection(self.root, path)
+
+    def test_gc_markers_share_exact_long_phases_and_eight_latencies(self):
+        self.path.write_text(''.join(json.dumps(item) + '\n' for item in LongMarkerTests.markers()))
+        phases, latencies, issues = baseline.marker_events(self.path, 'gc_diagnostic_control')
+        self.assertEqual(issues, [])
+        self.assertEqual([item['phase'] for item in phases], list(baseline.LONG_PHASES))
+        self.assertEqual([item['latency'] for item in latencies], list(baseline.LATENCIES))
+
+    def test_digest_handoff_rejects_replaced_valid_identity_before_log_reads(self):
+        self.root.joinpath('cedar-gc-102.log').write_bytes(b'[0ms][info][gc] Using G1\n')
+        corroboration = self.corroborate()
+        unchanged = baseline.gc_control.collect(
+            self.root, self.path, expected_selection_sha256=corroboration['selection_sha256'])
+        self.assertEqual(unchanged['status'], 'complete')
+        self.assertTrue(unchanged['selection_binding_verified'])
+        self.path.write_text(json.dumps({**self.selection, 'pid': 103}), encoding='utf-8')
+        with mock.patch.object(baseline.gc_control, 'parse_logs') as parse:
+            changed = baseline.gc_control.collect(
+                self.root, self.path, expected_selection_sha256=corroboration['selection_sha256'])
+        parse.assert_not_called()
+        self.assertEqual(changed['status'], 'rejected')
+        self.assertFalse(changed['selection_binding_verified'])
+        for secret in ('PRIVATE', 'creation_time', 'pid', str(self.path)):
+            self.assertNotIn(secret, json.dumps(changed))
+
+
 class LongWindowTests(unittest.TestCase):
     @staticmethod
     def events(duration=30_000):
@@ -914,6 +1049,19 @@ class ComparisonTests(unittest.TestCase):
         self.reports[1]['metadata']['input_files']['jvm']['bytes'] = 43
         self.assertEqual(self.compare()['status'], 'not_comparable')
 
+    def test_gc_diagnostic_cannot_be_labeled_as_unchanged_shipping_comparison(self):
+        original = copy.deepcopy(self.reports[1])
+        mutations = [('metadata', 'workload', 'gc_diagnostic_control'),
+                     ('metadata', 'test', baseline.GC_TEST),
+                     ('metadata', 'java_recipe', 'diagnostic_gc_logging_xmx512m_unchanged_heap_and_collector')]
+        for group, key, value in mutations:
+            self.reports[1] = copy.deepcopy(original)
+            self.reports[1][group][key] = value
+            self.assertEqual(self.compare()['status'], 'not_comparable')
+        self.reports[1] = copy.deepcopy(original)
+        self.reports[1]['purpose'] = 'observational_gc_diagnostic_control'
+        self.assertEqual(self.compare()['status'], 'not_comparable')
+
     def test_partial_or_failed_observation_is_not_a_resource_failure_or_zero(self):
         self.reports[1]['status'] = 'incomplete'
         self.reports[1]['idle_window_summary'] = baseline.idle_windows([], [], 200)
@@ -976,6 +1124,133 @@ class ComparisonTests(unittest.TestCase):
         with mock.patch.object(baseline.sys, 'argv', argv):
             self.assertEqual(baseline.main(), 1)
         self.assertEqual(json.loads(output.read_text())['status'], 'not_comparable')
+
+
+class GcWorkloadTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='cedar-gc-PRIVATE-route-')
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name)
+        self.args = SimpleNamespace(
+            driver='/PRIVATE/driver', agent='/PRIVATE/agent', java='/PRIVATE/java',
+            source_commit='a' * 40, interval_ms=200, timeout_seconds=270,
+            workload='gc_diagnostic_control', trial=None,
+            phase_file=str(root / 'phases'), transcript=str(root / 'private'),
+            output=str(root / 'report.json'), gc_owned_root=str(root),
+            gc_selection=str(root / baseline.GC_SELECTION_FILE))
+        self.backend = FakeBackend()
+        self.child = mock.Mock(pid=100, returncode=0)
+        self.child.poll.return_value = 0
+
+    def run_mocked(self, launch):
+        factory = 'Windows' if sys.platform == 'win32' else 'Linux'
+        with mock.patch.object(baseline, factory, return_value=self.backend), \
+                mock.patch.object(baseline, 'input_fingerprints', return_value=({}, [])), \
+                mock.patch.object(baseline.subprocess, 'Popen', side_effect=launch) as popen, \
+                mock.patch.object(baseline.time, 'perf_counter_ns', self.backend.clock):
+            result = baseline.run(self.args)
+        return result, json.loads(Path(self.args.output).read_text()), popen
+
+    def test_gc_exact_single_test_and_selectors_use_same_long_observation_without_trial(self):
+        def launch(command, **kwargs):
+            self.assertEqual(command, [self.args.driver, baseline.GC_TEST, '--exact',
+                                       '--ignored', '--nocapture', '--test-threads=1'])
+            self.assertEqual(kwargs['env']['CEDAR_GC_DIAGNOSTIC_AGENT_BIN'],
+                             str(Path(self.args.agent).absolute()))
+            self.assertEqual(kwargs['env']['CEDAR_GC_SELECTION_PATH'], self.args.gc_selection)
+            self.assertFalse(Path(self.args.gc_selection).exists())
+            Path(self.args.phase_file).write_text(''.join(json.dumps(item) + '\n'
+                                                         for item in LongMarkerTests.markers()))
+            selection = {'schema_version': 1, 'kind': 'cedar_gc_control_selection', 'pid': 102,
+                         'creation_time_100ns_since_1601': 12, 'root_exit_code': 0,
+                         **dict.fromkeys(baseline.gc_control.SELECTION_TRUE_FIELDS, True)}
+            Path(self.args.gc_selection).write_text(json.dumps(selection), encoding='utf-8')
+            self.backend.exited.add(102)
+            return self.child
+
+        with mock.patch.dict(baseline.os.environ, {'CEDAR_GC_DIAGNOSTIC_AGENT_BIN': 'STALE_PRIVATE',
+                                                 'CEDAR_GC_SELECTION_PATH': 'STALE_PRIVATE'}):
+            result, report, popen = self.run_mocked(launch)
+        self.assertEqual(result, 0)
+        self.assertEqual(popen.call_count, 1)
+        self.assertEqual(len(self.backend.closed), 3)
+        self.assertEqual(report['gc_selection_corroboration']['status'], 'corroborated')
+        self.assertEqual(report['purpose'], 'observational_gc_diagnostic_control')
+        metadata = report['metadata']
+        self.assertIsNone(metadata['trial'])
+        self.assertTrue(metadata['diagnostic_only'])
+        self.assertFalse(metadata['shipping_agent_used'])
+        self.assertEqual(metadata['java_heap_limit_mib'], 512)
+        self.assertEqual(metadata['java_logging_argument'], baseline.gc_control.LOGGING_ARGUMENT)
+        self.assertIn('logging_io', metadata['interpretation'])
+        self.assertIn('diagnostic', metadata['java_recipe'])
+        self.assertEqual(set(report['phase_summary']), set(baseline.LONG_PHASES))
+        self.assertEqual([item['latency'] for item in report['latency_events']], list(baseline.LATENCIES))
+        self.assertEqual(set(report['idle_window_summary']), set(baseline.IDLE_PHASES))
+        public = json.dumps(report)
+        for secret in ('PRIVATE', '"pid"', 'creation_time', 'production_java_xmx512m_unchanged',
+                       'same_production_acceptance_run'):
+            self.assertNotIn(secret, public)
+
+    def test_normal_and_long_clear_inherited_gc_selectors_and_keep_shipping_metadata(self):
+        for workload in ('normal_acceptance', 'long_idle_baseline'):
+            self.args.workload = workload
+            self.args.trial = 1 if workload == 'long_idle_baseline' else None
+            phase = Path(self.args.phase_file)
+            if phase.exists():
+                phase.unlink()
+
+            def launch(command, **kwargs):
+                self.assertEqual(command[1], baseline.LONG_TEST if workload == 'long_idle_baseline'
+                                 else baseline.PRODUCTION_TEST)
+                self.assertNotIn('CEDAR_GC_DIAGNOSTIC_AGENT_BIN', kwargs['env'])
+                self.assertNotIn('CEDAR_GC_SELECTION_PATH', kwargs['env'])
+                return self.child
+
+            with mock.patch.dict(baseline.os.environ, {'CEDAR_GC_DIAGNOSTIC_AGENT_BIN': 'STALE_PRIVATE',
+                                                     'CEDAR_GC_SELECTION_PATH': 'STALE_PRIVATE'}):
+                result, report, popen = self.run_mocked(launch)
+            self.assertEqual(result, 0)
+            self.assertEqual(popen.call_count, 1)
+            self.assertNotIn('gc_selection_corroboration', report)
+            self.assertNotIn('diagnostic_only', report['metadata'])
+            self.assertEqual(report['metadata']['java_recipe'], 'production_java_xmx512m_unchanged')
+
+    def test_bad_selection_setup_never_launches_or_leaks_paths(self):
+        self.args.gc_selection = str(Path(self.args.gc_owned_root).parent / baseline.GC_SELECTION_FILE)
+        result, report, popen = self.run_mocked(lambda *args, **kwargs: self.child)
+        popen.assert_not_called()
+        self.assertEqual(result, 1)
+        self.assertEqual(report['gc_selection_corroboration']['status'], 'selection_setup_rejected')
+        self.assertIn('gc_selection_not_corroborated', report['issues'])
+        self.assertNotIn('PRIVATE', json.dumps(report))
+
+    def test_cli_gc_requires_windows_paths_fixed_timeout_and_no_trial(self):
+        common = ['measure_process_tree.py']
+        for key in ('driver', 'agent', 'java', 'phase-file', 'transcript', 'output', 'source-commit'):
+            common.extend(['--' + key, getattr(self.args, key.replace('-', '_'))])
+        gc = ['--workload', 'gc_diagnostic_control', '--gc-owned-root', self.args.gc_owned_root,
+              '--gc-selection', self.args.gc_selection]
+        with mock.patch.object(baseline.sys, 'platform', 'win32'), \
+                mock.patch.object(baseline.sys, 'argv', common + gc), \
+                mock.patch.object(baseline, 'run', return_value=37) as run:
+            self.assertEqual(baseline.main(), 37)
+            self.assertIsNone(run.call_args.args[0].trial)
+        invalid = [(gc + ['--trial', '1'], 'win32'), (gc[:-2], 'win32'),
+                   (gc[:2] + gc[4:], 'win32'), (gc + ['--timeout-seconds', '30'], 'win32'),
+                   (gc, 'linux'), (gc[2:], 'win32'),
+                   (['--workload', 'long_idle_baseline', '--trial', '1'] + gc[2:], 'win32'),
+                   (gc + ['--PRIVATE_UNKNOWN', '/PRIVATE/secret'], 'win32')]
+        for extra, platform in invalid:
+            with mock.patch.object(baseline.sys, 'platform', platform), \
+                    mock.patch.object(baseline.sys, 'argv', common + extra), \
+                    mock.patch.object(baseline.sys, 'stderr', new_callable=io.StringIO) as stderr, \
+                    mock.patch.object(baseline, 'run') as run:
+                with self.assertRaises(SystemExit) as error:
+                    baseline.main()
+                self.assertEqual(error.exception.code, 2)
+                run.assert_not_called()
+                self.assertNotIn('PRIVATE', stderr.getvalue())
 
 
 class RunFailureTests(unittest.TestCase):

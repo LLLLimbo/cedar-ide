@@ -208,6 +208,14 @@ impl Workspace {
                     &distribution,
                     &data_directory,
                 )?;
+                #[cfg(feature = "windows-java-gc-diagnostic")]
+                let launch = {
+                    let mut launch = launch;
+                    if let Some(profile) = self.windows_java_gc_diagnostic.as_mut() {
+                        profile.decorate(&mut launch)?;
+                    }
+                    launch
+                };
                 self.start_language_session(
                     launch.config,
                     launch.options,

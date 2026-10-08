@@ -17,6 +17,7 @@ jobs:
       - run: python scripts/test_public_export.py
       - run: python scripts/test_java_crash_collection.py
       - run: python scripts/test_process_tree_baseline.py
+      - run: python scripts/test_gc_control_collection.py
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-targets --all-features --locked
         timeout-minutes: 15
@@ -87,7 +88,7 @@ jobs:
         timeout-minutes: 12
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/windows_java_acceptance.ps1
+        run: ./scripts/windows_java_acceptance.ps1 -GcDiagnosticControl
       - name: Windows Java acceptance evidence
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@v4
@@ -102,6 +103,9 @@ jobs:
             ${{ runner.temp }}/cedar-java-long-idle-acceptance-1.json
             ${{ runner.temp }}/cedar-java-long-idle-acceptance-2.json
             ${{ runner.temp }}/cedar-java-long-idle-comparison.json
+            ${{ runner.temp }}/cedar-java-gc-control-resources.json
+            ${{ runner.temp }}/cedar-java-gc-control-acceptance.json
+            ${{ runner.temp }}/cedar-java-gc-control-numeric.json
           if-no-files-found: ignore
       - name: Agent and tool protocol chains (Unix)
         if: runner.os != 'Windows'

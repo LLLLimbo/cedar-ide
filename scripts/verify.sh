@@ -5,6 +5,7 @@ cargo fmt --all -- --check
 python3 scripts/test_public_export.py
 python3 scripts/test_java_crash_collection.py
 python3 scripts/test_process_tree_baseline.py
+python3 scripts/test_gc_control_collection.py
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-targets --all-features --locked
 cargo build --workspace --all-features --locked

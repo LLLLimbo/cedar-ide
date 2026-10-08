@@ -1,5 +1,5 @@
-//! Normal shipping agent + capability-enforcing Client acceptance. Bundle path
-//! discovery is covered by the existing isolated Local bundle tests separately.
+//! Shipping agent and separate nonshipping GC-control acceptance through the
+//! same capability-enforcing Client. Neither route includes GUI acceptance.
 use super::*;
 use crate::java_language::{JavaStopOutcome, StopReason, StopStatus};
 use cedar_client::Client;
@@ -9,6 +9,157 @@ use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
 enum ObservationProfile {
     Quick,
     ResourceBaseline,
+    GcDiagnostic,
+}
+
+impl ObservationProfile {
+    fn observes_resources(self) -> bool {
+        self != Self::Quick
+    }
+
+    fn agent_selection(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Quick | Self::ResourceBaseline => ("CEDAR_AGENT_BIN", "cedar-agent.exe"),
+            Self::GcDiagnostic => (
+                "CEDAR_GC_DIAGNOSTIC_AGENT_BIN",
+                "cedar-agent-java-gc-diagnostic.exe",
+            ),
+        }
+    }
+
+    fn evidence(self) -> ProductionEvidence {
+        match self {
+            Self::Quick | Self::ResourceBaseline => ProductionEvidence::new(),
+            Self::GcDiagnostic => ProductionEvidence {
+                kind: "windows_java_gc_control",
+                route: "diagnostic_agent_normal_client",
+                ..ProductionEvidence::new()
+            },
+        }
+    }
+}
+
+const GC_WORKSPACE_MARKER: &str = ".cedar-windows-java-gc-diagnostic";
+const GC_WORKSPACE_MARKER_CONTENTS: &[u8] =
+    b"cedar-windows-java-gc-diagnostic-v1\nsynthetic-data-only\n";
+const GC_DISTRIBUTION_MARKER: &str = ".cedar-windows-java-gc-diagnostic-distribution";
+const GC_DISTRIBUTION_MARKER_CONTENTS: &[u8] =
+    b"cedar-windows-java-gc-diagnostic-distribution-v1\nsynthetic-data-only\n";
+const GC_SELECTION_FILE: &str = ".cedar-java-gc-selection-private.json";
+
+fn require_absent(path: &Path) -> CheckResult<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+        Ok(_) => Err("GC control requires a new, absent owned path".into()),
+    }
+}
+
+fn verify_gc_logs_absent(distribution: &Path) -> CheckResult<()> {
+    // Match the host's fixed logging namespace, including every rotation slot
+    // and malformed/preexisting names. No PID discovery or outside scan.
+    for (index, entry) in io(fs::read_dir(distribution))?.enumerate() {
+        require(index < 4096, "GC distribution entry bound exceeded")?;
+        let name = io(entry)?.file_name();
+        let name = name
+            .to_str()
+            .ok_or("GC distribution filename is not UTF-8")?;
+        require(
+            !name.to_ascii_lowercase().starts_with("cedar-gc"),
+            "GC logs must be absent before this owned Java launch",
+        )?;
+    }
+    Ok(())
+}
+
+fn prepare_gc_selection(distribution: &Path, selection: &Path) -> CheckResult<fs::File> {
+    use std::os::windows::fs::MetadataExt;
+    require(
+        selection.is_absolute()
+            && selection
+                .file_name()
+                .is_some_and(|name| name == GC_SELECTION_FILE)
+            && !selection
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+            && selection.parent().is_some_and(|parent| {
+                ordinary_path(parent).is_ok_and(|parent| parent == distribution)
+            }),
+        "GC selection must be the fixed private file in the verified distribution",
+    )?;
+    let marker = distribution.join(GC_DISTRIBUTION_MARKER);
+    let metadata = io(fs::symlink_metadata(&marker))?;
+    require(
+        metadata.is_file()
+            && !metadata.file_type().is_symlink()
+            && metadata.file_attributes() & 0x400 == 0
+            && metadata.len() == GC_DISTRIBUTION_MARKER_CONTENTS.len() as u64,
+        "GC distribution marker must be a bounded ordinary file",
+    )?;
+    let mut bytes = Vec::new();
+    io(io(fs::File::open(marker))?
+        .take(GC_DISTRIBUTION_MARKER_CONTENTS.len() as u64 + 1)
+        .read_to_end(&mut bytes))?;
+    require(
+        bytes == GC_DISTRIBUTION_MARKER_CONTENTS,
+        "GC distribution marker content mismatch",
+    )?;
+    require_absent(selection)?;
+    verify_gc_logs_absent(distribution)?;
+    // Reserve the fresh path before launch; keep the handle private and leave
+    // the file empty on failed/forced shutdown. A partial write is not proof.
+    io(fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(selection))
+}
+
+#[derive(serde::Serialize)]
+struct GcControlSelection {
+    schema_version: u8,
+    kind: &'static str,
+    pid: u32,
+    creation_time_100ns_since_1601: u64,
+    owned_jvm_identity_verified: bool,
+    root_image_verified: bool,
+    log_files_absent_before_launch: bool,
+    root_handle_signaled: bool,
+    root_exit_code: u32,
+    natural_shutdown_verified: bool,
+}
+
+fn finalize_gc_selection(file: &mut fs::File, process: &RootObservation) -> CheckResult<()> {
+    use std::io::Write;
+    require(
+        process.pid != 0 && process.created != 0 && process.exit_code_with_timeout(0)? == 0,
+        "GC selection requires the retained owned Java root's zero exit",
+    )?;
+    let witness = GcControlSelection {
+        schema_version: 1,
+        kind: "cedar_gc_control_selection",
+        pid: process.pid,
+        creation_time_100ns_since_1601: process.created,
+        owned_jvm_identity_verified: true,
+        root_image_verified: true,
+        log_files_absent_before_launch: true,
+        root_handle_signaled: true,
+        root_exit_code: 0,
+        natural_shutdown_verified: true,
+    };
+    let encoded = serde_json::to_vec(&witness).map_err(|error| error.to_string())?;
+    io(file.write_all(&encoded))?;
+    io(file.write_all(b"\n"))?;
+    io(file.sync_all())
+}
+
+fn gc_shutdown_is_natural(outcome: &JavaStopOutcome, actual_exit: u32) -> bool {
+    outcome.status == StopStatus::Graceful
+        && outcome.reason == StopReason::RootExited
+        && outcome.root_exit_code == 0
+        && actual_exit == 0
+        && outcome.shutdown_response_received
+        && outcome.exit_frame_completed
+        && outcome.cleanup_joined
 }
 
 #[derive(serde::Serialize)]
@@ -81,7 +232,7 @@ fn resource_latency(
     operation_started: Instant,
     latency: ResourceLatency,
 ) {
-    if profile == ObservationProfile::ResourceBaseline {
+    if profile.observes_resources() {
         let finished = Instant::now();
         resource_marker(&LatencyMarker {
             latency,
@@ -174,6 +325,12 @@ fn real_windows_normal_agent_java_resource_baseline() -> CheckResult<()> {
     normal_agent_java_acceptance(ObservationProfile::ResourceBaseline)
 }
 
+#[test]
+#[ignore = "requires native Windows, fixed diagnostic host, marked synthetic distribution and sampler files; run serially"]
+fn real_windows_java_gc_diagnostic_control() -> CheckResult<()> {
+    normal_agent_java_acceptance(ObservationProfile::GcDiagnostic)
+}
+
 fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> {
     println!();
     let _watchdog = Watchdog::start_with_timeout(Duration::from_secs(240));
@@ -186,23 +343,23 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
     let mut all_clients_reaped = false;
     let stage = Cell::new(FailureStage::Setup);
     let mut failure_stage = None;
-    let mut record = ProductionEvidence::new();
+    let mut record = profile.evidence();
+    let mut gc_selection: Option<fs::File> = None;
+    let mut natural_shutdown_verified = false;
     let mut cleanup_errors = Vec::new();
     let mut source_path: Option<PathBuf> = None;
     let primary = checked(|| {
         require(
             profile == ObservationProfile::Quick || instrumentation_ready,
-            "resource baseline requires the sampler's existing writable marker file",
+            "resource observation requires the sampler's existing writable marker file",
         )?;
         let distribution = environment_path("CEDAR_JDTLS_HOME")?;
         let java = environment_path("CEDAR_JAVA")?;
-        let binary = environment_path("CEDAR_AGENT_BIN")?;
+        let (binary_environment, binary_name) = profile.agent_selection();
+        let binary = environment_path(binary_environment)?;
         require(
-            binary.is_file()
-                && binary
-                    .file_name()
-                    .is_some_and(|name| name == "cedar-agent.exe"),
-            "production acceptance requires the exact normal cedar-agent.exe",
+            binary.is_file() && binary.file_name().is_some_and(|name| name == binary_name),
+            "acceptance requires the exact binary for its selected observation profile",
         )?;
         fixture = Some(io(tempfile::Builder::new()
             .prefix("cedar normal Java 雪 ")
@@ -219,6 +376,20 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
                 && !root.join(".cedar-windows-java-validation").exists(),
             "production fixture must have no validation opt-in markers",
         )?;
+        if profile == ObservationProfile::GcDiagnostic {
+            io(fs::write(
+                root.join(GC_WORKSPACE_MARKER),
+                GC_WORKSPACE_MARKER_CONTENTS,
+            ))?;
+            let selection = PathBuf::from(
+                std::env::var_os("CEDAR_GC_SELECTION_PATH")
+                    .ok_or("GC control requires the sampler's private selection path")?,
+            );
+            gc_selection = Some(prepare_gc_selection(&distribution, &selection)?);
+        } else {
+            require_absent(&root.join(GC_WORKSPACE_MARKER))?;
+            require_absent(&distribution.join(GC_DISTRIBUTION_MARKER))?;
+        }
         let source = root.join(SOURCE_PATH);
         source_path = Some(source.clone());
         let start_operation = || -> CheckResult<Operation> {
@@ -261,6 +432,9 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         all_clients_reaped = true;
         unchanged(&source)?;
         // This explicit synthetic trust is test authorization, never a GUI action.
+        if profile == ObservationProfile::GcDiagnostic {
+            verify_gc_logs_absent(&distribution)?;
+        }
         all_clients_reaped = false;
         client = Some(Client::spawn_agent(&binary, &root, true)?);
         let client = client.as_mut().unwrap();
@@ -327,14 +501,13 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             open_started,
             ResourceLatency::OpenExactDiagnostics,
         );
-        if resource_phase(started, ResourcePhase::SemanticReadyIdle)
-            || profile == ObservationProfile::ResourceBaseline
+        if resource_phase(started, ResourcePhase::SemanticReadyIdle) || profile.observes_resources()
         {
             // Defined observation interval after exact diagnostics, not a claim
             // that JDT indexing or other background work has fully settled.
             thread::sleep(Duration::from_secs(match profile {
                 ObservationProfile::Quick => 2,
-                ObservationProfile::ResourceBaseline => 30,
+                ObservationProfile::ResourceBaseline | ObservationProfile::GcDiagnostic => 30,
             }));
         }
         resource_phase(started, ResourcePhase::QueryWorkload);
@@ -498,7 +671,7 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             correction_started,
             ResourceLatency::CorrectionExactDiagnostics,
         );
-        if profile == ObservationProfile::ResourceBaseline {
+        if profile.observes_resources() {
             resource_phase(started, ResourcePhase::CorrectionReadyIdle);
             // A second fixed observation window, not an indexing-settled claim.
             thread::sleep(Duration::from_secs(30));
@@ -563,12 +736,19 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
                 outcome.status != StopStatus::Error,
                 "normal Java stop reported cleanup errors",
             )?;
+            natural_shutdown_verified = gc_shutdown_is_natural(&outcome, actual);
             resource_latency(
                 profile,
                 started,
                 stop_started,
                 ResourceLatency::StopVerifiedRootExit,
             );
+            if profile == ObservationProfile::GcDiagnostic {
+                require(
+                    natural_shutdown_verified,
+                    "GC control requires natural Java exit zero and verified graceful cleanup",
+                )?;
+            }
             Ok(())
         });
         if let Err(error) = stop {
@@ -624,6 +804,27 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         }
         None => false,
     };
+    if profile == ObservationProfile::GcDiagnostic
+        && natural_shutdown_verified
+        && record.root_observed_live
+        && record.root_identity_verified
+        && record.client_reaped
+        && record.synthetic_root_removed
+        && cleanup_errors.is_empty()
+    {
+        let selection = checked(|| {
+            finalize_gc_selection(
+                gc_selection
+                    .as_mut()
+                    .ok_or("GC selection reservation missing")?,
+                observed.as_ref().ok_or("GC root observer missing")?,
+            )
+        });
+        if let Err(error) = selection {
+            failure_stage.get_or_insert(FailureStage::FixtureCleanup);
+            cleanup_errors.push(error);
+        }
+    }
     record.primary_failed = primary.is_err();
     record.cleanup_failed = !cleanup_errors.is_empty();
     record.success = primary.is_ok()
@@ -646,7 +847,8 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         && record.cleanup_joined
         && record.root_handle_signaled
         && record.client_reaped
-        && record.synthetic_root_removed;
+        && record.synthetic_root_removed
+        && (profile != ObservationProfile::GcDiagnostic || natural_shutdown_verified);
     record.failure_stage = if record.success {
         FailureStage::None
     } else {
@@ -669,4 +871,128 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         }
         Ok(()) => Ok(()),
     }
+}
+
+#[test]
+fn gc_control_is_separate_from_both_shipping_observation_profiles() {
+    for profile in [
+        ObservationProfile::Quick,
+        ObservationProfile::ResourceBaseline,
+    ] {
+        assert_eq!(
+            profile.agent_selection(),
+            ("CEDAR_AGENT_BIN", "cedar-agent.exe")
+        );
+        assert_eq!(profile.evidence().kind, "windows_java_production");
+        assert_eq!(profile.evidence().route, "normal_agent_client");
+    }
+    let control = ObservationProfile::GcDiagnostic;
+    assert_eq!(
+        control.agent_selection(),
+        (
+            "CEDAR_GC_DIAGNOSTIC_AGENT_BIN",
+            "cedar-agent-java-gc-diagnostic.exe"
+        )
+    );
+    assert_eq!(control.evidence().kind, "windows_java_gc_control");
+    assert_eq!(control.evidence().route, "diagnostic_agent_normal_client");
+    assert!(control.observes_resources());
+}
+
+#[test]
+fn gc_control_rejects_forced_zero_exit_and_incomplete_shutdown() {
+    let natural = JavaStopOutcome {
+        status: StopStatus::Graceful,
+        reason: StopReason::RootExited,
+        root_exit_code: 0,
+        cleanup_joined: true,
+        shutdown_response_received: true,
+        exit_frame_completed: true,
+    };
+    assert!(gc_shutdown_is_natural(&natural, 0));
+    assert!(!gc_shutdown_is_natural(&natural, 1));
+    for invalid in [
+        JavaStopOutcome {
+            status: StopStatus::Forced,
+            ..natural.clone()
+        },
+        JavaStopOutcome {
+            status: StopStatus::Error,
+            ..natural.clone()
+        },
+        JavaStopOutcome {
+            reason: StopReason::GraceExpired,
+            ..natural.clone()
+        },
+        JavaStopOutcome {
+            root_exit_code: 1,
+            ..natural.clone()
+        },
+        JavaStopOutcome {
+            cleanup_joined: false,
+            ..natural.clone()
+        },
+        JavaStopOutcome {
+            shutdown_response_received: false,
+            ..natural.clone()
+        },
+        JavaStopOutcome {
+            exit_frame_completed: false,
+            ..natural.clone()
+        },
+    ] {
+        assert!(!gc_shutdown_is_natural(&invalid, 0));
+    }
+}
+
+#[test]
+fn gc_selection_reservation_requires_exact_fresh_in_distribution_file() -> CheckResult<()> {
+    let fixture = io(tempfile::tempdir())?;
+    let distribution = ordinary_path(fixture.path())?;
+    let selection = distribution.join(GC_SELECTION_FILE);
+    assert!(prepare_gc_selection(&distribution, &selection).is_err());
+    io(fs::write(
+        distribution.join(GC_DISTRIBUTION_MARKER),
+        GC_DISTRIBUTION_MARKER_CONTENTS,
+    ))?;
+    assert!(prepare_gc_selection(&distribution, &distribution.join("selection.json")).is_err());
+    let nested = distribution.join("nested");
+    io(fs::create_dir(&nested))?;
+    assert!(prepare_gc_selection(&distribution, &nested.join(GC_SELECTION_FILE)).is_err());
+    assert!(
+        prepare_gc_selection(&distribution, &nested.join("..").join(GC_SELECTION_FILE)).is_err()
+    );
+    let reserved = prepare_gc_selection(&distribution, &selection)?;
+    assert_eq!(io(reserved.metadata())?.len(), 0);
+    assert!(prepare_gc_selection(&distribution, &selection).is_err());
+    drop(reserved);
+    assert_eq!(io(fs::read(selection))?, b"");
+    Ok(())
+}
+
+#[test]
+fn gc_selection_rejects_all_preexisting_logging_namespace_entries() -> CheckResult<()> {
+    let fixture = io(tempfile::tempdir())?;
+    let distribution = ordinary_path(fixture.path())?;
+    io(fs::write(
+        distribution.join(GC_DISTRIBUTION_MARKER),
+        GC_DISTRIBUTION_MARKER_CONTENTS,
+    ))?;
+    let selection = distribution.join(GC_SELECTION_FILE);
+    for name in [
+        "cedar-gc-314.log",
+        "CEDAR-GC-314.log.0",
+        "cedar-gc-unexpected",
+        "cedar-gc.log",
+    ] {
+        let log = distribution.join(name);
+        io(fs::write(&log, b"private preexisting content"))?;
+        assert!(prepare_gc_selection(&distribution, &selection).is_err());
+        assert!(!selection.exists());
+        io(fs::remove_file(log))?;
+    }
+    io(fs::create_dir(distribution.join("cedar-gc-directory")))?;
+    assert!(prepare_gc_selection(&distribution, &selection).is_err());
+    assert!(!selection.exists());
+    Ok(())
 }
