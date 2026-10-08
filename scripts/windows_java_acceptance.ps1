@@ -185,8 +185,9 @@ finally {
                 $collected = Get-Content -LiteralPath $CrashEvidencePath -Raw | ConvertFrom-Json
                 $sessions = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_session' })
                 $cleanup = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_cleanup' })
-                if ($sessions.Count -ne 3 -or $cleanup.Count -ne 1) {
-                    throw 'Expected three real agent Java sessions and one cleanup witness; zero filtered tests cannot pass.'
+                $diagnostics = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_diagnostics' })
+                if ($sessions.Count -ne 3 -or $cleanup.Count -ne 1 -or $diagnostics.Count -ne 6) {
+                    throw 'Expected three real agent Java sessions, six diagnostic receipts and one cleanup witness; zero filtered tests cannot pass.'
                 }
                 $expectedModes = @('initial', 'fresh_data', 'reused_data')
                 for ($index = 0; $index -lt 3; $index++) {
@@ -195,8 +196,20 @@ finally {
                         -not $record.semantic_checks_passed -or -not $record.source_unchanged -or
                         -not $record.root_identity_verified -or -not $record.jdk_symbol_verified -or
                         -not $record.root_handle_signaled -or $record.root_exit_code -ne 0 -or
-                        -not $record.gracefully_exited -or -not $record.versions_2_3_4_synced) {
+                        -not $record.gracefully_exited -or -not $record.versions_2_3_4_synced -or
+                        -not $record.correction_change_acknowledged -or
+                        $record.correction_change_result -cne 'acknowledged') {
                         throw 'Agent Java session evidence did not prove required semantics, identity and natural zero exit.'
+                    }
+                }
+                for ($index = 0; $index -lt 6; $index++) {
+                    $record = $diagnostics[$index]
+                    $expectedSession = [Math]::Floor($index / 2) + 1
+                    $expectedPhase = if (($index % 2) -eq 0) { 'initial' } else { 'correction' }
+                    if ($record.session -ne $expectedSession -or $record.phase -cne $expectedPhase -or
+                        $record.result -cne 'matched' -or $record.matching_batches -lt 1 -or
+                        $record.counters_saturated -or $record.elapsed_saturated) {
+                        throw 'Diagnostic receipts did not prove both exact assertions in each Java session.'
                     }
                 }
                 if ($cleanup[0].sessions_completed -ne 3 -or -not $cleanup[0].success -or

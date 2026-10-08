@@ -381,3 +381,15 @@ Protocol document paths are `project with spaces 雪/src/Main.java`; location co
 semantic checks, source preservation and lifecycle deadlines remain unchanged.
 The 0.8.13 public native run failed initial diagnostics while natural root/agent
 cleanup passed. The corrected layout still requires a new exact native verdict.
+
+
+### 0.8.15 diagnostic classification
+
+A typed receipt accompanies each initial/correction diagnostic wait. It exposes
+only bounded counts and fixed result categories, plus the explicit version5
+change acknowledgement. Raw payloads remain private. Successful acceptance now
+requires six ordered matched receipts as well as the existing three successful
+sessions and cleanup receipt. Predicates, changes and timeouts are unchanged.
+The 0.8.14 first real-agent editor session passed, but the fresh-data session
+failed at correction; the new evidence distinguishes acknowledgement, transport
+and diagnostic predicate failures without inferring a timeout from a stage name.

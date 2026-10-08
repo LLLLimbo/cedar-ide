@@ -123,7 +123,8 @@ class CrashCollectionTests(unittest.TestCase):
             'real_completion': True, 'deferred_import_resolve': True,
             'primary_identity_unchanged': True, 'two_atomic_edits': True,
             'advisory_command_skipped': True, 'actual_undo': True, 'actual_redo': True,
-            'versions_2_3_4_synced': True, 'correction_diagnostics': True, 'source_unchanged': True,
+            'versions_2_3_4_synced': True, 'correction_change_acknowledged': True,
+            'correction_change_result': 'acknowledged', 'correction_diagnostics': True, 'source_unchanged': True,
             'root_observed_live': True, 'root_identity_verified': True, 'jdk_symbol_verified': True,
             'shutdown_api_succeeded': True, 'root_handle_signaled': True, 'gracefully_exited': True,
             'root_exit_code': 0, 'shutdown_elapsed_ms': 10 * number,
@@ -136,6 +137,19 @@ class CrashCollectionTests(unittest.TestCase):
 
     def agent_source(self, records):
         return self.private_source('private-agent.txt', '\n'.join(json.dumps(record) for record in records))
+
+    def agent_diagnostics_fixture(self):
+        return {
+            'kind': 'windows_java_diagnostics', 'session': 1, 'phase': 'initial', 'result': 'matched',
+            'elapsed_ms': 1000, 'elapsed_saturated': False,
+            'polls': 1, 'events': 2, 'diagnostic_batches': 3, 'uri_match_batches': 4,
+            'parsed_batches': 5, 'version_match_batches': 6, 'unversioned_batches': 7,
+            'eligible_batches': 8, 'eligible_empty_batches': 9, 'eligible_error_free_batches': 10,
+            'error_diagnostics': 11, 'warning_diagnostics': 12, 'expected_message_diagnostics': 13,
+            'expected_severity_diagnostics': 14, 'expected_range_diagnostics': 15,
+            'expected_joint_diagnostics': 16, 'eligible_expected_joint_diagnostics': 17,
+            'eligible_error_diagnostics': 18, 'matching_batches': 19, 'counters_saturated': False,
+        }
 
     def link(self, target, path, directory=False):
         try:
@@ -439,6 +453,7 @@ class CrashCollectionTests(unittest.TestCase):
                 if type(value) is bool:
                     record[key] = False
         session['root_exit_code'] = None
+        session['correction_change_result'] = 'not_attempted'
         cleanup.update(sessions_completed=0, primary_failed=True, cleanup_failed=True, failure_stage='stop')
         path = self.agent_source([session, cleanup])
         report = collector.collect(self.root, agent_transcript=path)
@@ -447,18 +462,19 @@ class CrashCollectionTests(unittest.TestCase):
         self.assertEqual(report['acceptance_result'], 'not_evaluated')
 
     def test_agent_records_do_not_expand_direct_java_transcript_schema(self):
-        agent = self.agent_source(self.agent_fixture())
+        agent = self.agent_source(self.agent_fixture() + [self.agent_diagnostics_fixture()])
         java = self.private_source('private-java.txt', '{"kind":"fixture_cleanup","removed":true}\n')
         report = collector.collect(self.root, java_transcript=agent, agent_transcript=java)
         self.assertEqual(report['status'], 'complete')
         self.assertEqual(report['java_transcript']['evidence']['records'], [])
         self.assertEqual(report['agent_transcript']['evidence']['records'], [])
-        self.assertEqual(report['java_transcript']['evidence']['omitted_other_json_records'], 4)
+        self.assertEqual(report['java_transcript']['evidence']['omitted_other_json_records'], 5)
         self.assertEqual(report['agent_transcript']['evidence']['omitted_other_json_records'], 1)
 
     def test_agent_session_numbers_require_bounded_integers(self):
         for kind, field, valid_values in (
                 ('windows_java_session', 'session', (1, 2, 3)),
+                ('windows_java_diagnostics', 'session', (1, 2, 3)),
                 ('windows_java_cleanup', 'sessions_completed', (0, 1, 2, 3))):
             for value in valid_values + (-1, 0, 4, 2 ** 53, True, False, 1.0, None, '1', 'SECRET_SESSION'):
                 valid = type(value) is int and value in valid_values
@@ -475,10 +491,12 @@ class CrashCollectionTests(unittest.TestCase):
                         self.assertNotIn(field, record)
                         self.assertIn('invalid_field_' + field, source['errors'])
                     self.assertNotIn('SECRET_', json.dumps(report))
-        path = self.agent_source([{'kind': 'windows_java_session', 'mode': 'initial'}])
-        report = collector.collect(self.root, agent_transcript=path)
-        self.assertEqual(report['status'], 'error')
-        self.assertIn('missing_session', report['agent_transcript']['errors'])
+        for kind in ('windows_java_session', 'windows_java_diagnostics'):
+            with self.subTest(kind=kind, missing_session=True):
+                path = self.agent_source([{'kind': kind}])
+                report = collector.collect(self.root, agent_transcript=path)
+                self.assertEqual(report['status'], 'error')
+                self.assertIn('missing_session', report['agent_transcript']['errors'])
 
     def test_agent_count_and_exit_code_bounds_reject_wrong_types(self):
         for field, maximum, nullable in (('initialization_ms', 2 ** 53 - 1, False),
@@ -501,7 +519,9 @@ class CrashCollectionTests(unittest.TestCase):
     def test_agent_enum_and_boolean_fields_reject_untrusted_values(self):
         path = self.agent_source([
             {'kind': 'windows_java_session', 'session': 1, 'mode': 'SECRET_MODE',
-             'semantic_checks_passed': 1, 'root_handle_signaled': 'SECRET_BOOLEAN'},
+             'semantic_checks_passed': 1, 'root_handle_signaled': 'SECRET_BOOLEAN',
+             'correction_change_acknowledged': 'SECRET_ACKNOWLEDGED',
+             'correction_change_result': 'SECRET_CHANGE_RESULT'},
             {'kind': 'windows_java_cleanup', 'sessions_completed': 0,
              'failure_stage': 'SECRET_STAGE', 'success': None, 'primary_failed': 0},
         ])
@@ -511,6 +531,8 @@ class CrashCollectionTests(unittest.TestCase):
             'invalid_field_mode', 'invalid_field_semantic_checks_passed',
             'invalid_field_root_handle_signaled', 'invalid_field_failure_stage',
             'invalid_field_success', 'invalid_field_primary_failed',
+            'invalid_field_correction_change_acknowledged',
+            'invalid_field_correction_change_result',
         })
         self.assertNotIn('SECRET_', json.dumps(report))
         stages = ('none', 'setup', 'initialize', 'open', 'diagnostics', 'hover', 'definition',
@@ -522,6 +544,90 @@ class CrashCollectionTests(unittest.TestCase):
         self.assertEqual(report['status'], 'complete')
         self.assertEqual([record['failure_stage'] for record in report['agent_transcript']['evidence']['records']],
                          list(stages))
+
+    def test_agent_diagnostics_keep_only_bounded_evidence_and_all_result_states(self):
+        expected = [{**self.agent_diagnostics_fixture(), 'phase': phase, 'result': result,
+                     'counters_saturated': phase == 'correction', 'elapsed_saturated': result == 'timeout'}
+                    for phase in ('initial', 'correction')
+                    for result in ('matched', 'timeout', 'request_error', 'malformed_events',
+                                   'truncated', 'lagged', 'closed')]
+        records = [{**record, 'uri': 'file:///SECRET_DIAGNOSTIC_PATH/Main.java',
+                    'source': 'SECRET_SOURCE_BYTES', 'message': 'SECRET_DIAGNOSTIC_MESSAGE',
+                    'errors': ['SECRET_REQUEST_ERROR'], 'stack': 'SECRET_STACK',
+                    'payload': {'diagnostics': ['SECRET_RAW_DIAGNOSTIC']},
+                    'environment': {'TOKEN': 'SECRET_ENV'}, 'SECRET_UNKNOWN_FIELD': True}
+                   for record in expected]
+        path = self.agent_source(records)
+        raw = path.read_bytes()
+        report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['acceptance_result'], 'not_evaluated')
+        source = report['agent_transcript']
+        self.assertEqual(source['status'], 'collected')
+        self.assertFalse(source['truncated'])
+        self.assertEqual(source['sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(source['bytes'], len(raw))
+        self.assertEqual(source['evidence']['records'], expected)
+        for secret in ('SECRET_', 'file:///', str(self.root), 'payload', 'environment'):
+            self.assertNotIn(secret, json.dumps(report))
+
+    def test_agent_diagnostic_counters_and_elapsed_time_require_bounded_integers(self):
+        counters = [key for key, value in self.agent_diagnostics_fixture().items()
+                    if type(value) is int and key not in ('session', 'elapsed_ms')]
+        self.assertEqual(len(counters), 19)
+        for field, maximum in [(field, 65535) for field in counters] + [('elapsed_ms', 300000)]:
+            for value in (0, maximum, -1, maximum + 1, 2 ** 53, True, False, 1.0, None, '1', 'SECRET_COUNTER'):
+                valid = type(value) is int and 0 <= value <= maximum
+                with self.subTest(field=field, value=value):
+                    record = {**self.agent_diagnostics_fixture(), field: value}
+                    path = self.agent_source([record])
+                    report = collector.collect(self.root, agent_transcript=path)
+                    source = report['agent_transcript']
+                    sanitized = source['evidence']['records'][0]
+                    self.assertEqual(report['status'], 'complete' if valid else 'error')
+                    if valid:
+                        self.assertEqual(sanitized[field], value)
+                    else:
+                        self.assertNotIn(field, sanitized)
+                        self.assertEqual(source['errors'], ['invalid_field_' + field])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_agent_correction_change_result_preserves_only_known_outcomes(self):
+        outcomes = ('not_attempted', 'request_error', 'acknowledgement_mismatch', 'acknowledged')
+        for value in outcomes + ('SECRET_RESULT', 'matched', 1, True, None, ['acknowledged']):
+            valid = isinstance(value, str) and value in outcomes
+            with self.subTest(value=value):
+                path = self.agent_source([{
+                    'kind': 'windows_java_session', 'session': 2, 'correction_change_result': value,
+                    'correction_change_acknowledged': value == 'acknowledged',
+                }])
+                report = collector.collect(self.root, agent_transcript=path)
+                source = report['agent_transcript']
+                record = source['evidence']['records'][0]
+                self.assertEqual(report['status'], 'complete' if valid else 'error')
+                if valid:
+                    self.assertEqual(record['correction_change_result'], value)
+                    self.assertEqual(record['correction_change_acknowledged'], value == 'acknowledged')
+                else:
+                    self.assertNotIn('correction_change_result', record)
+                    self.assertEqual(source['errors'], ['invalid_field_correction_change_result'])
+                self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_agent_diagnostic_enums_and_saturation_are_strict(self):
+        for field, invalid_values in (
+                ('phase', ('SECRET_PHASE', 'fresh_data', 1, True, None, ['initial'])),
+                ('result', ('SECRET_RESULT', 'success', 1, False, None, {'matched': True})),
+                ('counters_saturated', ('SECRET_BOOLEAN', 'false', 0, 1, None, [])),
+                ('elapsed_saturated', ('SECRET_BOOLEAN', 'false', 0, 1, None, []))):
+            for value in invalid_values:
+                with self.subTest(field=field, value=value):
+                    path = self.agent_source([{**self.agent_diagnostics_fixture(), field: value}])
+                    report = collector.collect(self.root, agent_transcript=path)
+                    source = report['agent_transcript']
+                    self.assertEqual(report['status'], 'error')
+                    self.assertEqual(source['errors'], ['invalid_field_' + field])
+                    self.assertNotIn(field, source['evidence']['records'][0])
+                    self.assertNotIn('SECRET_', json.dumps(report))
 
     def test_agent_missing_malformed_and_read_failed_sources_keep_safe_errors(self):
         report = collector.collect(self.root, agent_transcript='missing-private-agent.txt')
@@ -604,6 +710,8 @@ class CrashCollectionTests(unittest.TestCase):
 
     def test_agent_cli_collects_failures_and_errors_without_claiming_acceptance(self):
         records = self.agent_fixture()
+        records.insert(1, {**self.agent_diagnostics_fixture(), 'result': 'timeout',
+                           'message': 'SECRET_TIMEOUT_DIAGNOSTIC'})
         records[-1].update(success=False, primary_failed=True, failure_stage='correction',
                            error='SECRET_FAILURE_ERROR')
         path = self.agent_source(records)
@@ -615,6 +723,7 @@ class CrashCollectionTests(unittest.TestCase):
         self.assertEqual(collected.returncode, 0, collected.stderr)
         report = json.loads(output.read_text())
         self.assertFalse(report['agent_transcript']['evidence']['records'][-1]['success'])
+        self.assertEqual(report['agent_transcript']['evidence']['records'][1]['result'], 'timeout')
         self.assertFalse(report['java_transcript']['evidence']['records'][0]['windows_full_acceptance'])
         self.assertEqual(report['acceptance_result'], 'not_evaluated')
         self.assertEqual(json.loads(collected.stdout)['acceptance_result'], 'not_evaluated')

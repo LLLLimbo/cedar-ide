@@ -1,4 +1,4 @@
-# Verification report · checkpoint 9D agent/editor fixture layout / 0.8.14 · 2026-10-08
+# Verification report · checkpoint 9D agent/editor diagnostic classification / 0.8.15 · 2026-10-08
 
 This checkpoint adds an opt-in real Windows Java acceptance path through the
 nonshipping agent host and the actual headless editor transaction/history code.
@@ -39,6 +39,36 @@ Document paths change to project with spaces 雪/src/Main.java. Exact source, UR
 diagnostic, transaction and lifecycle assertions and deadlines are retained.
 The next native run must confirm this correction; no runtime cause or successful
 editor result is inferred solely from the static layout rule.
+
+## 0.8.14 result and bounded diagnostic evidence
+
+Exact public [`29a4f9da1279d591de34d91ee1009de35e2240ab`](https://github.com/LLLLimbo/cedar-ide/commit/29a4f9da1279d591de34d91ee1009de35e2240ab)
+[passed Ubuntu CI; Windows agent/editor acceptance remained incomplete](https://github.com/LLLLimbo/cedar-ide/actions/runs/37720374043).
+The direct three-session probe passed in 38.658 seconds. The first real-agent
+session passed exact diagnostics/definition, completion/import resolution,
+atomic edits, actual undo/redo, versions 2/3/4, correction diagnostics and natural
+exit0 (530 ms shutdown). The fresh-data session passed the edit checks but failed
+at the correction stage; it then exited naturally with code0 (1,002 ms shutdown).
+The agent and observed roots exited, disk source remained unchanged, and the
+generated fixture was removed. Overall acceptance remained unsuccessful and the
+third session was not reached.
+
+The existing stage field covers the version5 change request, its URI check and
+subsequent diagnostic polling. It does not establish which of these failed or
+whether a diagnostic deadline expired. Version 0.8.15 adds an explicit exact
+version5/URI acknowledgement flag and one bounded classification receipt for
+each diagnostic wait. Receipts distinguish matched, timeout, request error,
+malformed events, truncation, lag and closure; counters separate URI, parse,
+version, severity, message-category and range predicates. They contain no raw
+message, URI, source or arbitrary error text. The sanitizer uses a separate
+agent-only whitelist and numeric bounds.
+
+The exact semantic predicates, change sequence and original deadlines remain.
+The script requires six ordered matched diagnostic receipts and three correction
+acknowledgements in addition to the existing semantic and cleanup requirements.
+This is an evidence checkpoint, not a claim that the second-session failure is
+fixed. Its next exact native run must establish the failing condition or full
+acceptance; no unchanged retry is substituted for diagnosis.
 
 ## New agent/editor acceptance
 

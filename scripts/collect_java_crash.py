@@ -91,11 +91,24 @@ AGENT_TRANSCRIPT_FIELDS = {
         'semantic_checks_passed', 'exact_diagnostics', 'exact_definition', 'real_completion',
         'deferred_import_resolve', 'primary_identity_unchanged', 'two_atomic_edits',
         'advisory_command_skipped', 'actual_undo', 'actual_redo', 'versions_2_3_4_synced',
-        'correction_diagnostics', 'source_unchanged', 'root_observed_live',
+        'correction_change_acknowledged', 'correction_diagnostics', 'source_unchanged', 'root_observed_live',
         'root_identity_verified', 'jdk_symbol_verified', 'shutdown_api_succeeded',
         'root_handle_signaled', 'gracefully_exited'), 'bool')
         | {'session': ('integer_range', 1, 3), 'mode': ('initial', 'fresh_data', 'reused_data'),
-           'initialization_ms': 'count', 'root_exit_code': '?u32', 'shutdown_elapsed_ms': 'count'},
+           'initialization_ms': 'count', 'root_exit_code': '?u32', 'shutdown_elapsed_ms': 'count',
+           'correction_change_result': ('not_attempted', 'request_error', 'acknowledgement_mismatch',
+                                         'acknowledged')},
+    'windows_java_diagnostics': dict.fromkeys((
+        'polls', 'events', 'diagnostic_batches', 'uri_match_batches', 'parsed_batches',
+        'version_match_batches', 'unversioned_batches', 'eligible_batches', 'eligible_empty_batches',
+        'eligible_error_free_batches', 'error_diagnostics', 'warning_diagnostics',
+        'expected_message_diagnostics', 'expected_severity_diagnostics', 'expected_range_diagnostics',
+        'expected_joint_diagnostics', 'eligible_expected_joint_diagnostics',
+        'eligible_error_diagnostics', 'matching_batches'), ('integer_range', 0, 65535))
+        | {'session': ('integer_range', 1, 3), 'phase': ('initial', 'correction'),
+           'result': ('matched', 'timeout', 'request_error', 'malformed_events', 'truncated', 'lagged', 'closed'),
+           'counters_saturated': 'bool', 'elapsed_saturated': 'bool',
+           'elapsed_ms': ('integer_range', 0, 300000)},
     'windows_java_cleanup': dict.fromkeys((
         'agent_exit_zero', 'source_unchanged', 'observed_roots_exited', 'synthetic_root_removed',
         'success', 'primary_failed', 'cleanup_failed'), 'bool')

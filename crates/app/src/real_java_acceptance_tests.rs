@@ -109,6 +109,201 @@ pub(super) fn diagnostics_match(value: &Value, uri: &str, version: i32, correcte
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum DiagnosticPhase {
+    #[default]
+    Initial,
+    Correction,
+}
+impl DiagnosticPhase {
+    pub fn version(self) -> i32 {
+        match self {
+            Self::Initial => 1,
+            Self::Correction => 5,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum DiagnosticResult {
+    Matched,
+    Timeout,
+    #[default]
+    RequestError,
+    MalformedEvents,
+    Truncated,
+    Lagged,
+    Closed,
+}
+
+const DIAGNOSTIC_COUNTER_LIMIT: u32 = 65_535;
+fn add_diagnostic_count(counter: &mut u32, saturated: &mut bool, amount: usize) {
+    let remaining = (DIAGNOSTIC_COUNTER_LIMIT - *counter) as usize;
+    if amount > remaining {
+        *counter = DIAGNOSTIC_COUNTER_LIMIT;
+        *saturated = true;
+    } else {
+        *counter += amount as u32;
+    }
+}
+
+/// One fixed-size receipt per await. Counts classify the exact predicate without
+/// retaining or printing any server message, URI, source text or arbitrary error.
+#[derive(Default, Serialize)]
+pub(super) struct DiagnosticEvidence {
+    kind: &'static str,
+    session: u32,
+    phase: DiagnosticPhase,
+    pub result: DiagnosticResult,
+    elapsed_ms: u32,
+    elapsed_saturated: bool,
+    polls: u32,
+    events: u32,
+    diagnostic_batches: u32,
+    uri_match_batches: u32,
+    parsed_batches: u32,
+    version_match_batches: u32,
+    unversioned_batches: u32,
+    eligible_batches: u32,
+    eligible_empty_batches: u32,
+    eligible_error_free_batches: u32,
+    error_diagnostics: u32,
+    warning_diagnostics: u32,
+    expected_message_diagnostics: u32,
+    expected_severity_diagnostics: u32,
+    expected_range_diagnostics: u32,
+    expected_joint_diagnostics: u32,
+    eligible_expected_joint_diagnostics: u32,
+    eligible_error_diagnostics: u32,
+    matching_batches: u32,
+    counters_saturated: bool,
+}
+impl DiagnosticEvidence {
+    pub fn new(session: u32, phase: DiagnosticPhase) -> Self {
+        Self {
+            kind: "windows_java_diagnostics",
+            session,
+            phase,
+            ..Self::default()
+        }
+    }
+    pub fn finish_elapsed(&mut self, milliseconds: u128) {
+        self.elapsed_ms = milliseconds.min(300_000) as u32;
+        self.elapsed_saturated = milliseconds > 300_000;
+    }
+    pub fn begin_poll(&mut self) {
+        self.result = DiagnosticResult::RequestError;
+        add_diagnostic_count(&mut self.polls, &mut self.counters_saturated, 1);
+    }
+    pub fn inspect_response(
+        &mut self,
+        response: &Value,
+        expected_uri: &str,
+    ) -> Result<bool, DiagnosticResult> {
+        let result = (|| {
+            match response.get("truncated").and_then(Value::as_bool) {
+                Some(false) => {}
+                Some(true) => return Err(DiagnosticResult::Truncated),
+                None => return Err(DiagnosticResult::MalformedEvents),
+            }
+            let events = response["events"]
+                .as_array()
+                .ok_or(DiagnosticResult::MalformedEvents)?;
+            let mut matched = false;
+            for event in events {
+                add_diagnostic_count(&mut self.events, &mut self.counters_saturated, 1);
+                match event["type"].as_str() {
+                    Some("diagnostics") => {
+                        matched |= self.observe_batch(&event["value"], expected_uri);
+                    }
+                    Some("notification" | "unsupported_server_request") => {}
+                    Some("lagged") => return Err(DiagnosticResult::Lagged),
+                    Some("closed") => return Err(DiagnosticResult::Closed),
+                    _ => return Err(DiagnosticResult::MalformedEvents),
+                }
+            }
+            Ok(matched)
+        })();
+        match result {
+            Ok(true) => self.result = DiagnosticResult::Matched,
+            Err(category) => self.result = category,
+            Ok(false) => {}
+        }
+        result
+    }
+    fn observe_batch(&mut self, value: &Value, expected_uri: &str) -> bool {
+        macro_rules! count {
+            ($field:ident, $amount:expr) => {
+                add_diagnostic_count(&mut self.$field, &mut self.counters_saturated, $amount)
+            };
+        }
+        count!(diagnostic_batches, 1);
+        let uri_matches = value["uri"]
+            .as_str()
+            .is_some_and(|uri| same_local_uri(uri, expected_uri));
+        count!(uri_match_batches, usize::from(uri_matches));
+        let mut parsed = language_results::Diagnostics::default();
+        if parsed.apply(value).is_err() {
+            return false;
+        }
+        let Some(batch) = parsed.files.values().next() else {
+            return false;
+        };
+        count!(parsed_batches, 1);
+        let version_matches = batch.version.is_none_or(|v| v == self.phase.version());
+        count!(version_match_batches, usize::from(version_matches));
+        count!(unversioned_batches, usize::from(batch.version.is_none()));
+        let eligible = uri_matches && version_matches;
+        count!(eligible_batches, usize::from(eligible));
+        count!(
+            eligible_empty_batches,
+            usize::from(eligible && batch.items.is_empty())
+        );
+        let error_count = batch.items.iter().filter(|item| item.severity == 1).count();
+        count!(error_diagnostics, error_count);
+        count!(
+            warning_diagnostics,
+            batch.items.iter().filter(|item| item.severity == 2).count()
+        );
+        if eligible {
+            count!(eligible_error_diagnostics, error_count);
+            count!(eligible_error_free_batches, usize::from(error_count == 0));
+        }
+        let corrected = self.phase == DiagnosticPhase::Correction;
+        let expected_range = if corrected {
+            marker_range(&corrected_source(), "correctedOnly")
+        } else {
+            marker_range(SOURCE, "\"oops\"")
+        };
+        let expected_severity = if corrected { 2 } else { 1 };
+        for item in &batch.items {
+            let message_matches = if corrected {
+                item.message.contains("correctedOnly") && item.message.contains("not used")
+            } else {
+                item.message.contains("cannot convert from String to int")
+            };
+            let severity_matches = item.severity == expected_severity;
+            let range_matches = item.range == expected_range;
+            count!(expected_message_diagnostics, usize::from(message_matches));
+            count!(expected_severity_diagnostics, usize::from(severity_matches));
+            count!(expected_range_diagnostics, usize::from(range_matches));
+            let joint = message_matches && severity_matches && range_matches;
+            count!(expected_joint_diagnostics, usize::from(joint));
+            count!(
+                eligible_expected_joint_diagnostics,
+                usize::from(eligible && joint)
+            );
+        }
+        // Acceptance remains the original exact predicate, not any aggregate
+        // count or combination of partial witnesses from different messages.
+        let matched = diagnostics_match(value, expected_uri, self.phase.version(), corrected);
+        count!(matching_batches, usize::from(matched));
+        matched
+    }
+}
+
 pub(super) fn exact_definition(value: &Value, uri: &str) -> CheckResult<String> {
     let locations = language_results::parse_definitions(value)?;
     if locations.len() != 1
@@ -296,6 +491,16 @@ pub(super) enum SessionMode {
     ReusedData,
 }
 
+#[derive(Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CorrectionChangeResult {
+    #[default]
+    NotAttempted,
+    RequestError,
+    AcknowledgementMismatch,
+    Acknowledged,
+}
+
 #[derive(Serialize)]
 pub(super) struct SessionEvidence {
     kind: &'static str,
@@ -313,6 +518,8 @@ pub(super) struct SessionEvidence {
     pub actual_undo: bool,
     pub actual_redo: bool,
     pub versions_2_3_4_synced: bool,
+    pub correction_change_result: CorrectionChangeResult,
+    pub correction_change_acknowledged: bool,
     pub correction_diagnostics: bool,
     pub source_unchanged: bool,
     pub root_observed_live: bool,
@@ -342,6 +549,8 @@ impl SessionEvidence {
             actual_undo: false,
             actual_redo: false,
             versions_2_3_4_synced: false,
+            correction_change_result: CorrectionChangeResult::NotAttempted,
+            correction_change_acknowledged: false,
             correction_diagnostics: false,
             source_unchanged: false,
             root_observed_live: false,
@@ -489,4 +698,225 @@ fn lifecycle_evidence_is_typed_bounded_and_requires_complete_lines() {
     assert!(parse_evidence(&line.repeat(33)).is_err());
     assert!(parse_evidence(b"{\"kind\":\"private_raw_protocol\"}\n").is_err());
     assert!(parse_evidence(b"{\"kind\":\"agent_java_started\",\"session\":1,\"pid\":7,\"creation_time_100ns_since_1601\":1,\"raw\":\"private\"}\n").is_err());
+}
+
+fn diagnostic_fixture(phase: DiagnosticPhase, version: Option<i32>, uri: &str) -> Value {
+    let (range, severity, message) = match phase {
+        DiagnosticPhase::Initial => (
+            marker_range(SOURCE, "\"oops\""),
+            1,
+            "Type mismatch: cannot convert from String to int",
+        ),
+        DiagnosticPhase::Correction => (
+            marker_range(&corrected_source(), "correctedOnly"),
+            2,
+            "The value of the local variable correctedOnly is not used",
+        ),
+    };
+    json!({"uri":uri,"version":version,"diagnostics":[{"severity":severity,"message":message,"range":{"start":{"line":range.start.line,"character":range.start.character},"end":{"line":range.end.line,"character":range.end.character}}}]})
+}
+fn diagnostic_events(batch: Value) -> Value {
+    json!({"truncated":false,"events":[{"type":"diagnostics","value":batch}]})
+}
+
+#[test]
+fn diagnostic_receipt_distinguishes_versions_uris_and_valid_unversioned_witnesses() {
+    const URI: &str = "file:///fixture%20%E9%9B%AA/Main.java";
+    for phase in [DiagnosticPhase::Initial, DiagnosticPhase::Correction] {
+        for version in [Some(phase.version()), None] {
+            let mut receipt = DiagnosticEvidence::new(2, phase);
+            receipt.begin_poll();
+            assert_eq!(
+                receipt.inspect_response(
+                    &diagnostic_events(diagnostic_fixture(phase, version, URI)),
+                    URI
+                ),
+                Ok(true)
+            );
+            assert_eq!(receipt.result, DiagnosticResult::Matched);
+            assert_eq!(receipt.polls, 1);
+            assert_eq!(receipt.events, 1);
+            assert_eq!(receipt.parsed_batches, 1);
+            assert_eq!(receipt.uri_match_batches, 1);
+            assert_eq!(receipt.version_match_batches, 1);
+            assert_eq!(receipt.unversioned_batches, u32::from(version.is_none()));
+            assert_eq!(receipt.eligible_batches, 1);
+            assert_eq!(receipt.expected_joint_diagnostics, 1);
+            assert_eq!(receipt.eligible_expected_joint_diagnostics, 1);
+            assert_eq!(receipt.matching_batches, 1);
+        }
+        for (uri, version) in [
+            (URI, phase.version() - 1),
+            ("file:///other.java", phase.version()),
+        ] {
+            let mut receipt = DiagnosticEvidence::new(2, phase);
+            receipt.begin_poll();
+            assert_eq!(
+                receipt.inspect_response(
+                    &diagnostic_events(diagnostic_fixture(phase, Some(version), uri)),
+                    URI
+                ),
+                Ok(false)
+            );
+            assert_eq!(receipt.parsed_batches, 1);
+            assert_eq!(receipt.uri_match_batches, u32::from(uri == URI));
+            assert_eq!(
+                receipt.version_match_batches,
+                u32::from(version == phase.version())
+            );
+            assert_eq!(receipt.expected_joint_diagnostics, 1);
+            assert_eq!(receipt.eligible_batches, 0);
+            assert_eq!(receipt.eligible_expected_joint_diagnostics, 0);
+            assert_eq!(receipt.matching_batches, 0);
+        }
+    }
+}
+
+#[test]
+fn diagnostic_receipt_separates_wrong_triples_empty_batches_and_residual_errors() {
+    const URI: &str = "file:///fixture/Main.java";
+    let baseline = diagnostic_fixture(DiagnosticPhase::Correction, Some(5), URI);
+    for field in ["message", "severity", "range"] {
+        let mut batch = baseline.clone();
+        match field {
+            "message" => batch["diagnostics"][0]["message"] = json!("unrelated private text"),
+            "severity" => batch["diagnostics"][0]["severity"] = json!(3),
+            "range" => batch["diagnostics"][0]["range"]["start"]["character"] = json!(0),
+            _ => unreachable!(),
+        }
+        let mut receipt = DiagnosticEvidence::new(1, DiagnosticPhase::Correction);
+        assert_eq!(
+            receipt.inspect_response(&diagnostic_events(batch), URI),
+            Ok(false)
+        );
+        assert_eq!(receipt.eligible_batches, 1);
+        assert_eq!(
+            receipt.expected_message_diagnostics,
+            u32::from(field != "message")
+        );
+        assert_eq!(
+            receipt.expected_severity_diagnostics,
+            u32::from(field != "severity")
+        );
+        assert_eq!(
+            receipt.expected_range_diagnostics,
+            u32::from(field != "range")
+        );
+        assert_eq!(receipt.expected_joint_diagnostics, 0);
+    }
+    let mut residual = baseline.clone();
+    residual["diagnostics"]
+        .as_array_mut()
+        .unwrap()
+        .push(diagnostic_fixture(DiagnosticPhase::Initial, Some(5), URI)["diagnostics"][0].clone());
+    let mut receipt = DiagnosticEvidence::new(1, DiagnosticPhase::Correction);
+    assert_eq!(
+        receipt.inspect_response(&diagnostic_events(residual), URI),
+        Ok(false)
+    );
+    assert_eq!(receipt.warning_diagnostics, 1);
+    assert_eq!(receipt.error_diagnostics, 1);
+    assert_eq!(receipt.eligible_error_diagnostics, 1);
+    assert_eq!(receipt.eligible_error_free_batches, 0);
+    assert_eq!(receipt.eligible_expected_joint_diagnostics, 1);
+    assert_eq!(receipt.matching_batches, 0);
+    let mut empty = baseline.clone();
+    empty["diagnostics"] = json!([]);
+    let mut receipt = DiagnosticEvidence::new(1, DiagnosticPhase::Correction);
+    assert_eq!(
+        receipt.inspect_response(&diagnostic_events(empty), URI),
+        Ok(false)
+    );
+    assert_eq!(receipt.eligible_empty_batches, 1);
+    assert_eq!(receipt.eligible_error_free_batches, 1);
+    assert_eq!(receipt.matching_batches, 0);
+    let mut malformed = baseline;
+    malformed["diagnostics"][0]["range"] = Value::Null;
+    let mut receipt = DiagnosticEvidence::new(1, DiagnosticPhase::Correction);
+    assert_eq!(
+        receipt.inspect_response(&diagnostic_events(malformed), URI),
+        Ok(false)
+    );
+    assert_eq!(receipt.diagnostic_batches, 1);
+    assert_eq!(receipt.parsed_batches, 0);
+}
+
+#[test]
+fn diagnostic_stream_classification_rejects_loss_and_malformed_frames() {
+    const URI: &str = "file:///fixture/Main.java";
+    let good = diagnostic_events(diagnostic_fixture(DiagnosticPhase::Initial, Some(1), URI));
+    let mut truncated = good.clone();
+    truncated["truncated"] = json!(true);
+    for (response, expected) in [
+        (Value::Null, DiagnosticResult::MalformedEvents),
+        (
+            json!({"truncated":false,"events":null}),
+            DiagnosticResult::MalformedEvents,
+        ),
+        (
+            json!({"truncated":"false","events":[]}),
+            DiagnosticResult::MalformedEvents,
+        ),
+        (
+            json!({"truncated":false,"events":[{"type":"unknown"}]}),
+            DiagnosticResult::MalformedEvents,
+        ),
+        (truncated, DiagnosticResult::Truncated),
+        (
+            json!({"truncated":false,"events":[{"type":"lagged","dropped":1}]}),
+            DiagnosticResult::Lagged,
+        ),
+        (
+            json!({"truncated":false,"events":[{"type":"closed","message":"private error"}]}),
+            DiagnosticResult::Closed,
+        ),
+    ] {
+        let mut receipt = DiagnosticEvidence::new(1, DiagnosticPhase::Initial);
+        assert_eq!(receipt.inspect_response(&response, URI), Err(expected));
+        assert_eq!(receipt.result, expected);
+        assert_eq!(receipt.matching_batches, 0);
+    }
+    for category in ["lagged", "closed"] {
+        let mut response = good.clone();
+        response["events"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":category}));
+        let mut receipt = DiagnosticEvidence::new(1, DiagnosticPhase::Initial);
+        assert!(
+            receipt.inspect_response(&response, URI).is_err(),
+            "a preceding match must not hide event-stream failure"
+        );
+        assert_eq!(receipt.matching_batches, 1);
+    }
+}
+
+#[test]
+fn diagnostic_receipts_are_bounded_and_never_retain_server_text() {
+    let mut receipt = DiagnosticEvidence::new(3, DiagnosticPhase::Correction);
+    assert_eq!(receipt.result, DiagnosticResult::RequestError);
+    assert_eq!(receipt.events, 0);
+    receipt.polls = DIAGNOSTIC_COUNTER_LIMIT;
+    receipt.begin_poll();
+    assert_eq!(receipt.polls, DIAGNOSTIC_COUNTER_LIMIT);
+    assert!(receipt.counters_saturated);
+    receipt.finish_elapsed(u128::MAX);
+    assert_eq!(receipt.elapsed_ms, 300_000);
+    assert!(receipt.elapsed_saturated);
+    receipt.result = DiagnosticResult::Timeout;
+    let private_uri = "file:///private-user-directory/Main.java";
+    let mut batch = diagnostic_fixture(DiagnosticPhase::Correction, Some(5), private_uri);
+    batch["diagnostics"][0]["message"] = json!("private message sentinel");
+    receipt
+        .inspect_response(&diagnostic_events(batch), private_uri)
+        .unwrap();
+    let serialized = serde_json::to_string(&receipt).unwrap();
+    assert!(serialized.len() < 2048);
+    assert!(!serialized.contains("private"));
+    assert!(serialized.contains("\"result\":\"timeout\""));
+    let mut counter = 0;
+    let mut saturated = false;
+    add_diagnostic_count(&mut counter, &mut saturated, usize::MAX);
+    assert_eq!(counter, DIAGNOSTIC_COUNTER_LIMIT);
+    assert!(saturated);
 }

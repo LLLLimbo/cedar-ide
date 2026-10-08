@@ -269,28 +269,34 @@ impl RootObservation {
 fn await_diagnostics(
     agent: &mut RawAgent,
     uri: &str,
-    version: i32,
-    corrected: bool,
+    session: u32,
+    phase: DiagnosticPhase,
 ) -> CheckResult<()> {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while Instant::now() < deadline {
-        let response = language(agent, Operation::LanguageEvents, FEATURE_TIMEOUT)?;
-        let events = response["events"]
-            .as_array()
-            .ok_or("missing language event array")?;
-        for event in events {
-            if event["type"] == "lagged" || event["type"] == "closed" {
-                return Err("language events were dropped or the server closed".into());
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(60);
+    let mut receipt = DiagnosticEvidence::new(session, phase);
+    // RawAgent transport deadlines may panic. Capture them here so this one
+    // bounded receipt is emitted before the outer session performs cleanup.
+    let outcome = checked(|| {
+        while Instant::now() < deadline {
+            receipt.begin_poll();
+            let response = language(agent, Operation::LanguageEvents, FEATURE_TIMEOUT)?;
+            match receipt.inspect_response(&response, uri) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(_) => return Err("diagnostic event stream failed; see typed receipt".into()),
             }
-            if event["type"] == "diagnostics"
-                && diagnostics_match(&event["value"], uri, version, corrected)
-            {
-                return Ok(());
-            }
+            thread::sleep(Duration::from_millis(100));
         }
-        thread::sleep(Duration::from_millis(100));
-    }
-    Err("timed out awaiting exact source-specific diagnostics".into())
+        receipt.result = DiagnosticResult::Timeout;
+        Err("timed out awaiting exact source-specific diagnostics".into())
+    });
+    receipt.finish_elapsed(started.elapsed().as_millis());
+    println!(
+        "{}",
+        serde_json::to_string(&receipt).expect("typed diagnostic evidence")
+    );
+    outcome
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -382,7 +388,7 @@ fn run_semantics(
     )?;
     unchanged(&source)?;
     stage.set(FailureStage::Diagnostics);
-    await_diagnostics(agent, &uri, 1, false)?;
+    await_diagnostics(agent, &uri, record.session, DiagnosticPhase::Initial)?;
     record.exact_diagnostics = true;
     unchanged(&source)?;
     let cursor = completion::byte_to_position(
@@ -512,6 +518,7 @@ fn run_semantics(
     // A separate unsaved correction has a unique warning witness, so an old
     // empty diagnostic batch cannot be mistaken for successful didChange.
     stage.set(FailureStage::Correction);
+    record.correction_change_result = CorrectionChangeResult::RequestError;
     let changed = language(
         agent,
         Operation::LanguageChange {
@@ -521,13 +528,17 @@ fn run_semantics(
         },
         FEATURE_TIMEOUT,
     )?;
+    record.correction_change_result = CorrectionChangeResult::AcknowledgementMismatch;
     require(
-        changed["changed"]
-            .as_str()
-            .is_some_and(|actual| same_local_uri(actual, &uri)),
-        "corrected draft URI mismatch",
+        changed["version"] == 5
+            && changed["changed"]
+                .as_str()
+                .is_some_and(|actual| same_local_uri(actual, &uri)),
+        "corrected draft version or URI mismatch",
     )?;
-    await_diagnostics(agent, &uri, 5, true)?;
+    record.correction_change_result = CorrectionChangeResult::Acknowledged;
+    record.correction_change_acknowledged = true;
+    await_diagnostics(agent, &uri, record.session, DiagnosticPhase::Correction)?;
     record.correction_diagnostics = true;
     unchanged(&source)?;
     stage.set(FailureStage::Close);
