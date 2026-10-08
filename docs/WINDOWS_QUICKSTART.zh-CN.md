@@ -4,6 +4,17 @@
 IntelliJ IDEA 的完整替代品。请从本项目对应提交的 GitHub Actions 下载，保留
 同目录的 `cedar.exe` 与 `cedar-agent.exe`；不要混用不同版本。
 
+## 运行前提
+
+本包依赖 **Microsoft Visual C++ v14 x64 运行库**及 Windows UCRT。
+已验证的两个可执行文件都导入 `VCRUNTIME140.dll` 和 `api-ms-win-crt-*`；
+因此“解压运行”不表示可以在没有这些运行库的全新系统上直接启动。
+如果尚未安装兼容运行库，或提示缺少 `VCRUNTIME140.dll`，请按
+[Microsoft 官方说明](https://learn.microsoft.com/en-GB/cpp/windows/latest-supported-vc-redist?view=msvc-170)
+选择 [x64 运行库安装包](https://aka.ms/vc14/vc_redist.x64.exe)，自行确认并安装。
+不要从其他网站单独下载 DLL。Cedar 包不携带或自动安装此运行库；已有兼容版本
+通常无需重复安装。系统支持范围和安装要求以 Microsoft 页面为准。
+
 ## 第一次打开
 
 1. 将整个 ZIP 解压到一个你有写入权限的新目录。路径可以包含空格和中文。

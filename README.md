@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十四阶段 Windows 开发包工程（**0.14.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十四阶段 Windows 开发包工程（**0.14.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -42,7 +42,7 @@ Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完�
 
 ## Windows 开发包
 
-0.14.0 增加版本化的解压运行 ZIP，包含正常发行版前端/agent、逐文件 SHA256 清单、许可证和[中文入门](docs/WINDOWS_QUICKSTART.zh-CN.md)。包与精确源码/CI 运行关联，原生 CI 从中文空格路径解压后验证信任关闭的文件操作。当前是未签名开发版；原生 GUI 与真实 SSH 未因此获得验收。见[分发与验证范围](docs/WINDOWS_BUNDLE.md)。
+0.14.0 增加版本化的解压运行 ZIP，包含正常发行版前端/agent、逐文件 SHA256 清单、许可证和[中文入门](docs/WINDOWS_QUICKSTART.zh-CN.md)。包与精确源码/CI 运行关联，原生 CI 从中文空格路径解压后验证信任关闭的文件操作。0.14.0 已通过[精确提交双平台与原生解压验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37762972011)。0.14.1 补充实际需要的 Microsoft Visual C++ v14 x64 运行库说明和官方下载链接；本包不自动安装运行库。当前是未签名开发版，原生 GUI 与真实 SSH 未因此获得验收。见[分发与验证范围](docs/WINDOWS_BUNDLE.md)。
 
 ## 磁盘对比与重载
 

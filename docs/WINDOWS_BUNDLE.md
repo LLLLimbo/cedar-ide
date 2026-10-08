@@ -6,6 +6,13 @@ service, JDK, JDT LS, test host or diagnostic executable. It is unsigned. Progra
 files can be extracted into a chosen directory; recovery data still uses the
 existing user-local location. This is not a claim of portable user-data storage.
 
+The verified 0.14.0 executables import `VCRUNTIME140.dll` and UCRT API-set DLLs.
+The package therefore requires a compatible Microsoft Visual C++ v14 x64 runtime
+and Windows UCRT. Version 0.14.1 corrects the included quick-start to state this
+prerequisite and link Microsoft's official installer. No runtime DLL is copied,
+redistributed or installed by this workflow. CI's hosted machine is not evidence
+that the ZIP runs on a clean machine without prerequisites.
+
 `scripts/package_windows_bundle.py` creates an explicit payload inventory from a
 clean, exact source checkout. It records the Cargo version, source commit, project
 CI URL, and each payload's length and SHA256 in `BUNDLE_MANIFEST.json`. The manifest
