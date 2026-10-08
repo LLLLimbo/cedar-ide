@@ -278,7 +278,7 @@ class CrashCollectionTests(unittest.TestCase):
             {'kind': 'pass', 'sessions': 3, 'windows_full_acceptance': False,
              'source_bytes_unchanged': True, 'fixture_removed': True, 'payload': 'SECRET_PASS_PAYLOAD'},
             {'kind': 'session_semantics_pass', 'session': 'initial', 'initial_diagnostics': 2,
-             'corrected_diagnostics': 1, 'checks': ['initialize', 'didOpen'], 'error': 'SECRET_SEMANTIC_ERROR'},
+             'corrected_diagnostics': 1, 'jdk_index_symbol_checked': True, 'checks': ['initialize', 'didOpen', 'jdk_workspace_symbol'], 'error': 'SECRET_SEMANTIC_ERROR'},
             {'kind': 'session_cleanup', 'session': 'initial', 'semantics_succeeded': False,
              'gracefully_exited': False, 'root_exit_code': 3221225477, 'source_unchanged': True,
              'shutdown_elapsed_ms': 10002, 'shutdown_terminal_reason': 'grace_expired',
@@ -305,6 +305,8 @@ class CrashCollectionTests(unittest.TestCase):
         records = source['evidence']['records']
         self.assertEqual(len(records), 7)
         self.assertFalse(records[0]['windows_full_acceptance'])
+        self.assertTrue(records[1]['jdk_index_symbol_checked'])
+        self.assertIn('jdk_workspace_symbol', records[1]['checks'])
         self.assertFalse(records[2]['gracefully_exited'])
         self.assertEqual(records[2]['root_exit_code'], 3221225477)
         self.assertEqual(records[2]['shutdown_elapsed_ms'], 10002)

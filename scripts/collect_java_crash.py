@@ -58,8 +58,8 @@ PROBE_OUTCOMES = ('setup_error', 'spawn_error', 'execution_deadline_exceeded',
                   'supervision_error', 'child_nonzero_exit', 'child_exited')
 SESSIONS = ('initial', 'restart_fresh_data', 'restart_same_data')
 PHASES = ('after_all_clients_dropped', 'after_semantic_queries_and_resolve',
-          'after_unsaved_correction', 'after_shutdown_or_failure_drop')
-CHECKS = ('initialize', 'didOpen', 'semantic_diagnostics', 'hover', 'completion',
+          'after_unsaved_correction', 'after_shutdown_or_failure_drop', 'after_jdk_symbol_query')
+CHECKS = ('jdk_workspace_symbol', 'initialize', 'didOpen', 'semantic_diagnostics', 'hover', 'completion',
           'definition', 'didChange', 'diagnostic_error_cleared',
           'correction_specific_warning', 'source_bytes_unchanged', 'didClose')
 TRANSCRIPT_FIELDS = {
@@ -69,7 +69,7 @@ TRANSCRIPT_FIELDS = {
             | {'elapsed_ms': 'count', 'sessions': 'count'},
     'session_semantics_pass': {'session': SESSIONS, 'elapsed_ms': 'count',
                                'initial_diagnostics': 'count', 'corrected_diagnostics': 'count',
-                               'lazy_import_resolve_checked': 'bool', 'server_commands_executed': 'bool',
+                               'lazy_import_resolve_checked': 'bool', 'jdk_index_symbol_checked': 'bool', 'server_commands_executed': 'bool',
                                'checks': ('enum_list', CHECKS)},
     'session_cleanup': dict.fromkeys(('semantics_succeeded', 'shutdown_api_succeeded', 'client_dropped',
                                      'windows_root_handle_signaled', 'source_unchanged',

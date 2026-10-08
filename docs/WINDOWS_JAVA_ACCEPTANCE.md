@@ -336,3 +336,11 @@ stdin closure and acknowledgement, and permits clean stdout EOF during a fixed
 explicit graceful phase while preserving malformed/unexpected EOF failure.
 The example still requires natural root exit0 and now retains sanitized terminal
 category and elapsed shutdown time. See [shutdown report](TEST_REPORT_PHASE9C_SHUTDOWN.md).
+
+Version 0.8.12 adds a read-only workspace/symbol query for java.lang.String with
+JDK-library results enabled in this example's initialization options. The returned
+class/container, binary URI and ordered range must be valid; source bytes are
+checked again afterward. This is a semantic index witness, not a formal join of
+all server jobs. Documentation/resolve coverage, existing deadlines and the
+independent Windows exit0 requirement remain unchanged. See
+[JDK symbol coverage](TEST_REPORT_PHASE9C_JDK_SYMBOL.md).

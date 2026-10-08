@@ -147,6 +147,35 @@ fn require_graceful_exit(code: u32) -> SmokeResult<()> {
     Ok(())
 }
 
+fn has_jdk_string_symbol(value: &Value) -> bool {
+    value.as_array().is_some_and(|items| {
+        items.iter().any(|item| {
+            item["name"] == "String"
+                && item["containerName"] == "java.lang"
+                && item["kind"] == 5
+                && item["location"]["uri"].as_str().is_some_and(|uri| {
+                    uri.strip_prefix("jdt://contents/")
+                        .is_some_and(|path| !path.is_empty())
+                        && !uri.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+                })
+                && serde_json::from_value::<Range>(item["location"]["range"].clone()).is_ok_and(
+                    |range| {
+                        [
+                            range.start.line,
+                            range.start.character,
+                            range.end.line,
+                            range.end.character,
+                        ]
+                        .into_iter()
+                        .all(|value| value <= i32::MAX as u32)
+                            && (range.start.line, range.start.character)
+                                <= (range.end.line, range.end.character)
+                    },
+                )
+        })
+    })
+}
+
 fn terminal_category(error: &cedar_language::Error) -> &'static str {
     use cedar_language::Error as RpcError;
     match error {
@@ -696,7 +725,7 @@ fn run_session(
     #[cfg(not(windows))]
     let identity = (pid, 0);
     let result = (|| -> SmokeResult<()> {
-        let initialized = client.initialize(Some(root_uri), json!({"settings":{"java":{"import":{"gradle":{"enabled":false},"maven":{"enabled":false}}}}}))?;
+        let initialized = client.initialize(Some(root_uri), json!({"extendedClientCapabilities":{"classFileContentsSupport":true},"settings":{"java":{"search":{"scope":"all"},"import":{"gradle":{"enabled":false},"maven":{"enabled":false}}}}}))?;
         println!(
             "{}",
             json!({"kind":"initialize","session":session,"elapsed_ms":start.elapsed().as_millis(),"payload":initialized})
@@ -840,10 +869,24 @@ fn run_session(
             "after_correction_before_shutdown",
             start,
         )?;
+        // Exercise indexed JDK symbols through a standard read-only request.
+        // JDT includes system libraries only with classFileContentsSupport.
+        // This witnesses the requested symbol, not completion of every hidden job.
+        let symbol_provider = &initialized["capabilities"]["workspaceSymbolProvider"];
+        if symbol_provider != &Value::Bool(true) && !symbol_provider.is_object() {
+            return Err("JDT did not advertise workspace symbol support".into());
+        }
+        let indexed = client.request("workspace/symbol", json!({"query":"java.lang.String"}))?;
+        if !has_jdk_string_symbol(&indexed) {
+            return Err(
+                "workspace symbol query did not return the indexed java.lang.String class".into(),
+            );
+        }
+        assert_source_unchanged(source, "after_jdk_symbol_query")?;
         client.did_close(document_uri)?;
         println!(
             "{}",
-            json!({"kind":"session_semantics_pass","session":session,"elapsed_ms":start.elapsed().as_millis(),"initial_diagnostics":initial_diagnostics.diagnostics.len(),"corrected_diagnostics":corrected_diagnostics.diagnostics.len(),"lazy_import_resolve_checked":resolve_imports,"server_commands_executed":false,"checks":["initialize","didOpen","semantic_diagnostics","hover","completion","definition","didChange","diagnostic_error_cleared","correction_specific_warning","source_bytes_unchanged","didClose"]})
+            json!({"kind":"session_semantics_pass","session":session,"elapsed_ms":start.elapsed().as_millis(),"initial_diagnostics":initial_diagnostics.diagnostics.len(),"corrected_diagnostics":corrected_diagnostics.diagnostics.len(),"lazy_import_resolve_checked":resolve_imports,"jdk_index_symbol_checked":true,"server_commands_executed":false,"checks":["jdk_workspace_symbol","initialize","didOpen","semantic_diagnostics","hover","completion","definition","didChange","diagnostic_error_cleared","correction_specific_warning","source_bytes_unchanged","didClose"]})
         );
         Ok(())
     })();
@@ -949,6 +992,47 @@ mod tests {
             r"C:relative",
         ] {
             assert!(ordinary_windows_local_path(Path::new(path)).is_err());
+        }
+    }
+
+    #[test]
+    fn jdk_symbol_witness_requires_exact_class_and_valid_binary_location() {
+        let symbol = json!({"name":"String","containerName":"java.lang","kind":5,
+            "location":{"uri":"jdt://contents/java.base/java.lang/String.class?fixture",
+            "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}});
+        assert!(has_jdk_string_symbol(&json!([symbol.clone()])));
+        for (key, value) in [
+            ("name", json!("StringBuilder")),
+            ("containerName", json!("fixture")),
+            ("kind", json!(6)),
+        ] {
+            let mut wrong = symbol.clone();
+            wrong[key] = value;
+            assert!(!has_jdk_string_symbol(&json!([wrong])));
+        }
+        for coordinate in ["line", "character"] {
+            let mut wrong = symbol.clone();
+            wrong["location"]["range"]["start"][coordinate] = json!(i32::MAX as u64 + 1);
+            wrong["location"]["range"]["end"][coordinate] = json!(i32::MAX as u64 + 1);
+            assert!(!has_jdk_string_symbol(&json!([wrong])));
+        }
+        for uri in [
+            "file:///fixture/String.java",
+            "jdt://contents/",
+            "jdt://contents/invalid path",
+        ] {
+            let mut wrong = symbol.clone();
+            wrong["location"]["uri"] = json!(uri);
+            assert!(!has_jdk_string_symbol(&json!([wrong])));
+        }
+        let mut wrong = symbol.clone();
+        wrong["location"]["range"]["start"]["line"] = json!(1);
+        assert!(!has_jdk_string_symbol(&json!([wrong])));
+        let mut wrong = symbol;
+        wrong["location"]["range"] = Value::Null;
+        assert!(!has_jdk_string_symbol(&json!([wrong])));
+        for value in [Value::Null, json!({}), json!([])] {
+            assert!(!has_jdk_string_symbol(&value));
         }
     }
 
