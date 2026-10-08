@@ -311,3 +311,10 @@ memory. Collection runs before scratch cleanup; failures/partial results are
 reported explicitly. No minidumps or raw hs_err files are uploaded. A diagnostic
 case's successful collection never substitutes for its child exit/cleanup result.
 See [the diagnostic checkpoint report](TEST_REPORT_PHASE9C_DIAGNOSTIC.md).
+
+The 0.8.7 native attempt stopped in the sanitizer's own Windows tests before any
+Java diagnostic process ran. Version 0.8.8 corrects documented Windows cached
+DirEntry identity fields and short/long path spelling comparison while retaining
+link/reparse and opened-file identity checks. The primary JVM crash remains
+unknown; neither a collector fix nor a local Linux pass establishes Java success.
+See [collector portability report](TEST_REPORT_PHASE9C_COLLECTOR.md).

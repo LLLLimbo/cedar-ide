@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Synthetic-only checks for the sanitized JVM crash evidence collector."""
 import hashlib
+from contextlib import contextmanager
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import stat
 import subprocess
 import sys
@@ -470,6 +471,161 @@ class CrashCollectionTests(unittest.TestCase):
         self.assertEqual(report['status'], 'partial')
         self.assertEqual(report['files'], [])
         self.assertEqual(report['issues'][0]['reason'], 'symlink_or_reparse_point')
+
+    def test_cached_windows_direntry_zero_identity_is_never_trusted(self):
+        self.log()
+        real_scandir = collector.os.scandir
+        cached_stats = []
+
+        @contextmanager
+        def cached_scandir(directory):
+            with real_scandir(directory) as entries:
+                proxies = []
+                for entry in entries:
+                    cached = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=0,
+                                             st_ino=0, st_dev=0, st_nlink=0)
+                    stat_method = mock.Mock(return_value=cached)
+                    cached_stats.append(stat_method)
+                    proxies.append(SimpleNamespace(name=entry.name, stat=stat_method))
+                yield iter(proxies)
+
+        with mock.patch.object(collector.os, 'scandir', side_effect=cached_scandir):
+            report = collector.collect(self.root)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['files'][0]['status'], 'collected')
+        self.assertTrue(cached_stats)
+        for cached in cached_stats:
+            cached.assert_not_called()
+
+    def test_windows_short_alias_normalization_follows_no_link_checks(self):
+        root = PureWindowsPath(r'C:\Users\RUNNER~1\Temp\cedar')
+        path = root / 'hs_err_pid1.log'
+        long_root = r'C:\Users\Runner Admin\Temp\cedar'
+        long_path = long_root + r'\hs_err_pid1.log'
+        info = SimpleNamespace(st_dev=8, st_ino=42)
+        events = []
+
+        def checked(value):
+            events.append('check')
+            return info
+
+        def canonical(value, *, strict):
+            self.assertTrue(strict)
+            events.append('canonical')
+            return long_root if value == root else long_path
+
+        with mock.patch.object(collector, 'check_components', side_effect=checked), \
+                mock.patch.object(collector.os.path, 'realpath', side_effect=canonical):
+            result = collector.checked_windows_canonical_path(root, path, info)
+        self.assertEqual(result, collector.windows_path_key('\\\\?\\' + long_path))
+        self.assertEqual(events, ['check', 'check', 'canonical', 'canonical', 'check', 'check'])
+        self.assertEqual(collector.windows_path_key(r'\\?\UNC\SERVER\share\file'),
+                         collector.windows_path_key(r'\\server\share\file'))
+
+    def test_windows_canonicalization_rejects_links_root_changes_and_escape(self):
+        root = PureWindowsPath(r'C:\owned')
+        path = root / 'hs_err_pid1.log'
+        info = SimpleNamespace(st_dev=8, st_ino=42)
+        changed = SimpleNamespace(st_dev=8, st_ino=43)
+        with mock.patch.object(collector, 'check_components', side_effect=ValueError('symlink_or_reparse_point')), \
+                mock.patch.object(collector.os.path, 'realpath') as canonical:
+            with self.assertRaisesRegex(ValueError, 'symlink_or_reparse_point'):
+                collector.checked_windows_canonical_path(root, path, info)
+            canonical.assert_not_called()
+        with mock.patch.object(collector, 'check_components', side_effect=[info, info, info, changed]), \
+                mock.patch.object(collector.os.path, 'realpath', side_effect=[str(root), str(path)]):
+            with self.assertRaisesRegex(ValueError, 'root_changed'):
+                collector.checked_windows_canonical_path(root, path, info)
+        with mock.patch.object(collector, 'check_components', return_value=info), \
+                mock.patch.object(collector.os.path, 'realpath', side_effect=[str(root), r'C:\outside\hs_err_pid1.log']):
+            with self.assertRaisesRegex(ValueError, 'canonical_path_outside_root'):
+                collector.checked_windows_canonical_path(root, path, info)
+
+    def test_windows_read_keeps_handle_path_root_and_file_identity_checks(self):
+        path = self.log()
+        expected, root_info = path.lstat(), self.root.lstat()
+        canonical = collector.windows_path_key(r'C:\Users\Runner Admin\owned\hs_err_pid314.log')
+        # Exercise the Windows branch with real file descriptors on every host;
+        # only the native handle-path API and canonical spellings are replaced.
+        with mock.patch.object(collector.os, 'name', 'nt'), \
+                mock.patch.object(collector.os, 'supports_dir_fd', set()), \
+                mock.patch.object(collector, 'checked_windows_canonical_path', return_value=canonical), \
+                mock.patch.object(collector, 'windows_handle_path', return_value=canonical) as handle_path:
+            actual = collector.read_checked(self.root, path, expected, root_info, collector.LIMITS['file_bytes'])
+            self.assertEqual(actual, HOTSPOT.encode())
+            handle_path.return_value = collector.windows_path_key(r'C:\outside\hs_err_pid314.log')
+            with self.assertRaisesRegex(ValueError, 'opened_path_changed'):
+                collector.read_checked(self.root, path, expected, root_info, collector.LIMITS['file_bytes'])
+            handle_path.return_value = canonical
+            stale = SimpleNamespace(st_dev=expected.st_dev, st_ino=expected.st_ino + 1, st_size=expected.st_size)
+            with self.assertRaisesRegex(ValueError, 'file_changed'):
+                collector.read_checked(self.root, path, stale, root_info, collector.LIMITS['file_bytes'])
+            with mock.patch.object(collector, 'check_root_identity', side_effect=ValueError('root_changed')), \
+                    mock.patch.object(collector.os, 'fdopen') as reader:
+                with self.assertRaisesRegex(ValueError, 'root_changed'):
+                    collector.read_checked(self.root, path, expected, root_info, collector.LIMITS['file_bytes'])
+                reader.assert_not_called()
+
+    @unittest.skipUnless(os.name == 'nt', 'Native Windows identity and short-path integration check')
+    def test_windows_native_identity_and_short_path_metadata(self):
+        import ctypes
+        from ctypes import wintypes
+        path = self.log()
+        metadata = {'kind': 'windows_collector_filesystem', 'platform': 'windows',
+                    'python_version': list(sys.version_info[:3])}
+        failure = False
+        try:
+            with os.scandir(self.root) as entries:
+                cached = next(entry for entry in entries if entry.name == path.name).stat(follow_symlinks=False)
+            fresh = path.lstat()
+            fd = os.open(path, os.O_RDONLY | os.O_BINARY)
+            try:
+                opened = os.fstat(fd)
+                metadata.update({
+                    'direntry_inode_zero': cached.st_ino == 0, 'direntry_device_zero': cached.st_dev == 0,
+                    'direntry_nlink': cached.st_nlink, 'lstat_nlink': fresh.st_nlink,
+                    'fstat_nlink': opened.st_nlink, 'lstat_inode_nonzero': fresh.st_ino != 0,
+                    'fstat_inode_nonzero': opened.st_ino != 0,
+                    'lstat_fstat_identity_equal': (fresh.st_dev, fresh.st_ino) == (opened.st_dev, opened.st_ino),
+                    'canonical_matches_handle': collector.checked_windows_canonical_path(
+                        self.root, path, self.root.lstat()) == collector.windows_handle_path(fd),
+                })
+            finally:
+                os.close(fd)
+            function = ctypes.WinDLL('kernel32', use_last_error=True).GetShortPathNameW
+            function.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+            function.restype = wintypes.DWORD
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = function(str(self.root), buffer, len(buffer))
+            available = 0 < length < len(buffer)
+            metadata['short_path_available'] = available
+            if available:
+                short_root = Path(buffer.value)
+                metadata['short_spelling_differs'] = collector.windows_path_key(short_root) != collector.windows_path_key(
+                    os.path.realpath(self.root, strict=True))
+                metadata['short_canonical_equivalent'] = collector.windows_path_key(
+                    os.path.realpath(short_root, strict=True)) == collector.windows_path_key(
+                    os.path.realpath(self.root, strict=True))
+                result = collector.collect(short_root)
+                metadata['short_path_collected'] = result['status'] == 'complete' and len(result['files']) == 1
+            else:
+                metadata['short_path_error_code'] = ctypes.get_last_error()
+        except (OSError, ValueError) as error:
+            failure = True
+            metadata['error_type'] = type(error).__name__
+            if getattr(error, 'winerror', None) is not None:
+                metadata['error_code'] = error.winerror
+        # Numeric versions, counts and booleans only: never runner paths,
+        # inherited environment values or a raw exception message.
+        print(json.dumps(metadata, sort_keys=True), flush=True)
+        self.assertFalse(failure, 'Native Windows metadata check failed; see sanitized metadata')
+        self.assertTrue(metadata['lstat_fstat_identity_equal'])
+        self.assertTrue(metadata['canonical_matches_handle'])
+        self.assertEqual(metadata['lstat_nlink'], 1)
+        self.assertEqual(metadata['fstat_nlink'], 1)
+        if metadata['short_path_available']:
+            self.assertTrue(metadata['short_canonical_equivalent'])
+            self.assertTrue(metadata['short_path_collected'])
 
     @unittest.skipUnless(os.name == 'nt', 'Windows junction integration check')
     def test_real_windows_junction_cannot_escape_scan_root(self):

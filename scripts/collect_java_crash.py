@@ -11,6 +11,7 @@ collection was partial or failed. Neither exit status establishes acceptance.
 import argparse
 import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path
 import re
@@ -106,6 +107,41 @@ def check_components(path):
     return info
 
 
+def windows_path_key(value):
+    """Normalize only Windows spelling, never follow links in this helper."""
+    value = os.fspath(value)
+    if value.lower().startswith('\\\\?\\unc\\'):
+        value = '\\\\' + value[8:]
+    elif value.startswith('\\\\?\\'):
+        value = value[4:]
+    return ntpath.normcase(ntpath.normpath(value))
+
+
+def check_root_identity(root, root_info):
+    current_root = check_components(root)
+    if (current_root.st_dev, current_root.st_ino) != (root_info.st_dev, root_info.st_ino):
+        raise ValueError('root_changed')
+
+
+def checked_windows_canonical_path(root, path, root_info):
+    """Expand 8.3 aliases only after rejecting every reparse component.
+
+    Python documents realpath's Windows 8.3 expansion at:
+    https://docs.python.org/3/library/os.path.html#os.path.realpath
+    Recheck after normalization so it cannot authorize a linked input, and
+    retain the original root identity instead of adopting a replacement root.
+    """
+    check_root_identity(root, root_info)
+    check_components(path)
+    root_key = windows_path_key(os.path.realpath(root, strict=True))
+    path_key = windows_path_key(os.path.realpath(path, strict=True))
+    if ntpath.commonpath((root_key, path_key)) != root_key:
+        raise ValueError('canonical_path_outside_root')
+    check_components(path)
+    check_root_identity(root, root_info)
+    return path_key
+
+
 def windows_handle_path(fd):
     # Validate the opened handle before reading bytes, including on Python
     # versions without Path.is_junction or O_NOFOLLOW.
@@ -119,12 +155,7 @@ def windows_handle_path(fd):
     length = function(msvcrt.get_osfhandle(fd), buffer, len(buffer), 0)
     if not length or length >= len(buffer):
         raise OSError(ctypes.get_last_error(), 'handle_path_unavailable')
-    value = buffer.value
-    if value.startswith('\\\\?\\UNC\\'):
-        value = '\\\\' + value[8:]
-    elif value.startswith('\\\\?\\'):
-        value = value[4:]
-    return Path(os.path.normcase(value))
+    return windows_path_key(buffer.value)
 
 
 def read_checked(root, path, expected, root_info, limit):
@@ -147,10 +178,12 @@ def read_checked(root, path, expected, root_info, limit):
                 directories.append(parent)
             fd = os.open(parts[-1], flags | os.O_NOFOLLOW, dir_fd=parent)
         else:
+            canonical_path = checked_windows_canonical_path(root, path, root_info) if os.name == 'nt' else None
             fd = os.open(path, flags | getattr(os, 'O_NOFOLLOW', 0))
-            if os.name == 'nt' and windows_handle_path(fd) != Path(os.path.normcase(str(path))):
+            if os.name == 'nt' and windows_handle_path(fd) != canonical_path:
                 raise ValueError('opened_path_changed')
             check_components(path)
+            check_root_identity(root, root_info)
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or is_link(before) or before.st_nlink != 1:
             raise ValueError('not_unlinked_regular_file')
@@ -533,7 +566,12 @@ def collect(root, limits=None, probe_report=None, java_transcript=None):
                     path = directory / entry.name
                     matches = bool(LOG_NAME.fullmatch(entry.name))
                     try:
-                        info = entry.stat(follow_symlinks=False)
+                        # DirEntry.stat caches metadata, and on Windows its
+                        # st_ino/st_dev/st_nlink are always zero. Fresh lstat
+                        # supplies real identity/link counts without following
+                        # symlinks or junctions. Never accept zero as one link.
+                        # https://docs.python.org/3/library/os.html#os.DirEntry.stat
+                        info = path.lstat()
                     except OSError as error:
                         issue('error', 'stat_failed', path, error)
                         continue
