@@ -9,6 +9,8 @@ rust-version.workspace = true
 [features]
 # Enables a separate fixture binary, never a cedar-agent CLI or capability flag.
 windows-language-validation = ["cedar-workspace/windows-language-validation"]
+# Marked synthetic roots only; never included in the ordinary agent CLI.
+interrupted-save-validation = []
 
 [dependencies]
 cedar-protocol = { path = "../protocol" }
@@ -25,3 +27,8 @@ path = "src/main.rs"
 name = "cedar-agent-language-validation"
 path = "tests/support/language_validation.rs"
 required-features = ["windows-language-validation"]
+
+[[bin]]
+name = "cedar-agent-interrupted-save-validation"
+path = "tests/support/interrupted_save_validation.rs"
+required-features = ["interrupted-save-validation"]

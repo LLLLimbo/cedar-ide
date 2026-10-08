@@ -7,6 +7,7 @@ pub struct Document {
     pub saved_text: String,
     pub revision: Option<String>,
     pub saving: bool,
+    pub interrupted_save: Option<crate::interrupted_save::InterruptedSave>,
     pub cursor: (usize, usize),
     pub jump_to: Option<usize>,
     pub scroll_to: Option<usize>,
@@ -26,6 +27,7 @@ impl Document {
             text,
             revision: Some(revision),
             saving: false,
+            interrupted_save: None,
             cursor: (1, 1),
             jump_to: None,
             scroll_to: None,
@@ -35,12 +37,13 @@ impl Document {
         }
     }
     pub fn dirty(&self) -> bool {
-        self.revision.is_none() || self.text != self.saved_text
+        self.interrupted_save.is_some() || self.revision.is_none() || self.text != self.saved_text
     }
     pub fn acknowledge_save(&mut self, snapshot: String, revision: String) {
         self.saved_text = snapshot;
         self.revision = Some(revision);
         self.saving = false;
+        self.interrupted_save = None;
     }
     /// Called only after a reviewed, twice-read clean reload passes its final
     /// frame guard. This is baseline adoption, never a write acknowledgement.

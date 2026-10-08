@@ -3,8 +3,7 @@
 Cedar's Windows isolated agent has a Java/JDT-specific language route. It uses
 an installed JDK and Eclipse JDT LS; these dependencies are not bundled or
 automatically downloaded. The tested acceptance distribution is JDT LS 1.61.0
-with Java 21. The current 0.9.0 production-route checkpoint still needs its exact
-native CI result; see [the verification report](TEST_REPORT.md).
+with Java 21. The 0.9.0 normal-agent production route passed [exact Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37727806345). Its Stop used verified forced cleanup after grace expired, not natural exit.
 
 ## Configuration
 

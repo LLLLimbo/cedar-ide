@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第九阶段 E Windows Java 工程（**0.9.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十阶段断线保存核对工程（**0.10.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -38,7 +38,7 @@ cargo run -p cedar-app --bin cedar -- examples/demo
 
 Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`，本地连接还要求同目录的 `cedar-agent.exe`；不要只复制前端。缺失或损坏的 agent 会报错，不搜索 PATH 或回退到进程内执行。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.8.16 提交 [`af15a82c414f4081077429f04736e58e001545cf`](https://github.com/LLLLimbo/cedar-ide/commit/af15a82c414f4081077429f04736e58e001545cf) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37724199678)：真实 Java 三会话、真实编辑器补全/导入/Undo/Redo，以及 Java 与独立任务并发、强制结束所属 agent 后的清理均通过。0.9.0 增加正常 Windows 隔离 agent 的专用 Java/JDT 路径、配置面板及区分自然退出和强制清理的 Stop 结果，尚待精确提交的正式路径验收。**Windows Git、同步 Run 和通用 LSP 仍不启用**。Java 配置与限制见[使用说明](docs/WINDOWS_JAVA_SETUP.md)；原生 GUI 与真实 SSH 仍待独立验收，当前证据见[测试报告](docs/TEST_REPORT.md)。
+公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.9.0 提交 [`270119b45eea1d37581a497e1bbe9a2d4ba3764a`](https://github.com/LLLLimbo/cedar-ide/commit/270119b45eea1d37581a497e1bbe9a2d4ba3764a) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37727806345)：正常 Windows 隔离 agent 的专用 Java/JDT 路径与真实编辑器事务通过；Stop 如实报告超时后的强制清理，不冒充自然退出。0.10.0 增加显式、只读的[断线保存核对](docs/INTERRUPTED_SAVES.md)，保留后续输入和 Undo，不自动重放写入，尚待精确提交 CI。**Windows Git、同步 Run 和通用 LSP 仍不启用**。Java 配置见[使用说明](docs/WINDOWS_JAVA_SETUP.md)；原生 GUI 与真实 SSH 仍待独立验收，当前证据见[测试报告](docs/TEST_REPORT.md)。
 
 ## 磁盘对比与重载
 

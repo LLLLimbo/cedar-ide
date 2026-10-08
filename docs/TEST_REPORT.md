@@ -1,81 +1,69 @@
-# Verification report · scoped Windows Java production route / 0.9.0 · 2026-10-08
+# Verification report · interrupted-save reconciliation / 0.10.0 · 2026-10-08
 
-This checkpoint adds an explicit Java/JDT route to the normal Windows isolated
-agent and Language panel. Its exact native production-route verdict is pending.
+This checkpoint adds an explicit, read-only way to check a save whose reply was
+lost. Exact native CI for the new checkpoint is pending.
 
-## Verified public prerequisites
+## Verified public baseline
 
-Exact public 0.8.16 commit
-[`af15a82c414f4081077429f04736e58e001545cf`](https://github.com/LLLLimbo/cedar-ide/commit/af15a82c414f4081077429f04736e58e001545cf)
-[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37724199678).
-The direct real Java probe passed three sessions in 40.020 seconds. All three
-real agent/headless-editor sessions passed exact semantics, completion/import
-resolution, atomic apply, actual undo/redo, version synchronization, correction
-and independently observed natural exit0.
+Exact public 0.9.0 commit
+[`270119b45eea1d37581a497e1bbe9a2d4ba3764a`](https://github.com/LLLLimbo/cedar-ide/commit/270119b45eea1d37581a497e1bbe9a2d4ba3764a)
+[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37727806345).
+Normal shipping-agent/Client Java acceptance passed capabilities, trust rejection,
+source semantics, actual editor transactions and native process identity checks.
+Production Stop was accurately reported as forced, with grace_expired and root
+exit1067; both protocol witnesses, joined cleanup, verified client reap, unchanged
+source and fixture removal passed. That is not a natural production-exit claim.
+The prior strict direct/fixture three-session tests, real task independence and
+forced-agent ownership cases also passed.
 
-Two independent task lifetimes passed: Java Stop preserved a live task, and task
-cancellation preserved the same Java session and real hover. A separate forced
-owner case completed in 6,397 ms: after killing only the exact owned agent, the
-retained Java/task handles signaled, the task lock released, no safety cap fired,
-source stayed unchanged and the fixture was removed. Child exit0 after injected
-owner death was recorded as forced cleanup, not graceful shutdown. Existing
-native/mock suites cover descendants, Job-zero, EOF and cancellation ownership.
+## Interrupted-save behavior
 
-The earlier intermittent correction failure's cause remains unproven. Later
-successful runs establish their recorded outcomes, not a causal fix or universal
-reliability guarantee. Native GUI and authenticated SSH remain separate claims.
+A save can commit remotely before its Written reply is lost. Previously the
+frontend retained the old revision but discarded the submitted snapshot; a later
+Save conflicted, while dirty-file comparison could not adopt the current base.
+The new session-local token records a bounded submitted-content fingerprint and
+original workspace/path/tab/request/baseline lineage. It never asserts that an
+accepted but unanswered request was transmitted or committed.
 
-## Production behavior
+A successful Check interrupted save requires two agreeing Read responses; an
+earlier failure can stop the check after one. Each
+returned revision must equal SHA-256 of its actual text. A match with submitted
+contents can update only the saved baseline/revision; newer typing, native history,
+cursor and edit version remain intact. Original-baseline matches merely resolve
+current uncertainty. Original new-file absence requires two not-found reads and
+still needs a later explicit Save to create anything. Existing-file absence,
+divergence and malformed responses cannot silently adopt a new base or write.
 
-Protocol4 gains a capability-negotiated `LanguageStartJava` operation with three
-explicit host paths: Java executable, JDT distribution and external data directory.
-Only native Windows isolated agents advertise `language_start_java`; generic
-Windows language startup stays unsupported. Execution trust is checked before
-filesystem inspection or spawning. Old peers never receive the unsupported new
-operation. Shared language operations work with the selected startup capability.
+Generation, navigation, current-content, edit-version, profile and close-action
+guards reject stale results, including same-frame input. Duplicate checks and
+save/check overlap remain bounded. Recovery updates use existing ownership and
+storage-acknowledgement guards; profile edits and reconnect review remain intact.
 
-A shared recipe validates ordinary native paths and identity, chooses the Unicode
-distribution cwd, and supplies the exact relative launcher plus encoded location
-URLs. It does not download tools, create data directories, use PATH or a shell,
-or accept arbitrary JVM argument text. Production initialization does not claim
-class-file viewing, and production Stop does not run a semantic/indexing query.
-Fixture markers, crash hooks and the fixed String witness remain fixture-only.
+## Deterministic acceptance
 
-The Language panel exposes the three host paths, fixed Java document mode and
-current import/viewer limitations. It preserves explicit trust and synchronizes
-Java documents only. Queued startup/query behavior is disclosed. Java sessions
-receive a 75-second client request budget; generic language/task budgets retain
-their previous values. See [configuration and limitations](WINDOWS_JAVA_SETUP.md).
+A separate feature-gated fixture requires an exactly marked generated root,
+rejects execution trust and accepts only Hello, root List and draft.txt Read/Write.
+It uses the real Workspace write implementation, then exits after the first
+successful commit without sending Written. A later process reads the same bytes.
+Its bounded operation ledger verifies that reconnect and checking send no Write.
+The fixture is not an ordinary agent flag or a published product binary.
 
-## Honest termination and cleanup
+Nine explicit stdio acceptance cases cover committed lost replies, unchanged and
+newer drafts, native Undo/Redo, diverged/missing/recreated files, stale checks,
+malformed path/revision/content, subsequent explicit Save and recovery ownership.
+Focused tests additionally cover original absence, profile forms and native-frame
+input ordering. The CI workflow runs the process cases on both operating systems;
+leaving ignored tests unexecuted is not a pass.
 
-A durable Windows shutdown report separates protocol completion, first terminal
-cause, root exit observed before/after owner termination, material transport
-failure and joined cleanup errors. It never infers natural exit from a numeric
-exit code alone. A final malformed frame after root exit vetoes graceful status.
-Original failures, worker panics and outcomes remain cached across repeated calls;
-a consumed join handle cannot manufacture later success or extend grace.
+## Evidence boundary
 
-The UI renders bounded natural/forced/error summaries. Unverified or malformed
-Stop evidence blocks restart and cancels pending window close rather than hiding
-the error. Explicit Client close waits for a verified owned-child reap result;
-wait/kill errors remain failures. This does not claim detached transport-reader
-joins or an independent real-JVM Job inventory.
+The result means current disk contents match a known snapshot. It does not prove
+historical commit provenance or physical-file identity; identical-byte recreation
+is indistinguishable under the unchanged protocol. Transaction tokens are not
+persisted across application crashes. Normal Written revision handling is not
+redefined by this slice, and revision-based writes remain non-atomic compare-and-swap.
 
-## Required exact native validation
-
-The existing direct and strict three-session fixture acceptance remains required.
-An added ignored test uses the normal shipping agent and capability-enforcing
-Client, without validation markers. It checks Java-only capabilities, generic and
-untrusted start rejection, retained Java image/identity, real source/editor
-semantics, unchanged disk bytes, typed Stop outcome against the native handle,
-verified client-owned reap and generated-root removal. An honestly reported
-joined forced Stop may satisfy this production cleanup check; it is not counted
-as graceful. The stricter natural-exit fixture is preserved separately.
-
-Only typed fixed enums, bounded numbers and booleans pass through the sanitizer.
-Raw source, URI, messages, stderr and JVM diagnostics remain private. The script
-runs independent fixture, forced-owner and production cases and preserves all
-three exit codes; each has a required receipt. Native bundle discovery remains
-covered by its existing separate suite. No private diagnostic findings are
-included in this report.
+Authenticated SSH and native GUI Trust remain separately unverified. This change
+adds no network service, credentials, automatic write/replay or execution trust.
+See [user-facing behavior and limits](INTERRUPTED_SAVES.md). No private diagnostic
+findings are included in this report.

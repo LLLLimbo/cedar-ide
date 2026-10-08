@@ -233,6 +233,7 @@ fn save_while_typing_preserves_newer_draft_and_updates_base() {
         Job::Save {
             document: 1,
             snapshot: "current draft".into(),
+            submission: None,
         },
     );
     app.apply_event(Event {
@@ -286,6 +287,7 @@ fn unopened_recovery_survives_unrelated_tab_save_and_discard() {
         Job::Save {
             document: 1,
             snapshot: "current draft".into(),
+            submission: None,
         },
     );
     app.apply_event(Event {
@@ -336,6 +338,7 @@ fn startup_never_connects_or_starts_tools_and_restore_retains_original_base() {
         Job::Save {
             document: app.documents[0].id,
             snapshot: "recovered text".into(),
+            submission: None,
         },
     );
     app.apply_event(Event {
@@ -722,6 +725,7 @@ fn save_started_during_recovery_close_cancels_final_close() {
         Job::Save {
             document: 1,
             snapshot: "current draft".into(),
+            submission: None,
         },
     );
     app.finish_recovery_close_frame(&egui::Context::default());

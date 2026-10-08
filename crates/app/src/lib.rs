@@ -3,6 +3,9 @@ mod agent_support;
 pub mod completion;
 mod disk_review;
 mod editor_state;
+mod interrupted_save;
+#[cfg(test)]
+mod interrupted_save_process_tests;
 mod java_language;
 mod language_navigation_results;
 mod language_results;
@@ -166,6 +169,7 @@ enum Job {
     Save {
         document: u64,
         snapshot: String,
+        submission: Option<interrupted_save::InterruptedSave>,
     },
     Search {
         query: String,
@@ -178,6 +182,9 @@ enum Job {
     DiskReview {
         ticket: u64,
         purpose: disk_review::Purpose,
+    },
+    InterruptedSaveCheck {
+        ticket: u64,
     },
     Language(language_ui::Action),
 }
@@ -240,6 +247,7 @@ pub struct CedarApp {
     find_index: Option<usize>,
     find_focus: bool,
     disk_review: disk_review::DiskReview,
+    interrupted_save_check: interrupted_save::Check,
     font_size: f32,
     recovery: recovery::Recovery,
 }
@@ -335,6 +343,7 @@ impl CedarApp {
             find_index: None,
             find_focus: false,
             disk_review: disk_review::DiskReview::default(),
+            interrupted_save_check: interrupted_save::Check::default(),
             font_size: 14.0,
             recovery: recovery::Recovery::default(),
         }
@@ -395,6 +404,7 @@ impl CedarApp {
         self.generation += 1;
         self.pending.clear();
         self.disk_review.outstanding = None;
+        self.interrupted_save_check.reset();
         for doc in &mut self.documents {
             doc.saving = false;
         }
@@ -458,6 +468,7 @@ impl CedarApp {
     }
 
     fn disconnected(&mut self, message: String) {
+        self.retain_interrupted_saves();
         self.dismiss_disk_review();
         self.run_state.disconnected();
         self.profiles.disconnected();
@@ -469,6 +480,7 @@ impl CedarApp {
         self.worker = None;
         self.pending.clear();
         self.disk_review.outstanding = None;
+        self.interrupted_save_check.reset();
         for doc in &mut self.documents {
             doc.saving = false;
         }
@@ -483,6 +495,7 @@ impl CedarApp {
 
     fn navigation_changed(&mut self) {
         self.dismiss_disk_review();
+        self.interrupted_save_check.invalidate();
         self.navigation_epoch = self.navigation_epoch.wrapping_add(1);
         self.language.cancel_navigation();
     }
@@ -543,10 +556,19 @@ impl CedarApp {
         if !doc.dirty() || doc.saving {
             return;
         }
+        if doc.interrupted_save.is_some() || self.interrupted_save_check.busy() {
+            self.error = Some("Check the interrupted save after reconnecting before saving again. Your draft is retained".into());
+            return;
+        }
         if doc.text.len() > cedar_protocol::MAX_FILE_BYTES {
             self.error = Some("This draft exceeds the 1 MiB file limit. Your text is retained; shorten it or copy it before saving".into());
             return;
         }
+        let submission = interrupted_save::InterruptedSave::capture(self, doc);
+        let Some(submission) = submission else {
+            self.error = Some("The save identity could not be captured. Reconnect to the original workspace before saving".into());
+            return;
+        };
         let (id, path, text, revision) = (
             doc.id,
             doc.path.clone(),
@@ -562,6 +584,7 @@ impl CedarApp {
             Job::Save {
                 document: id,
                 snapshot: text,
+                submission: Some(submission),
             },
         );
         if request != 0 {
@@ -677,9 +700,32 @@ impl CedarApp {
             }
             return;
         }
+        let invalid_save_ack = self.pending.get(&event.id).is_some_and(|job| {
+            matches!(job, Job::Save { .. } if match &event.result {
+                Ok(Payload::Written { .. }) => false,
+                Ok(_) => true,
+                Err(_) => false,
+            })
+        });
+        if !event.connected || invalid_save_ack {
+            self.retain_interrupted_save(event.id);
+        }
         let Some(job) = self.pending.remove(&event.id) else {
             return;
         };
+        if let Job::InterruptedSaveCheck { ticket } = job {
+            if self.interrupted_save_check.outstanding == Some(event.id) {
+                self.interrupted_save_check.outstanding = None;
+            }
+            if !event.connected {
+                self.disconnected(event.result.err().unwrap_or_else(|| {
+                    "The connection closed while checking the interrupted save".into()
+                }));
+            } else {
+                self.apply_interrupted_save_read(ticket, event.result);
+            }
+            return;
+        }
         if let Job::DiskReview { ticket, purpose } = job {
             if self.disk_review.outstanding == Some(event.id) {
                 self.disk_review.outstanding = None;
@@ -703,6 +749,13 @@ impl CedarApp {
             if let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == *document) {
                 doc.saving = false;
             }
+        }
+        if invalid_save_ack {
+            self.error = Some("The save acknowledgement could not be verified. Use Check interrupted save; your draft is retained".into());
+            if !event.connected {
+                self.disconnected(self.error.clone().unwrap());
+            }
+            return;
         }
         let payload = match event.result {
             Ok(payload) => payload,
@@ -814,7 +867,12 @@ impl CedarApp {
                         Some("Agent returned a different profile path; response ignored".into());
                 }
             }
-            (Job::Save { document, snapshot }, Payload::Written { revision }) => {
+            (
+                Job::Save {
+                    document, snapshot, ..
+                },
+                Payload::Written { revision },
+            ) => {
                 let workspace = self.recovery_workspace();
                 if let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == document) {
                     doc.acknowledge_save(snapshot, revision);
@@ -1006,7 +1064,10 @@ impl CedarApp {
                         .on_hover_text(&self.root);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let can_save = self.backend_supports("write")
-                            && self.active().is_some_and(|doc| doc.dirty() && !doc.saving);
+                            && !self.interrupted_save_check.busy()
+                            && self.active().is_some_and(|doc| {
+                                doc.dirty() && !doc.saving && doc.interrupted_save.is_none()
+                            });
                         if ui
                             .add_enabled(
                                 can_save,
@@ -1535,11 +1596,22 @@ impl CedarApp {
         }
         ui.separator();
         let mut compare = false;
-        let can_compare = self.backend_supports("read") && !self.disk_review.busy();
+        let mut check_save = false;
+        let can_compare = self.backend_supports("read")
+            && !self.disk_review.busy()
+            && !self.interrupted_save_check.busy();
+        let can_check_save = can_compare
+            && !self.documents.iter().any(|doc| doc.saving)
+            && !self
+                .pending
+                .values()
+                .any(|job| matches!(job, Job::Save { .. }));
         if let Some(doc) = self.active() {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&doc.path).size(12.0).color(MUTED));
-                if doc.dirty() {
+                if doc.interrupted_save.is_some() {
+                    ui.label(RichText::new("SAVE OUTCOME UNKNOWN").size(10.0).color(AMBER));
+                } else if doc.dirty() {
                     ui.label(RichText::new("UNSAVED").size(10.0).color(AMBER));
                 }
                 if doc.text.len() > cedar_protocol::MAX_FILE_BYTES {
@@ -1557,6 +1629,10 @@ impl CedarApp {
                     {
                         compare = true;
                     }
+                    if doc.interrupted_save.is_some() {
+                        check_save = ui.add_enabled(can_check_save, egui::Button::new("Check interrupted save").small())
+                            .on_hover_text("Read disk twice and compare with the submitted contents; never retries the write").clicked();
+                    }
                     if ui.small_button("Copy draft").clicked() {
                         ui.ctx().copy_text(doc.text.clone());
                     }
@@ -1565,6 +1641,12 @@ impl CedarApp {
         }
         if compare {
             self.compare_with_disk();
+        }
+        if check_save {
+            self.check_interrupted_save();
+        }
+        if let Some(message) = self.interrupted_save_check.message() {
+            ui.label(RichText::new(message).small().color(AMBER));
         }
         self.find_bar(ui);
         if let Some(doc) = self
@@ -1866,6 +1948,7 @@ impl eframe::App for CedarApp {
         self.run_dialog(ctx);
         self.finish_disk_reload(ctx);
         self.finish_profile_actions();
+        self.finish_interrupted_save_check();
         self.finish_tab_close();
         self.language_tick(ctx);
         self.recovery_tick(ctx);
@@ -2167,6 +2250,7 @@ mod tests {
             Job::Save {
                 document: 7,
                 snapshot: "precious draft".into(),
+                submission: None,
             },
         );
         app.apply_event(Event {
@@ -2193,6 +2277,7 @@ mod tests {
             Job::Save {
                 document: 7,
                 snapshot: "draft".into(),
+                submission: None,
             },
         );
         app.apply_event(Event {

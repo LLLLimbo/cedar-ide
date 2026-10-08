@@ -178,6 +178,9 @@ impl CedarApp {
         if doc.saving {
             return Some("The configuration is saving; wait for its acknowledgement");
         }
+        if doc.interrupted_save.is_some() || self.interrupted_save_check.busy() {
+            return Some("Check the interrupted save in the configuration tab before Save or Run");
+        }
         None
     }
     pub(super) fn profile_run_problem(&self) -> Option<&'static str> {
@@ -438,6 +441,18 @@ impl CedarApp {
                 .into(),
         );
         self.save_document(id);
+    }
+    pub(super) fn profile_interrupted_save_checked(&mut self, document: u64) {
+        // Advance only the source revision. Retain newer form edits and the
+        // reconnect review requirement; checking disk never grants execution trust.
+        if let Some(source) = &mut self.profiles.source {
+            if source.document == document {
+                if let Some(doc) = self.documents.iter().find(|doc| doc.id == document) {
+                    source.revision = doc.revision.clone();
+                    self.profiles.message = Some("The interrupted configuration save was checked against disk. Form edits and the reconnect review requirement are retained".into());
+                }
+            }
+        }
     }
     pub(super) fn profile_saved(&mut self, document: u64) {
         if let Some(source) = &mut self.profiles.source {
@@ -1680,5 +1695,126 @@ mod tests {
         }
         assert_eq!(app.profiles.draft.args.len(), 256);
         assert_eq!(app.profiles.draft.args[0], " 你好 \n\t $(literal); ");
+    }
+    #[test]
+    fn interrupted_profile_check_preserves_newer_form_and_reconnect_review() {
+        use sha2::{Digest, Sha256};
+        for change_during_check in [false, true] {
+            let (mut app, rx) = loaded();
+            app.profiles.draft.args.push("submitted".into());
+            app.profiles.changed();
+            app.save_profile();
+            let command = rx.try_recv().unwrap();
+            let submitted = app.documents[0].text.clone();
+            let revision = format!("{:x}", Sha256::digest(submitted.as_bytes()));
+            app.apply_event(Event {
+                generation: app.generation,
+                id: command.id,
+                connected: false,
+                result: Err("lost save reply".into()),
+            });
+            app.generation += 1;
+            app.state = ConnectionState::Ready;
+            let (worker, rx) = worker::Worker::recording();
+            app.worker = Some(worker);
+            app.profiles.draft.args.push("newer form".into());
+            app.profiles.changed();
+            let before_form = app.profiles.draft.clone();
+            let before_baseline = app.profiles.baseline.clone();
+            let before_generation = app.profiles.source.as_ref().unwrap().generation;
+            assert!(app.profiles.review_required);
+            app.check_interrupted_save();
+            for _ in 0..2 {
+                let command = rx.try_recv().unwrap();
+                respond(
+                    &mut app,
+                    &command,
+                    Payload::File {
+                        path: PATH.into(),
+                        text: submitted.clone(),
+                        revision: revision.clone(),
+                    },
+                );
+            }
+            if change_during_check {
+                app.profiles.draft.args.push("same frame form".into());
+                app.profiles.changed();
+            }
+            let current_form = app.profiles.draft.clone();
+            // Even a queued Save must reject before committing form text or
+            // advancing its baseline while this check remains staged.
+            app.queue_profile_action(Action::Save);
+            app.finish_profile_actions();
+            assert_eq!(app.profiles.draft, current_form);
+            assert_eq!(app.profiles.baseline, before_baseline);
+            assert_eq!(app.documents[0].text, submitted);
+            app.finish_interrupted_save_check();
+            assert_eq!(app.profiles.draft, current_form);
+            assert_eq!(app.profiles.baseline, before_baseline);
+            assert_eq!(
+                app.profiles.source.as_ref().unwrap().generation,
+                before_generation
+            );
+            assert!(app.profiles.review_required);
+            assert_eq!(
+                app.documents[0].interrupted_save.is_some(),
+                change_during_check
+            );
+            if !change_during_check {
+                assert_eq!(app.profiles.draft, before_form);
+                assert_eq!(
+                    app.profiles.source.as_ref().unwrap().revision,
+                    Some(revision)
+                );
+                assert!(app
+                    .profile_source_problem(false)
+                    .unwrap()
+                    .contains("Connection changed"));
+                app.review_profile_connection();
+                assert!(!app.profiles.review_required);
+            }
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn queued_profile_selection_invalidates_staged_interrupted_save_check() {
+        use sha2::{Digest, Sha256};
+        let (mut app, rx) = loaded();
+        app.profiles.draft.args.push("submitted".into());
+        app.profiles.changed();
+        app.save_profile();
+        let command = rx.try_recv().unwrap();
+        let submitted = app.documents[0].text.clone();
+        let revision = format!("{:x}", Sha256::digest(submitted.as_bytes()));
+        app.apply_event(Event {
+            generation: app.generation,
+            id: command.id,
+            connected: false,
+            result: Err("lost reply".into()),
+        });
+        app.generation += 1;
+        app.state = ConnectionState::Ready;
+        let (worker, rx) = worker::Worker::recording();
+        app.worker = Some(worker);
+        app.check_interrupted_save();
+        for _ in 0..2 {
+            let command = rx.try_recv().unwrap();
+            respond(
+                &mut app,
+                &command,
+                Payload::File {
+                    path: PATH.into(),
+                    text: submitted.clone(),
+                    revision: revision.clone(),
+                },
+            );
+        }
+        app.queue_profile_action(Action::Select(None));
+        app.finish_profile_actions();
+        app.finish_interrupted_save_check();
+        assert!(app.documents[0].interrupted_save.is_some());
+        assert_eq!(app.documents[0].revision.as_deref(), Some("sha0"));
+        assert!(rx.try_recv().is_err());
     }
 }

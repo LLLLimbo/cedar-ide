@@ -178,7 +178,7 @@ impl CedarApp {
     }
 
     pub(super) fn compare_with_disk(&mut self) {
-        if self.disk_review.busy() {
+        if self.disk_review.busy() || self.interrupted_save_check.busy() {
             return;
         }
         if !self.backend_supports("read") {
@@ -265,7 +265,7 @@ impl CedarApp {
         let Some(review) = &self.disk_review.slot else {
             return;
         };
-        if self.disk_review.busy() {
+        if self.disk_review.busy() || self.interrupted_save_check.busy() {
             return;
         }
         let problem = if review.snapshot.is_none() {

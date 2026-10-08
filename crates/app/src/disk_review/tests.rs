@@ -768,6 +768,7 @@ fn reload_rechecks_save_and_every_close_transition_at_both_barriers() {
                         Job::Save {
                             document: 1,
                             snapshot: "before".into(),
+                            submission: None,
                         },
                     );
                 }
