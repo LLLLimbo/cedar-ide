@@ -3,7 +3,10 @@
 #[cfg(windows)]
 fn main() {
     use cedar_client::{Client, ConnectionSpec};
-    use cedar_protocol::{Operation, Payload, PROTOCOL_VERSION, RUN_TASK_CAPABILITIES};
+    use cedar_protocol::{
+        Operation, Payload, JAVA_LANGUAGE_SESSION_CAPABILITIES, PROTOCOL_VERSION,
+        RUN_TASK_CAPABILITIES,
+    };
     use std::{
         path::PathBuf,
         thread,
@@ -65,6 +68,7 @@ fn main() {
     for cap in ["list", "read", "write", "search"]
         .iter()
         .chain(RUN_TASK_CAPABILITIES)
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
     {
         assert!(info.supports(cap), "missing {cap}");
     }
@@ -84,6 +88,14 @@ fn main() {
     };
     assert!(untrusted
         .request(task())
+        .unwrap_err()
+        .starts_with("run_disabled:"));
+    assert!(untrusted
+        .request(Operation::LanguageStartJava {
+            java_executable: String::new(),
+            distribution: String::new(),
+            data_directory: String::new(),
+        })
         .unwrap_err()
         .starts_with("run_disabled:"));
     assert!(untrusted

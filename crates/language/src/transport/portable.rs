@@ -125,6 +125,14 @@ impl Backend {
 
     pub(super) fn begin_shutdown(&self, _timeout: Duration) {}
 
+    pub(super) fn shutdown_outcome(&self) -> Option<crate::WindowsShutdownOutcome> {
+        None
+    }
+
+    pub(super) fn transport_failed(&self) {}
+
+    pub(super) fn begin_abort(&self) {}
+
     pub(super) fn finish(&self, shared: &Shared, timeout: Duration) -> Result<(), Error> {
         let deadline = Instant::now() + timeout;
         loop {

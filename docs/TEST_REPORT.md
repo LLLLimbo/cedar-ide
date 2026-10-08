@@ -1,69 +1,81 @@
-# Verification report · checkpoint 9D Java task ownership / 0.8.16 · 2026-10-08
+# Verification report · scoped Windows Java production route / 0.9.0 · 2026-10-08
 
-This checkpoint adds real Java/task concurrency and forced-agent ownership
-acceptance. Normal Windows language capability remains disabled pending the
-finite activation checks and validation of the production route.
+This checkpoint adds an explicit Java/JDT route to the normal Windows isolated
+agent and Language panel. Its exact native production-route verdict is pending.
 
-## Verified public baseline
+## Verified public prerequisites
 
-Exact public 0.8.15 commit
-[`74c130455d3fbc7ed6a6299c140ba5940b456426`](https://github.com/LLLLimbo/cedar-ide/commit/74c130455d3fbc7ed6a6299c140ba5940b456426)
-[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37721943175).
-The direct real Java probe passed all three sessions in 39.710 seconds.
+Exact public 0.8.16 commit
+[`af15a82c414f4081077429f04736e58e001545cf`](https://github.com/LLLLimbo/cedar-ide/commit/af15a82c414f4081077429f04736e58e001545cf)
+[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37724199678).
+The direct real Java probe passed three sessions in 40.020 seconds. All three
+real agent/headless-editor sessions passed exact semantics, completion/import
+resolution, atomic apply, actual undo/redo, version synchronization, correction
+and independently observed natural exit0.
 
-All three real agent/headless-editor sessions passed exact source diagnostics
-and definition, completion/import resolution, atomic edits, actual Document
-undo/redo, versions 2/3/4 and correction diagnostics. Version5 acknowledgements
-were exact; correction receipts matched in 745, 810 and 504 ms with the unique
-warning and no residual errors. Independently retained Java handles observed
-natural exit0, with shutdown taking 525, 695 and 1,017 ms. The agent exited0,
-source bytes remained unchanged, all observed roots exited and the generated
-fixture was removed.
+Two independent task lifetimes passed: Java Stop preserved a live task, and task
+cancellation preserved the same Java session and real hover. A separate forced
+owner case completed in 6,397 ms: after killing only the exact owned agent, the
+retained Java/task handles signaled, the task lock released, no safety cap fired,
+source stayed unchanged and the fixture was removed. Child exit0 after injected
+owner death was recorded as forced cleanup, not graceful shutdown. Existing
+native/mock suites cover descendants, Job-zero, EOF and cancellation ownership.
 
-The earlier intermittent correction failure's cause remains unproven. This
-successful run establishes the recorded baseline; instrumentation alone is not
-claimed as a causal repair or a universal reliability guarantee. Existing native
-mock/process suites separately cover descendants, Job-zero, cancellation and
-adversarial stream ownership. These are not OS-window or authenticated SSH tests.
+The earlier intermittent correction failure's cause remains unproven. Later
+successful runs establish their recorded outcomes, not a causal fix or universal
+reliability guarantee. Native GUI and authenticated SSH remain separate claims.
 
-## Added finite ownership cases
+## Production behavior
 
-The existing three-session editor test gains two independent-task checks. A
-known task must remain live after the first Java session stops naturally. During
-the second Java session, task cancellation must leave the same Java root live
-and able to answer a real source hover query. Each task uses a retained native
-identity and an exclusive lifetime-file lock; completion requires exit and lock
-release before the safety cap.
+Protocol4 gains a capability-negotiated `LanguageStartJava` operation with three
+explicit host paths: Java executable, JDT distribution and external data directory.
+Only native Windows isolated agents advertise `language_start_java`; generic
+Windows language startup stays unsupported. Execution trust is checked before
+filesystem inspection or spawning. Old peers never receive the unsupported new
+operation. Shared language operations work with the selected startup capability.
 
-A separate ignored test starts real Java and a known task, proves both live,
-then kills only the owned agent. It requires that exact agent to be reaped and
-both retained Java/task handles to signal, with the task lock released. Forced
-termination is not labeled graceful. Failure paths retain explicit ownership and
-cleanup checks before generated source removal.
+A shared recipe validates ordinary native paths and identity, chooses the Unicode
+distribution cwd, and supplies the exact relative launcher plus encoded location
+URLs. It does not download tools, create data directories, use PATH or a shell,
+or accept arbitrary JVM argument text. Production initialization does not claim
+class-file viewing, and production Stop does not run a semantic/indexing query.
+Fixture markers, crash hooks and the fixed String witness remain fixture-only.
 
-The new native fixture mode has a fixed 210-second self-exit cap and an expired
-marker. Existing five-second fixture modes remain unchanged. Neither cap exit124
-nor marker presence can count as successful cleanup. The new case uses a single
-known task root; already verified mock/native tests supply descendant and Job
-accounting coverage rather than claiming a real JVM descendant tree was observed.
+The Language panel exposes the three host paths, fixed Java document mode and
+current import/viewer limitations. It preserves explicit trust and synchronizes
+Java documents only. Queued startup/query behavior is disclosed. Java sessions
+receive a 75-second client request budget; generic language/task budgets retain
+their previous values. See [configuration and limitations](WINDOWS_JAVA_SETUP.md).
 
-Typed concurrency and forced-cleanup receipts pass through the agent-only
-sanitizer whitelist. Raw messages, paths, source and errors are not added to
-public evidence. PowerShell runs the independent forced-owner case even if the
-editor case fails and preserves both exit codes. It requires successful receipts
-for both, in addition to all existing direct/editor checks. The containing CI
-budget becomes twelve minutes for the added workload; individual Java semantic,
-grace and cleanup deadlines are unchanged.
+## Honest termination and cleanup
 
-## Activation boundary
+A durable Windows shutdown report separates protocol completion, first terminal
+cause, root exit observed before/after owner termination, material transport
+failure and joined cleanup errors. It never infers natural exit from a numeric
+exit code alone. A final malformed frame after root exit vetoes graceful status.
+Original failures, worker panics and outcomes remain cached across repeated calls;
+a consumed join handle cannot manufacture later success or extend grace.
 
-Exact native CI for this checkpoint is pending. Successful completion will close
-the real task-concurrency and forced-owner cases, reusing existing trust/default
-and mock cleanup evidence. Scoped production Java support must still be exercised
-through the normal bundled agent and capability-enforcing Client before it is
-advertised. Fixture-only markers and validation flags do not establish that path.
+The UI renders bounded natural/forced/error summaries. Unverified or malformed
+Stop evidence blocks restart and cancels pending window close rather than hiding
+the error. Explicit Client close waits for a verified owned-child reap result;
+wait/kill errors remain failures. This does not claim detached transport-reader
+joins or an independent real-JVM Job inventory.
 
-Native GUI interaction, authenticated SSH, performance benchmarking and broader
-IDE feature coverage remain separately disclosed work. They are not blanket
-prerequisites for the scoped Java route. No private diagnostic findings are
-included here.
+## Required exact native validation
+
+The existing direct and strict three-session fixture acceptance remains required.
+An added ignored test uses the normal shipping agent and capability-enforcing
+Client, without validation markers. It checks Java-only capabilities, generic and
+untrusted start rejection, retained Java image/identity, real source/editor
+semantics, unchanged disk bytes, typed Stop outcome against the native handle,
+verified client-owned reap and generated-root removal. An honestly reported
+joined forced Stop may satisfy this production cleanup check; it is not counted
+as graceful. The stricter natural-exit fixture is preserved separately.
+
+Only typed fixed enums, bounded numbers and booleans pass through the sanitizer.
+Raw source, URI, messages, stderr and JVM diagnostics remain private. The script
+runs independent fixture, forced-owner and production cases and preserves all
+three exit codes; each has a required receipt. Native bundle discovery remains
+covered by its existing separate suite. No private diagnostic findings are
+included in this report.

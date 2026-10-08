@@ -421,3 +421,21 @@ independent task concurrency, normal/forced owned cleanup, and safe default/trus
 gates. A later normal bundled-agent/Client test must verify the scoped production
 Java route. Native GUI, SSH, listener inventories and benchmarks remain separate
 claims and do not indefinitely block unrelated functionality.
+
+
+## 0.9.0 normal-agent production route
+
+The finite real-editor/task/forced-owner prerequisites passed on public0.8.16.
+The added `real_windows_normal_agent_java_editor_acceptance` test uses the normal
+release agent with capability-enforcing Client, explicit synthetic execution
+trust, no validation markers and data outside its workspace. It preserves exact
+source/editor assertions and compares bounded typed Stop evidence to a retained
+native Java identity. Verified owned-agent reaping precedes generated-root removal.
+Normal Local bundle discovery remains covered by the separate bundle suite.
+
+Production Stop performs no fixed JDK-symbol query and can report joined forced
+cleanup honestly. The strict fixture's natural-exit assertions remain required.
+The new production receipt cannot label forced code0 as graceful; error or
+unverified cleanup fails acceptance. It emits no extra fixture diagnostic
+receipts and does not publish raw payloads. Native GUI and authenticated SSH
+are separate claims; see [the production configuration](WINDOWS_JAVA_SETUP.md).

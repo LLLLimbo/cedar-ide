@@ -1,4 +1,5 @@
-//! Nonshipping agent/Workspace integration acceptance; never a Windows LSP grant.
+//! Nonshipping generic agent/Workspace integration acceptance. Production Java
+//! has a separate scoped route; these fixtures never grant arbitrary LSP startup.
 //! Prebuild the validation agent, normal agent, mock LSP and process fixture.
 //! Set CEDAR_AGENT_LANGUAGE_VALIDATION_BIN, CEDAR_AGENT_BIN,
 //! CEDAR_MOCK_LSP_BIN and CEDAR_WINPROCESS_FIXTURE_BIN to their absolute paths.
@@ -12,7 +13,7 @@
 #[path = "support/windows_task_harness.rs"]
 mod harness;
 
-use cedar_protocol::{LanguageQueryKind, Operation, Payload, LANGUAGE_SESSION_CAPABILITIES};
+use cedar_protocol::{LanguageQueryKind, Operation, Payload, JAVA_LANGUAGE_SESSION_CAPABILITIES};
 use cedar_tasks::TaskState;
 use cedar_workspace::{BackendMode, Workspace};
 use harness::*;
@@ -192,8 +193,9 @@ fn fixture_trust_is_explicit_and_normal_all_feature_hosts_remain_gated() {
     fs::create_dir(&lsp_dir).unwrap();
     let mut normal = RawAgent::new(root.path(), true);
     let info = metadata(normal.ok(Operation::Hello));
-    for cap in LANGUAGE_SESSION_CAPABILITIES {
-        assert!(!info.supports(cap), "standard binary advertised {cap}");
+    assert!(!info.supports("language_start"));
+    for cap in JAVA_LANGUAGE_SESSION_CAPABILITIES {
+        assert!(info.supports(cap), "standard isolated binary omitted {cap}");
     }
     assert_eq!(
         normal
@@ -203,10 +205,8 @@ fn fixture_trust_is_explicit_and_normal_all_feature_hosts_remain_gated() {
         "unsupported_platform"
     );
     normal.close_cleanly();
-    for mut workspace in [
-        Workspace::open(root.path()).unwrap(),
-        Workspace::with_backend_mode(root.path(), BackendMode::IsolatedAgent).unwrap(),
-    ] {
+    for backend_mode in [BackendMode::InProcess, BackendMode::IsolatedAgent] {
+        let mut workspace = Workspace::with_backend_mode(root.path(), backend_mode).unwrap();
         workspace.set_allow_run(true);
         assert_eq!(
             workspace
@@ -215,8 +215,14 @@ fn fixture_trust_is_explicit_and_normal_all_feature_hosts_remain_gated() {
                 .code,
             "unsupported_platform"
         );
-        for cap in LANGUAGE_SESSION_CAPABILITIES {
-            assert!(!metadata(workspace.handle(Operation::Hello).unwrap()).supports(cap));
+        let info = metadata(workspace.handle(Operation::Hello).unwrap());
+        assert!(!info.supports("language_start"));
+        for cap in JAVA_LANGUAGE_SESSION_CAPABILITIES {
+            assert_eq!(
+                info.supports(cap),
+                backend_mode == BackendMode::IsolatedAgent,
+                "{cap}"
+            );
         }
     }
     let mut untrusted = validation_agent(root.path(), false);

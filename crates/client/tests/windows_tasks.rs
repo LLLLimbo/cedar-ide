@@ -12,7 +12,9 @@
 mod harness;
 
 use cedar_client::Client;
-use cedar_protocol::{Operation, Payload, LANGUAGE_SESSION_CAPABILITIES, RUN_TASK_CAPABILITIES};
+use cedar_protocol::{
+    Operation, Payload, JAVA_LANGUAGE_SESSION_CAPABILITIES, RUN_TASK_CAPABILITIES,
+};
 use cedar_tasks::{TaskState, MAX_COMPLETED_TASKS, MAX_OUTPUT_BYTES_PER_STREAM};
 use cedar_workspace::Workspace;
 use harness::*;
@@ -36,6 +38,18 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
     assert_eq!(
         info.capabilities,
         [
+            "language_change",
+            "language_close",
+            "language_document_symbols",
+            "language_events",
+            "language_format",
+            "language_open",
+            "language_query",
+            "language_references",
+            "language_resolve_completion",
+            "language_resolve_uri",
+            "language_start_java",
+            "language_stop",
             "list",
             "read",
             "run_cancel",
@@ -48,13 +62,11 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
     for cap in ["list", "read", "write", "search"]
         .iter()
         .chain(RUN_TASK_CAPABILITIES)
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
     {
         assert!(info.supports(cap), "missing isolated capability {cap}");
     }
-    for cap in ["run", "git_status", "terminal"]
-        .iter()
-        .chain(LANGUAGE_SESSION_CAPABILITIES)
-    {
+    for cap in ["run", "git_status", "language_start", "terminal"] {
         assert!(!info.supports(cap), "overstated isolated capability {cap}");
     }
     let marker = root.path().join("must-not-run");
@@ -62,6 +74,11 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
         start(&["marker", &text_path(&marker)], 3),
         Operation::RunPoll { task_id: 1 },
         Operation::RunCancel { task_id: 1 },
+        Operation::LanguageStartJava {
+            java_executable: String::new(),
+            distribution: String::new(),
+            data_directory: String::new(),
+        },
     ] {
         assert_eq!(untrusted.request(op).unwrap_err().code, "run_disabled");
     }
@@ -90,7 +107,10 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
     let mut in_process = Workspace::open(root.path()).unwrap();
     in_process.set_allow_run(true);
     let local = metadata(in_process.handle(Operation::Hello).unwrap());
-    for cap in RUN_TASK_CAPABILITIES {
+    for cap in RUN_TASK_CAPABILITIES
+        .iter()
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
+    {
         assert!(
             !local.supports(cap),
             "ordinary host must not advertise {cap}"

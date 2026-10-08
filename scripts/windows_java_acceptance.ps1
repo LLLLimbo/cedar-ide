@@ -158,6 +158,10 @@ try {
     $env:CEDAR_JAVA_ERROR_DIR = $agentErrors
     $env:CEDAR_JDTLS_HOME = $distribution
     $env:CEDAR_AGENT_LANGUAGE_VALIDATION_BIN = [IO.Path]::GetFullPath('target/release/cedar-agent-language-validation.exe')
+    $env:CEDAR_AGENT_BIN = [IO.Path]::GetFullPath('target/release/cedar-agent.exe')
+    if (-not (Test-Path -LiteralPath $env:CEDAR_AGENT_BIN -PathType Leaf)) {
+        throw 'Build the normal shipping agent before production Java acceptance.'
+    }
     $env:CEDAR_WINPROCESS_FIXTURE_BIN = [IO.Path]::GetFullPath('target/release/cedar-winprocess-fixture.exe')
     if (-not (Test-Path -LiteralPath $env:CEDAR_WINPROCESS_FIXTURE_BIN -PathType Leaf)) {
         throw 'Build the native owned task fixture before this test.'
@@ -173,8 +177,10 @@ try {
     # fails. Both exit codes remain required; neither failure is masked.
     & cargo test -p cedar-app --all-features --locked real_windows_agent_java_forced_owner_cleanup -- --ignored --nocapture --test-threads=1 *>> $agentTranscript
     $forcedExitCode = $LASTEXITCODE
-    if ($editorExitCode -ne 0 -or $forcedExitCode -ne 0) {
-        throw 'Real Windows Java editor or forced-owner acceptance failed.'
+    & cargo test -p cedar-app --all-features --locked real_windows_normal_agent_java_editor_acceptance -- --ignored --nocapture --test-threads=1 *>> $agentTranscript
+    $productionExitCode = $LASTEXITCODE
+    if ($editorExitCode -ne 0 -or $forcedExitCode -ne 0 -or $productionExitCode -ne 0) {
+        throw 'Real Windows Java editor, forced-owner or production-route acceptance failed.'
     }
 }
 catch {
@@ -252,6 +258,29 @@ finally {
                     'task_cap_not_reached', 'source_unchanged', 'synthetic_root_removed', 'success')) {
                     if (-not $record.$field) { throw 'Forced-owner cleanup witness is incomplete.' }
                 }
+                $production = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_production' })
+                if ($production.Count -ne 1) { throw 'Expected exactly one normal-agent Java acceptance receipt.' }
+                $record = $production[0]
+                if ($record.route -cne 'normal_agent_client' -or $record.primary_failed -or $record.cleanup_failed -or
+                    $record.failure_stage -cne 'none' -or $record.elapsed_saturated -or
+                    $null -eq $record.root_exit_code -or $record.stop_status -cnotin @('graceful', 'forced')) {
+                    throw 'Production Java route did not establish bounded semantics and verified owned cleanup.'
+                }
+                foreach ($field in @('java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected',
+                    'root_observed_live', 'root_identity_verified', 'semantic_diagnostics', 'exact_definition',
+                    'real_completion', 'deferred_import_resolve', 'actual_editor_apply_undo_redo', 'versions_2_3_4_synced',
+                    'correction_acknowledged', 'correction_diagnostics', 'source_unchanged', 'stop_outcome_verified',
+                    'cleanup_joined', 'root_handle_signaled', 'client_reaped', 'synthetic_root_removed', 'success')) {
+                    if (-not $record.$field) { throw 'Production Java semantic or ownership witness is incomplete.' }
+                }
+                if ($record.stop_status -ceq 'graceful' -and ($record.root_exit_code -ne 0 -or
+                    $record.stop_reason -cne 'root_exited' -or -not $record.shutdown_response_received -or
+                    -not $record.exit_frame_completed)) {
+                    throw 'Production Java graceful label lacks matching protocol and root-exit evidence.'
+                }
+                if ($record.stop_status -ceq 'forced' -and $record.stop_reason -cnotin @('grace_expired', 'aborted')) {
+                    throw 'Production Java forced label lacks a matching termination reason.'
+                }
                 if ($cleanup[0].sessions_completed -ne 3 -or -not $cleanup[0].success -or
                     $cleanup[0].primary_failed -or $cleanup[0].cleanup_failed -or
                     $cleanup[0].failure_stage -cne 'none' -or -not $cleanup[0].agent_exit_zero -or
@@ -265,7 +294,7 @@ finally {
             if ($null -eq $failure) { $stage = 'sanitized crash evidence collection'; $failure = $_ }
             else { Add-Content -LiteralPath $EvidencePath -Value ('Crash evidence collection also failed: ' + $_.Exception.Message) }
         }
-        foreach ($name in @('CEDAR_JAVA_ERROR_DIR', 'CEDAR_JDTLS_HOME', 'CEDAR_AGENT_LANGUAGE_VALIDATION_BIN', 'CEDAR_WINPROCESS_FIXTURE_BIN')) {
+        foreach ($name in @('CEDAR_JAVA_ERROR_DIR', 'CEDAR_JDTLS_HOME', 'CEDAR_AGENT_LANGUAGE_VALIDATION_BIN', 'CEDAR_WINPROCESS_FIXTURE_BIN', 'CEDAR_AGENT_BIN')) {
             $environmentPath = 'Env:' + $name
             if (Test-Path -LiteralPath $environmentPath) { Remove-Item -LiteralPath $environmentPath }
         }
@@ -287,4 +316,4 @@ if ($null -ne $failure) {
     Record ('FAIL during ' + $stage + ': ' + $failure.Exception.Message)
     throw $failure
 }
-Record 'PASS: direct Java plus real agent/headless editor assertions completed and generated dependency scratch was removed.'
+Record 'PASS: direct Java, fixture ownership and normal-agent Java editor assertions completed; generated dependency scratch was removed.'

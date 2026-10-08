@@ -14,9 +14,16 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
     }
     // Language startup has its own platform policy. Do not infer it from task
     // support or advertise executable availability (which Hello never probes).
-    if super::language::platform_supported() {
+    let generic_language = super::language::platform_supported();
+    let java_language = super::language::java_platform_supported(backend_mode);
+    if generic_language {
+        capabilities.push("language_start");
+    }
+    if java_language {
+        capabilities.push("language_start_java");
+    }
+    if generic_language || java_language {
         capabilities.extend([
-            "language_start",
             "language_open",
             "language_change",
             "language_close",
@@ -84,6 +91,11 @@ mod tests {
                 program: "nonexistent-cedar-test-server".into(),
                 args: vec![],
             },
+            Operation::LanguageStartJava {
+                java_executable: "must-not-be-inspected".into(),
+                distribution: "must-not-be-inspected".into(),
+                data_directory: "must-not-be-inspected".into(),
+            },
             Operation::LanguageOpen {
                 path: "a.rs".into(),
                 language_id: "rust".into(),
@@ -150,9 +162,17 @@ mod tests {
             for capability in RUN_TASK_CAPABILITIES {
                 assert_eq!(agent.supports(capability), task_platform, "{capability}");
             }
-            // Language stdio ownership has its own policy, independent of tasks.
-            let language_platform = !cfg!(windows);
+            // Generic start remains unsupported on Windows. Only an isolated
+            // Windows agent advertises the narrow Java route and its lifecycle.
+            let generic_language = !cfg!(windows);
+            let java_language = cfg!(windows) && backend_mode == BackendMode::IsolatedAgent;
+            let language_operation_supported = |name: &str| match name {
+                "language_start" => generic_language,
+                "language_start_java" => java_language,
+                _ => generic_language || java_language,
+            };
             for capability in LANGUAGE_SESSION_CAPABILITIES.iter().chain(&[
+                "language_start_java",
                 "language_query",
                 "language_resolve_uri",
                 "language_format",
@@ -162,7 +182,7 @@ mod tests {
             ]) {
                 assert_eq!(
                     agent.supports(capability),
-                    language_platform,
+                    language_operation_supported(capability),
                     "{capability}"
                 );
             }
@@ -170,7 +190,7 @@ mod tests {
             for operation in execution_operations() {
                 let name = operation.capability_name().unwrap();
                 let supported = if name.starts_with("language_") {
-                    language_platform
+                    language_operation_supported(name)
                 } else if RUN_TASK_CAPABILITIES.contains(&name) {
                     task_platform
                 } else {

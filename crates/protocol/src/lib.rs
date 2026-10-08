@@ -11,10 +11,20 @@ pub const MAX_AGENT_CAPABILITIES: usize = 32;
 pub const MAX_CAPABILITY_BYTES: usize = 64;
 /// Minimum complete lifecycle required before starting a managed command task.
 pub const RUN_TASK_CAPABILITIES: &[&str] = &["run_start", "run_poll", "run_cancel"];
-/// Minimum session Cedar must be able to synchronize and shut down.
+/// Minimum generic session Cedar must be able to synchronize and shut down.
 /// Queries, navigation, formatting and completion resolution remain optional.
 pub const LANGUAGE_SESSION_CAPABILITIES: &[&str] = &[
     "language_start",
+    "language_open",
+    "language_change",
+    "language_close",
+    "language_events",
+    "language_stop",
+];
+/// Scoped Java startup uses the same synchronization/shutdown lifecycle, without
+/// implying that the backend supports arbitrary language-server commands.
+pub const JAVA_LANGUAGE_SESSION_CAPABILITIES: &[&str] = &[
+    "language_start_java",
     "language_open",
     "language_change",
     "language_close",
@@ -125,6 +135,13 @@ pub enum Operation {
         program: String,
         args: Vec<String>,
     },
+    /// Explicit Java/JDT recipe; no shell, PATH lookup or caller-supplied argv.
+    /// Like other execution operations, support does not grant workspace trust.
+    LanguageStartJava {
+        java_executable: String,
+        distribution: String,
+        data_directory: String,
+    },
     LanguageOpen {
         path: String,
         language_id: String,
@@ -200,6 +217,7 @@ impl Operation {
             Self::Search { .. } => "search",
             Self::GitStatus => "git_status",
             Self::LanguageStart { .. } => "language_start",
+            Self::LanguageStartJava { .. } => "language_start_java",
             Self::LanguageOpen { .. } => "language_open",
             Self::LanguageChange { .. } => "language_change",
             Self::LanguageClose { .. } => "language_close",

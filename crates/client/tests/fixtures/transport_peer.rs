@@ -3,7 +3,7 @@
 use std::{
     fs::{self, OpenOptions},
     io::{self, BufRead, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     thread,
     time::Duration,
 };
@@ -23,7 +23,11 @@ fn hello(id: u64, protocol: u32) {
 }
 // New capability peers have a caller-supplied first Hello and deterministic,
 // side-effect-free responses. Every request is recorded before it is answered.
-fn capability_reply(id: u64, request: &str) {
+fn capability_reply(id: u64, request: &str, directory: &Path) {
+    if let Ok(result) = fs::read_to_string(directory.join(format!("response-{id}.json"))) {
+        emit(format!("{{\"id\":{id},\"result\":{result}}}\n").as_bytes());
+        return;
+    }
     let payload = if request.contains("\"type\":\"hello\"") {
         // A second wire Hello is deliberately inconsistent. The public Client
         // must return its original snapshot without ever transmitting this.
@@ -42,6 +46,10 @@ fn capability_reply(id: u64, request: &str) {
         "{\"type\":\"run\",\"stdout\":\"\",\"stderr\":\"\",\"exit_code\":0,\"timed_out\":false,\"truncated\":false}"
     } else if request.contains("\"type\":\"run_") {
         "{\"type\":\"run_task\",\"snapshot\":{}}"
+    } else if request.contains("\"type\":\"language_start\"")
+        || request.contains("\"type\":\"language_start_java\"")
+    {
+        "{\"type\":\"language\",\"value\":{\"started\":true}}"
     } else {
         "{\"type\":\"language\",\"value\":null}"
     };
@@ -153,7 +161,7 @@ fn main() {
             continue;
         }
         match mode.as_str() {
-            "capability_peer" => capability_reply(id, &line),
+            "capability_peer" => capability_reply(id, &line, &dir),
             "eof_after_request" => return,
             "wrong_later_id" => hello(id - 1, 4),
             "stderr_flood" => {

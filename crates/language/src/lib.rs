@@ -8,7 +8,12 @@
 pub mod dap;
 pub mod framing;
 mod lsp;
+mod shutdown;
 mod transport;
 
 pub use lsp::{Diagnostic, LspClient, LspEvent, Position, PublishDiagnostics, Range};
+pub use shutdown::{
+    ShutdownOutcome, WindowsCleanupErrors, WindowsCleanupStatus, WindowsRootExit,
+    WindowsShutdownOutcome, WindowsShutdownReason,
+};
 pub use transport::{ClientOptions, Error, ProcessConfig, RpcEvent, StdioRpc};

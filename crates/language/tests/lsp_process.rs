@@ -76,7 +76,17 @@ fn complete_lifecycle_features_and_full_document_sync() {
     );
     client.did_close(uri).unwrap();
     assert!(client.did_change(uri, 3, "closed").is_err());
-    client.shutdown().unwrap();
+    let (result, outcome) = client.shutdown_with_outcome();
+    result.unwrap();
+    assert!(outcome.shutdown_response_received && outcome.exit_frame_completed);
+    #[cfg(not(windows))]
+    {
+        assert_eq!(outcome.windows, None);
+        assert!(!outcome.is_graceful());
+    }
+    let (repeated, repeated_outcome) = client.shutdown_with_outcome();
+    repeated.unwrap();
+    assert_eq!(repeated_outcome, outcome);
     client.shutdown().unwrap();
     assert!(client.request("mock/echo", json!({})).is_err());
     let audit: Vec<Value> = std::fs::read_to_string(audit_path)
@@ -137,6 +147,39 @@ fn shutdown_delivers_complete_exit_then_stdin_eof_before_cleanup() {
     // shutdown() can return Ok after forced cleanup. This server-written marker
     // exists only if it consumed a complete exit frame and then clean stdin EOF.
     assert_eq!(audit[4], json!({"fixture":"stdin-eof-after-exit"}));
+}
+
+#[test]
+fn failed_shutdown_preserves_original_error_and_outcome_without_another_rpc() {
+    let temp = tempfile::tempdir().unwrap();
+    let audit_path = temp.path().join("failed-shutdown.jsonl");
+    let client = ready("shutdown-error", Some(&audit_path));
+    let (result, outcome) = client.shutdown_with_outcome();
+    assert!(matches!(result, Err(Error::Remote { code: -32000, .. })));
+    assert!(outcome.shutdown_response_received);
+    assert!(!outcome.exit_frame_completed);
+    assert!(!outcome.is_graceful());
+    let (repeated, repeated_outcome) = client.shutdown_with_outcome();
+    assert_eq!(
+        repeated.unwrap_err().to_string(),
+        result.clone().unwrap_err().to_string()
+    );
+    assert_eq!(repeated_outcome, outcome);
+    assert_eq!(
+        client.shutdown().unwrap_err().to_string(),
+        result.unwrap_err().to_string()
+    );
+    let methods: Vec<String> = std::fs::read_to_string(audit_path)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<Value>(line).unwrap()["method"]
+                .as_str()
+                .unwrap()
+                .into()
+        })
+        .collect();
+    assert_eq!(methods, ["initialize", "initialized", "shutdown"]);
 }
 
 #[test]

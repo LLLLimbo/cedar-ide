@@ -1,15 +1,16 @@
 //! One joined owner of the Windows process, its Job and every pipe operation.
 //! No blocking host stderr writes, detached I/O threads, PID-based termination,
 //! or flush-to-child-consumption operations are used here.
-use super::owned::{retain_tail, ActiveWrite, Incoming};
+use super::owned::{retain_tail, ActiveWrite, DurableJoin, Incoming, TerminalState};
 use super::{route_message, ClientOptions, Error, ProcessConfig, Shared, WriteCommand};
+use crate::{WindowsRootExit, WindowsShutdownOutcome, WindowsShutdownReason};
 use cedar_winprocess::{
     LaunchSpec, StdinWriteProgress, Stream, WindowsCommand, MAX_STDIN_WRITE_BYTES,
 };
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -20,12 +21,33 @@ struct Control {
     graceful_deadline: Mutex<Option<Instant>>,
     done: Mutex<bool>,
     completed: Condvar,
+    terminal: Mutex<TerminalState>,
+}
+
+impl Control {
+    fn record_reason(&self, reason: WindowsShutdownReason) {
+        self.terminal.lock().unwrap().record_reason(reason);
+    }
+
+    fn transport_failed(&self) {
+        self.terminal.lock().unwrap().transport_failed();
+    }
+
+    fn failure(&self, error: Error) -> Error {
+        self.transport_failed();
+        error
+    }
+}
+
+struct WorkerState {
+    join: DurableJoin<()>,
+    outcome: Option<(Result<(), Error>, WindowsShutdownOutcome)>,
 }
 
 pub(super) struct Backend {
     process_id: u32,
     control: Arc<Control>,
-    worker: Mutex<Option<JoinHandle<()>>>,
+    worker: Mutex<WorkerState>,
     wake: thread::Thread,
 }
 
@@ -59,6 +81,7 @@ impl Backend {
             graceful_deadline: Mutex::new(None),
             done: Mutex::new(false),
             completed: Condvar::new(),
+            terminal: Mutex::new(TerminalState::default()),
         });
         let worker_control = Arc::clone(&control);
         let options = options.clone();
@@ -104,6 +127,7 @@ impl Backend {
                     stderr: Vec::new(),
                     retain_stderr: config.inherit_stderr,
                     writes,
+                    termination_started: false,
                 };
                 let error = connection.run(&worker_control, &shared, &outbound, &options);
                 let error = connection.with_stderr(error);
@@ -118,14 +142,20 @@ impl Backend {
                         let _ = ack.try_send(Err(error.clone()));
                     }
                 }
-                connection.cleanup();
+                connection.cleanup(&worker_control);
+                // Completion is published only after WindowsCommand's destructor
+                // and the remaining connection state have released ownership.
+                drop(connection);
             })
             .map_err(|e| Error::Io(format!("start owned language worker: {e}")))?;
         let mut backend = Self {
             process_id: 0,
             control,
             wake: worker.thread().clone(),
-            worker: Mutex::new(Some(worker)),
+            worker: Mutex::new(WorkerState {
+                join: DurableJoin::Running(worker),
+                outcome: None,
+            }),
         };
         match ready.recv() {
             Ok(Ok(id)) => {
@@ -158,17 +188,40 @@ impl Backend {
         // Serialize joiners until cleanup really finishes. Taking a handle then
         // unlocking would let another abort falsely report completed teardown.
         let mut owner = self.worker.lock().unwrap();
-        if let Some(worker) = owner.take() {
-            worker
-                .join()
-                .map_err(|_| Error::Closed("language worker panicked".into()))?;
+        if let Some((result, _)) = &owner.outcome {
+            return result.clone();
         }
-        Ok(())
+        let result = owner
+            .join
+            .join()
+            .map_err(|_| Error::Closed("language worker panicked".into()));
+        let mut terminal = self.control.terminal.lock().unwrap();
+        let outcome = terminal.joined(result.is_err());
+        owner.outcome = Some((result.clone(), outcome));
+        result
+    }
+
+    pub(super) fn shutdown_outcome(&self) -> Option<WindowsShutdownOutcome> {
+        self.worker
+            .lock()
+            .unwrap()
+            .outcome
+            .as_ref()
+            .map(|(_, outcome)| *outcome)
+    }
+
+    pub(super) fn transport_failed(&self) {
+        self.control.transport_failed();
+    }
+
+    pub(super) fn begin_abort(&self) {
+        self.control.record_reason(WindowsShutdownReason::Aborted);
     }
 
     pub(super) fn abort(&self) {
+        self.begin_abort(); // independent of outbound queue fullness and pipe progress
         self.control.stop.store(true, Ordering::Release);
-        self.wake(); // independent of outbound queue fullness and pipe progress
+        self.wake();
         let _ = self.join();
     }
 
@@ -200,6 +253,8 @@ impl Backend {
         let completed = *done;
         drop(done);
         if !completed {
+            self.control
+                .record_reason(WindowsShutdownReason::GraceExpired);
             shared.fail(Error::Closed("shutdown grace period elapsed".into()));
             self.control.stop.store(true, Ordering::Release);
             self.wake();
@@ -220,6 +275,11 @@ struct Completion<'a> {
 }
 impl Drop for Completion<'_> {
     fn drop(&mut self) {
+        self.control.record_reason(if thread::panicking() {
+            WindowsShutdownReason::WorkerPanicked
+        } else {
+            WindowsShutdownReason::TransportFailure
+        });
         self.shared
             .fail(Error::Closed("language worker stopped".into()));
         *self.control.done.lock().unwrap() = true;
@@ -234,6 +294,7 @@ struct Connection {
     stderr: Vec<u8>,
     retain_stderr: bool,
     writes: mpsc::Receiver<WriteCommand>,
+    termination_started: bool,
 }
 
 impl Connection {
@@ -254,10 +315,11 @@ impl Connection {
             }
             let graceful_deadline = *control.graceful_deadline.lock().unwrap();
             if graceful_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                control.record_reason(WindowsShutdownReason::GraceExpired);
                 return Error::Closed("shutdown grace period elapsed".into());
             }
             if let Err(error) = self.incoming.check_deadline(Instant::now()) {
-                return error;
+                return control.failure(error);
             }
             // Each round is bounded by the primitive (four 8-KiB chunks per
             // stream). Parse/route one frame at a time, never collect a batch.
@@ -300,11 +362,11 @@ impl Connection {
                 Stream::Stdout => {}
             });
             if let Some(error) = failure {
-                return error;
+                return control.failure(error);
             }
             let capture = match capture {
                 Ok(capture) => capture,
-                Err(e) => return Error::Io(format!("capture server output: {e}")),
+                Err(e) => return control.failure(Error::Io(format!("capture server output: {e}"))),
             };
             // Unexpected stdout EOF remains immediately terminal. During an
             // explicit graceful exit, a server may close stdout before shutdown
@@ -313,11 +375,13 @@ impl Connection {
             if capture.stdout_eof {
                 let error = self.incoming.eof();
                 if graceful_deadline.is_none() || !matches!(error, Error::Closed(_)) {
-                    return error;
+                    return control.failure(error);
                 }
             }
             match self.command.try_exit() {
                 Ok(Some(exit)) if exited.is_none() => {
+                    control.record_reason(WindowsShutdownReason::RootExited);
+                    self.record_root(control, exit.code);
                     // A server can exit after reading the final bytes before
                     // we poll their overlapped completion. Complete only that
                     // already-submitted exit write; never submit after root exit.
@@ -327,14 +391,15 @@ impl Connection {
                         .is_some_and(|write| write.closes_stdin() && write.pending())
                     {
                         if let Err(error) = self.write_round(options) {
-                            return error;
+                            return control.failure(error);
                         }
                     }
                     exited = Some((exit.code, Instant::now() + FINAL_DRAIN));
                     // Stop pipe-holding descendants now, then allow pending
                     // overlapped reads to complete before declaring EOF.
-                    if let Err(error) = self.command.terminate_tree() {
-                        return Error::Io(format!("terminate exited server tree: {error}"));
+                    if let Err(error) = self.terminate_tree(control) {
+                        return control
+                            .failure(Error::Io(format!("terminate exited server tree: {error}")));
                     }
                     // The child may have written between this round's empty
                     // capture and exit observation. Always capture again after
@@ -348,12 +413,15 @@ impl Connection {
                         .is_some_and(|write| write.closes_stdin() && write.pending())
                     {
                         if let Err(error) = self.write_round(options) {
-                            return error;
+                            return control.failure(error);
                         }
                     }
                 }
                 Ok(None) => {}
-                Err(e) => return Error::Io(format!("observe server: {e}")),
+                Err(e) => {
+                    control.terminal.lock().unwrap().errors.observe_root = true;
+                    return control.failure(Error::Io(format!("observe server: {e}")));
+                }
             }
             if let Some((code, deadline)) = exited {
                 // Root exit must not discard a response already buffered behind
@@ -373,7 +441,7 @@ impl Connection {
             match self.write_round(options) {
                 Ok(progress) if progress || capture.bytes > 0 => continue,
                 Ok(_) => thread::park_timeout(POLL_INTERVAL),
-                Err(error) => return error,
+                Err(error) => return control.failure(error),
             }
         }
     }
@@ -450,9 +518,40 @@ impl Connection {
         }
     }
 
-    fn cleanup(&mut self) {
-        let _ = self.command.terminate_tree();
-        let _ = self.command.cancel_stdin_and_complete();
+    fn record_root(&self, control: &Control, code: u32) {
+        let mut terminal = control.terminal.lock().unwrap();
+        if terminal.root_exit == WindowsRootExit::Unobserved {
+            terminal.root_exit = if self.termination_started {
+                WindowsRootExit::AfterTermination(code)
+            } else {
+                WindowsRootExit::BeforeTermination(code)
+            };
+        }
+    }
+
+    fn terminate_tree(&mut self, control: &Control) -> std::io::Result<()> {
+        // Snapshot root observation before any termination attempt. The same
+        // operation is used to clean descendants of an already exited root.
+        if !self.termination_started {
+            match self.command.try_exit() {
+                Ok(Some(exit)) => self.record_root(control, exit.code),
+                Ok(None) => {}
+                Err(_) => control.terminal.lock().unwrap().errors.observe_root = true,
+            }
+        }
+        self.termination_started = true;
+        let result = self.command.terminate_tree();
+        if result.is_err() {
+            control.terminal.lock().unwrap().errors.terminate_tree = true;
+        }
+        result
+    }
+
+    fn cleanup(&mut self, control: &Control) {
+        let _ = self.terminate_tree(control);
+        if self.command.cancel_stdin_and_complete().is_err() {
+            control.terminal.lock().unwrap().errors.cancel_stdin = true;
+        }
         // Drain final output only for a finite budget. No final bytes can revive
         // requests or enqueue more writes after the terminal state is published.
         let deadline = Instant::now() + FINAL_DRAIN;
@@ -462,13 +561,59 @@ impl Connection {
                 Ok(progress) if progress.stdout_eof && progress.stderr_eof => break,
                 Ok(progress) if progress.bytes == 0 => thread::park_timeout(POLL_INTERVAL),
                 Ok(_) => {}
-                Err(_) => break,
+                Err(_) => {
+                    control.terminal.lock().unwrap().errors.drain_output = true;
+                    control.transport_failed();
+                    break;
+                }
             }
         }
-        let _ = self.command.cancel_capture_and_complete();
-        let _ = self.command.wait_exit();
+        if self.command.cancel_capture_and_complete().is_err() {
+            control.terminal.lock().unwrap().errors.cancel_capture = true;
+        }
+        match self.command.wait_exit() {
+            Ok(exit) => self.record_root(control, exit.code),
+            Err(_) => control.terminal.lock().unwrap().errors.wait_root = true,
+        }
         // WindowsCommand's Drop is the backstop on failures and unwinding. OS
         // cancellation/completion may delay cleanup; live I/O is never freed to
         // satisfy a timer. Closing the Job also waits for owned descendants.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::WindowsCleanupStatus;
+
+    #[test]
+    fn panicked_worker_keeps_failed_join_and_unverified_report_on_repeat() {
+        let control = Arc::new(Control {
+            stop: AtomicBool::new(false),
+            graceful_deadline: Mutex::new(None),
+            done: Mutex::new(true),
+            completed: Condvar::new(),
+            terminal: Mutex::new(TerminalState::default()),
+        });
+        let worker = thread::spawn(|| panic!("owned worker panic regression"));
+        let backend = Backend {
+            process_id: 0,
+            control,
+            wake: worker.thread().clone(),
+            worker: Mutex::new(WorkerState {
+                join: DurableJoin::Running(worker),
+                outcome: None,
+            }),
+        };
+        assert!(backend.shutdown_outcome().is_none());
+        assert!(backend.join().is_err());
+        let outcome = backend.shutdown_outcome().unwrap();
+        assert_eq!(outcome.reason, WindowsShutdownReason::WorkerPanicked);
+        assert_eq!(outcome.root_exit, WindowsRootExit::Unobserved);
+        assert_eq!(outcome.cleanup, WindowsCleanupStatus::Unverified);
+        assert!(outcome.errors.worker_panicked);
+        backend.abort();
+        assert!(backend.join().is_err());
+        assert_eq!(backend.shutdown_outcome(), Some(outcome));
     }
 }

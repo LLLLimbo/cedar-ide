@@ -136,6 +136,22 @@ AGENT_TRANSCRIPT_FIELDS = {
         'elapsed_saturated'), 'bool')
         | {'java_exit_code': '?u32', 'task_exit_code': '?u32',
            'failure_stage': AGENT_LIFECYCLE_FAILURE_STAGES, 'elapsed_ms': ('integer_range', 0, 300000)},
+    'windows_java_production': dict.fromkeys((
+        'java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected', 'root_observed_live',
+        'root_identity_verified', 'semantic_diagnostics', 'exact_definition', 'real_completion',
+        'deferred_import_resolve', 'actual_editor_apply_undo_redo', 'versions_2_3_4_synced',
+        'correction_acknowledged', 'correction_diagnostics', 'source_unchanged', 'stop_outcome_verified',
+        'shutdown_response_received', 'exit_frame_completed', 'cleanup_joined', 'root_handle_signaled',
+        'client_reaped', 'synthetic_root_removed', 'primary_failed', 'cleanup_failed', 'success',
+        'elapsed_saturated'), 'bool')
+        | {'route': ('normal_agent_client',), 'stop_status': ('not_attempted', 'graceful', 'forced', 'error'),
+           'stop_reason': ('not_attempted', 'root_exited', 'grace_expired', 'aborted',
+                           'transport_failure', 'worker_panicked'),
+           'root_exit_code': '?u32', 'elapsed_ms': ('integer_range', 0, 300000),
+           'failure_stage': ('none', 'setup', 'initialize', 'open', 'diagnostics', 'hover',
+                             'definition', 'completion', 'resolve', 'apply', 'undo', 'redo',
+                             'sync', 'correction', 'close', 'stop', 'root_exit', 'agent_exit',
+                             'fixture_cleanup')},
 }
 
 

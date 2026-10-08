@@ -565,9 +565,10 @@ impl SessionEvidence {
     }
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum FailureStage {
+    #[default]
     None,
     Setup,
     Initialize,
@@ -768,6 +769,71 @@ fn hover_witness_requires_actual_symbol_and_type_tokens() {
         json!({"contents":"int greeting"}),
     ] {
         assert!(!hover_has_source_variable(&value));
+    }
+}
+
+#[derive(Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ProductionStopStatus {
+    #[default]
+    NotAttempted,
+    Graceful,
+    Forced,
+    Error,
+}
+#[derive(Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ProductionStopReason {
+    #[default]
+    NotAttempted,
+    RootExited,
+    GraceExpired,
+    Aborted,
+    TransportFailure,
+    WorkerPanicked,
+}
+#[derive(Default, Serialize)]
+pub(super) struct ProductionEvidence {
+    pub kind: &'static str,
+    pub route: &'static str,
+    pub java_capabilities: bool,
+    pub generic_start_rejected: bool,
+    pub untrusted_start_rejected: bool,
+    pub root_observed_live: bool,
+    pub root_identity_verified: bool,
+    pub semantic_diagnostics: bool,
+    pub exact_definition: bool,
+    pub real_completion: bool,
+    pub deferred_import_resolve: bool,
+    pub actual_editor_apply_undo_redo: bool,
+    pub versions_2_3_4_synced: bool,
+    pub correction_acknowledged: bool,
+    pub correction_diagnostics: bool,
+    pub source_unchanged: bool,
+    pub stop_outcome_verified: bool,
+    pub shutdown_response_received: bool,
+    pub exit_frame_completed: bool,
+    pub cleanup_joined: bool,
+    pub root_handle_signaled: bool,
+    pub client_reaped: bool,
+    pub synthetic_root_removed: bool,
+    pub primary_failed: bool,
+    pub cleanup_failed: bool,
+    pub success: bool,
+    pub stop_status: ProductionStopStatus,
+    pub stop_reason: ProductionStopReason,
+    pub root_exit_code: Option<u32>,
+    pub failure_stage: FailureStage,
+    pub elapsed_ms: u32,
+    pub elapsed_saturated: bool,
+}
+impl ProductionEvidence {
+    pub fn new() -> Self {
+        Self {
+            kind: "windows_java_production",
+            route: "normal_agent_client",
+            ..Self::default()
+        }
     }
 }
 

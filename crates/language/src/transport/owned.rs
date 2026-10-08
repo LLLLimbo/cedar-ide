@@ -2,7 +2,76 @@
 //! tests on every host. No process or OS I/O is performed here.
 use super::{Error, WriteCommand};
 use crate::framing::{FrameLimits, IncrementalDecoder};
+use crate::{
+    WindowsCleanupErrors, WindowsCleanupStatus, WindowsRootExit, WindowsShutdownOutcome,
+    WindowsShutdownReason,
+};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+/// The caller serializes joiners while the handle is consumed. A consumed handle
+/// must retain its failure; its absence must never be interpreted as success.
+pub(super) enum DurableJoin<T> {
+    Running(JoinHandle<T>),
+    Finished(Result<T, ()>),
+}
+
+impl<T: Clone> DurableJoin<T> {
+    pub(super) fn join(&mut self) -> Result<T, ()> {
+        if matches!(self, Self::Running(_)) {
+            let Self::Running(worker) = std::mem::replace(self, Self::Finished(Err(()))) else {
+                unreachable!();
+            };
+            *self = Self::Finished(worker.join().map_err(|_| ()));
+        }
+        match self {
+            Self::Finished(result) => result.clone(),
+            Self::Running(_) => unreachable!(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct TerminalState {
+    pub(super) reason: Option<WindowsShutdownReason>,
+    pub(super) transport_failure_observed: bool,
+    pub(super) root_exit: WindowsRootExit,
+    pub(super) errors: WindowsCleanupErrors,
+}
+
+impl TerminalState {
+    pub(super) fn record_reason(&mut self, reason: WindowsShutdownReason) {
+        self.reason.get_or_insert(reason);
+    }
+
+    pub(super) fn transport_failed(&mut self) {
+        self.transport_failure_observed = true;
+        self.record_reason(WindowsShutdownReason::TransportFailure);
+    }
+
+    // Called only after the ownership thread has actually been joined.
+    pub(super) fn joined(&mut self, panicked: bool) -> WindowsShutdownOutcome {
+        if panicked {
+            self.record_reason(WindowsShutdownReason::WorkerPanicked);
+            self.errors.worker_panicked = true;
+        }
+        WindowsShutdownOutcome {
+            reason: self
+                .reason
+                .unwrap_or(WindowsShutdownReason::TransportFailure),
+            transport_failure_observed: self.transport_failure_observed,
+            root_exit: self.root_exit,
+            cleanup: if panicked {
+                WindowsCleanupStatus::Unverified
+            } else if self.errors == WindowsCleanupErrors::default() {
+                WindowsCleanupStatus::Joined
+            } else {
+                WindowsCleanupStatus::JoinedWithErrors
+            },
+            errors: self.errors,
+        }
+    }
+}
 
 pub(super) struct ActiveWrite {
     command: WriteCommand,
@@ -151,6 +220,67 @@ pub(super) fn retain_tail(tail: &mut Vec<u8>, bytes: &[u8]) {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn repeated_join_preserves_worker_panic_and_success() {
+        let mut failed = DurableJoin::Running(std::thread::spawn(|| -> u8 {
+            panic!("owned worker panic regression");
+        }));
+        assert_eq!(failed.join(), Err(()));
+        assert_eq!(failed.join(), Err(()));
+        let mut success = DurableJoin::Running(std::thread::spawn(|| 7));
+        assert_eq!(success.join(), Ok(7));
+        assert_eq!(success.join(), Ok(7));
+    }
+
+    #[test]
+    fn final_malformed_output_after_root_exit_cannot_be_graceful() {
+        // The decoder can receive trailing bytes on the mandatory final capture
+        // after root exit was observed. Exercise both orderings deterministically.
+        for failure_first in [false, true] {
+            for truncated in [false, true] {
+                let mut terminal = TerminalState::default();
+                if !failure_first {
+                    terminal.record_reason(WindowsShutdownReason::RootExited);
+                    terminal.root_exit = WindowsRootExit::BeforeTermination(0);
+                }
+                let mut incoming = Incoming::new(FrameLimits::default(), Duration::from_secs(1));
+                if truncated {
+                    incoming
+                        .push(&mut &b"Content-Length: 4\r\n\r\n{"[..], Instant::now())
+                        .unwrap();
+                    assert!(matches!(incoming.eof(), Error::Protocol(_)));
+                } else {
+                    assert!(matches!(
+                        incoming.push(&mut &b"Content-Length: -1\r\n\r\n"[..], Instant::now()),
+                        Err(Error::Protocol(_))
+                    ));
+                }
+                terminal.transport_failed();
+                terminal.record_reason(WindowsShutdownReason::RootExited);
+                terminal.root_exit = WindowsRootExit::BeforeTermination(0);
+                let owned = terminal.joined(false);
+                assert!(owned.transport_failure_observed);
+                assert_eq!(
+                    owned.reason,
+                    if failure_first {
+                        WindowsShutdownReason::TransportFailure
+                    } else {
+                        WindowsShutdownReason::RootExited
+                    }
+                );
+                assert_eq!(owned.cleanup, WindowsCleanupStatus::Joined);
+                let outcome = crate::ShutdownOutcome {
+                    shutdown_response_received: true,
+                    exit_frame_completed: true,
+                    windows: Some(owned),
+                };
+                assert!(!outcome.is_graceful());
+                terminal.record_reason(WindowsShutdownReason::Aborted);
+                assert_eq!(terminal.joined(false), owned);
+            }
+        }
+    }
 
     fn write(now: Instant) -> (ActiveWrite, mpsc::Receiver<Result<(), Error>>) {
         let (ack, recv) = mpsc::sync_channel(1);

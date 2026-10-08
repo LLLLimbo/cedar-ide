@@ -1,12 +1,20 @@
 //! Nonshipping fixture profile; no protocol method, capability, or trust grant.
+#[cfg(test)]
+use super::java_launch::ordinary_ascii_java_spelling;
+use super::java_launch::{
+    self, ordinary_local_path, regular_path, relative_launcher, validate_distribution,
+    validate_java_executable,
+};
 use crate::{error, io_error, Workspace};
 use cedar_language::{ClientOptions, LspClient, ProcessConfig, Range};
 use cedar_protocol::RemoteError;
 use serde_json::{json, Value};
-use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
+use std::fs;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 pub const WINDOWS_JAVA_VALIDATION_MARKER: &str = ".cedar-windows-java-validation";
 pub const WINDOWS_JAVA_VALIDATION_MARKER_CONTENTS: &[u8] = b"cedar-windows-java-validation-v1\n";
@@ -71,6 +79,19 @@ impl JavaValidationProfile {
         config: &mut ProcessConfig,
         options: &mut ClientOptions,
     ) -> Result<Value, RemoteError> {
+        self.configure_inner(config, options).map_err(|mut error| {
+            if error.code == "invalid_java_launch" {
+                error.code = "invalid_java_validation".into();
+            }
+            error
+        })
+    }
+
+    fn configure_inner(
+        &self,
+        config: &mut ProcessConfig,
+        options: &mut ClientOptions,
+    ) -> Result<Value, RemoteError> {
         if self.sessions >= MAX_SESSIONS {
             return Err(invalid("Java validation session limit reached"));
         }
@@ -92,31 +113,12 @@ impl JavaValidationProfile {
             &self.configuration_uri,
             &self.root,
         )?;
-        for name in [
-            "CLIENT_PORT",
-            "CLIENT_HOST",
-            "socket.stream.debug",
-            "JDK_JAVA_OPTIONS",
-            "JAVA_TOOL_OPTIONS",
-            "_JAVA_OPTIONS",
-        ] {
-            if std::env::var_os(name).is_some() {
-                return Err(invalid(
-                    "Java fixture requires a clean launcher environment",
-                ));
-            }
-        }
+        java_launch::check_environment()?;
         config.working_directory = Some(self.distribution.clone());
-        // Match the bounded direct-Java probe queues and deadlines. Ordinary
-        // workspace sessions keep their existing, smaller queue defaults.
-        *options = ClientOptions {
-            request_timeout: Duration::from_secs(60),
-            shutdown_timeout: Duration::from_secs(10),
-            ..ClientOptions::default()
-        };
-        Ok(
-            json!({"extendedClientCapabilities":{"classFileContentsSupport":true},"settings":{"java":{"search":{"scope":"all"},"import":{"gradle":{"enabled":false},"maven":{"enabled":false}}}}}),
-        )
+        *options = java_launch::client_options();
+        let mut initialization = java_launch::initialization_options();
+        initialization["extendedClientCapabilities"] = json!({"classFileContentsSupport":true});
+        Ok(initialization)
     }
 
     pub(super) fn begin(
@@ -258,159 +260,6 @@ fn finish_result(
         "Java validation failed: jdk_symbol_verified={witness}, shutdown_api_succeeded={shutdown}, root_handle_signaled={}, root_exit_code={:?}, evidence_written={evidence}",
         root.signaled, root.exit_code,
     )))
-}
-
-fn regular_path(path: &Path, directory: bool) -> Result<(), RemoteError> {
-    let meta = fs::symlink_metadata(path).map_err(io_error)?;
-    #[cfg(windows)]
-    let reparse = {
-        use std::os::windows::fs::MetadataExt;
-        meta.file_attributes() & 0x400 != 0
-    };
-    #[cfg(not(windows))]
-    let reparse = false;
-    if meta.file_type().is_symlink()
-        || reparse
-        || if directory {
-            !meta.is_dir()
-        } else {
-            !meta.is_file()
-        }
-    {
-        return Err(invalid(
-            "Java fixture paths must be ordinary files or directories",
-        ));
-    }
-    Ok(())
-}
-
-fn ordinary_local_path(path: &Path) -> Result<PathBuf, RemoteError> {
-    let canonical = path.canonicalize().map_err(io_error)?;
-    #[cfg(windows)]
-    let ordinary = {
-        use std::path::Prefix;
-        let text = canonical
-            .to_str()
-            .ok_or_else(|| invalid("Java fixture paths must be UTF-8"))?;
-        let plain = match canonical.components().next() {
-            Some(Component::Prefix(prefix)) => match prefix.kind() {
-                Prefix::VerbatimDisk(_) => text
-                    .strip_prefix(r"\\?\")
-                    .ok_or_else(|| invalid("Invalid local-drive path"))?,
-                Prefix::Disk(_) if canonical.is_absolute() => text,
-                _ => return Err(invalid("Java fixture requires a local-drive path")),
-            },
-            _ => {
-                return Err(invalid(
-                    "Java fixture requires an absolute local-drive path",
-                ))
-            }
-        };
-        PathBuf::from(plain)
-    };
-    #[cfg(not(windows))]
-    let ordinary = canonical.clone();
-    if ordinary.canonicalize().map_err(io_error)? != canonical {
-        return Err(invalid(
-            "Ordinary Java path changed the selected filesystem identity",
-        ));
-    }
-    Ok(ordinary)
-}
-
-fn validate_distribution(path: &Path) -> Result<(PathBuf, PathBuf, String), RemoteError> {
-    if !path.is_absolute() {
-        return Err(invalid("Java distribution must be absolute"));
-    }
-    regular_path(path, true)?;
-    let distribution = ordinary_local_path(path)?;
-    let configuration = distribution.join("config_win");
-    regular_path(&configuration, true)?;
-    let plugins = distribution.join("plugins");
-    regular_path(&plugins, true)?;
-    let mut launcher = None;
-    for (index, entry) in fs::read_dir(&plugins).map_err(io_error)?.enumerate() {
-        if index >= 4096 {
-            return Err(invalid("Java plugins directory exceeds fixture limit"));
-        }
-        let entry = entry.map_err(io_error)?;
-        let name = entry.file_name();
-        if name.to_str().is_some_and(|name| {
-            name.starts_with("org.eclipse.equinox.launcher_") && name.ends_with(".jar")
-        }) {
-            if launcher.is_some() {
-                return Err(invalid("Expected exactly one Equinox launcher JAR"));
-            }
-            regular_path(&entry.path(), false)?;
-            launcher = Some(entry.path());
-        }
-    }
-    let launcher = launcher.ok_or_else(|| invalid("Expected exactly one Equinox launcher JAR"))?;
-    let relative = relative_launcher(&distribution, &launcher)?;
-    let configuration_uri = url::Url::from_directory_path(&configuration)
-        .map_err(|_| invalid("Invalid Java configuration URI"))?
-        .into();
-    Ok((distribution, relative, configuration_uri))
-}
-
-fn relative_launcher(distribution: &Path, launcher: &Path) -> Result<PathBuf, RemoteError> {
-    let relative = launcher
-        .strip_prefix(distribution)
-        .map_err(|_| invalid("Launcher must be inside its distribution"))?;
-    if relative.as_os_str().is_empty()
-        || !relative.to_str().is_some_and(str::is_ascii)
-        || relative
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_)))
-        || distribution
-            .join(relative)
-            .canonicalize()
-            .map_err(io_error)?
-            != launcher.canonicalize().map_err(io_error)?
-    {
-        return Err(invalid("Launcher requires an exact ASCII relative path"));
-    }
-    Ok(relative.to_path_buf())
-}
-
-fn ordinary_ascii_java_spelling(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    text.is_ascii()
-        && !bytes.iter().any(u8::is_ascii_control)
-        && bytes.len() > 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && matches!(bytes[2], b'/' | b'\\')
-        && text[3..].split(['/', '\\']).all(|part| {
-            !part.is_empty()
-                && part != "."
-                && part != ".."
-                && !part.ends_with(['.', ' '])
-                && !part.contains(':')
-        })
-        && text
-            .rsplit(['/', '\\'])
-            .next()
-            .is_some_and(|name| name.eq_ignore_ascii_case("java.exe"))
-}
-
-fn validate_java_executable(program: &std::ffi::OsStr) -> Result<(), RemoteError> {
-    if !program.to_str().is_some_and(ordinary_ascii_java_spelling) {
-        return Err(invalid(
-            "Java fixture requires an ordinary absolute ASCII java.exe",
-        ));
-    }
-    let path = Path::new(program);
-    regular_path(path, false)?;
-    if ordinary_local_path(path)?
-        .canonicalize()
-        .map_err(io_error)?
-        != path.canonicalize().map_err(io_error)?
-    {
-        return Err(invalid("Java executable identity changed"));
-    }
-    // Deliberately do not replace ProcessConfig.program with its canonical path.
-    Ok(())
 }
 
 fn unique_argument<'a>(

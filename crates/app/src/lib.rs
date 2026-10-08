@@ -3,6 +3,7 @@ mod agent_support;
 pub mod completion;
 mod disk_review;
 mod editor_state;
+mod java_language;
 mod language_navigation_results;
 mod language_results;
 mod language_sync;
@@ -706,6 +707,11 @@ impl CedarApp {
         let payload = match event.result {
             Ok(payload) => payload,
             Err(error) => {
+                let error = if let Job::Language(action) = &job {
+                    self.language_public_error(action, &error)
+                } else {
+                    error
+                };
                 if let Job::ProfilesLoad { epoch } = &job {
                     if self.profile_load_error(*epoch, event.connected, &error) {
                         return;

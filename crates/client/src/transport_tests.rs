@@ -90,7 +90,10 @@ fn rejects_truncated_and_oversized_real_pipe_frames() {
         let error = peer.request(Operation::Hello).unwrap_err();
         assert!(error.contains(expected), "{error}");
         assert!(!peer.connected);
-        peer.reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+        peer.reaped
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
     }
 }
 #[test]
@@ -117,7 +120,10 @@ fn eof_before_hello_and_after_request_disconnect_without_replay() {
             .request(Operation::Hello)
             .unwrap_err()
             .starts_with("disconnected:"));
-        peer.reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+        peer.reaped
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
         if mode != "eof_before_hello" {
             assert_eq!(
                 fs::read_to_string(dir.path().join("requests"))
@@ -141,7 +147,10 @@ fn wrong_response_id_poisoning_requires_a_new_connection() {
         .request(Operation::Hello)
         .unwrap_err()
         .starts_with("disconnected:"));
-    peer.reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+    peer.reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
     assert_eq!(
         fs::read_to_string(dir.path().join("requests"))
             .unwrap()
@@ -165,7 +174,10 @@ fn stderr_flood_is_drained_and_only_a_bounded_tail_is_retained() {
     assert!(error.contains("diagnostic-tail-marker"));
     assert!(!error.contains("discarded-prefix"));
     assert!(error.len() < STDERR_TAIL_BYTES + 512);
-    peer.reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+    peer.reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
 }
 #[test]
 fn stalled_response_has_a_short_internal_deadline_and_orderly_close() {
@@ -178,7 +190,10 @@ fn stalled_response_has_a_short_internal_deadline_and_orderly_close() {
     assert!(error.starts_with("transport_timeout:"));
     assert!(start.elapsed() < Duration::from_secs(2));
     assert!(!peer.connected);
-    peer.reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+    peer.reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
     assert!(dir.path().join("eof").exists());
 }
 #[test]
@@ -199,14 +214,21 @@ fn unknown_write_outcome_is_warned_and_never_automatically_replayed() {
         .request(write)
         .unwrap_err()
         .starts_with("disconnected:"));
-    peer.reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+    peer.reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
     let before_reconnect = fs::read_to_string(dir.path().join("requests")).unwrap();
     assert_eq!(before_reconnect.lines().count(), 2);
     assert_eq!(before_reconnect.matches("\"type\":\"write\"").count(), 1);
     let mut fresh = connected("normal", dir.path());
     fresh.request(Operation::Hello).unwrap();
     fresh.close();
-    fresh.reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+    fresh
+        .reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
     let requests = fs::read_to_string(dir.path().join("requests")).unwrap();
     assert_eq!(requests.matches("\"type\":\"write\"").count(), 1);
     let ids: Vec<_> = requests
@@ -232,7 +254,10 @@ fn blocked_writer_is_bounded_and_force_closed_off_the_calling_thread() {
         .unwrap_err();
     assert!(error.starts_with("transport_timeout:"), "{error}");
     assert!(start.elapsed() < Duration::from_secs(2));
-    peer.reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+    peer.reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
     assert!(!dir.path().join("eof").exists());
 }
 #[test]
@@ -252,7 +277,10 @@ fn flood_cannot_hold_the_response_reader_on_a_full_queue_after_close() {
     // A malicious peer can fill the single response slot before any request.
     // Closing must drop the receiver and release the blocked reader/writer.
     peer.close();
-    peer.reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+    peer.reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
 }
 
 #[test]
@@ -272,7 +300,10 @@ fn invalid_outgoing_frame_disconnects_without_putting_a_write_on_the_wire() {
     assert!(error.starts_with("transport_write:"), "{error}");
     assert!(error.contains("frame too large"));
     assert!(!peer.connected);
-    peer.reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+    peer.reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
     assert_eq!(
         fs::read_to_string(dir.path().join("requests"))
             .unwrap()
@@ -290,8 +321,97 @@ fn dropping_an_unresponsive_peer_does_not_wait_for_the_grace_deadline() {
     let start = Instant::now();
     drop(peer);
     assert!(start.elapsed() < Duration::from_millis(100));
-    reaped.recv_timeout(Duration::from_secs(5)).unwrap();
+    reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
     assert!(!dir.path().join("eof").exists());
+}
+
+#[test]
+fn explicit_close_waits_for_owned_child_cleanup_without_sending_another_request() {
+    let directory = tempfile::tempdir().unwrap();
+    let client = capability_client(directory.path(), Some(agent_info(&java_capabilities())));
+    client.close_and_wait(Duration::from_secs(5)).unwrap();
+    assert!(directory.path().join("eof").exists());
+    assert_eq!(recorded_requests(directory.path()).len(), 1);
+}
+
+#[test]
+fn explicit_close_timeout_is_bounded_while_the_reaper_keeps_ownership() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut peer = connected("blocked_writer", directory.path());
+    let start = Instant::now();
+    let error = peer.close_and_wait(Duration::from_millis(20)).unwrap_err();
+    assert!(error.starts_with("transport_close:"));
+    assert!(start.elapsed() < Duration::from_millis(150));
+    assert!(!peer.connected);
+    peer.reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert!(!directory.path().join("eof").exists());
+}
+
+#[test]
+fn explicit_close_never_reports_success_for_unverified_reaper_completion() {
+    for failure in [ReapError::TryWait, ReapError::Kill, ReapError::Wait] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = capability_client(directory.path(), Some(agent_info(&["list", "read"])));
+        let (completion, results) = mpsc::channel();
+        let actual_reaper = std::mem::replace(&mut process(&mut client).reaped, results);
+        completion.send(Err(failure)).unwrap();
+        let error = client.close_and_wait(Duration::from_secs(5)).unwrap_err();
+        assert!(
+            error.starts_with("transport_cleanup_unverified:"),
+            "{error}"
+        );
+        assert!(error.contains(failure.operation()), "{error}");
+        // The injected result only tests the public boundary. The real owner
+        // still closes and must independently confirm its child was reaped.
+        actual_reaper
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn lost_wait_ownership_is_unverified_and_never_retried_by_drop() {
+    let directory = tempfile::tempdir().unwrap();
+    let child = Command::new(peer_binary())
+        .arg("eof_before_hello")
+        .arg(directory.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut owned = OwnedProcess {
+        child,
+        completion: None,
+    };
+    let pid = owned.child.id() as libc::pid_t;
+    wait_until(|| {
+        let mut status = 0;
+        // Fault injection: reap only this test's exact direct child outside
+        // its owner, forcing the next try_wait to observe lost wait ownership.
+        // No PID lookup or signal is performed here.
+        let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        assert!(
+            result >= 0,
+            "fixture wait failed: {}",
+            io::Error::last_os_error()
+        );
+        result == pid
+    });
+    assert_eq!(owned.poll_exit(), Some(Err(ReapError::TryWait)));
+    assert_eq!(owned.completion, Some(Err(ReapError::TryWait)));
+    // The terminal error is sticky: the teardown path must not retry a kill or
+    // wait on this PID after an external reaper may have made it reusable.
+    assert_eq!(owned.terminate_and_reap(), Err(ReapError::TryWait));
+    drop(owned);
 }
 
 fn agent_info(capabilities: &[&str]) -> cedar_protocol::AgentInfo {
@@ -339,6 +459,13 @@ fn start_language() -> Operation {
         args: vec![],
     }
 }
+fn start_java_language() -> Operation {
+    Operation::LanguageStartJava {
+        java_executable: "C:\\jdk\\bin\\java.exe".into(),
+        distribution: "C:\\JDT distribution 雪".into(),
+        data_directory: "C:\\workspace data 雪".into(),
+    }
+}
 fn advanced_operations() -> Vec<Operation> {
     vec![
         Operation::GitStatus,
@@ -351,6 +478,7 @@ fn advanced_operations() -> Vec<Operation> {
             timeout_secs: 1,
         },
         start_language(),
+        start_java_language(),
         Operation::LanguageOpen {
             path: "fixture.txt".into(),
             language_id: "text".into(),
@@ -556,6 +684,7 @@ fn starts_require_the_complete_lifecycle_before_sending_any_request() {
     for (start, lifecycle) in [
         (start_task(), RUN_TASK_CAPABILITIES),
         (start_language(), LANGUAGE_SESSION_CAPABILITIES),
+        (start_java_language(), JAVA_LANGUAGE_SESSION_CAPABILITIES),
     ] {
         for missing in lifecycle {
             let capabilities: Vec<_> = ["list", "read", "run"]
@@ -587,6 +716,320 @@ fn starts_require_the_complete_lifecycle_before_sending_any_request() {
         client.request(start).unwrap();
         assert_eq!(recorded_requests(directory.path()).len(), 2);
     }
+}
+
+fn java_capabilities() -> Vec<&'static str> {
+    ["list", "read"]
+        .into_iter()
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES.iter().copied())
+        .chain([
+            "language_query",
+            "language_format",
+            "language_references",
+            "language_document_symbols",
+            "language_resolve_uri",
+            "language_resolve_completion",
+        ])
+        .collect()
+}
+
+fn process(client: &mut Client) -> &mut ProcessClient {
+    match &mut client.backend {
+        Backend::Process(process) => process,
+        #[cfg(not(windows))]
+        Backend::Local(_) => panic!("expected process transport"),
+    }
+}
+
+fn next_result(directory: &Path, client: &mut Client, result: serde_json::Value) {
+    let id = process(client).next_id + 1;
+    fs::write(
+        directory.join(format!("response-{id}.json")),
+        result.to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn old_generic_language_peers_never_receive_the_new_java_start() {
+    let directory = tempfile::tempdir().unwrap();
+    let capabilities: Vec<_> = ["list", "read"]
+        .into_iter()
+        .chain(LANGUAGE_SESSION_CAPABILITIES.iter().copied())
+        .collect();
+    let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+    client.request(start_language()).unwrap();
+    let error = client.request(start_java_language()).unwrap_err();
+    assert!(
+        error.contains("does not advertise language_start_java"),
+        "{error}"
+    );
+    client.request(Operation::LanguageEvents).unwrap();
+    client.request(Operation::LanguageStop).unwrap();
+    read_fixture(&mut client);
+    let requests = recorded_requests(directory.path());
+    assert_eq!(requests.len(), 5);
+    assert!(!requests
+        .iter()
+        .any(|r| r["op"]["type"] == "language_start_java"));
+    assert_eq!(requests.last().unwrap()["id"], 5);
+}
+
+#[test]
+fn java_only_peer_manages_its_complete_session_without_generic_start_permission() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&java_capabilities())));
+    assert!(!process(&mut client).java_language_session);
+    client.request(start_java_language()).unwrap();
+    assert!(process(&mut client).java_language_session);
+    assert!(client
+        .request(start_language())
+        .unwrap_err()
+        .contains("language_start"));
+    assert!(process(&mut client).java_language_session);
+    for operation in advanced_operations()
+        .into_iter()
+        .filter(is_language_session_operation)
+    {
+        assert_eq!(
+            process(&mut client).request_timeout(&operation),
+            Duration::from_secs(75)
+        );
+        client.request(operation).unwrap();
+    }
+    assert!(!process(&mut client).java_language_session);
+    assert_eq!(
+        process(&mut client).request_timeout(&Operation::LanguageEvents),
+        Duration::from_secs(30)
+    );
+    // The active-session budget is cleared, but Stop remains idempotent and
+    // no-session failures still come from the Java-capable agent.
+    client.request(Operation::LanguageStop).unwrap();
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Err":{"code":"language_not_running","message":"fixture session absent"}}),
+    );
+    assert!(client
+        .request(Operation::LanguageEvents)
+        .unwrap_err()
+        .starts_with("language_not_running:"));
+    read_fixture(&mut client);
+    let requests = recorded_requests(directory.path());
+    assert!(!requests.iter().any(|r| r["op"]["type"] == "language_start"));
+    assert_eq!(requests[1]["op"]["distribution"], "C:\\JDT distribution 雪");
+}
+
+#[test]
+fn language_operations_require_the_common_lifecycle_and_selected_start_route() {
+    for operation in advanced_operations()
+        .into_iter()
+        .filter(is_language_session_operation)
+    {
+        let name = operation.capability_name().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut client =
+            capability_client(directory.path(), Some(agent_info(&["list", "read", name])));
+        assert!(client
+            .request(operation)
+            .unwrap_err()
+            .contains("language_start"));
+        assert_eq!(recorded_requests(directory.path()).len(), 1);
+    }
+}
+
+#[test]
+fn java_deadline_only_applies_after_successful_start_and_never_extends_other_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut capabilities = java_capabilities();
+    capabilities.push("language_start");
+    let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+    let language_operations: Vec<_> = advanced_operations()
+        .into_iter()
+        .filter(is_language_session_operation)
+        .collect();
+    for operation in &language_operations {
+        assert_eq!(
+            process(&mut client).request_timeout(operation),
+            Duration::from_secs(30)
+        );
+    }
+    assert_eq!(
+        process(&mut client).request_timeout(&start_java_language()),
+        Duration::from_secs(75)
+    );
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Err":{"code":"invalid_java_profile","message":"invalid fixture path"}}),
+    );
+    assert!(client
+        .request(start_java_language())
+        .unwrap_err()
+        .starts_with("invalid_java_profile:"));
+    assert!(!process(&mut client).java_language_session);
+    client.request(start_java_language()).unwrap();
+    for operation in &language_operations {
+        assert_eq!(
+            process(&mut client).request_timeout(operation),
+            Duration::from_secs(75)
+        );
+    }
+    for operation in [
+        Operation::Hello,
+        Operation::Read {
+            path: "fixture.txt".into(),
+        },
+        start_task(),
+        Operation::RunPoll { task_id: 1 },
+        Operation::RunCancel { task_id: 1 },
+    ] {
+        assert_eq!(
+            process(&mut client).request_timeout(&operation),
+            Duration::from_secs(30)
+        );
+    }
+    for (requested, expected) in [(0, 11), (40, 50), (u64::MAX, 310)] {
+        assert_eq!(
+            process(&mut client).request_timeout(&Operation::Run {
+                program: "never-executed".into(),
+                args: vec![],
+                timeout_secs: requested
+            }),
+            Duration::from_secs(expected)
+        );
+    }
+    client.request(Operation::LanguageStop).unwrap();
+    client.request(start_language()).unwrap();
+    assert!(!process(&mut client).java_language_session);
+    for operation in &language_operations {
+        assert_eq!(
+            process(&mut client).request_timeout(operation),
+            Duration::from_secs(30)
+        );
+    }
+}
+
+#[test]
+fn java_mode_survives_start_and_query_refusals_but_clears_on_stop_or_no_session() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut capabilities = java_capabilities();
+    capabilities.push("language_start");
+    let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+    client.request(start_java_language()).unwrap();
+    for (operation, code) in [
+        (start_language(), "language_running"),
+        (start_java_language(), "language_running"),
+        (Operation::LanguageEvents, "language_error"),
+        (
+            Operation::LanguageDocumentSymbols {
+                path: "fixture.txt".into(),
+            },
+            "language_document_closed",
+        ),
+    ] {
+        next_result(
+            directory.path(),
+            &mut client,
+            serde_json::json!({"Err":{"code":code,"message":"fixture refusal"}}),
+        );
+        assert!(client.request(operation).unwrap_err().starts_with(code));
+        assert!(process(&mut client).java_language_session);
+        assert_eq!(
+            process(&mut client).request_timeout(&Operation::LanguageStop),
+            Duration::from_secs(75)
+        );
+    }
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Err":{"code":"language_cleanup_unverified","message":"fixture cleanup failed"}}),
+    );
+    assert!(client
+        .request(Operation::LanguageStop)
+        .unwrap_err()
+        .starts_with("language_cleanup_unverified:"));
+    assert!(!process(&mut client).java_language_session);
+    assert!(client.is_connected());
+    client.request(start_java_language()).unwrap();
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Err":{"code":"language_not_running","message":"fixture session absent"}}),
+    );
+    assert!(client
+        .request(Operation::LanguageEvents)
+        .unwrap_err()
+        .starts_with("language_not_running:"));
+    assert!(!process(&mut client).java_language_session);
+    read_fixture(&mut client);
+}
+
+#[test]
+fn java_stop_forwards_cleanup_evidence_without_inventing_graceful_success() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&java_capabilities())));
+    client.request(start_java_language()).unwrap();
+    let value = serde_json::json!({
+        "stopped": true,
+        "shutdown": {
+            "status": "forced",
+            "reason": "grace_expired",
+            "root_exit_code": 1,
+            "cleanup_joined": true,
+            "shutdown_response_received": true,
+            "exit_frame_completed": true
+        }
+    });
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Ok":{"type":"language","value":value}}),
+    );
+    let Payload::Language { value: received } = client.request(Operation::LanguageStop).unwrap()
+    else {
+        panic!("expected language shutdown evidence");
+    };
+    assert_eq!(received, value);
+    assert!(!process(&mut client).java_language_session);
+    assert!(client.is_connected());
+}
+
+#[test]
+fn java_transport_failure_clears_mode_without_replay_or_leaking_to_a_new_connection() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&java_capabilities())));
+    client.request(start_java_language()).unwrap();
+    next_result(directory.path(), &mut client, serde_json::Value::Null);
+    assert!(client
+        .request(Operation::LanguageEvents)
+        .unwrap_err()
+        .starts_with("transport_read:"));
+    assert!(!client.is_connected());
+    assert!(!process(&mut client).java_language_session);
+    assert!(client
+        .request(start_java_language())
+        .unwrap_err()
+        .starts_with("disconnected:"));
+    process(&mut client)
+        .reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert_eq!(recorded_requests(directory.path()).len(), 3);
+    let fresh_directory = tempfile::tempdir().unwrap();
+    let mut fresh = capability_client(
+        fresh_directory.path(),
+        Some(agent_info(&java_capabilities())),
+    );
+    assert!(!process(&mut fresh).java_language_session);
+    assert_eq!(
+        process(&mut fresh).request_timeout(&Operation::LanguageEvents),
+        Duration::from_secs(30)
+    );
+    fresh.request(start_java_language()).unwrap();
+    process(&mut fresh).close();
+    assert!(!process(&mut fresh).java_language_session);
 }
 #[test]
 fn missing_required_workspace_capability_refuses_connection_without_fallback() {

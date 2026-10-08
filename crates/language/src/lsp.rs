@@ -1,4 +1,4 @@
-use crate::{ClientOptions, Error, ProcessConfig, RpcEvent, StdioRpc};
+use crate::{ClientOptions, Error, ProcessConfig, RpcEvent, ShutdownOutcome, StdioRpc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -92,7 +92,10 @@ enum Lifecycle {
         sync: SyncCapabilities,
     },
     ShuttingDown,
-    Stopped,
+    Stopped {
+        result: Result<(), Error>,
+        outcome: ShutdownOutcome,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -216,8 +219,14 @@ impl LspClient {
             Ok(result)
         })();
         if let Err(error) = &result {
-            *self.lifecycle.lock().unwrap() = Lifecycle::Stopped;
-            self.rpc.abort(error.clone());
+            self.rpc.abort_after_failure(error.clone());
+            *self.lifecycle.lock().unwrap() = Lifecycle::Stopped {
+                result: Err(error.clone()),
+                outcome: ShutdownOutcome {
+                    windows: self.rpc.windows_shutdown_outcome(),
+                    ..ShutdownOutcome::default()
+                },
+            };
         }
         result
     }
@@ -487,32 +496,57 @@ impl LspClient {
             .transpose()
     }
 
-    /// Perform shutdown -> response -> exit, then reap the process. A failed
-    /// graceful shutdown still kills/reaps the direct child and returns the error.
+    /// Perform shutdown -> response -> exit, then reap the process. This legacy
+    /// result may be Ok after forced cleanup; use shutdown_with_outcome to tell
+    /// whether the Windows shutdown was graceful. Repeated calls return the
+    /// original result, including failures, without sending another request.
     pub fn shutdown(&self) -> Result<(), Error> {
+        self.shutdown_with_outcome().0
+    }
+
+    /// Stop once and return the original legacy result separately from a bounded
+    /// ownership report. Even protocol failure returns the cleanup observation;
+    /// no diagnostic text is copied into the report. Windows reports appear only
+    /// after process/I/O owner destruction and worker join. Kernel cancellation
+    /// can delay that join; this API does not promise a hard cleanup deadline.
+    /// Calling before initialization returns InvalidState without stopping.
+    pub fn shutdown_with_outcome(&self) -> (Result<(), Error>, ShutdownOutcome) {
         let _gate = self.gate.write().unwrap();
         {
             let mut state = self.lifecycle.lock().unwrap();
-            if matches!(*state, Lifecycle::Stopped) {
-                return Ok(());
+            if let Lifecycle::Stopped { result, outcome } = &*state {
+                return (result.clone(), *outcome);
             }
             if !matches!(*state, Lifecycle::Ready { .. }) {
-                return Err(Error::InvalidState(
-                    "shutdown requires an initialized client".into(),
-                ));
+                return (
+                    Err(Error::InvalidState(
+                        "shutdown requires an initialized client".into(),
+                    )),
+                    ShutdownOutcome::default(),
+                );
             }
             *state = Lifecycle::ShuttingDown;
         }
+        let mut outcome = ShutdownOutcome::default();
         let result = (|| {
-            self.rpc.request("shutdown", Value::Null)?;
-            self.rpc.exit_and_finish()
+            let shutdown = self.rpc.request("shutdown", Value::Null);
+            outcome.shutdown_response_received =
+                matches!(shutdown, Ok(_) | Err(Error::Remote { .. }));
+            shutdown?;
+            self.rpc.send_exit()?;
+            outcome.exit_frame_completed = true;
+            self.rpc.finish_process()
         })();
         if let Err(error) = &result {
-            self.rpc.abort(error.clone());
+            self.rpc.abort_after_failure(error.clone());
         }
-        *self.lifecycle.lock().unwrap() = Lifecycle::Stopped;
+        outcome.windows = self.rpc.windows_shutdown_outcome();
+        *self.lifecycle.lock().unwrap() = Lifecycle::Stopped {
+            result: result.clone(),
+            outcome,
+        };
         self.documents.lock().unwrap().clear();
-        result
+        (result, outcome)
     }
 
     fn ready(&self) -> Result<(Arc<Value>, SyncCapabilities), Error> {

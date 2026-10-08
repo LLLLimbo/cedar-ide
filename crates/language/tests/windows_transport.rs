@@ -1,7 +1,8 @@
 //! Actual Windows runtime acceptance; compile-only or ignored results are not passes.
 #![cfg(all(windows, feature = "test-server"))]
 use cedar_language::{
-    ClientOptions, Error, LspClient, LspEvent, ProcessConfig, RpcEvent, StdioRpc,
+    ClientOptions, Error, LspClient, LspEvent, ProcessConfig, RpcEvent, ShutdownOutcome, StdioRpc,
+    WindowsCleanupErrors, WindowsCleanupStatus, WindowsRootExit, WindowsShutdownReason,
 };
 use serde_json::json;
 use std::fs::{self, OpenOptions};
@@ -200,15 +201,30 @@ fn launch_lsp_shutdown(mode: &str, dir: &Path) -> (Arc<LspClient>, ObservedRoot)
     (client, root)
 }
 
+type ShutdownResult = (Result<(), Error>, ShutdownOutcome);
+
 fn start_shutdown(
     client: &Arc<LspClient>,
-) -> (thread::JoinHandle<()>, mpsc::Receiver<Result<(), Error>>) {
+) -> (thread::JoinHandle<()>, mpsc::Receiver<ShutdownResult>) {
     let client = Arc::clone(client);
     let (done, result) = mpsc::channel();
     let thread = thread::spawn(move || {
-        let _ = done.send(client.shutdown());
+        let _ = done.send(client.shutdown_with_outcome());
     });
     (thread, result)
+}
+
+fn assert_cached_shutdown(client: &LspClient, original: &ShutdownResult) {
+    let repeated = client.shutdown_with_outcome();
+    assert_eq!(repeated.1, original.1);
+    assert_eq!(
+        repeated.0.map_err(|error| error.to_string()),
+        original.0.clone().map_err(|error| error.to_string())
+    );
+    assert_eq!(
+        client.shutdown().map_err(|error| error.to_string()),
+        original.0.clone().map_err(|error| error.to_string())
+    );
 }
 
 fn wait_marker(path: &Path, expected: &[u8]) {
@@ -247,10 +263,10 @@ fn lsp_exit_delivers_complete_frame_then_stdin_eof_for_natural_exit() {
     let dir = temp();
     let (client, root) = launch_lsp_shutdown("win-lsp-exit-needs-stdin-eof", dir.path());
     let (thread, result) = start_shutdown(&client);
-    result
-        .recv_timeout(Duration::from_secs(3))
-        .unwrap()
-        .unwrap();
+    let stopped = result.recv_timeout(Duration::from_secs(3)).unwrap();
+    stopped.0.clone().unwrap();
+    assert!(stopped.1.is_graceful(), "{:?}", stopped.1);
+    assert_cached_shutdown(&client, &stopped);
     thread.join().unwrap();
     assert_eq!(
         root.exit_code(),
@@ -261,8 +277,8 @@ fn lsp_exit_delivers_complete_frame_then_stdin_eof_for_natural_exit() {
         fs::read(dir.path().join("stdin-eof.ready")).unwrap(),
         b"verified"
     );
-    drop(client);
     assert_dead(dir.path(), true);
+    drop(client);
 }
 
 #[test]
@@ -281,18 +297,18 @@ fn lsp_stdout_eof_preserves_live_root_until_graceful_release() {
     ));
     root.assert_alive();
     fs::write(dir.path().join("release"), b"release").unwrap();
-    result
-        .recv_timeout(Duration::from_secs(3))
-        .unwrap()
-        .unwrap();
+    let stopped = result.recv_timeout(Duration::from_secs(3)).unwrap();
+    stopped.0.clone().unwrap();
+    assert!(stopped.1.is_graceful(), "{:?}", stopped.1);
+    assert_cached_shutdown(&client, &stopped);
     thread.join().unwrap();
     assert_eq!(
         root.exit_code(),
         0,
         "stdout EOF must not terminate a graceful root"
     );
-    drop(client);
     assert_dead(dir.path(), true);
+    drop(client);
 }
 
 #[test]
@@ -309,10 +325,17 @@ fn lsp_stalled_stdout_eof_exhausts_grace_and_terminates_tree() {
         Err(mpsc::RecvTimeoutError::Timeout)
     ));
     root.assert_alive();
-    result
-        .recv_timeout(Duration::from_secs(3))
-        .unwrap()
-        .unwrap();
+    let stopped = result.recv_timeout(Duration::from_secs(3)).unwrap();
+    stopped.0.clone().unwrap(); // legacy result intentionally remains compatible
+    assert!(stopped.1.shutdown_response_received && stopped.1.exit_frame_completed);
+    assert!(!stopped.1.is_graceful());
+    let owned = stopped.1.windows.unwrap();
+    assert_eq!(owned.reason, WindowsShutdownReason::GraceExpired);
+    assert!(!owned.transport_failure_observed);
+    assert_eq!(owned.root_exit, WindowsRootExit::AfterTermination(1067));
+    assert_eq!(owned.cleanup, WindowsCleanupStatus::Joined);
+    assert_eq!(owned.errors, WindowsCleanupErrors::default());
+    assert_cached_shutdown(&client, &stopped);
     thread.join().unwrap();
     assert!(started.elapsed() >= LSP_SHUTDOWN_GRACE);
     assert!(started.elapsed() < Duration::from_secs(4));
@@ -324,8 +347,8 @@ fn lsp_stalled_stdout_eof_exhausts_grace_and_terminates_tree() {
         1067,
         "stalled root must be terminated by its owned Job"
     );
-    drop(client);
     assert_dead(dir.path(), true);
+    drop(client);
 }
 
 #[test]
@@ -340,11 +363,20 @@ fn lsp_malformed_stdout_eof_aborts_during_grace() {
     assert!(matches!(lsp_terminal(&client), Error::Protocol(_)));
     // Completion can race the exit write acknowledgement; either API result is
     // allowed here, but the first terminal error must retain protocol severity.
-    let _ = result.recv_timeout(Duration::from_secs(3)).unwrap();
+    let stopped = result.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert!(stopped.1.shutdown_response_received);
+    assert!(!stopped.1.is_graceful());
+    let owned = stopped.1.windows.unwrap();
+    assert_eq!(owned.reason, WindowsShutdownReason::TransportFailure);
+    assert!(owned.transport_failure_observed);
+    assert_eq!(owned.root_exit, WindowsRootExit::AfterTermination(1067));
+    assert_eq!(owned.cleanup, WindowsCleanupStatus::Joined);
+    assert_eq!(owned.errors, WindowsCleanupErrors::default());
+    assert_cached_shutdown(&client, &stopped);
     thread.join().unwrap();
     assert_eq!(root.exit_code(), 1067);
-    drop(client);
     assert_dead(dir.path(), true);
+    drop(client);
 }
 
 #[test]
@@ -484,6 +516,15 @@ fn abort_bypasses_full_outbound_queue_and_wakes_waiters() {
         Err(Error::QueueFull)
     ));
     rpc.abort(Error::Closed("test abort".into()));
+    let stopped = rpc.windows_shutdown_outcome().unwrap();
+    assert_eq!(stopped.reason, WindowsShutdownReason::Aborted);
+    assert_eq!(stopped.root_exit, WindowsRootExit::AfterTermination(1067));
+    assert_eq!(stopped.cleanup, WindowsCleanupStatus::Joined);
+    assert_eq!(stopped.errors, WindowsCleanupErrors::default());
+    rpc.abort(Error::Closed("repeated abort".into()));
+    rpc.finish_process().unwrap();
+    assert_eq!(rpc.windows_shutdown_outcome(), Some(stopped));
+    assert_dead(dir.path(), true);
     let mut aborted = 0;
     for _ in 1..6 {
         match results.recv_timeout(Duration::from_secs(2)).unwrap() {

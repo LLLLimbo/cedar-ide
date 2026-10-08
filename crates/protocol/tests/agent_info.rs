@@ -1,8 +1,8 @@
 use cedar_protocol::{
     read_frame, supports_capability, write_frame, AgentInfo, Operation, Payload, RemoteError,
-    Response, AGENT_INFO_SCHEMA, LANGUAGE_SESSION_CAPABILITIES, MAX_AGENT_CAPABILITIES,
-    MAX_AGENT_PLATFORM_BYTES, MAX_AGENT_VERSION_BYTES, MAX_CAPABILITY_BYTES, PROTOCOL_VERSION,
-    RUN_TASK_CAPABILITIES,
+    Response, AGENT_INFO_SCHEMA, JAVA_LANGUAGE_SESSION_CAPABILITIES, LANGUAGE_SESSION_CAPABILITIES,
+    MAX_AGENT_CAPABILITIES, MAX_AGENT_PLATFORM_BYTES, MAX_AGENT_VERSION_BYTES,
+    MAX_CAPABILITY_BYTES, PROTOCOL_VERSION, RUN_TASK_CAPABILITIES,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -92,6 +92,7 @@ fn absent_and_null_metadata_are_legacy_but_empty_capabilities_are_explicit() {
         "run",
         "run_start",
         "language_start",
+        "language_start_java",
         "future",
         "hello",
     ] {
@@ -254,6 +255,7 @@ fn capability_names_match_every_existing_operation_wire_discriminant() {
         json!({"type":"search","query":"x","limit":1}),
         json!({"type":"git_status"}),
         json!({"type":"language_start","program":"server","args":[]}),
+        json!({"type":"language_start_java","java_executable":"C:\\jdk\\bin\\java.exe","distribution":"C:\\JDT 雪","data_directory":"C:\\data 雪"}),
         json!({"type":"language_open","path":"a","language_id":"rust","version":1,"text":""}),
         json!({"type":"language_change","path":"a","version":1,"text":""}),
         json!({"type":"language_close","path":"a"}),
@@ -283,12 +285,29 @@ fn capability_names_match_every_existing_operation_wire_discriminant() {
     for name in RUN_TASK_CAPABILITIES
         .iter()
         .chain(LANGUAGE_SESSION_CAPABILITIES)
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
     {
         assert!(names.contains(name), "unknown session prerequisite {name}");
     }
     assert_eq!(
         RUN_TASK_CAPABILITIES,
         &["run_start", "run_poll", "run_cancel"]
+    );
+    assert_eq!(
+        LANGUAGE_SESSION_CAPABILITIES,
+        &[
+            "language_start",
+            "language_open",
+            "language_change",
+            "language_close",
+            "language_events",
+            "language_stop"
+        ]
+    );
+    assert_eq!(JAVA_LANGUAGE_SESSION_CAPABILITIES[0], "language_start_java");
+    assert_eq!(
+        &JAVA_LANGUAGE_SESSION_CAPABILITIES[1..],
+        &LANGUAGE_SESSION_CAPABILITIES[1..]
     );
     for optional in [
         "language_query",
@@ -299,5 +318,34 @@ fn capability_names_match_every_existing_operation_wire_discriminant() {
         "language_resolve_completion",
     ] {
         assert!(!LANGUAGE_SESSION_CAPABILITIES.contains(&optional));
+        assert!(!JAVA_LANGUAGE_SESSION_CAPABILITIES.contains(&optional));
+    }
+}
+
+#[test]
+fn java_start_is_an_additive_protocol_four_operation_with_literal_paths() {
+    let wire = json!({
+        "type": "language_start_java",
+        "java_executable": "C:\\Program Files\\jdk\\bin\\java.exe",
+        "distribution": "C:\\JDT distribution 雪",
+        "data_directory": "C:\\workspace data 雪"
+    });
+    let operation: Operation = serde_json::from_value(wire.clone()).unwrap();
+    assert!(matches!(&operation, Operation::LanguageStartJava { .. }));
+    assert_eq!(serde_json::to_value(operation).unwrap(), wire);
+    assert_eq!(PROTOCOL_VERSION, 4);
+    for field in ["java_executable", "distribution", "data_directory"] {
+        let mut missing = wire.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<Operation>(missing).is_err(),
+            "{field}"
+        );
+        let mut malformed = wire.clone();
+        malformed[field] = json!(["not", "a", "path"]);
+        assert!(
+            serde_json::from_value::<Operation>(malformed).is_err(),
+            "{field}"
+        );
     }
 }

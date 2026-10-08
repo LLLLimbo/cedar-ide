@@ -324,7 +324,7 @@ impl StdioRpc {
             Ok(result) => result,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let error = Error::Timeout(format!("write notification {method}"));
-                self.abort(error.clone());
+                self.abort_after_failure(error.clone());
                 Err(error)
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -367,22 +367,35 @@ impl StdioRpc {
     // LSP calls this only after the shutdown response. Arm the fixed grace
     // before exit can cause stdout EOF, then close stdin only after the complete
     // exit frame has been written. The acknowledgement includes stdin closure.
-    pub(crate) fn exit_and_finish(&self) -> Result<(), Error> {
+    pub(crate) fn send_exit(&self) -> Result<(), Error> {
         self.backend.begin_shutdown(self.options.shutdown_timeout);
-        self.notify_impl("exit", Value::Null, true)?;
-        self.finish_process()
+        self.notify_impl("exit", Value::Null, true)
     }
 
     /// Wait briefly after `exit`, then stop the owned process if necessary.
-    /// On Windows this joins the worker, the Job tree and all outstanding I/O.
+    /// On Windows this joins the worker after its process and I/O owners have
+    /// been destroyed. Inspect windows_shutdown_outcome for recorded failures;
+    /// join alone is not an independent observation of Job process accounting.
     pub fn finish_process(&self) -> Result<(), Error> {
         self.backend
             .finish(&self.shared, self.options.shutdown_timeout)
     }
 
+    /// A cached observation is available only after the Windows worker has been
+    /// joined. Other platforms never claim the Windows ownership guarantee.
+    pub fn windows_shutdown_outcome(&self) -> Option<crate::WindowsShutdownOutcome> {
+        self.backend.shutdown_outcome()
+    }
+
     pub fn abort(&self, reason: Error) {
+        self.backend.begin_abort();
         self.shared.fail(reason);
         self.backend.abort();
+    }
+
+    pub(crate) fn abort_after_failure(&self, reason: Error) {
+        self.backend.transport_failed();
+        self.abort(reason);
     }
 
     fn encode(&self, value: &Value) -> Result<Vec<u8>, Error> {

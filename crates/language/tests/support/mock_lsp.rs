@@ -263,6 +263,13 @@ fn main() {
             "mock/exit" => return,
             "shutdown" => {
                 shutdown = true;
+                if mode == "shutdown-error" {
+                    send(
+                        &mut output,
+                        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"shutdown refused"}}),
+                    );
+                    continue;
+                }
                 Value::Null
             }
             "exit" => {

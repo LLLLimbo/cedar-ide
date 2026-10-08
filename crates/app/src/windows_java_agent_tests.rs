@@ -2,7 +2,7 @@
 //! Run serially with explicit verified prebuilt paths. Cross-compiling is not a
 //! native runtime pass and this fixture grants no shipping Windows capability.
 use super::*;
-use cedar_protocol::{LanguageQueryKind, Operation, Payload, LANGUAGE_SESSION_CAPABILITIES};
+use cedar_protocol::{LanguageQueryKind, Operation, Payload, JAVA_LANGUAGE_SESSION_CAPABILITIES};
 use std::{
     fs,
     io::Read,
@@ -193,7 +193,16 @@ struct RootObservation {
 }
 impl RootObservation {
     fn open(session: u32, pid: u32, created: u64) -> CheckResult<Self> {
-        require(pid != 0 && created != 0, "invalid Java root identity")?;
+        require(created != 0, "invalid Java root creation time")?;
+        let observed = Self::open_current(session, pid)?;
+        require(
+            observed.created == created,
+            "PID creation time did not match the started Java root",
+        )?;
+        Ok(observed)
+    }
+    fn open_current(session: u32, pid: u32) -> CheckResult<Self> {
+        require(pid != 0, "invalid Java root identity")?;
         // SAFETY: PID comes from this private fixture's just-started session.
         // Only observation rights are requested; creation time is checked below.
         let raw = unsafe {
@@ -226,14 +235,10 @@ impl RootObservation {
             return Err(std::io::Error::last_os_error().to_string());
         }
         let actual = (u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime);
-        require(
-            created == actual,
-            "PID creation time did not match the started Java root",
-        )?;
         let observed = Self {
             session,
             pid,
-            created,
+            created: actual,
             handle,
         };
         require(
@@ -634,9 +639,6 @@ impl TaskAcceptance {
 }
 
 fn prepare_project(root: &Path) -> CheckResult<()> {
-    let project = root.join(PROJECT_DIR);
-    io(fs::create_dir_all(project.join("src")))?;
-    io(fs::create_dir_all(project.join(".settings")))?;
     io(fs::write(
         root.join(".cedar-windows-language-validation"),
         "cedar-windows-language-validation-v1\n",
@@ -645,6 +647,13 @@ fn prepare_project(root: &Path) -> CheckResult<()> {
         root.join(".cedar-windows-java-validation"),
         "cedar-windows-java-validation-v1\n",
     ))?;
+    prepare_project_files(root)
+}
+
+fn prepare_project_files(root: &Path) -> CheckResult<()> {
+    let project = root.join(PROJECT_DIR);
+    io(fs::create_dir_all(project.join("src")))?;
+    io(fs::create_dir_all(project.join(".settings")))?;
     io(fs::write(project.join(".project"), "<?xml version=\"1.0\"?><projectDescription><name>cedar-editor-smoke</name><projects/><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name><arguments/></buildCommand></buildSpec><natures><nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>"))?;
     io(fs::write(project.join(".classpath"), "<?xml version=\"1.0\"?><classpath><classpathentry kind=\"src\" path=\"src\"/><classpathentry kind=\"con\" path=\"org.eclipse.jdt.launching.JRE_CONTAINER\"/><classpathentry kind=\"output\" path=\"bin\"/></classpath>"))?;
     io(fs::write(project.join(".settings/org.eclipse.jdt.core.prefs"), "eclipse.preferences.version=1\norg.eclipse.jdt.core.compiler.codegen.targetPlatform=21\norg.eclipse.jdt.core.compiler.compliance=21\norg.eclipse.jdt.core.compiler.source=21\norg.eclipse.jdt.core.compiler.problem.unusedLocal=warning\n"))?;
@@ -1091,9 +1100,10 @@ fn real_windows_agent_java_editor_transactions() -> CheckResult<()> {
                 .map_err(|e| e.message)?,
         );
         require(
-            LANGUAGE_SESSION_CAPABILITIES
-                .iter()
-                .all(|capability| !info.supports(capability)),
+            !info.supports("language_start")
+                && JAVA_LANGUAGE_SESSION_CAPABILITIES
+                    .iter()
+                    .all(|capability| info.supports(capability)),
             "nonshipping profile changed normal Hello capability evidence",
         )?;
         for (session, mode, name) in [
@@ -1541,3 +1551,6 @@ fn real_windows_agent_java_forced_owner_cleanup() -> CheckResult<()> {
         Ok(()) => Ok(()),
     }
 }
+
+#[path = "windows_java_production_tests.rs"]
+mod production;

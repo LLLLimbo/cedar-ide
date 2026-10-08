@@ -4,6 +4,7 @@ mod features;
 
 use crate::{
     completion::{self, Candidate, Position, Range},
+    java_language::{JavaConfiguration, JavaStopOutcome, ServerMode, StopStatus},
     language_results::{self, Diagnostics, Location},
     language_sync::{Acknowledged, SyncTracker},
     model::Document,
@@ -103,6 +104,9 @@ pub(super) struct LanguagePanel {
     features: features::FeatureState,
     next_version: i32,
     closed_uris: HashSet<String>,
+    mode: ServerMode,
+    java: JavaConfiguration,
+    restart_blocked: bool,
     program: String,
     args: String,
     language_id: String,
@@ -126,6 +130,7 @@ impl Default for LanguagePanel {
     fn default() -> Self {
         Self {
             running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), next_version: 1, closed_uris: HashSet::new(),
+            mode: ServerMode::Generic, java: JavaConfiguration::default(), restart_blocked: false,
             program: String::new(), args: "[]".into(), language_id: "rust".into(), capabilities: Value::Null,
             diagnostics: Diagnostics::default(), definitions: Vec::new(), hover: String::new(),
             output: "Start an installed stdio language server. Java/Kotlin servers and their JDK must be installed on the workspace host.".into(),
@@ -139,6 +144,7 @@ impl LanguagePanel {
         self.features.reset();
         self.session = self.session.wrapping_add(1);
         self.running = false;
+        self.restart_blocked = false;
         self.sync.clear();
         self.next_version = 1;
         self.closed_uris.clear();
@@ -171,8 +177,15 @@ impl LanguagePanel {
         }
         self.closed_uris.insert(uri);
     }
+    fn document_language_id(&self) -> &str {
+        if self.mode == ServerMode::Java {
+            "java"
+        } else {
+            self.language_id.trim()
+        }
+    }
     fn matches(&self, path: &str) -> bool {
-        match self.language_id.trim() {
+        match self.document_language_id() {
             "java" => path.ends_with(".java"),
             "kotlin" => path.ends_with(".kt") || path.ends_with(".kts"),
             "rust" => path.ends_with(".rs"),
@@ -226,34 +239,68 @@ impl CedarApp {
         {
             return;
         }
+        if self.language.restart_blocked {
+            self.error = Some(
+                "Reconnect before starting another Java session; prior cleanup was not verified"
+                    .into(),
+            );
+            return;
+        }
         if !self.execution_trusted() {
             self.error =
                 Some("Language servers require trusted tool permission for this connection".into());
             return;
         }
-        if !self.backend_language_supported() {
-            self.error = Some(self.unsupported_message("the complete language session lifecycle"));
-            return;
+        if !self.backend_generic_language_supported() && self.backend_java_language_supported() {
+            self.language.mode = ServerMode::Java;
         }
-        let args: Vec<String> = match serde_json::from_str(&self.language.args) {
-            Ok(args) => args,
-            Err(_) => {
-                self.error =
-                    Some("Language server arguments must be a JSON array of strings".into());
-                return;
+        let operation = match self.language.mode {
+            ServerMode::Java => {
+                if !self.backend_java_language_supported() {
+                    self.error = Some(
+                        self.unsupported_message("the complete Java language session lifecycle"),
+                    );
+                    return;
+                }
+                match self.language.java.operation() {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        self.error = Some(error);
+                        return;
+                    }
+                }
+            }
+            ServerMode::Generic => {
+                if !self.backend_generic_language_supported() {
+                    self.error =
+                        Some(self.unsupported_message("the complete language session lifecycle"));
+                    return;
+                }
+                let args: Vec<String> = match serde_json::from_str(&self.language.args) {
+                    Ok(args) => args,
+                    Err(_) => {
+                        self.error = Some(
+                            "Language server arguments must be a JSON array of strings".into(),
+                        );
+                        return;
+                    }
+                };
+                let program = self.language.program.trim().to_owned();
+                if program.is_empty() || self.language.language_id.trim().is_empty() {
+                    self.error =
+                        Some("Enter the installed server executable and language ID".into());
+                    return;
+                }
+                Operation::LanguageStart { program, args }
             }
         };
-        let program = self.language.program.trim().to_owned();
-        if program.is_empty() || self.language.language_id.trim().is_empty() {
-            self.error = Some("Enter the installed server executable and language ID".into());
-            return;
-        }
         self.language.reset();
-        self.language_request(
-            Operation::LanguageStart { program, args },
-            ActionKind::Start,
-        );
+        if self.language.mode == ServerMode::Java {
+            self.language.language_id = "java".into();
+        }
+        self.language_request(operation, ActionKind::Start);
     }
+
     pub(super) fn stop_language(&mut self) {
         self.language.features.reset();
         self.language.intent = None;
@@ -264,6 +311,9 @@ impl CedarApp {
         let Some(doc) = self.documents.iter().find(|doc| doc.id == document) else {
             return;
         };
+        if self.language.mode == ServerMode::Java && !self.language.matches(&doc.path) {
+            return;
+        }
         if doc.text.len() > MAX_FILE_BYTES {
             self.language.sync.fail(doc.id, doc.edit_version);
             self.language.intent = None;
@@ -294,7 +344,7 @@ impl CedarApp {
         } else {
             Operation::LanguageOpen {
                 path: doc.path.clone(),
-                language_id: self.language.language_id.trim().to_owned(),
+                language_id: self.language.document_language_id().to_owned(),
                 version,
                 text: doc.text.clone(),
             }
@@ -357,6 +407,16 @@ impl CedarApp {
             self.language.intent = None;
         }
     }
+    pub(super) fn language_public_error(&self, action: &Action, error: &str) -> String {
+        if self.language.mode != ServerMode::Java {
+            return error.into();
+        }
+        match action.kind {
+            ActionKind::Start => "Java server startup failed. Check the Java executable, JDT distribution and data directory on the workspace host.".into(),
+            ActionKind::Stop => "Java session closed; process cleanup could not be verified. Reconnect before starting another Java session.".into(),
+            _ => "Java request failed. Your unsaved draft is retained; reconnect if the session is no longer available.".into(),
+        }
+    }
     pub(super) fn language_error(&mut self, action: &Action, error: &str) {
         if action.session != self.language.session {
             return;
@@ -377,6 +437,11 @@ impl CedarApp {
                 self.language.paused_reason = Some(error.into());
             }
             ActionKind::Start => self.language.running = false,
+            ActionKind::Stop if self.language.mode == ServerMode::Java => {
+                self.language.reset();
+                self.language.restart_blocked = true;
+                self.language.output = error.into();
+            }
             _ => {}
         }
     }
@@ -538,7 +603,40 @@ impl CedarApp {
         if action.session != self.language.session {
             return;
         }
-        self.language.activity(&value);
+        if matches!(action.kind, ActionKind::Stop) {
+            if self.language.mode == ServerMode::Java {
+                let outcome = JavaStopOutcome::parse(&value);
+                self.language.reset();
+                match outcome {
+                    Ok(outcome) => {
+                        let message = outcome.message();
+                        self.language.output = message.clone();
+                        self.notice = message.clone();
+                        if outcome.status == StopStatus::Error {
+                            self.close_after_language_stop = false;
+                            self.close_snapshot = None;
+                            self.error = Some(message);
+                        }
+                    }
+                    Err(_) => {
+                        let message = "Java session closed; process cleanup could not be verified. Reconnect before starting another Java session.".to_owned();
+                        self.language.restart_blocked = true;
+                        self.close_after_language_stop = false;
+                        self.close_snapshot = None;
+                        self.language.output = message.clone();
+                        self.error = Some(message);
+                    }
+                }
+            } else {
+                self.language.reset();
+            }
+            return;
+        }
+        if self.language.mode == ServerMode::Java {
+            self.language.output = "Java session response received. Diagnostics and supported results are shown in their views.".into();
+        } else {
+            self.language.activity(&value);
+        }
         match action.kind {
             ActionKind::Start => {
                 self.language.running = true;
@@ -924,20 +1022,50 @@ impl CedarApp {
         if !trusted {
             ui.colored_label(AMBER, "Language servers require trusted tool permission. Enable it in Open workspace and reconnect.");
         }
+        let generic_supported = self.backend_generic_language_supported();
+        let java_supported = self.backend_java_language_supported();
+        if !self.language.running && !busy && !generic_supported && java_supported {
+            self.language.mode = ServerMode::Java;
+        }
         egui::CollapsingHeader::new("Server configuration").default_open(!self.language.running).show(ui, |ui| {
-            ui.add_enabled_ui(trusted && supported && self.ready() && !self.language.running && !busy, |ui| {
+            ui.add_enabled_ui(trusted && supported && self.ready() && !self.language.running && !busy && !self.language.restart_blocked, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("Executable"); ui.add(egui::TextEdit::singleline(&mut self.language.program).hint_text("jdtls / kotlin-lsp / rust-analyzer").desired_width(245.0));
-                    ui.label("Arguments (JSON)"); ui.add(egui::TextEdit::singleline(&mut self.language.args).desired_width(210.0));
-                    ui.label("Language ID"); ui.add(egui::TextEdit::singleline(&mut self.language.language_id).desired_width(80.0));
-                    if ui.button("Start server").clicked() { self.start_language(); }
+                    if generic_supported { ui.selectable_value(&mut self.language.mode, ServerMode::Generic, "Installed stdio server"); }
+                    if java_supported { ui.selectable_value(&mut self.language.mode, ServerMode::Java, "Java / JDT LS"); }
                 });
+                match self.language.mode {
+                    ServerMode::Generic => ui.horizontal_wrapped(|ui| {
+                        ui.label("Executable"); ui.add(egui::TextEdit::singleline(&mut self.language.program).hint_text("kotlin-lsp / rust-analyzer").desired_width(245.0));
+                        ui.label("Arguments (JSON)"); ui.add(egui::TextEdit::singleline(&mut self.language.args).desired_width(210.0));
+                        ui.label("Language ID"); ui.add(egui::TextEdit::singleline(&mut self.language.language_id).desired_width(80.0));
+                    }),
+                    ServerMode::Java => ui.vertical(|ui| {
+                        ui.label("Use existing paths on the workspace host:");
+                        ui.horizontal(|ui| { ui.label("Java executable"); ui.add(egui::TextEdit::singleline(&mut self.language.java.executable).hint_text("Absolute ASCII path to java.exe").desired_width(390.0)); });
+                        ui.horizontal(|ui| { ui.label("JDT distribution"); ui.add(egui::TextEdit::singleline(&mut self.language.java.distribution).hint_text("Existing Eclipse JDT LS directory").desired_width(390.0)); });
+                        ui.horizontal(|ui| { ui.label("JDT data directory"); ui.add(egui::TextEdit::singleline(&mut self.language.java.data_directory).hint_text("Existing directory outside the workspace").desired_width(390.0)); });
+                        ui.label("Language: Java. Maven and Gradle project imports are disabled; JDK class-file viewing is unavailable.");
+                    }),
+                };
+                if ui.button("Start server").clicked() { self.start_language(); }
             });
-            ui.label(RichText::new("One explicitly started server per workspace. Java/Kotlin require their own installed server and JDK on the workspace host.").small().color(MUTED));
+            ui.label(RichText::new("One explicitly started server per workspace. The server and JDK must be installed on the workspace host.").small().color(MUTED));
         });
+        if busy {
+            ui.label(RichText::new("Language startup and queries block queued workspace requests until they finish. Stop becomes available afterward.").small().color(MUTED));
+        }
+        if self.language.restart_blocked {
+            ui.colored_label(
+                AMBER,
+                "Reconnect before starting another Java session; prior cleanup was not verified.",
+            );
+        }
         if self.language.running {
             ui.horizontal_wrapped(|ui| {
-                ui.colored_label(GREEN, format!("{} server", self.language.language_id));
+                ui.colored_label(
+                    GREEN,
+                    format!("{} server", self.language.document_language_id()),
+                );
                 ui.checkbox(&mut self.language.automatic, "Automatic sync + diagnostics");
                 if ui
                     .add_enabled(!busy, egui::Button::new("Stop server"))
@@ -1014,7 +1142,12 @@ impl CedarApp {
             ui.selectable_value(&mut self.language.view, View::Format, "Format");
             ui.selectable_value(&mut self.language.view, View::References, "References");
             ui.selectable_value(&mut self.language.view, View::Outline, "Outline");
-            ui.selectable_value(&mut self.language.view, View::Activity, "Protocol details");
+            let activity_label = if self.language.mode == ServerMode::Java {
+                "Session activity"
+            } else {
+                "Protocol details"
+            };
+            ui.selectable_value(&mut self.language.view, View::Activity, activity_label);
             if busy {
                 ui.spinner();
             }
@@ -1811,6 +1944,137 @@ mod tests {
             assert!(!safe_relative_path(path));
         }
         assert!(safe_relative_path("src/你好.java"));
+    }
+    fn java_app() -> (CedarApp, std::sync::mpsc::Receiver<crate::worker::Command>) {
+        let (mut app, rx) = capability_app();
+        let info = app.agent_info.as_mut().unwrap();
+        info.os = "windows".into();
+        info.capabilities.retain(|name| name != "language_start");
+        info.capabilities.push("language_start_java".into());
+        app.language.mode = ServerMode::Java;
+        app.language.java = JavaConfiguration {
+            executable: r"C:\Java\bin\java.exe".into(),
+            distribution: r"D:\JDT 雪".into(),
+            data_directory: r"D:\Java data 雪".into(),
+        };
+        (app, rx)
+    }
+    #[test]
+    fn java_start_requires_the_scoped_lifecycle_and_unchanged_execution_trust() {
+        for missing in cedar_protocol::JAVA_LANGUAGE_SESSION_CAPABILITIES {
+            let (mut app, rx) = java_app();
+            app.agent_info
+                .as_mut()
+                .unwrap()
+                .capabilities
+                .retain(|name| name != missing);
+            app.start_language();
+            assert!(rx.try_recv().is_err());
+            assert_eq!(app.language.session, 0);
+        }
+        let (mut app, rx) = java_app();
+        app.active_form.as_mut().unwrap().allow_run = false;
+        app.start_language();
+        assert!(!app.execution_trusted());
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.language.session, 0);
+        let (mut app, rx) = java_app();
+        assert!(app.backend_java_language_supported());
+        assert!(!app.backend_generic_language_supported());
+        assert!(app
+            .operation_problem(&Operation::LanguageStart {
+                program: "must-not-run".into(),
+                args: vec![]
+            })
+            .is_some());
+        app.start_language();
+        assert!(
+            matches!(rx.try_recv().unwrap().op, Operation::LanguageStartJava { java_executable,distribution,data_directory } if java_executable == r"C:\Java\bin\java.exe" && distribution == r"D:\JDT 雪" && data_directory == r"D:\Java data 雪")
+        );
+    }
+    #[test]
+    fn java_mode_uses_only_java_documents_even_for_explicit_sync() {
+        let (mut app, rx) = java_app();
+        app.language.running = true;
+        app.language.language_id = "rust".into();
+        app.documents.push(Document::new(
+            1,
+            "other.rs".into(),
+            "fn main() {}".into(),
+            "r".into(),
+        ));
+        app.documents.push(Document::new(
+            2,
+            "Main.java".into(),
+            "class Main {}".into(),
+            "r".into(),
+        ));
+        app.sync_document(1);
+        assert!(rx.try_recv().is_err());
+        app.sync_document(2);
+        assert!(
+            matches!(rx.try_recv().unwrap().op, Operation::LanguageOpen { path,language_id,.. } if path == "Main.java" && language_id == "java")
+        );
+    }
+    #[test]
+    fn java_stop_shows_bounded_outcome_and_unknown_cleanup_blocks_restart() {
+        let (mut app, _) = java_app();
+        app.language.running = true;
+        let stop = serde_json::json!({"stopped":true,"shutdown":{"status":"forced","reason":"grace_expired","root_exit_code":1,"cleanup_joined":true,"shutdown_response_received":true,"exit_frame_completed":true},"private":"private stderr"});
+        app.apply_language_action(
+            Action {
+                session: 0,
+                kind: ActionKind::Stop,
+            },
+            stop,
+        );
+        assert!(!app.language.running);
+        assert!(app.notice.contains("forced cleanup"));
+        assert!(!app.language.output.contains("private"));
+        assert!(!app.language.restart_blocked);
+        let session = app.language.session;
+        app.language.running = true;
+        app.close_after_language_stop = true;
+        app.close_snapshot = Some(vec![]);
+        app.apply_language_action(
+            Action {
+                session,
+                kind: ActionKind::Stop,
+            },
+            serde_json::json!({"stopped":true}),
+        );
+        assert!(!app.language.running);
+        assert!(app.language.restart_blocked);
+        assert!(!app.close_after_language_stop);
+        assert!(app.close_snapshot.is_none());
+        app.finish_pending_close(&egui::Context::default());
+        assert!(!app.allow_close);
+        assert!(app
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("could not be verified"));
+    }
+    #[test]
+    fn java_activity_and_errors_never_render_arbitrary_server_payloads() {
+        let (mut app, _) = java_app();
+        app.apply_language_action(
+            Action {
+                session: 0,
+                kind: ActionKind::Start,
+            },
+            serde_json::json!({"initialize":{"capabilities":{}},"private":"private payload"}),
+        );
+        assert!(!app.language.output.contains("private"));
+        let error = app.language_public_error(
+            &Action {
+                session: 0,
+                kind: ActionKind::Stop,
+            },
+            "raw private stderr",
+        );
+        assert!(!error.contains("private"));
+        assert!(error.contains("could not be verified"));
     }
 }
 

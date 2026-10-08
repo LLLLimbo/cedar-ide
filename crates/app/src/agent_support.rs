@@ -1,6 +1,9 @@
 //! Connection-scoped, unverified agent support claims. Trust stays user-owned.
 use crate::{CedarApp, Operation};
-use cedar_protocol::{supports_capability, LANGUAGE_SESSION_CAPABILITIES, RUN_TASK_CAPABILITIES};
+use cedar_protocol::{
+    supports_capability, JAVA_LANGUAGE_SESSION_CAPABILITIES, LANGUAGE_SESSION_CAPABILITIES,
+    RUN_TASK_CAPABILITIES,
+};
 
 impl CedarApp {
     pub(super) fn backend_supports(&self, name: &str) -> bool {
@@ -12,6 +15,14 @@ impl CedarApp {
             .all(|name| self.backend_supports(name))
     }
     pub(super) fn backend_language_supported(&self) -> bool {
+        self.backend_generic_language_supported() || self.backend_java_language_supported()
+    }
+    pub(super) fn backend_java_language_supported(&self) -> bool {
+        JAVA_LANGUAGE_SESSION_CAPABILITIES
+            .iter()
+            .all(|name| self.backend_supports(name))
+    }
+    pub(super) fn backend_generic_language_supported(&self) -> bool {
         LANGUAGE_SESSION_CAPABILITIES
             .iter()
             .all(|name| self.backend_supports(name))
@@ -31,9 +42,14 @@ impl CedarApp {
             return Some(self.unsupported_message("run_start/run_poll/run_cancel"));
         }
         if matches!(operation, Operation::LanguageStart { .. })
-            && !self.backend_language_supported()
+            && !self.backend_generic_language_supported()
         {
             return Some(self.unsupported_message("the complete language session lifecycle"));
+        }
+        if matches!(operation, Operation::LanguageStartJava { .. })
+            && !self.backend_java_language_supported()
+        {
+            return Some(self.unsupported_message("the complete Java language session lifecycle"));
         }
         if let Some(name) = operation.capability_name() {
             if !self.backend_supports(name) {
@@ -47,6 +63,7 @@ impl CedarApp {
             Operation::RunStart { .. }
                 | Operation::Run { .. }
                 | Operation::LanguageStart { .. }
+                | Operation::LanguageStartJava { .. }
                 | Operation::GitStatus
         ) && !self.execution_trusted()
         {

@@ -2,7 +2,8 @@
 //! No passwords, host-key acceptance, key generation, port listeners, or telemetry.
 use cedar_protocol::{
     read_frame, supports_capability, write_frame, Operation, Payload, Request, Response,
-    LANGUAGE_SESSION_CAPABILITIES, PROTOCOL_VERSION, RUN_TASK_CAPABILITIES,
+    JAVA_LANGUAGE_SESSION_CAPABILITIES, LANGUAGE_SESSION_CAPABILITIES, PROTOCOL_VERSION,
+    RUN_TASK_CAPABILITIES,
 };
 #[cfg(not(windows))]
 use cedar_workspace::Workspace;
@@ -174,6 +175,20 @@ impl Client {
         let lifecycle = match op {
             Operation::RunStart { .. } => RUN_TASK_CAPABILITIES,
             Operation::LanguageStart { .. } => LANGUAGE_SESSION_CAPABILITIES,
+            Operation::LanguageStartJava { .. } => JAVA_LANGUAGE_SESSION_CAPABILITIES,
+            _ if is_language_session_operation(op) => match &self.backend {
+                Backend::Process(process) if process.java_language_session => {
+                    JAVA_LANGUAGE_SESSION_CAPABILITIES
+                }
+                _ if !supports_capability(agent.as_ref(), "language_start")
+                    && supports_capability(agent.as_ref(), "language_start_java") =>
+                {
+                    // Keep idempotent Stop and ordinary no-session responses
+                    // available on Java-only peers after active mode is cleared.
+                    JAVA_LANGUAGE_SESSION_CAPABILITIES
+                }
+                _ => LANGUAGE_SESSION_CAPABILITIES,
+            },
             _ => &[],
         };
         for capability in lifecycle {
@@ -186,6 +201,18 @@ impl Client {
             #[cfg(not(windows))]
             Backend::Local(_) => true,
             Backend::Process(p) => p.connected,
+        }
+    }
+    /// Close this connection and, for a process transport, wait at most `timeout`
+    /// for its owned-child reaper to confirm an observed or waited child exit.
+    /// Wait/kill failures remain errors. Ordinary Drop stays asynchronous.
+    /// This does not join detached pipe-reader threads or attest
+    /// to graceful language-server shutdown; inspect LanguageStop's payload.
+    pub fn close_and_wait(mut self, timeout: Duration) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(not(windows))]
+            Backend::Local(_) => Ok(()),
+            Backend::Process(process) => process.close_and_wait(timeout),
         }
     }
 }
@@ -321,16 +348,36 @@ fn posix_quote(value: &str) -> String {
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const REAP_INTERVAL: Duration = Duration::from_millis(10);
 const STDERR_TAIL_BYTES: usize = 4096;
+// Java can spend 60 seconds in an agent request and a further 10 seconds in
+// bounded shutdown. Leave transport headroom without extending task/file limits.
+const JAVA_LANGUAGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(75);
+
+fn is_language_session_operation(op: &Operation) -> bool {
+    matches!(
+        op,
+        Operation::LanguageOpen { .. }
+            | Operation::LanguageChange { .. }
+            | Operation::LanguageClose { .. }
+            | Operation::LanguageQuery { .. }
+            | Operation::LanguageFormat { .. }
+            | Operation::LanguageReferences { .. }
+            | Operation::LanguageDocumentSymbols { .. }
+            | Operation::LanguageResolveUri { .. }
+            | Operation::LanguageResolveCompletion { .. }
+            | Operation::LanguageEvents
+            | Operation::LanguageStop
+    )
+}
 
 struct ProcessClient {
     requests: Option<mpsc::SyncSender<Request>>,
     responses: Option<mpsc::Receiver<Result<Response, String>>>,
     shutdown: Option<mpsc::Sender<()>>,
-    #[cfg(test)]
-    reaped: mpsc::Receiver<()>,
+    reaped: mpsc::Receiver<ReapResult>,
     stderr: Arc<Mutex<Vec<u8>>>,
     next_id: u64,
     connected: bool,
+    java_language_session: bool,
 }
 impl ProcessClient {
     fn spawn(cmd: Command) -> Result<Self, String> {
@@ -365,20 +412,18 @@ impl ProcessClient {
         // a stopped writer must never accumulate work or block the caller.
         let (request_tx, request_rx) = mpsc::sync_channel::<Request>(1);
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        #[cfg(test)]
         let (reaped_tx, reaped_rx) = mpsc::channel();
         // Create the owner now, not from Drop. Neither normal close nor a
         // transport failure waits for process exit on the caller/UI thread.
         let owned = OwnedProcess {
             child,
-            wait_owned: true,
+            completion: None,
         };
         thread::Builder::new()
             .name("cedar-transport-reaper".into())
             .spawn(move || {
-                reap_after_close(owned, shutdown_rx, grace);
-                #[cfg(test)]
-                let _ = reaped_tx.send(());
+                let result = reap_after_close(owned, shutdown_rx, grace);
+                let _ = reaped_tx.send(result);
             })
             .map_err(|e| format!("spawn_failed: transport reaper: {e}"))?;
         let (response_tx, response_rx) = mpsc::sync_channel(1);
@@ -431,11 +476,11 @@ impl ProcessClient {
             requests: Some(request_tx),
             responses: Some(response_rx),
             shutdown: Some(shutdown_tx),
-            #[cfg(test)]
             reaped: reaped_rx,
             stderr,
             next_id: 0,
             connected: true,
+            java_language_session: false,
         })
     }
     fn fail(&mut self, message: String) -> String {
@@ -449,14 +494,21 @@ impl ProcessClient {
         }
     }
     fn request(&mut self, op: Operation) -> Result<Payload, String> {
-        let timeout = match &op {
+        let timeout = self.request_timeout(&op);
+        self.request_with_timeout(op, timeout)
+    }
+    fn request_timeout(&self, op: &Operation) -> Duration {
+        match op {
+            Operation::LanguageStartJava { .. } => JAVA_LANGUAGE_REQUEST_TIMEOUT,
+            _ if self.java_language_session && is_language_session_operation(op) => {
+                JAVA_LANGUAGE_REQUEST_TIMEOUT
+            }
             Operation::LanguageStart { .. } => Duration::from_secs(75),
             Operation::Run { timeout_secs, .. } => {
                 Duration::from_secs((*timeout_secs).clamp(1, 300) + 10)
             }
             _ => Duration::from_secs(30),
-        };
-        self.request_with_timeout(op, timeout)
+        }
     }
     // Kept private: fault tests use short deadlines without changing production
     // operation limits or exposing a weaker connection mode to the UI.
@@ -470,6 +522,9 @@ impl ProcessClient {
                 "disconnected: reconnect before retrying; unsaved buffers remain local".into(),
             );
         }
+        let starts_java = matches!(op, Operation::LanguageStartJava { .. });
+        let starts_generic = matches!(op, Operation::LanguageStart { .. });
+        let stops_language = matches!(op, Operation::LanguageStop);
         self.next_id = self.next_id.checked_add(1).ok_or("request id exhausted")?;
         let id = self.next_id;
         if self
@@ -497,10 +552,27 @@ impl ProcessClient {
                 response.id
             )));
         }
+        // Failed startup never replaces a running session. Query errors may be
+        // recoverable, so only an authoritative absent session clears the mode.
+        // Stop consumes the agent session even if bounded cleanup reports error.
+        match &response.result {
+            _ if stops_language => self.java_language_session = false,
+            Ok(Payload::Language { value })
+                if (starts_java || starts_generic)
+                    && value.get("started").and_then(|v| v.as_bool()) == Some(true) =>
+            {
+                self.java_language_session = starts_java;
+            }
+            Err(error) if error.code == "language_not_running" => {
+                self.java_language_session = false;
+            }
+            _ => {}
+        }
         response.result.map_err(|e| e.to_string())
     }
     fn close(&mut self) {
         self.connected = false;
+        self.java_language_session = false;
         // Dropping the only request sender lets the writer close child stdin.
         // Drop the receiver too, releasing readers blocked on a full queue.
         self.requests.take();
@@ -508,6 +580,20 @@ impl ProcessClient {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
+    }
+    fn close_and_wait(&mut self, timeout: Duration) -> Result<(), String> {
+        self.close();
+        self.reaped
+            .recv_timeout(timeout)
+            .map_err(|error| {
+                format!("transport_close: owned-child cleanup did not complete: {error}")
+            })?
+            .map_err(|error| {
+                format!(
+                    "transport_cleanup_unverified: owned-child {} failed",
+                    error.operation()
+                )
+            })
     }
 }
 impl Drop for ProcessClient {
@@ -518,46 +604,83 @@ impl Drop for ProcessClient {
 
 // Drop also covers failure to create the reaper thread during connection setup.
 // This owns only the direct child, never arbitrary remote or descendant PIDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReapError {
+    TryWait,
+    Kill,
+    Wait,
+}
+impl ReapError {
+    fn operation(self) -> &'static str {
+        match self {
+            Self::TryWait => "try_wait",
+            Self::Kill => "kill",
+            Self::Wait => "wait",
+        }
+    }
+}
+type ReapResult = Result<(), ReapError>;
+
 struct OwnedProcess {
     child: Child,
-    wait_owned: bool,
+    // Some means wait ownership has ended, either with verified reaping or an
+    // error. Preserve the distinction and never signal a disowned PID again.
+    completion: Option<ReapResult>,
 }
 impl OwnedProcess {
     // Require exclusive wait ownership, as the task supervisor does. A failed
     // wait may mean another reaper consumed this PID; never signal it afterward.
-    fn exited_or_unowned(&mut self) -> bool {
-        if !self.wait_owned {
-            return true;
+    fn poll_exit(&mut self) -> Option<ReapResult> {
+        if self.completion.is_some() {
+            return self.completion;
         }
         loop {
             match self.child.try_wait() {
-                Ok(None) => return false,
+                Ok(None) => return None,
                 Ok(Some(_)) => {
-                    self.wait_owned = false;
-                    return true;
+                    self.completion = Some(Ok(()));
+                    return self.completion;
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => {
-                    self.wait_owned = false;
-                    return true;
+                    self.completion = Some(Err(ReapError::TryWait));
+                    return self.completion;
                 }
             }
         }
     }
+    fn terminate_and_reap(&mut self) -> ReapResult {
+        if let Some(result) = self.poll_exit() {
+            return result;
+        }
+        let killed = self.child.kill().map_err(|_| ReapError::Kill);
+        let waited = loop {
+            match self.child.wait() {
+                Ok(_) => break Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => break Err(ReapError::Wait),
+            }
+        };
+        // Even if the later wait observes exit, a failed termination attempt is
+        // not a successful cleanup result. A failed wait disowns the process.
+        let result = waited.and(killed);
+        self.completion = Some(result);
+        result
+    }
 }
 impl Drop for OwnedProcess {
     fn drop(&mut self) {
-        if !self.exited_or_unowned() {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            self.wait_owned = false;
-        }
+        let _ = self.terminate_and_reap();
     }
 }
-fn reap_after_close(mut owned: OwnedProcess, shutdown: mpsc::Receiver<()>, grace: Duration) {
+fn reap_after_close(
+    mut owned: OwnedProcess,
+    shutdown: mpsc::Receiver<()>,
+    grace: Duration,
+) -> ReapResult {
     loop {
-        if owned.exited_or_unowned() {
-            return;
+        if let Some(result) = owned.poll_exit() {
+            return result;
         }
         match shutdown.recv_timeout(REAP_INTERVAL) {
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -570,11 +693,12 @@ fn reap_after_close(mut owned: OwnedProcess, shutdown: mpsc::Receiver<()>, grace
     // cleanup after network loss, SIGKILL, or an escaped descendant.
     let deadline = Instant::now() + grace;
     while Instant::now() < deadline {
-        if owned.exited_or_unowned() {
-            return;
+        if let Some(result) = owned.poll_exit() {
+            return result;
         }
         thread::sleep(REAP_INTERVAL);
     }
+    owned.terminate_and_reap()
 }
 
 #[cfg(test)]

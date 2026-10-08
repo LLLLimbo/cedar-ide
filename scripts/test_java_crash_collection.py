@@ -170,6 +170,21 @@ class CrashCollectionTests(unittest.TestCase):
             'failure_stage': 'none', 'elapsed_ms': 1250, 'elapsed_saturated': False,
         }]
 
+    def agent_production_fixture(self):
+        return {
+            'kind': 'windows_java_production', 'route': 'normal_agent_client',
+            'java_capabilities': True, 'generic_start_rejected': True, 'untrusted_start_rejected': True,
+            'root_observed_live': True, 'root_identity_verified': True, 'semantic_diagnostics': True,
+            'exact_definition': True, 'real_completion': True, 'deferred_import_resolve': True,
+            'actual_editor_apply_undo_redo': True, 'versions_2_3_4_synced': True,
+            'correction_acknowledged': True, 'correction_diagnostics': True, 'source_unchanged': True,
+            'stop_outcome_verified': True, 'shutdown_response_received': True, 'exit_frame_completed': True,
+            'cleanup_joined': True, 'root_handle_signaled': True, 'client_reaped': True,
+            'synthetic_root_removed': True, 'primary_failed': False, 'cleanup_failed': False,
+            'success': True, 'stop_status': 'graceful', 'stop_reason': 'root_exited', 'root_exit_code': 0,
+            'failure_stage': 'none', 'elapsed_ms': 1500, 'elapsed_saturated': False,
+        }
+
     def link(self, target, path, directory=False):
         try:
             path.symlink_to(target, target_is_directory=directory)
@@ -482,13 +497,13 @@ class CrashCollectionTests(unittest.TestCase):
 
     def test_agent_records_do_not_expand_direct_java_transcript_schema(self):
         agent = self.agent_source(self.agent_fixture() + [self.agent_diagnostics_fixture()]
-                                  + self.agent_lifecycle_fixtures())
+                                  + self.agent_lifecycle_fixtures() + [self.agent_production_fixture()])
         java = self.private_source('private-java.txt', '{"kind":"fixture_cleanup","removed":true}\n')
         report = collector.collect(self.root, java_transcript=agent, agent_transcript=java)
         self.assertEqual(report['status'], 'complete')
         self.assertEqual(report['java_transcript']['evidence']['records'], [])
         self.assertEqual(report['agent_transcript']['evidence']['records'], [])
-        self.assertEqual(report['java_transcript']['evidence']['omitted_other_json_records'], 7)
+        self.assertEqual(report['java_transcript']['evidence']['omitted_other_json_records'], 8)
         self.assertEqual(report['agent_transcript']['evidence']['omitted_other_json_records'], 1)
 
     def test_agent_session_numbers_require_bounded_integers(self):
@@ -764,6 +779,98 @@ class CrashCollectionTests(unittest.TestCase):
         self.assertEqual(report['status'], 'error')
         self.assertEqual(report['agent_transcript']['errors'], ['invalid_field_failure_stage'])
 
+    def test_agent_production_preserves_failures_and_omits_all_private_fields(self):
+        failed = {key: False if type(value) is bool else value
+                  for key, value in self.agent_production_fixture().items()}
+        failed.update(primary_failed=True, cleanup_failed=True, stop_status='error',
+                      stop_reason='transport_failure', root_exit_code=None, failure_stage='stop')
+        expected = [self.agent_production_fixture(), failed]
+        records = [{**record, 'source': 'SECRET_SOURCE', 'uri': 'file:///SECRET_PRIVATE/Main.java',
+                    'path': 'C:\\SECRET_PRIVATE\\fixture', 'error': 'SECRET_ERROR',
+                    'messages': ['SECRET_PROTOCOL_MESSAGE'], 'stack': ['SECRET_STACK'],
+                    'environment': {'TOKEN': 'SECRET_ENV'}, 'payload': {'raw': 'SECRET_PAYLOAD'},
+                    'session': 'SECRET_OTHER_SCHEMA', 'java_exit_code': 'SECRET_OTHER_EXIT',
+                    'tasks_started': 'SECRET_OTHER_COUNT'} for record in expected]
+        path = self.agent_source(records)
+        raw = path.read_bytes()
+        report = collector.collect(self.root, agent_transcript=path)
+        source = report['agent_transcript']
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['acceptance_result'], 'not_evaluated')
+        self.assertEqual(source['status'], 'collected')
+        self.assertFalse(source['truncated'])
+        self.assertEqual(source['sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(source['bytes'], len(raw))
+        self.assertEqual(source['evidence']['records'], expected)
+        for secret in ('SECRET_', 'file:///', str(self.root), 'payload', 'environment', 'messages'):
+            self.assertNotIn(secret, json.dumps(report))
+
+    def test_agent_production_booleans_require_actual_boolean_values(self):
+        fixture = self.agent_production_fixture()
+        fields = [key for key, value in fixture.items() if type(value) is bool]
+        self.assertEqual(len(fields), 25)
+        for field in fields:
+            for value in (True, False, 0, 1, 0.0, None, 'SECRET_BOOLEAN', []):
+                valid = type(value) is bool
+                with self.subTest(field=field, value=value):
+                    path = self.agent_source([{**fixture, field: value}])
+                    report = collector.collect(self.root, agent_transcript=path)
+                    source = report['agent_transcript']
+                    record = source['evidence']['records'][0]
+                    self.assertEqual(report['status'], 'complete' if valid else 'error')
+                    if valid:
+                        self.assertIs(record[field], value)
+                    else:
+                        self.assertNotIn(field, record)
+                        self.assertEqual(source['errors'], ['invalid_field_' + field])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_agent_production_exit_code_and_elapsed_time_have_exact_bounds(self):
+        for field, maximum, nullable in (('root_exit_code', 2 ** 32 - 1, True),
+                                         ('elapsed_ms', 300000, False)):
+            for value in (0, maximum, -1, maximum + 1, 2 ** 53, True, False, 1.0, None, 'SECRET_NUMBER'):
+                valid = (value is None and nullable) or (type(value) is int and 0 <= value <= maximum)
+                with self.subTest(field=field, value=value):
+                    path = self.agent_source([{**self.agent_production_fixture(), field: value}])
+                    report = collector.collect(self.root, agent_transcript=path)
+                    source = report['agent_transcript']
+                    record = source['evidence']['records'][0]
+                    self.assertEqual(report['status'], 'complete' if valid else 'error')
+                    if valid:
+                        self.assertEqual(record[field], value)
+                    else:
+                        self.assertNotIn(field, record)
+                        self.assertEqual(source['errors'], ['invalid_field_' + field])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_agent_production_enum_namespaces_are_fixed_and_do_not_accept_ownership_stages(self):
+        enums = {
+            'route': ('normal_agent_client',),
+            'stop_status': ('not_attempted', 'graceful', 'forced', 'error'),
+            'stop_reason': ('not_attempted', 'root_exited', 'grace_expired', 'aborted',
+                            'transport_failure', 'worker_panicked'),
+            'failure_stage': ('none', 'setup', 'initialize', 'open', 'diagnostics', 'hover',
+                              'definition', 'completion', 'resolve', 'apply', 'undo', 'redo',
+                              'sync', 'correction', 'close', 'stop', 'root_exit', 'agent_exit',
+                              'fixture_cleanup'),
+        }
+        for field, allowed in enums.items():
+            for value in allowed + ('SECRET_ENUM', 'owner_death', 'task_start', 'java_exit',
+                                    '', 0, True, None, ['normal_agent_client']):
+                valid = isinstance(value, str) and value in allowed
+                with self.subTest(field=field, value=value):
+                    path = self.agent_source([{**self.agent_production_fixture(), field: value}])
+                    report = collector.collect(self.root, agent_transcript=path)
+                    source = report['agent_transcript']
+                    record = source['evidence']['records'][0]
+                    self.assertEqual(report['status'], 'complete' if valid else 'error')
+                    if valid:
+                        self.assertEqual(record[field], value)
+                    else:
+                        self.assertNotIn(field, record)
+                        self.assertEqual(source['errors'], ['invalid_field_' + field])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+
     def test_agent_source_cannot_leave_root_or_follow_file_and_directory_links(self):
         outside = self.base / 'outside-private-agent.txt'
         outside.write_text('SECRET_OUTSIDE_SOURCE')
@@ -831,6 +938,7 @@ class CrashCollectionTests(unittest.TestCase):
         records.insert(1, {**self.agent_diagnostics_fixture(), 'result': 'timeout',
                            'message': 'SECRET_TIMEOUT_DIAGNOSTIC'})
         records[2:2] = self.agent_lifecycle_fixtures()
+        records.insert(4, self.agent_production_fixture())
         records[-1].update(success=False, primary_failed=True, failure_stage='correction',
                            error='SECRET_FAILURE_ERROR')
         path = self.agent_source(records)
@@ -844,6 +952,7 @@ class CrashCollectionTests(unittest.TestCase):
         self.assertFalse(report['agent_transcript']['evidence']['records'][-1]['success'])
         self.assertEqual(report['agent_transcript']['evidence']['records'][1]['result'], 'timeout')
         self.assertEqual(report['agent_transcript']['evidence']['records'][2:4], self.agent_lifecycle_fixtures())
+        self.assertEqual(report['agent_transcript']['evidence']['records'][4], self.agent_production_fixture())
         self.assertFalse(report['java_transcript']['evidence']['records'][0]['windows_full_acceptance'])
         self.assertEqual(report['acceptance_result'], 'not_evaluated')
         self.assertEqual(json.loads(collected.stdout)['acceptance_result'], 'not_evaluated')

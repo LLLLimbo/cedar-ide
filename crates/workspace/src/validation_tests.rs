@@ -1,4 +1,4 @@
-//! Building every feature must never opt an ordinary host into Windows LSP.
+//! Building every feature never opts ordinary hosts into generic Windows LSP.
 use crate::{BackendMode, Workspace};
 use cedar_protocol::{Operation, Payload};
 
@@ -54,8 +54,12 @@ fn validation_requires_synthetic_root_and_separate_execution_trust() {
             else {
                 panic!("expected metadata");
             };
-            for capability in cedar_protocol::LANGUAGE_SESSION_CAPABILITIES {
-                assert!(!info.supports(capability));
+            assert!(!info.supports("language_start"));
+            for capability in cedar_protocol::JAVA_LANGUAGE_SESSION_CAPABILITIES {
+                assert_eq!(
+                    info.supports(capability),
+                    normal.backend_mode == BackendMode::IsolatedAgent
+                );
             }
         }
     }

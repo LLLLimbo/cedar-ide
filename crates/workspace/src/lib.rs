@@ -10,6 +10,7 @@
 //! permissions, not merely workspace access.
 
 mod capabilities;
+mod java_launch;
 #[cfg(feature = "windows-language-validation")]
 mod java_validation;
 mod language;
@@ -124,7 +125,7 @@ impl Workspace {
     }
 
     /// Nonshipping, marked-root Java fixture. Does not grant execution trust,
-    /// advertise Windows language support, or change ordinary constructors.
+    /// change Hello's production support claims, or change ordinary constructors.
     #[cfg(feature = "windows-language-validation")]
     pub fn for_windows_java_validation(
         root: impl AsRef<Path>,
@@ -172,6 +173,7 @@ impl Workspace {
                 self.git_status()
             }
             op @ (Operation::LanguageStart { .. }
+            | Operation::LanguageStartJava { .. }
             | Operation::LanguageOpen { .. }
             | Operation::LanguageChange { .. }
             | Operation::LanguageClose { .. }
