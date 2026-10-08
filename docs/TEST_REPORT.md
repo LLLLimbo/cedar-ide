@@ -1,10 +1,11 @@
-# Verification report · Windows environment lookup contract and Git selection / 0.15.2 · 2026-10-08
+# Verification report · Independent Windows Git acceptance / 0.15.3 · 2026-10-08
 
-This checkpoint selects exactly one native Git application in the Windows CI
-driver. It retains 0.15.1's corrected Unicode unit and independent native lookup
-gate. Production Git filtering and owned process-launch behavior are unchanged. The Windows Git
-route remains pending exact native acceptance; the previous green user-download
-baseline is 0.14.1, not the failed 0.15.0 Windows build.
+This checkpoint lets the normal Windows shipping rebuild and actual Git acceptance
+run after an unrelated runtime-suite failure, provided their own build prerequisites
+succeeded and the job was not cancelled. Every required failure still fails the
+job; bundle verification and uploads remain blocked by an earlier failure.
+Production Rust and probe implementation are unchanged. Windows Git acceptance
+is still pending, and the last verified downloadable bundle remains 0.14.1.
 
 ## Exact 0.15.0 result
 
@@ -88,3 +89,37 @@ For the 0.15.2 selection/documentation change, local package regressions again
 passed 28 with one native-only skip, export regressions passed two and diff checks
 passed. Rust and Python probe source are byte-identical to 0.15.1; native CI will
 perform the full rebuild and actual Git invocation before a delivery claim.
+
+
+## Native 0.15.2 result and independent 0.15.3 checks
+
+Exact public commit
+[`4e935fa6ba6d48de2ee38bf11187a234e238c1cc`](https://github.com/LLLLimbo/cedar-ide/commit/4e935fa6ba6d48de2ee38bf11187a234e238c1cc)
+[passed Ubuntu and failed Windows](https://github.com/LLLLimbo/cedar-ide/actions/runs/37781153032).
+The fresh-data second Java agent/editor session acknowledged the correction but
+its bounded receipt recorded zero events and zero diagnostic batches across
+594 polls over the existing 60-second deadline. Its other edit/undo/redo checks
+passed, and both attempted sessions recorded natural JVM exit zero, agent exit
+zero, unchanged source and completed cleanup. The first session fully passed.
+Direct Java sessions, forced-owner cleanup and normal production semantics also
+passed; production stop retained its honest forced/grace-expired outcome.
+
+This repeats an earlier unresolved correction-notification failure. The receipt
+does not establish whether JDT did not publish or a lower layer lost an event;
+a completed write acknowledgement is not proof the server applied the change.
+The failure remains open and required. The Git and bundle steps did not run.
+No timeout or semantic assertion has been relaxed, and this checkpoint is not a
+claimed Java fix or an unchanged retry.
+
+Version 0.15.3 makes the Windows shipping rebuild depend on the successful
+release build and non-cancellation, and the Git probe depend on that successful
+normal rebuild and non-cancellation. Explicit status conditions let independent
+Git evidence be collected even when Java fails. No continue-on-error is used;
+the original failing step keeps the overall job red and prevents bundle delivery.
+Static review confirmed these dependency and failure rules. Native CI must still
+verify their execution and the actual Git route on this exact source revision.
+
+Local verification for this CI-only change: package regressions ran 29 tests
+(28 passed, one native-only skip), export regressions passed two, workflow parsing
+and explicit prerequisite checks passed, and diff checks passed. Rust and probe
+source remain byte-identical to 0.15.2; native CI performs the full rebuild.

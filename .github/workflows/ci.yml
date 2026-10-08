@@ -29,7 +29,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-targets --all-features --locked
         timeout-minutes: 15
-      - run: cargo build --release --workspace --all-features --locked
+      - id: release_build
+        run: cargo build --release --workspace --all-features --locked
       - name: Connection cancellation (Unix)
         timeout-minutes: 3
         if: runner.os != 'Windows'
@@ -129,11 +130,12 @@ jobs:
         if: runner.os != 'Windows'
         run: python3 scripts/git_views_smoke.py --agent "$PWD/target/release/cedar-agent" --git "$(command -v git)"
       - name: Default-feature Windows shipping binaries
-        if: runner.os == 'Windows'
+        id: windows_shipping
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.release_build.outcome == 'success' }}
         run: cargo build --release -p cedar-app -p cedar-agent --bin cedar --bin cedar-agent --locked
       - name: Real Git changes and selected-file diff (Windows)
         timeout-minutes: 3
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.windows_shipping.outcome == 'success' }}
         shell: pwsh
         run: |
           $GitCommands = @(Get-Command git.exe -CommandType Application -ErrorAction Stop)

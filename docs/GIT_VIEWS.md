@@ -96,3 +96,8 @@ APIs; ASCII/mixed-case and Greek-case controls matched. The earlier unconditiona
 alias assertion was corrected without changing production filtering. Actual Git
 acceptance remains separately required; that run's Git driver was blocked by a
 multiple-application discovery argument error, corrected in 0.15.2.
+
+The 0.15.2 Git step was skipped after a recurring Java correction-notification
+timeout. Version 0.15.3 collects independent Windows Git evidence after its own
+normal-build prerequisite even if Java fails; the overall job remains failed and
+no bundle is delivered until every required gate passes.
