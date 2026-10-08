@@ -44,6 +44,11 @@ impl CedarApp {
         }
     }
     pub(super) fn operation_problem(&self, operation: &Operation) -> Option<String> {
+        if let Operation::LanguageOrganizeJavaImports { path, version } = operation {
+            if let Some(problem) = self.java_imports_operation_problem(path, *version) {
+                return Some(problem);
+            }
+        }
         if let Operation::LanguageRefreshJavaDiagnostics { path, version } = operation {
             if let Some(problem) = self.java_diagnostics_operation_problem(path, *version) {
                 return Some(problem);
@@ -162,6 +167,7 @@ pub(super) fn full_test_agent() -> cedar_protocol::AgentInfo {
             "language_events",
             "language_stop",
             "language_format",
+            "language_organize_java_imports",
             "language_references",
             "language_document_symbols",
             "language_resolve_completion",

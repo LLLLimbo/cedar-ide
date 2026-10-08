@@ -280,6 +280,7 @@ impl Client {
             | Operation::LanguageStartJavaBegin { .. }
             | Operation::LanguageStartJavaPoll { .. }
             | Operation::LanguageStartJavaCancel { .. }
+            | Operation::LanguageOrganizeJavaImports { .. }
             | Operation::LanguageRefreshJavaDiagnostics { .. } => {
                 JAVA_LANGUAGE_SESSION_CAPABILITIES
             }
@@ -468,6 +469,7 @@ fn is_language_session_operation(op: &Operation) -> bool {
             | Operation::LanguageClose { .. }
             | Operation::LanguageQuery { .. }
             | Operation::LanguageFormat { .. }
+            | Operation::LanguageOrganizeJavaImports { .. }
             | Operation::LanguageRefreshJavaDiagnostics { .. }
             | Operation::LanguageReferences { .. }
             | Operation::LanguageDocumentSymbols { .. }

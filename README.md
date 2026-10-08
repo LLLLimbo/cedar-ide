@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十九阶段单文档替换预览工程（**0.19.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第二十阶段 Java 导入整理预览工程（**0.20.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -24,6 +24,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - 显式 Java 诊断刷新；待到达、过期、无版本和当前版本状态分开显示，请求发送成功不等于诊断已更新
 - 支持能力协商的后台 Java 启动与取消；初始化期间可继续文件操作，清理完成前不宣称已取消
 - **安全格式化预览**：只读 Before / After，显式 Apply / Cancel；校验精确草稿版本后单次撤销事务，不自动保存
+- **Java 导入整理预览**：Windows 专用 Java 路径的当前已同步草稿的显式整理请求，先预览再 Apply，单次撤销，不自动保存；歧义导入仍需人工解决，见[范围与限制](docs/JAVA_IMPORTS.md)
 - **引用查找**：同步所有匹配语言的打开草稿，可选择包含声明；显示无版本结果的时效边界，跳转由 agent 校验工作区
 - **文档大纲**：显式刷新，保留层级或平面符号结果，按声明选择范围导航；编辑后失效
 - 补全可延迟解析 import，校验所有编辑后一次性改动草稿；一次撤销/重做覆盖整个操作；不执行服务器返回的任意命令

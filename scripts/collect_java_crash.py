@@ -165,6 +165,24 @@ AGENT_TRANSCRIPT_FIELDS = {
                              'definition', 'completion', 'resolve', 'apply', 'undo', 'redo',
                              'sync', 'correction', 'close', 'stop', 'root_exit', 'agent_exit',
                              'fixture_cleanup')},
+    # Quick-only organize-imports receipt. In particular, neither source edits,
+    # candidate names/URIs nor raw JDT responses are ever copied into evidence.
+    'windows_java_organize_imports': dict.fromkeys((
+        'exercised', 'supported', 'left_candidate_indexed', 'right_candidate_indexed',
+        'unsaved_type_indexed', 'independent_type_indexed', 'unsaved_version_acknowledged',
+        'sorted_retained_imports', 'unused_import_removed', 'unsaved_unique_import_added',
+        'preview_unchanged', 'cancel_unchanged', 'actual_frontend_apply', 'one_undo_exact',
+        'one_redo_exact', 'draft_versions_synced', 'ambiguous_candidates_skipped',
+        'independent_import_added', 'source_files_unchanged', 'root_handle_signaled',
+        'client_reaped', 'synthetic_root_removed', 'primary_failed', 'cleanup_failed',
+        'success', 'elapsed_saturated'), 'bool')
+        | {'main_edit_count': ('integer_range', 0, 1024),
+           'ambiguity_edit_count': ('integer_range', 0, 1024),
+           'observed_editor_stages': ('integer_range', 0, 5),
+           'failure_stage': ('none', 'setup', 'support', 'index_witness', 'unsaved_sync',
+                             'organize', 'preview', 'cancel', 'apply', 'undo', 'redo',
+                             'ambiguity', 'close'),
+           'elapsed_ms': ('integer_range', 0, 240000)},
 }
 # The diagnostic route shares bounded semantic witnesses with the shipping
 # acceptance, but has its own kind and one exact route. Never expand the shipping

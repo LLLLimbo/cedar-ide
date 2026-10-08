@@ -47,6 +47,7 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
             "language_events",
             "language_format",
             "language_open",
+            "language_organize_java_imports",
             "language_query",
             "language_references",
             "language_resolve_completion",
@@ -84,6 +85,10 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
             java_executable: String::new(),
             distribution: String::new(),
             data_directory: String::new(),
+        },
+        Operation::LanguageOrganizeJavaImports {
+            path: "must-not-be-opened.java".into(),
+            version: 1,
         },
         Operation::LanguageRefreshJavaDiagnostics {
             path: "must-not-be-opened.java".into(),

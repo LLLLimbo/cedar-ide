@@ -15,6 +15,9 @@ pub(super) const INITIAL_DATA_DIR: &str = "jdt data initial 雪";
 pub(super) const RESTART_DATA_DIR: &str = "jdt data restart 雪";
 pub(super) type CheckResult<T> = Result<T, String>;
 
+#[path = "java_organize_acceptance_tests.rs"]
+mod organize;
+
 pub(super) fn validate_fixture_layout(
     root: &std::path::Path,
     data: &std::path::Path,

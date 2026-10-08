@@ -90,8 +90,10 @@ fn main() {
             }
             if mode == "bad_init" {
                 "{}"
+            } else if mode == "imports_unsupported" {
+                r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1}},"serverInfo":{"name":"JDT Language Server (Standard)","version":"1.61.0-SNAPSHOT"},"cedar_java_organize_imports":true}"#
             } else {
-                r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1},"hoverProvider":true},"serverInfo":{"name":"JDT Language Server (Standard)","version":"1.61.0-SNAPSHOT"}}"#
+                r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1},"hoverProvider":true,"executeCommandProvider":{"commands":["java.edit.organizeImports"]}},"serverInfo":{"name":"JDT Language Server (Standard)","version":"1.61.0-SNAPSHOT"},"cedar_java_organize_imports":false}"#
             }
         } else {
             "null"

@@ -133,3 +133,11 @@ synchronous behavior and cleanup reporting, so a slow query can still delay
 queued workspace requests. An older agent without all three startup
 capabilities keeps the original synchronous launch; its notice explains that
 Stop is available only after launch returns.
+
+## Explicit import organization
+
+For a supported Standard JDT session, **Imports → Organize imports** requests a
+preview for the current synchronized Java draft. Apply changes only that draft
+in one Undo transaction; Save remains separate. Ambiguous missing types are not
+automatically chosen. Other-document/resource edits and unsupported results are
+rejected. See [the full scope and limits](JAVA_IMPORTS.md).

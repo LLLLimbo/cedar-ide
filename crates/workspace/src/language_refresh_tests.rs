@@ -46,15 +46,17 @@ fn peer_binary() -> &'static Path {
         .path
 }
 
-fn initialize() -> Value {
+pub(super) fn initialize() -> Value {
     json!({
-        "capabilities":{"textDocumentSync":{"openClose":true,"change":1},"hoverProvider":true},
+        "capabilities":{"textDocumentSync":{"openClose":true,"change":1},"hoverProvider":true,
+            "executeCommandProvider":{"commands":["java.edit.organizeImports"]}},
         "serverInfo":{"name":"JDT Language Server (Standard)","version":"1.61.0-SNAPSHOT"},
-        "cedar_java_diagnostics_refresh":true
+        "cedar_java_diagnostics_refresh":true,
+        "cedar_java_organize_imports":true
     })
 }
 
-fn start(production_java: bool, initialize: Value) -> (TempDir, Workspace, Value) {
+pub(super) fn start(production_java: bool, initialize: Value) -> (TempDir, Workspace, Value) {
     let directory = tempfile::tempdir().unwrap();
     fs::write(
         directory.path().join("initialize.json"),
@@ -88,7 +90,7 @@ fn refresh(path: &str, version: i32) -> Operation {
     }
 }
 
-fn open(workspace: &mut Workspace, path: &str, version: i32) {
+pub(super) fn open(workspace: &mut Workspace, path: &str, version: i32) {
     workspace
         .handle(Operation::LanguageOpen {
             path: path.into(),
@@ -99,7 +101,7 @@ fn open(workspace: &mut Workspace, path: &str, version: i32) {
         .unwrap();
 }
 
-fn audit(directory: &Path, workspace: &mut Workspace) -> Vec<Value> {
+pub(super) fn audit(directory: &Path, workspace: &mut Workspace) -> Vec<Value> {
     // A private fixture barrier proves all preceding notification writes were
     // consumed before inspecting the audit. The shipping refresh never queries.
     workspace
@@ -116,7 +118,7 @@ fn audit(directory: &Path, workspace: &mut Workspace) -> Vec<Value> {
         .collect()
 }
 
-fn close(mut workspace: Workspace) {
+pub(super) fn close(mut workspace: Workspace) {
     workspace
         .language
         .take()

@@ -596,6 +596,11 @@ fn ready_is_adopted_once_and_its_id_scoped_cancel_closes_only_that_session() {
         ready["language"]["initialize"]["cedar_java_diagnostics_refresh"],
         true
     );
+    assert_eq!(
+        ready["language"]["initialize"]["cedar_java_organize_imports"],
+        true
+    );
+    assert!(workspace.language.as_ref().unwrap().java_organize_imports);
     assert_eq!(workspace.language.as_ref().unwrap().startup_id, Some(id));
     let pid = ready["language"]["process_id"].as_u64().unwrap() as u32;
     let observed = ObservedProcess::open(pid);
@@ -1278,5 +1283,27 @@ fn cleanup_thread_allocation_failure_retains_client_and_predecessor_until_drop()
         completed.load(Ordering::SeqCst),
         "Drop did not join the retained predecessor"
     );
+    observed.assert_dead();
+}
+
+#[test]
+fn async_java_adoption_overwrites_spoofed_import_support_without_command_advertisement() {
+    let (_root, mut workspace) = workspace();
+    let id = start(
+        &mut workspace,
+        "imports_unsupported",
+        Duration::from_secs(5),
+    );
+    let ready = terminal(&mut workspace, id);
+    assert_eq!(ready["state"], "ready");
+    assert_eq!(
+        ready["language"]["initialize"]["cedar_java_organize_imports"],
+        false
+    );
+    assert!(!workspace.language.as_ref().unwrap().java_organize_imports);
+    let pid = ready["language"]["process_id"].as_u64().unwrap() as u32;
+    let observed = ObservedProcess::open(pid);
+    workspace.cancel_java_startup(id).unwrap();
+    cancellation_terminal(&terminal(&mut workspace, id));
     observed.assert_dead();
 }

@@ -265,6 +265,7 @@ fn capability_names_match_each_operation_or_its_explicit_bridge_name() {
         json!({"type":"language_query","path":"a","line":0,"character":0,"kind":"hover"}),
         json!({"type":"language_format","path":"a","version":1,"tab_size":4,"insert_spaces":true}),
         json!({"type":"language_refresh_java_diagnostics","path":"a.java","version":1}),
+        json!({"type":"language_organize_java_imports","path":"a.java","version":1}),
         json!({"type":"language_references","path":"a","line":0,"character":0,"include_declaration":true}),
         json!({"type":"language_document_symbols","path":"a"}),
         json!({"type":"language_resolve_uri","uri":"file:///a"}),
@@ -322,6 +323,7 @@ fn capability_names_match_each_operation_or_its_explicit_bridge_name() {
     );
     for optional in [
         "java_diagnostics_refresh",
+        "language_organize_java_imports",
         "language_query",
         "language_resolve_uri",
         "language_format",

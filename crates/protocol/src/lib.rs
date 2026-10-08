@@ -203,6 +203,12 @@ pub enum Operation {
         path: String,
         version: i32,
     },
+    /// Preview imports for exactly the acknowledged Java document version.
+    /// The agent owns the fixed command and its single document URI argument.
+    LanguageOrganizeJavaImports {
+        path: String,
+        version: i32,
+    },
     LanguageReferences {
         path: String,
         line: u32,
@@ -263,6 +269,7 @@ impl Operation {
             Self::LanguageQuery { .. } => "language_query",
             Self::LanguageFormat { .. } => "language_format",
             Self::LanguageRefreshJavaDiagnostics { .. } => "java_diagnostics_refresh",
+            Self::LanguageOrganizeJavaImports { .. } => "language_organize_java_imports",
             Self::LanguageReferences { .. } => "language_references",
             Self::LanguageDocumentSymbols { .. } => "language_document_symbols",
             Self::LanguageResolveUri { .. } => "language_resolve_uri",
@@ -536,6 +543,29 @@ mod tests {
             serde_json::json!({"type":"language_refresh_java_diagnostics","path":"a.java","version":"7"}),
             serde_json::json!({"type":"language_refresh_java_diagnostics","path":"a.java","version":2147483648_i64}),
             serde_json::json!({"type":"language_notify","method":"java/validateDocument","params":{}}),
+        ] {
+            assert!(serde_json::from_value::<Operation>(invalid).is_err());
+        }
+    }
+    #[test]
+    fn java_imports_is_a_typed_optional_protocol_four_operation() {
+        let wire = serde_json::json!({
+            "type":"language_organize_java_imports", "path":"src/你好 #.java", "version":7
+        });
+        let operation: Operation = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(
+            operation.capability_name(),
+            Some("language_organize_java_imports")
+        );
+        assert_eq!(serde_json::to_value(operation).unwrap(), wire);
+        assert!(!supports_capability(None, "language_organize_java_imports"));
+        assert!(!JAVA_LANGUAGE_SESSION_CAPABILITIES.contains(&"language_organize_java_imports"));
+        assert_eq!(PROTOCOL_VERSION, 4);
+        for invalid in [
+            serde_json::json!({"type":"language_organize_java_imports","path":"a.java"}),
+            serde_json::json!({"type":"language_organize_java_imports","path":"a.java","version":"7"}),
+            serde_json::json!({"type":"language_organize_java_imports","path":"a.java","version":2147483648_i64}),
+            serde_json::json!({"type":"language_execute_command","command":"java.edit.organizeImports","arguments":[]}),
         ] {
             assert!(serde_json::from_value::<Operation>(invalid).is_err());
         }

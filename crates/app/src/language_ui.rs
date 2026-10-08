@@ -99,6 +99,7 @@ enum View {
     Completion,
     Definitions,
     Format,
+    Imports,
     References,
     Outline,
     Hover,
@@ -137,6 +138,7 @@ pub(super) struct LanguagePanel {
     diagnostics: Diagnostics,
     diagnostics_exited: bool,
     java_diagnostics_refresh_supported: bool,
+    java_organize_imports_supported: bool,
     diagnostic_refresh: Option<java_diagnostics::RefreshState>,
     diagnostic_refresh_sequence: u64,
     definitions: Vec<Location>,
@@ -159,7 +161,7 @@ impl Default for LanguagePanel {
             running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), next_version: 1, closed_uris: HashSet::new(),
             mode: ServerMode::Generic, java: JavaConfiguration::default(), restart_blocked: false, startup: None,
             program: String::new(), args: "[]".into(), language_id: "rust".into(), capabilities: Value::Null,
-            diagnostics: Diagnostics::default(), diagnostics_exited: false, java_diagnostics_refresh_supported: false,
+            diagnostics: Diagnostics::default(), diagnostics_exited: false, java_diagnostics_refresh_supported: false, java_organize_imports_supported: false,
             diagnostic_refresh: None, diagnostic_refresh_sequence: 0, definitions: Vec::new(), hover: String::new(),
             output: "Start an installed stdio language server. Java/Kotlin servers and their JDK must be installed on the workspace host.".into(),
             view: View::Problems, automatic: true, paused_reason: None, next_events: 0.0,
@@ -180,6 +182,7 @@ impl LanguagePanel {
         self.diagnostics.clear();
         self.diagnostics_exited = false;
         self.java_diagnostics_refresh_supported = false;
+        self.java_organize_imports_supported = false;
         self.diagnostic_refresh = None;
         self.definitions.clear();
         self.hover.clear();
@@ -740,6 +743,13 @@ impl CedarApp {
                         .and_then(|value| value.get("cedar_java_diagnostics_refresh"))
                         .and_then(Value::as_bool)
                         == Some(true);
+                self.language.java_organize_imports_supported = self.language.mode
+                    == ServerMode::Java
+                    && value
+                        .get("initialize")
+                        .and_then(|value| value.get("cedar_java_organize_imports"))
+                        .and_then(Value::as_bool)
+                        == Some(true);
                 self.language.diagnostics_exited = false;
                 self.language.next_events = 0.0;
                 self.language.automatic = true;
@@ -944,6 +954,7 @@ impl CedarApp {
                 Some("closed") => {
                     self.language.diagnostics_exited = true;
                     self.language.java_diagnostics_refresh_supported = false;
+                    self.language.java_organize_imports_supported = false;
                     self.language.diagnostic_refresh = None;
                     self.language.features.reset();
                     self.language.automatic = false;
@@ -1267,6 +1278,9 @@ impl CedarApp {
             ui.selectable_value(&mut self.language.view, View::Definitions, "Definitions");
             ui.selectable_value(&mut self.language.view, View::Hover, "Hover");
             ui.selectable_value(&mut self.language.view, View::Format, "Format");
+            if self.language.mode == ServerMode::Java {
+                ui.selectable_value(&mut self.language.view, View::Imports, "Imports");
+            }
             ui.selectable_value(&mut self.language.view, View::References, "References");
             ui.selectable_value(&mut self.language.view, View::Outline, "Outline");
             let activity_label = if self.language.mode == ServerMode::Java {
@@ -1282,7 +1296,7 @@ impl CedarApp {
         ui.separator();
         match self.language.view {
             View::Problems => self.problems_view(ui),
-            View::Format => self.format_view(ui),
+            View::Format | View::Imports => self.edit_preview_view(ui),
             View::References => self.references_view(ui),
             View::Outline => self.outline_view(ui),
             View::Definitions => {

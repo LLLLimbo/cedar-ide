@@ -1,4 +1,6 @@
 //! Headless transaction and lifetime tests for explicit language features.
+#[path = "java_imports_tests.rs"]
+mod java_imports;
 use super::*;
 use serde_json::json;
 const BEFORE: &str = "fn main(){}\n";

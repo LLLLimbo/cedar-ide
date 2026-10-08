@@ -673,6 +673,10 @@ fn advanced_operations() -> Vec<Operation> {
             tab_size: 4,
             insert_spaces: true,
         },
+        Operation::LanguageOrganizeJavaImports {
+            path: "fixture.txt".into(),
+            version: 1,
+        },
         Operation::LanguageRefreshJavaDiagnostics {
             path: "fixture.txt".into(),
             version: 1,
@@ -909,6 +913,7 @@ fn java_capabilities() -> Vec<&'static str> {
         .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES.iter().copied())
         .chain([
             "java_diagnostics_refresh",
+            "language_organize_java_imports",
             "language_query",
             "language_format",
             "language_references",
@@ -994,6 +999,87 @@ fn java_refresh_ack_is_returned_unchanged_without_retry_or_diagnostic_poll() {
     );
     read_fixture(&mut client);
     assert_eq!(recorded_requests(directory.path()).len(), 4);
+}
+
+#[test]
+fn java_imports_requires_optional_bridge_and_complete_typed_java_lifecycle() {
+    let organize = Operation::LanguageOrganizeJavaImports {
+        path: "Hello.java".into(),
+        version: 7,
+    };
+    for missing in std::iter::once(&"language_organize_java_imports")
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES.iter())
+    {
+        let capabilities: Vec<_> = java_capabilities()
+            .into_iter()
+            .chain(["language_start"])
+            .filter(|capability| capability != missing)
+            .collect();
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+        let error = client.request(organize.clone()).unwrap_err();
+        assert!(error.starts_with("unsupported_operation:"), "{error}");
+        assert!(error.contains(missing), "{error}");
+        assert_eq!(recorded_requests(directory.path()).len(), 1);
+        read_fixture(&mut client);
+        assert_eq!(recorded_requests(directory.path()).len(), 2);
+    }
+    let capabilities: Vec<_> = java_capabilities()
+        .into_iter()
+        .filter(|capability| *capability != "language_organize_java_imports")
+        .collect();
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+    client.request(start_java_language()).unwrap();
+    client.request(Operation::LanguageEvents).unwrap();
+    assert!(client
+        .request(organize)
+        .unwrap_err()
+        .contains("language_organize_java_imports"));
+    client.request(Operation::LanguageStop).unwrap();
+    assert_eq!(recorded_requests(directory.path()).len(), 4);
+}
+
+#[test]
+fn java_imports_normalized_preview_and_error_are_returned_without_retry_or_extra_requests() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&java_capabilities())));
+    client.request(start_java_language()).unwrap();
+    let edits = serde_json::json!([{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":"import java.util.List;\n"}]);
+    let organize = Operation::LanguageOrganizeJavaImports {
+        path: "Hello #.java".into(),
+        version: 7,
+    };
+    assert_eq!(
+        process(&mut client).request_timeout(&organize),
+        Duration::from_secs(75)
+    );
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Ok":{"type":"language","value":edits}}),
+    );
+    assert!(
+        matches!(client.request(organize.clone()).unwrap(), Payload::Language { value } if value == edits)
+    );
+    assert!(process(&mut client).java_language_session);
+    let requests = recorded_requests(directory.path());
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[2]["op"],
+        serde_json::json!({"type":"language_organize_java_imports","path":"Hello #.java","version":7})
+    );
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Err":{"code":"language_imports_invalid_edit","message":"different document"}}),
+    );
+    assert!(client
+        .request(organize)
+        .unwrap_err()
+        .starts_with("language_imports_invalid_edit:"));
+    read_fixture(&mut client);
+    assert_eq!(recorded_requests(directory.path()).len(), 5);
 }
 
 fn process(client: &mut Client) -> &mut ProcessClient {

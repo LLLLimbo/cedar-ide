@@ -194,6 +194,23 @@ class CrashCollectionTests(unittest.TestCase):
         return {**self.agent_production_fixture(), 'kind': 'windows_java_gc_control',
                 'route': 'diagnostic_agent_normal_client'}
 
+    def agent_organize_fixture(self):
+        return {
+            'kind': 'windows_java_organize_imports', 'exercised': True, 'supported': True,
+            'left_candidate_indexed': True, 'right_candidate_indexed': True,
+            'unsaved_type_indexed': True, 'independent_type_indexed': True,
+            'unsaved_version_acknowledged': True, 'sorted_retained_imports': True,
+            'unused_import_removed': True, 'unsaved_unique_import_added': True,
+            'preview_unchanged': True, 'cancel_unchanged': True, 'actual_frontend_apply': True,
+            'one_undo_exact': True, 'one_redo_exact': True, 'draft_versions_synced': True,
+            'ambiguous_candidates_skipped': True, 'independent_import_added': True,
+            'source_files_unchanged': True, 'root_handle_signaled': True, 'client_reaped': True,
+            'synthetic_root_removed': True, 'primary_failed': False, 'cleanup_failed': False,
+            'success': True, 'elapsed_saturated': False, 'main_edit_count': 3,
+            'ambiguity_edit_count': 1, 'observed_editor_stages': 5,
+            'failure_stage': 'none', 'elapsed_ms': 1234,
+        }
+
     def link(self, target, path, directory=False):
         try:
             path.symlink_to(target, target_is_directory=directory)
@@ -875,6 +892,87 @@ class CrashCollectionTests(unittest.TestCase):
                         self.assertNotIn(field, record)
                         self.assertEqual(source['errors'], ['invalid_field_' + field])
                     self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_organize_receipts_preserve_failures_without_source_protocol_or_candidate_data(self):
+        failed = {**self.agent_organize_fixture(), 'success': False, 'primary_failed': True,
+                  'cleanup_failed': True, 'failure_stage': 'ambiguity',
+                  'ambiguous_candidates_skipped': False, 'independent_import_added': False,
+                  'ambiguity_edit_count': 0, 'synthetic_root_removed': False}
+        expected = [self.agent_organize_fixture(), failed]
+        path = self.agent_source([{**record,
+            'source': 'SECRET_JAVA_SOURCE', 'draft': 'SECRET_UNSAVED_DRAFT',
+            'edits': [{'newText': 'SECRET_EDIT_TEXT'}], 'candidate': 'SECRET_PROJECT_TYPE',
+            'uri': 'file:///SECRET_PRIVATE/Fixture.java', 'path': 'C:\\SECRET_ROOT',
+            'error': 'SECRET_ERROR', 'response': {'raw': 'SECRET_JDT_PROTOCOL'},
+            'raw_log': 'SECRET_PRIVATE_LOG', 'route': 'SECRET_OTHER_SCHEMA',
+            'pid': 314, 'environment': {'TOKEN': 'SECRET_ENV'},
+        } for record in expected])
+        report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['acceptance_result'], 'not_evaluated')
+        self.assertEqual(report['agent_transcript']['evidence']['records'], expected)
+        for private in ('SECRET_', 'file:///', str(self.root), 'newText', 'raw_log', 'pid'):
+            self.assertNotIn(private, json.dumps(report))
+        # The other transcript schema must not gain this acceptance namespace.
+        other, errors, truncation = collector.sanitize_transcript(path.read_bytes(), collector.LIMITS)
+        self.assertEqual(other['records'], [])
+        self.assertEqual(other['omitted_other_json_records'], 2)
+        self.assertEqual(errors, set())
+        self.assertEqual(truncation, set())
+
+    def test_organize_receipt_booleans_require_real_boolean_values(self):
+        fixture = self.agent_organize_fixture()
+        fields = [key for key, value in fixture.items() if type(value) is bool]
+        self.assertEqual(len(fields), 26)
+        for field in fields:
+            for value in (True, False, 0, 1, None, 'SECRET_BOOLEAN', [], {}):
+                with self.subTest(field=field, value=value):
+                    report = collector.collect(self.root, agent_transcript=self.agent_source([
+                        {**fixture, field: value}]))
+                    source = report['agent_transcript']
+                    record = source['evidence']['records'][0]
+                    valid = type(value) is bool
+                    self.assertEqual(report['status'], 'complete' if valid else 'error')
+                    if valid:
+                        self.assertIs(record[field], value)
+                    else:
+                        self.assertNotIn(field, record)
+                        self.assertEqual(source['errors'], ['invalid_field_' + field])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_organize_receipt_counts_are_bounded_and_enums_are_closed(self):
+        fixture = self.agent_organize_fixture()
+        for field, maximum in [('main_edit_count', 1024), ('ambiguity_edit_count', 1024),
+                               ('observed_editor_stages', 5), ('elapsed_ms', 240000)]:
+            for value in (0, maximum, -1, maximum + 1, True, 1.0, None, 'SECRET_COUNT'):
+                with self.subTest(field=field, value=value):
+                    report = collector.collect(self.root, agent_transcript=self.agent_source([
+                        {**fixture, field: value}]))
+                    source = report['agent_transcript']
+                    record = source['evidence']['records'][0]
+                    valid = type(value) is int and 0 <= value <= maximum
+                    self.assertEqual(report['status'], 'complete' if valid else 'error')
+                    if valid:
+                        self.assertEqual(record[field], value)
+                    else:
+                        self.assertNotIn(field, record)
+                        self.assertEqual(source['errors'], ['invalid_field_' + field])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+        stages = ('none', 'setup', 'support', 'index_witness', 'unsaved_sync', 'organize',
+                  'preview', 'cancel', 'apply', 'undo', 'redo', 'ambiguity', 'close')
+        for stage in (*stages, 'SECRET_STAGE', 'owner_death', 0, None, []):
+            with self.subTest(stage=stage):
+                report = collector.collect(self.root, agent_transcript=self.agent_source([
+                    {**fixture, 'failure_stage': stage}]))
+                source = report['agent_transcript']
+                valid = isinstance(stage, str) and stage in stages
+                self.assertEqual(report['status'], 'complete' if valid else 'error')
+                if valid:
+                    self.assertEqual(source['evidence']['records'][0]['failure_stage'], stage)
+                else:
+                    self.assertNotIn('failure_stage', source['evidence']['records'][0])
+                    self.assertEqual(source['errors'], ['invalid_field_failure_stage'])
+                self.assertNotIn('SECRET_', json.dumps(report))
 
     def test_gc_control_receipt_is_distinct_and_keeps_forced_shutdown_a_failure(self):
         natural = self.agent_gc_control_fixture()

@@ -216,6 +216,7 @@ impl Workspace {
             | Operation::LanguageClose { .. }
             | Operation::LanguageQuery { .. }
             | Operation::LanguageFormat { .. }
+            | Operation::LanguageOrganizeJavaImports { .. }
             | Operation::LanguageRefreshJavaDiagnostics { .. }
             | Operation::LanguageReferences { .. }
             | Operation::LanguageDocumentSymbols { .. }

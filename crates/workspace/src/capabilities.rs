@@ -28,6 +28,7 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
         // A bridge implementation claim, never JDT/server-version support or
         // permission to execute it. Startup reports guarded session support.
         capabilities.push("java_diagnostics_refresh");
+        capabilities.push("language_organize_java_imports");
     }
     if generic_language || java_language {
         capabilities.extend([
@@ -144,6 +145,10 @@ mod tests {
                 tab_size: 4,
                 insert_spaces: true,
             },
+            Operation::LanguageOrganizeJavaImports {
+                path: "a.java".into(),
+                version: 1,
+            },
             Operation::LanguageRefreshJavaDiagnostics {
                 path: "a.java".into(),
                 version: 1,
@@ -196,6 +201,7 @@ mod tests {
                 "language_start" => generic_language,
                 "language_start_java"
                 | "java_diagnostics_refresh"
+                | "language_organize_java_imports"
                 | "language_start_java_begin"
                 | "language_start_java_poll"
                 | "language_start_java_cancel" => java_language,
@@ -207,6 +213,7 @@ mod tests {
                 "language_start_java_poll",
                 "language_start_java_cancel",
                 "java_diagnostics_refresh",
+                "language_organize_java_imports",
                 "language_query",
                 "language_resolve_uri",
                 "language_format",

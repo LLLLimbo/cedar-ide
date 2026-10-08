@@ -537,13 +537,16 @@ impl Workspace {
         }) = prepared
         {
             let refresh = java_diagnostics_refresh_supported(true, &initialize);
+            let imports = super::imports::supported(true, &initialize);
             initialize["cedar_java_diagnostics_refresh"] = json!(refresh);
+            initialize["cedar_java_organize_imports"] = json!(imports);
             let value = json!({"started":true,"initialize":initialize,"root_uri":root_uri,"process_id":client.process_id()});
             self.language = Some(LanguageSession {
                 client,
                 startup_id: Some(id),
                 production_java: true,
                 java_diagnostics_refresh: refresh,
+                java_organize_imports: imports,
                 opened: HashMap::new(),
                 #[cfg(feature = "windows-language-validation")]
                 java_validation: None,

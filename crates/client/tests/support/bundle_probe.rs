@@ -271,6 +271,7 @@ mod portable {
             "language_start_java_poll",
             "language_start_java_cancel",
             "java_diagnostics_refresh",
+            "language_organize_java_imports",
             "language_open",
             "language_change",
             "language_close",

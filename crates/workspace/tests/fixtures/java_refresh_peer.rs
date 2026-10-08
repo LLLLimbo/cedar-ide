@@ -1,5 +1,5 @@
-//! Standalone std-only peer for the bounded Java refresh bridge tests. It emits
-//! no diagnostics and never responds to validation notifications.
+//! Standalone std-only peer for bounded Java refresh and import bridge tests.
+//! It emits no diagnostics and never responds to validation notifications.
 use std::{
     fs::{self, OpenOptions},
     io::{self, BufRead, Read, Write},
@@ -40,18 +40,37 @@ fn main() {
         if request.contains("\"method\":\"exit\"") {
             return;
         }
+        // Audit client replies to server applyEdit, but never reply to a reply.
+        if !request.contains("\"method\":") {
+            continue;
+        }
         let Some(id) = request.split("\"id\":").nth(1) else {
             // In particular, java/validateDocument receives neither a response
             // nor a publishDiagnostics event, even though the write succeeds.
             continue;
         };
         let id: u64 = id.split([',', '}']).next().unwrap().parse().unwrap();
+        let organize = request.contains("\"method\":\"workspace/executeCommand\"");
+        if organize {
+            if let Ok(apply) = fs::read_to_string(directory.join("server-apply-edit.json")) {
+                write!(output, "Content-Length: {}\r\n\r\n{apply}", apply.len()).unwrap();
+                output.flush().unwrap();
+            }
+        }
         let result = if request.contains("\"method\":\"initialize\"") {
-            initialize.as_str()
+            initialize.clone()
+        } else if organize {
+            fs::read_to_string(directory.join("organize-result.json"))
+                .unwrap_or_else(|_| "{}".into())
         } else {
-            "null"
+            "null".into()
         };
-        let response = format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{result}}}");
+        let response = if organize && directory.join("organize-error.json").exists() {
+            let error = fs::read_to_string(directory.join("organize-error.json")).unwrap();
+            format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{error}}}")
+        } else {
+            format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{result}}}")
+        };
         write!(
             output,
             "Content-Length: {}\r\n\r\n{response}",

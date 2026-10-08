@@ -10,6 +10,9 @@ use std::time::Duration;
 mod startup;
 pub(super) use startup::JavaStartup;
 
+#[path = "language_imports.rs"]
+mod imports;
+
 pub(super) const fn platform_supported() -> bool {
     // Match this service's existing startup guard, independently of the more
     // restrictive Linux/macOS command-task and Git implementations.
@@ -27,6 +30,7 @@ pub(super) struct LanguageSession {
     startup_id: Option<u64>,
     production_java: bool,
     java_diagnostics_refresh: bool,
+    java_organize_imports: bool,
     opened: HashMap<String, OpenLanguageDocument>,
     #[cfg(feature = "windows-language-validation")]
     java_validation: Option<super::java_validation::JavaValidationSession>,
@@ -406,6 +410,9 @@ impl Workspace {
                     .map_err(lsp_error)?;
                 Ok(Payload::Language { value })
             }
+            Operation::LanguageOrganizeJavaImports { path, version } => {
+                self.organize_java_imports(&path, version)
+            }
             Operation::LanguageRefreshJavaDiagnostics { path, version } => {
                 let uri = self.language_uri(&path)?;
                 let session = self.language.as_ref().ok_or_else(|| {
@@ -637,15 +644,18 @@ impl Workspace {
         };
         let mut result = result?;
         let java_diagnostics_refresh = java_diagnostics_refresh_supported(production_java, &result);
+        let java_organize_imports = imports::supported(production_java, &result);
         // This field belongs to Cedar, not the language server. Always replace
         // any server-supplied value, including in generic/unsupported sessions.
         result["cedar_java_diagnostics_refresh"] = json!(java_diagnostics_refresh);
+        result["cedar_java_organize_imports"] = json!(java_organize_imports);
         let process_id = client.process_id();
         self.language = Some(LanguageSession {
             client,
             startup_id: None,
             production_java,
             java_diagnostics_refresh,
+            java_organize_imports,
             opened: HashMap::new(),
             #[cfg(feature = "windows-language-validation")]
             java_validation,

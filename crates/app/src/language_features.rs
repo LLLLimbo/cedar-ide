@@ -1,4 +1,4 @@
-//! Explicit, snapshot-checked formatting and navigation. Server text stays inert.
+//! Explicit, snapshot-checked edit previews and navigation. Server text stays inert.
 use super::*;
 use crate::{
     language_navigation_results::{self, OutlineItem, OutlineLocation},
@@ -35,6 +35,7 @@ impl DocumentStamp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FeatureKind {
     Format { tab_size: u32, insert_spaces: bool },
+    OrganizeJavaImports,
     References { include_declaration: bool },
     Outline,
 }
@@ -49,7 +50,7 @@ pub(crate) struct FeatureRequest {
     cursor_chars: usize,
     kind: FeatureKind,
 }
-struct FormatPreview {
+struct EditPreview {
     request: FeatureRequest,
     edits: Vec<TextEdit>,
     after: String,
@@ -62,7 +63,7 @@ struct OutlineSnapshot {
 pub(super) struct FeatureState {
     sequence: u64,
     intent: Option<FeatureRequest>,
-    preview: Option<FormatPreview>,
+    preview: Option<EditPreview>,
     preview_open: bool,
     references: Vec<Location>,
     references_requested: bool,
@@ -111,6 +112,58 @@ enum FeatureStep {
     Dispatch(Box<FeatureRequest>, Operation),
 }
 impl CedarApp {
+    fn java_imports_problem(&self) -> Option<String> {
+        if !self.ready() || !self.language.running || self.language.diagnostics_exited {
+            return Some("Start a Java / JDT LS session for this connection first".into());
+        }
+        if !self.execution_trusted() {
+            return Some(
+                "Organize imports requires trusted tool permission for this connection".into(),
+            );
+        }
+        if self.language.mode != ServerMode::Java {
+            return Some("Organize imports requires a typed Java / JDT LS session".into());
+        }
+        if !self.backend_supports("language_organize_java_imports") {
+            return Some(self.unsupported_message("language_organize_java_imports"));
+        }
+        if !self.language.java_organize_imports_supported {
+            return Some("Organize imports is unavailable for this JDT LS session".into());
+        }
+        if !self.active().is_some_and(|doc| doc.path.ends_with(".java")) {
+            return Some("Select a Java document to organize its imports".into());
+        }
+        if self.close_after_language_stop || self.recovery.closing.is_some() {
+            return Some("Finish closing the current session first".into());
+        }
+        None
+    }
+    pub(crate) fn java_imports_operation_problem(
+        &self,
+        path: &str,
+        version: i32,
+    ) -> Option<String> {
+        if let Some(problem) = self.java_imports_problem() {
+            return Some(problem);
+        }
+        let doc = self
+            .active()
+            .expect("import guard checked the active document");
+        if path != doc.path
+            || version <= 0
+            || !self
+                .language
+                .sync
+                .opened
+                .get(&doc.id)
+                .is_some_and(|ack| ack.version == version && ack.edit_version == doc.edit_version)
+        {
+            return Some(
+                "Organize imports requires the active document's exact synchronized version".into(),
+            );
+        }
+        None
+    }
     // Cursor location is deliberately absent: moving it is not a document change.
     fn feature_document_current(&self, request: &FeatureRequest) -> bool {
         self.ready()
@@ -119,6 +172,8 @@ impl CedarApp {
             && self.language.session == request.session
             && self.active_document == Some(request.source.id)
             && request.source.matches(&self.documents)
+            && (!matches!(request.kind, FeatureKind::OrganizeJavaImports)
+                || self.java_imports_problem().is_none())
     }
     fn feature_request_current(&self, request: &FeatureRequest) -> bool {
         self.feature_document_current(request)
@@ -162,6 +217,7 @@ impl CedarApp {
         }
         let remote_capability = match kind {
             FeatureKind::Format { .. } => "language_format",
+            FeatureKind::OrganizeJavaImports => "language_organize_java_imports",
             FeatureKind::References { .. } => "language_references",
             FeatureKind::Outline => "language_document_symbols",
         };
@@ -170,11 +226,18 @@ impl CedarApp {
             return;
         }
         let capability = match kind {
-            FeatureKind::Format { .. } => "documentFormattingProvider",
-            FeatureKind::References { .. } => "referencesProvider",
-            FeatureKind::Outline => "documentSymbolProvider",
+            FeatureKind::Format { .. } => Some("documentFormattingProvider"),
+            FeatureKind::OrganizeJavaImports => {
+                if let Some(problem) = self.java_imports_problem() {
+                    self.error = Some(problem);
+                    return;
+                }
+                None
+            }
+            FeatureKind::References { .. } => Some("referencesProvider"),
+            FeatureKind::Outline => Some("documentSymbolProvider"),
         };
-        if !self.language.supports(capability) {
+        if capability.is_some_and(|capability| !self.language.supports(capability)) {
             self.error = Some("The running language server does not advertise this feature".into());
             return;
         }
@@ -247,6 +310,7 @@ impl CedarApp {
         self.tool = crate::Tool::Language;
         self.language.view = match kind {
             FeatureKind::Format { .. } => View::Format,
+            FeatureKind::OrganizeJavaImports => View::Imports,
             FeatureKind::References { .. } => View::References,
             FeatureKind::Outline => View::Outline,
         };
@@ -322,6 +386,10 @@ impl CedarApp {
                 tab_size,
                 insert_spaces,
             },
+            FeatureKind::OrganizeJavaImports => Operation::LanguageOrganizeJavaImports {
+                path: request.source.path.clone(),
+                version: request.source.lsp_version?,
+            },
             FeatureKind::References {
                 include_declaration,
             } => Operation::LanguageReferences {
@@ -356,7 +424,12 @@ impl CedarApp {
             return;
         }
         match request.kind {
-            FeatureKind::Format { .. } => {
+            FeatureKind::Format { .. } | FeatureKind::OrganizeJavaImports => {
+                let organizing = matches!(request.kind, FeatureKind::OrganizeJavaImports);
+                if organizing && !value.is_array() {
+                    self.error = Some("Import edits must be a plain text edit array".into());
+                    return;
+                }
                 let edits = match text_edits::parse_text_edits(&value) {
                     Ok(edits) => edits,
                     Err(error) => {
@@ -377,20 +450,37 @@ impl CedarApp {
                 };
                 if plan.text == request.source.text {
                     self.language.features.cancel_pending();
-                    self.notice = "Formatting made no changes".into();
+                    self.notice = if organizing {
+                        if edits.is_empty() {
+                            "No import edits returned; unresolved types may remain"
+                        } else {
+                            "Organize imports made no text changes; unresolved types may remain"
+                        }
+                    } else {
+                        "Formatting made no changes"
+                    }
+                    .into();
                     return;
                 }
                 self.language.cjk_seen |= crate::system_fonts::contains_cjk(&plan.text);
-                self.language.features.preview = Some(FormatPreview {
+                self.language.features.preview = Some(EditPreview {
                     request,
                     edits,
                     after: plan.text,
                     edit_count: plan.edit_count,
                 });
                 self.language.features.preview_open = true;
-                self.language.view = View::Format;
-                self.notice =
-                    "Formatting preview ready. Apply changes only the unsaved draft".into();
+                self.language.view = if organizing {
+                    View::Imports
+                } else {
+                    View::Format
+                };
+                self.notice = if organizing {
+                    "Organize imports preview ready. Apply changes only the unsaved draft"
+                } else {
+                    "Formatting preview ready. Apply changes only the unsaved draft"
+                }
+                .into();
             }
             FeatureKind::References {
                 include_declaration,
@@ -418,11 +508,17 @@ impl CedarApp {
         let Some(preview) = self.language.features.preview.take() else {
             return;
         };
+        let label = if matches!(preview.request.kind, FeatureKind::OrganizeJavaImports) {
+            "Organize imports"
+        } else {
+            "Formatting"
+        };
         self.language.features.preview_open = false;
         if !self.feature_request_current(&preview.request) {
             self.language.features.cancel_pending();
-            self.error =
-                Some("Formatting preview expired. Nothing was applied; request it again".into());
+            self.error = Some(format!(
+                "{label} preview expired. Nothing was applied; request it again"
+            ));
             return;
         }
         let cursor_chars = self.active().and_then(|doc| {
@@ -446,8 +542,9 @@ impl CedarApp {
         ) {
             Ok(plan) if plan.text == preview.after => plan,
             _ => {
-                self.error =
-                    Some("Formatting preview could not be revalidated; nothing was applied".into());
+                self.error = Some(format!(
+                    "{label} preview could not be revalidated; nothing was applied"
+                ));
                 return;
             }
         };
@@ -460,8 +557,13 @@ impl CedarApp {
             // Do not authorize recovery: normal observation must protect unrelated old copies.
             crate::editor_state::commit(&self.editor_ctx, doc, plan.text, plan.cursor_chars);
             self.notice = format!(
-                "Applied {} formatting edits to the unsaved draft; one undo step",
-                plan.edit_count
+                "Applied {} {} edits to the unsaved draft; one undo step",
+                plan.edit_count,
+                if matches!(preview.request.kind, FeatureKind::OrganizeJavaImports) {
+                    "import"
+                } else {
+                    "formatting"
+                }
             );
         }
         self.language.features.outline = None;
@@ -475,6 +577,9 @@ impl CedarApp {
                 .active()
                 .is_some_and(|doc| self.language.matches(&doc.path));
         ui.horizontal_wrapped(|ui| {
+            if ui.add_enabled(self.java_imports_problem().is_none(), egui::Button::new("Organize imports")).on_hover_text(IMPORTS_DISCLOSURE).clicked() {
+                self.request_language_navigation_feature(FeatureKind::OrganizeJavaImports);
+            }
             if ui.add_enabled(matching && self.backend_supports("language_format") && self.language.supports("documentFormattingProvider"), egui::Button::new("Format preview")).clicked() {
                 self.request_language_navigation_feature(FeatureKind::Format { tab_size: self.language.features.tab_size, insert_spaces: self.language.features.insert_spaces });
             }
@@ -495,19 +600,34 @@ impl CedarApp {
             }
         });
     }
-    pub(super) fn format_view(&mut self, ui: &mut egui::Ui) {
-        if let Some(preview) = &self.language.features.preview {
+    pub(super) fn edit_preview_view(&mut self, ui: &mut egui::Ui) {
+        let organizing = self.language.view == View::Imports;
+        if organizing {
+            ui.label(RichText::new(IMPORTS_DISCLOSURE).small().color(AMBER));
+        }
+        if let Some(preview) = self.language.features.preview.as_ref().filter(|preview| {
+            matches!(preview.request.kind, FeatureKind::OrganizeJavaImports) == organizing
+        }) {
             ui.label(format!(
                 "{} · {} edits · unsaved draft only",
                 preview.request.source.path, preview.edit_count
             ));
-            if ui.button("Review formatting preview").clicked() {
+            if ui
+                .button(if organizing {
+                    "Review import preview"
+                } else {
+                    "Review formatting preview"
+                })
+                .clicked()
+            {
                 self.language.features.preview_open = true;
             }
         } else {
-            ui.label(
-                "Request Format preview to review the complete before/after text before applying",
-            );
+            ui.label(if organizing {
+                "Choose Organize imports to review the complete before/after text before applying"
+            } else {
+                "Request Format preview to review the complete before/after text before applying"
+            });
         }
     }
     pub(super) fn references_view(&mut self, ui: &mut egui::Ui) {
@@ -665,8 +785,21 @@ impl CedarApp {
         }
     }
     fn cancel_format_preview(&mut self) {
+        let organizing = self
+            .language
+            .features
+            .preview
+            .as_ref()
+            .is_some_and(|preview| {
+                matches!(preview.request.kind, FeatureKind::OrganizeJavaImports)
+            });
         self.language.features.cancel_pending();
-        self.notice = "Formatting cancelled; draft unchanged".into();
+        self.notice = if organizing {
+            "Organize imports cancelled; draft unchanged"
+        } else {
+            "Formatting cancelled; draft unchanged"
+        }
+        .into();
     }
     pub(super) fn format_preview_shortcut(&mut self, ctx: &egui::Context) -> bool {
         if self.language.features.preview_open
@@ -690,7 +823,8 @@ impl CedarApp {
         let mut visible = true;
         let mut apply = false;
         let mut cancel = false;
-        egui::Window::new("Formatting preview")
+        let organizing = matches!(preview.request.kind, FeatureKind::OrganizeJavaImports);
+        egui::Window::new(if organizing { "Organize imports preview" } else { "Formatting preview" })
             .id(egui::Id::new("format_preview"))
             .open(&mut visible).collapsible(false).resizable(true)
             .default_size(egui::vec2(920.0, 520.0))
@@ -698,6 +832,9 @@ impl CedarApp {
             .show(ctx, |ui| {
                 ui.label(format!("{} · {} edits", preview.request.source.path, preview.edit_count));
                 ui.label(RichText::new("Read-only preview. Apply changes the draft in one undo step; Save remains separate.").small().color(MUTED));
+                if organizing {
+                    ui.label(RichText::new(IMPORTS_DISCLOSURE).small().color(AMBER));
+                }
                 ui.horizontal(|ui| {
                     apply = ui.button("Apply to draft").clicked();
                     cancel = ui.button("Cancel").clicked();
@@ -725,6 +862,7 @@ impl CedarApp {
         }
     }
 }
+const IMPORTS_DISCLOSURE: &str = "Sorts and removes imports, and adds uniquely resolved imports. Ambiguous missing types remain unresolved.";
 fn symbol_kind(kind: u32) -> &'static str {
     match kind {
         1 => "file",

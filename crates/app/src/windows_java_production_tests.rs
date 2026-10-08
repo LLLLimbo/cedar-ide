@@ -407,6 +407,307 @@ fn require_java_capabilities(client: &Client) -> CheckResult<()> {
     )
 }
 
+fn prepare_organize_files(
+    root: &Path,
+    created: &mut Vec<(PathBuf, &'static str)>,
+) -> CheckResult<()> {
+    use std::io::Write;
+    for fixture in organize::FIXTURES {
+        let path = root.join(fixture.path);
+        io(fs::create_dir_all(
+            path.parent().ok_or("synthetic source parent missing")?,
+        ))?;
+        let mut file = io(fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path))?;
+        // Track partial writes too, so any failure is checked before root removal.
+        created.push((path, fixture.source));
+        io(file.write_all(fixture.source.as_bytes()))?;
+    }
+    Ok(())
+}
+
+fn organize_files_unchanged(created: &[(PathBuf, &'static str)]) -> bool {
+    created.len() == organize::FIXTURES.len()
+        && created
+            .iter()
+            .all(|(path, source)| fs::read(path).is_ok_and(|bytes| bytes == source.as_bytes()))
+}
+
+fn organize_language(client: &mut Client, deadline: Instant, op: Operation) -> CheckResult<Value> {
+    // No indexing retries or added wait window. This bounds when additional
+    // work may begin; each request keeps the normal Client timeout and the
+    // original Quick watchdog remains the hard total envelope.
+    require(
+        Instant::now() < deadline,
+        "organize imports exhausted the Quick session budget",
+    )?;
+    client_language(client, op)
+}
+
+fn organize_open(
+    client: &mut Client,
+    root: &Path,
+    fixture: &organize::Fixture,
+    deadline: Instant,
+) -> CheckResult<String> {
+    let value = organize_language(
+        client,
+        deadline,
+        Operation::LanguageOpen {
+            path: fixture.path.into(),
+            language_id: "java".into(),
+            version: 1,
+            text: fixture.source.into(),
+        },
+    )?;
+    let uri = value["opened"]
+        .as_str()
+        .ok_or("organize fixture didOpen omitted URI")?;
+    let expected = url::Url::from_file_path(ordinary_path(&root.join(fixture.path))?)
+        .map_err(|_| "cannot encode organize fixture URI")?;
+    require(
+        value["version"] == 1 && same_local_uri(uri, expected.as_str()),
+        "organize fixture didOpen URI/version mismatch",
+    )?;
+    Ok(uri.to_owned())
+}
+
+fn organize_change(
+    client: &mut Client,
+    deadline: Instant,
+    uri: &str,
+    version: i32,
+    text: &str,
+) -> CheckResult<()> {
+    let value = organize_language(
+        client,
+        deadline,
+        Operation::LanguageChange {
+            path: organize::MAIN.path.into(),
+            version,
+            text: text.into(),
+        },
+    )?;
+    require(
+        value["version"] == version
+            && value["changed"]
+                .as_str()
+                .is_some_and(|actual| same_local_uri(actual, uri)),
+        "organize fixture didChange URI/version mismatch",
+    )
+}
+
+fn production_organize_imports(
+    client: &mut Client,
+    root: &Path,
+    initialized: &Value,
+    created: &[(PathBuf, &'static str)],
+    deadline: Instant,
+    receipt: &mut organize::Evidence,
+) -> CheckResult<()> {
+    receipt.exercised = true;
+    receipt.failure_stage = organize::Stage::Support;
+    let Payload::Hello {
+        agent: Some(info), ..
+    } = client.handshake()
+    else {
+        return Err("organize imports agent metadata missing".into());
+    };
+    require(
+        info.supports("language_organize_java_imports")
+            && initialized["initialize"]["cedar_java_organize_imports"] == true,
+        "vetted Standard JDT organize imports support was not established",
+    )?;
+    receipt.supported = true;
+    receipt.failure_stage = organize::Stage::IndexWitness;
+    organize_open(client, root, &organize::INDEX, deadline)?;
+    // Both ambiguous candidates must resolve independently to their exact
+    // generated source declaration. Merely creating their files is not proof.
+    for (fixture, qualified, name, witness) in [
+        (
+            &organize::LEFT,
+            "cedarimportfixture.left.CedarSharedType",
+            "CedarSharedType",
+            &mut receipt.left_candidate_indexed,
+        ),
+        (
+            &organize::RIGHT,
+            "cedarimportfixture.right.CedarSharedType",
+            "CedarSharedType",
+            &mut receipt.right_candidate_indexed,
+        ),
+        (
+            &organize::UNIQUE,
+            "cedarimportfixture.unique.CedarUnsavedUnique",
+            "CedarUnsavedUnique",
+            &mut receipt.unsaved_type_indexed,
+        ),
+        (
+            &organize::INDEPENDENT,
+            "cedarimportfixture.unique.CedarIndependentUnique",
+            "CedarIndependentUnique",
+            &mut receipt.independent_type_indexed,
+        ),
+    ] {
+        let byte = organize::INDEX
+            .source
+            .find(qualified)
+            .ok_or("synthetic index marker missing")?
+            + qualified.len()
+            - name.len()
+            + 2;
+        let cursor = completion::byte_to_position(organize::INDEX.source, byte)?;
+        let definition = organize_language(
+            client,
+            deadline,
+            Operation::LanguageQuery {
+                path: organize::INDEX.path.into(),
+                line: cursor.line,
+                character: cursor.character,
+                kind: LanguageQueryKind::Definition,
+            },
+        )?;
+        let expected = url::Url::from_file_path(ordinary_path(&root.join(fixture.path))?)
+            .map_err(|_| "cannot encode indexed fixture URI")?;
+        require(
+            organize::exact_indexed_definition(&definition, expected.as_str(), fixture, name),
+            "synthetic project type was not indexed at its exact declaration",
+        )?;
+        *witness = true;
+    }
+    receipt.failure_stage = organize::Stage::UnsavedSync;
+    let uri = organize_open(client, root, &organize::MAIN, deadline)?;
+    organize_change(client, deadline, &uri, 2, organize::DRAFT)?;
+    receipt.unsaved_version_acknowledged = true;
+    require(
+        organize_files_unchanged(created),
+        "organize fixtures changed on disk during synchronization",
+    )?;
+    receipt.failure_stage = organize::Stage::Organize;
+    let value = organize_language(
+        client,
+        deadline,
+        Operation::LanguageOrganizeJavaImports {
+            path: organize::MAIN.path.into(),
+            version: 2,
+        },
+    )?;
+    let plan = organize::main_plan(&value)?;
+    receipt.main_edit_count =
+        u16::try_from(plan.edit_count).map_err(|_| "organize edit count exceeded bound")?;
+    receipt.sorted_retained_imports = true;
+    receipt.unused_import_removed = true;
+    receipt.unsaved_unique_import_added = true;
+    require(
+        organize_files_unchanged(created),
+        "organize command changed source files on disk",
+    )?;
+    crate::CedarApp::organize_imports_acceptance_transaction(
+        organize::MAIN.path,
+        organize::MAIN.source,
+        organize::DRAFT,
+        value,
+        |phase, doc| {
+            let (expected_phase, expected_text, edit_version, sync_version, stage) =
+                match receipt.observed_editor_stages {
+                    0 => (
+                        "preview",
+                        organize::DRAFT,
+                        1,
+                        None,
+                        organize::Stage::Preview,
+                    ),
+                    1 => ("cancel", organize::DRAFT, 1, None, organize::Stage::Cancel),
+                    2 => (
+                        "apply",
+                        plan.text.as_str(),
+                        2,
+                        Some(3),
+                        organize::Stage::Apply,
+                    ),
+                    3 => ("undo", organize::DRAFT, 3, Some(4), organize::Stage::Undo),
+                    4 => (
+                        "redo",
+                        plan.text.as_str(),
+                        4,
+                        Some(5),
+                        organize::Stage::Redo,
+                    ),
+                    _ => return Err("unexpected repeated organize editor stage".into()),
+                };
+            receipt.failure_stage = stage;
+            require(
+                phase == expected_phase
+                    && doc.path == organize::MAIN.path
+                    && doc.text == expected_text
+                    && doc.edit_version == edit_version
+                    && doc.saved_text == organize::MAIN.source
+                    && doc.revision.as_deref() == Some("r0")
+                    && doc.dirty()
+                    && organize_files_unchanged(created),
+                "organize preview/cancel/history/disk invariant failed",
+            )?;
+            if let Some(version) = sync_version {
+                organize_change(client, deadline, &uri, version, &doc.text)?;
+                require(
+                    organize_files_unchanged(created),
+                    "organize editor synchronization changed disk",
+                )?;
+            }
+            match phase {
+                "preview" => receipt.preview_unchanged = true,
+                "cancel" => receipt.cancel_unchanged = true,
+                "apply" => receipt.actual_frontend_apply = true,
+                "undo" => receipt.one_undo_exact = true,
+                "redo" => {
+                    receipt.one_redo_exact = true;
+                    receipt.draft_versions_synced = true;
+                }
+                _ => unreachable!(),
+            }
+            receipt.observed_editor_stages += 1;
+            Ok(())
+        },
+    )?;
+    receipt.failure_stage = organize::Stage::Ambiguity;
+    organize_open(client, root, &organize::AMBIGUOUS, deadline)?;
+    let ambiguous = organize_language(
+        client,
+        deadline,
+        Operation::LanguageOrganizeJavaImports {
+            path: organize::AMBIGUOUS.path.into(),
+            version: 1,
+        },
+    )?;
+    let ambiguity = organize::ambiguity_plan(&ambiguous)?;
+    receipt.ambiguity_edit_count =
+        u16::try_from(ambiguity.edit_count).map_err(|_| "ambiguity edit count exceeded bound")?;
+    receipt.ambiguous_candidates_skipped = true;
+    receipt.independent_import_added = true;
+    require(
+        organize_files_unchanged(created),
+        "ambiguous organize command changed disk",
+    )?;
+    receipt.failure_stage = organize::Stage::Close;
+    for fixture in [&organize::INDEX, &organize::MAIN, &organize::AMBIGUOUS] {
+        organize_language(
+            client,
+            deadline,
+            Operation::LanguageClose {
+                path: fixture.path.into(),
+            },
+        )?;
+    }
+    require(
+        receipt.semantics_passed(),
+        "organize semantic acceptance was incomplete",
+    )?;
+    receipt.failure_stage = organize::Stage::None;
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires native Windows, installed JDT/Java and exact normal CEDAR_AGENT_BIN; run serially"]
 fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
@@ -443,6 +744,8 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
     let mut natural_shutdown_verified = false;
     let mut cleanup_errors = Vec::new();
     let mut source_path: Option<PathBuf> = None;
+    let mut organize_files = Vec::new();
+    let mut organize_receipt = organize::Evidence::new();
     let primary = checked(|| {
         require(
             profile == ObservationProfile::Quick || instrumentation_ready,
@@ -463,6 +766,9 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         let root = base.join("workspace 雪");
         io(fs::create_dir(&root))?;
         prepare_project_files(&root)?;
+        if profile == ObservationProfile::Quick {
+            prepare_organize_files(&root, &mut organize_files)?;
+        }
         let data = base.join("external JDT data 雪");
         io(fs::create_dir(&data))?;
         require(
@@ -858,6 +1164,18 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             record.diagnostics_refresh_unversioned = production_refresh_diagnostics(client, &uri)?;
             record.diagnostics_refresh_witness = true;
             unchanged(&source)?;
+            // Extra witnesses apply only to Quick, after every original
+            // semantic/async/refresh criterion. Resource and GC workloads stay fixed.
+            stage.set(FailureStage::Apply);
+            production_organize_imports(
+                client,
+                &root,
+                &initialized,
+                &organize_files,
+                started + Duration::from_secs(180),
+                &mut organize_receipt,
+            )?;
+            unchanged(&source)?;
         }
         if profile.observes_resources() {
             resource_phase(started, ResourcePhase::CorrectionReadyIdle);
@@ -986,6 +1304,13 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         failure_stage.get_or_insert(FailureStage::FixtureCleanup);
         cleanup_errors.push("normal source bytes changed before cleanup".into());
     }
+    if profile == ObservationProfile::Quick {
+        organize_receipt.source_files_unchanged = organize_files_unchanged(&organize_files);
+        if !organize_files.is_empty() && !organize_receipt.source_files_unchanged {
+            failure_stage.get_or_insert(FailureStage::FixtureCleanup);
+            cleanup_errors.push("organize fixture source bytes changed before cleanup".into());
+        }
+    }
     record.synthetic_root_removed = match fixture.take() {
         Some(temp) if record.client_reaped && root_stopped => match temp.close() {
             Ok(()) => true,
@@ -1024,6 +1349,27 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
     }
     record.primary_failed = primary.is_err();
     record.cleanup_failed = !cleanup_errors.is_empty();
+    if profile == ObservationProfile::Quick {
+        organize_receipt.root_handle_signaled = record.root_handle_signaled;
+        organize_receipt.client_reaped = record.client_reaped;
+        organize_receipt.synthetic_root_removed = record.synthetic_root_removed;
+        organize_receipt.primary_failed = record.primary_failed;
+        organize_receipt.cleanup_failed = record.cleanup_failed;
+        organize_receipt.success = primary.is_ok()
+            && cleanup_errors.is_empty()
+            && organize_receipt.semantics_passed()
+            && organize_receipt.source_files_unchanged
+            && organize_receipt.root_handle_signaled
+            && organize_receipt.client_reaped
+            && organize_receipt.synthetic_root_removed;
+        let elapsed = started.elapsed().as_millis();
+        organize_receipt.elapsed_ms = elapsed.min(240_000) as u32;
+        organize_receipt.elapsed_saturated = elapsed > 240_000;
+        println!(
+            "{}",
+            serde_json::to_string(&organize_receipt).expect("typed organize imports evidence")
+        );
+    }
     record.success = primary.is_ok()
         && cleanup_errors.is_empty()
         && record.java_capabilities
@@ -1053,7 +1399,8 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
                 && record.diagnostics_refresh_exercised
                 && record.diagnostics_refresh_supported
                 && record.diagnostics_refresh_requested
-                && record.diagnostics_refresh_witness))
+                && record.diagnostics_refresh_witness
+                && organize_receipt.success))
         && (profile != ObservationProfile::GcDiagnostic || natural_shutdown_verified);
     record.failure_stage = if record.success {
         FailureStage::None
