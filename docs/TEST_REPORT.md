@@ -1,58 +1,57 @@
-# Verification report · fixed GC diagnostic control / 0.13.0 · 2026-10-08
+# Verification report · Windows development bundle / 0.14.0 · 2026-10-08
 
-This checkpoint adds one opt-in nonshipping diagnostic control, retaining the
-production 512 MiB heap recipe and collector selection. Local verification passed; the exact native diagnostic run is pending. The control records GC-point numeric evidence;
-it does not tune the product or infer unused heap from resident memory.
+This checkpoint adds a versioned unsigned Windows development ZIP, exact source
+and workflow mapping, payload hashes, Chinese quick-start and native extracted
+bundle verification. It uses the normal default-feature release app and agent.
+The package excludes diagnostic binaries, language runtimes and raw test logs.
+Local checks passed; exact native bundle execution remains pending for this checkpoint.
 
 ## Verified baseline
 
-Exact public 0.12.0 commit
-[`69044092d4c4f8532cad4ff2513f770af716afeb`](https://github.com/LLLLimbo/cedar-ide/commit/69044092d4c4f8532cad4ff2513f770af716afeb)
-[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37749233834).
-Both ordinary long trials passed all semantics/editor/source and cleanup checks,
-with graceful root exit 0 and verified client reap. All eight stage latencies
-were present in each. The native observer suite passed 62 tests with one platform
-skip; previous cancellation/save/task/Java gates remained green.
+Exact public 0.13.0 commit
+[`e93172385bed14855f62edf86ae8253c05251dcc`](https://github.com/LLLLimbo/cedar-ide/commit/e93172385bed14855f62edf86ae8253c05251dcc)
+[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37758115385).
+The single fixed GC control passed full semantics/editor checks, natural root
+exit 0 and client reap, with the shipping agent hash unchanged. Numeric evidence
+was complete, matched the sampler-selected JVM, and identified G1 with 54 pause
+events. Last/max post-GC occupancy was 378 MiB and capacity 512 MiB; the last event
+at uptime 37.390 seconds was not a final-idle live-heap measurement. No production
+heap/collector change follows. Previous native Java, task ownership, cancellation
+and interrupted-save suites remained green.
 
-All four final windows had 50 stable RSS samples, about 9.82 seconds of observed
-coverage, no unknown RSS samples and documented gaps within the 400 ms allowance.
-Tree working-set medians were 791.36/778.96 MiB after initial diagnostics and
-840.30/819.04 MiB after correction. Independent-window CPU estimates were
-2.865/4.615% and then 0.159/0.318% of one logical core. This is a debug headless
-driver/release agent/JVM observation, not a GUI footprint, settled-state guarantee
-or IDEA comparison. Low observed CPU plus retained resident memory does not
-establish unused committed Java heap.
+The diagnostic question is answered. Its optional invocation leaves routine CI;
+the isolated fixture and unit tests remain. Required Java correctness suites are
+retained. See [the diagnostic result and limits](GC_DIAGNOSTIC_CONTROL.md) and the
+[preceding local report](TEST_REPORT_PHASE13.md).
 
-## Diagnostic boundary
+## Bundle acceptance scope
 
-The [fixed control](GC_DIAGNOSTIC_CONTROL.md) uses a separate constructor/binary
-and distinct receipt, with exact synthetic opt-in markers and ordinary execution
-trust. Normal constructors and shipping CLI remain isolated under all features.
-The shared production launch recipe file is unchanged; only the diagnostic path
-adds the fixed private file-logging option. Logging overhead is explicit.
+The [bundle workflow](WINDOWS_BUNDLE.md) checks an explicit allowlist, bounded
+stable file reads, valid x86-64 PE binaries, complete hash inventory and safe
+archive names before extracting into a new Unicode/space path. The nonshipping
+probe uses normal Local sibling-agent discovery with trust off. It exercises
+listing, reading, conditional save, readback, search, stale-write refusal,
+execution rejection and owned child reaping. Synthetic saved bytes, unchanged
+package payloads and scratch removal are checked independently by the wrapper.
 
-The sampler verifies the retained JVM identity. Its exact private-witness digest
-binds the numeric collector's selected log reads before and after collection.
-The general crash scan excludes private GC names before even reporting rejected
-metadata. Only bounded numeric/enumerated data and digests are published.
-Natural zero exit and full semantic cleanup are required independently of log
-observations; partial observations remain partial and trigger no tuning.
-
-The preceding local report is preserved in [the long baseline report](TEST_REPORT_PHASE12.md).
+This is headless validation of the delivered file route. Windows GUI interaction
+and authenticated SSH remain unverified; the ZIP is not a signed installer or a
+production-readiness claim. Existing Java stop reporting still distinguishes
+forced cleanup from natural exit. The included resource notes describe earlier
+headless observations, with no claim of GUI footprint or superiority to IDEA.
 
 ## Local verification
 
-Rust 1.99.0 passed 649 aggregate tests plus 19 explicitly executed process
-acceptance cases (668 total), five Python agent smoke chains, formatting, strict
-whole-workspace host/MSVC checks and the optimized build. The default-feature
-Windows shipping app/agent cross-check also passed. The focused diagnostic-host
-subset passed nine workspace and three CLI tests; Windows-only controls remain
-for native execution. The shared production java_launch.rs is byte-identical.
+Rust 1.99.0 passed 649 aggregate tests plus 19 explicitly executed process cases
+(668 total), five real-agent Python chains, formatting, strict whole-workspace
+host/MSVC checks, default-feature shipping MSVC checks and the optimized normal
+app/agent build. The package regression suite passed 28 tests with one native
+Windows junction case skipped locally. Existing Python suites passed two export,
+69 crash-collector tests with two Windows-only skips, 79 sampler and 36 GC tests.
 
-The GC collector passed 36 tests; the sampler passed 79; the crash collector
-passed 69 with two native-only skips; export tests passed two. Independent review
-confirmed digest handoff binding, enclosing-scan filename privacy, fixed-default
-isolation and the partial-observation limits. Exact-commit native Windows must
-still execute the one diagnostic control and verify its matched identity,
-semantic/lifecycle receipt and actual numeric GC output. No local Java control
-was run.
+Independent review reproduced and verified fixes for Windows pathname/handle
+metadata differences and hidden trailing DEFLATE bytes. All 517 existing license
+notice paths match the package allowlist. PowerShell and the actual x64 PE bundle
+probe require native Windows CI; Linux unit fixtures are not runtime evidence.
+The final delivery must additionally verify the exact uploaded artifact digest,
+inner ZIP manifest, source/CI mapping and successful native probe receipt.

@@ -39,8 +39,8 @@ overhead; these resource values are not an unchanged shipping baseline.
 
 ## Exactly one matched workload
 
-`scripts/windows_java_acceptance.ps1` defaults to no GC control. This checkpoint's
-CI explicitly passes `-GcDiagnosticControl`, adding one invocation after the
+`scripts/windows_java_acceptance.ps1` defaults to no GC control. The 0.13.0 checkpoint's
+CI explicitly passed `-GcDiagnosticControl`, adding one invocation after the
 existing acceptance and two ordinary long trials. It uses the same four generated
 Java files, disabled Maven/Gradle importers, fresh project/JDT data, selected, version-recorded installed
 JDK and pinned JDT, 30-second initial/correction observation windows and eight stage latencies.
@@ -114,3 +114,24 @@ comparison is claimed here.
 Format and semantics references: [OpenJDK logging rotation](https://github.com/openjdk/jdk21u/blob/master/src/hotspot/share/logging/logFileOutput.cpp),
 [collector header](https://github.com/openjdk/jdk21u/blob/master/src/hotspot/share/memory/universe.cpp),
 and [GC timing/heap reporting](https://github.com/openjdk/jdk21u/blob/master/src/hotspot/share/gc/shared/gcTraceTime.cpp).
+
+
+## Observed 0.13.0 outcome
+
+Exact public commit
+[`e93172385bed14855f62edf86ae8253c05251dcc`](https://github.com/LLLLimbo/cedar-ide/commit/e93172385bed14855f62edf86ae8253c05251dcc)
+[passed both native CI jobs](https://github.com/LLLLimbo/cedar-ide/actions/runs/37758115385).
+The single control passed semantic/editor checks, natural root exit 0, verified
+client reaping and unchanged shipping-agent hash. The sampler's retained JVM
+selection digest exactly matched the numeric collector binding. Numeric status
+was complete with no issues: one G1 header and 54 pause events (36 young, nine
+remark, nine cleanup). Maximum and last observed post-GC occupancy were 378 MiB;
+maximum and last capacity were 512 MiB. The largest numeric pause was 27.529 ms,
+and their sum was 393.781 ms.
+
+The last event was at JVM uptime 37.390 seconds, before the final observation
+window. It is not a final-idle heap reading or proof of reclaimable resident
+memory. This answers the bounded collector/GC-point occupancy question; it does
+not justify reducing heap or introducing periodic collection. From 0.14.0 the
+optional GC control is no longer invoked by routine CI. Its source and tests are
+retained; required Java correctness suites remain enabled.

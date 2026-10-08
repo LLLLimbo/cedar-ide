@@ -10,11 +10,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: python scripts/test_public_export.py
+      - run: python scripts/test_windows_bundle.py
       - run: python scripts/test_java_crash_collection.py
       - run: python scripts/test_process_tree_baseline.py
       - run: python scripts/test_gc_control_collection.py
@@ -88,7 +92,7 @@ jobs:
         timeout-minutes: 12
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/windows_java_acceptance.ps1 -GcDiagnosticControl
+        run: ./scripts/windows_java_acceptance.ps1
       - name: Windows Java acceptance evidence
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@v4
@@ -116,6 +120,24 @@ jobs:
           python3 scripts/task_bridge_smoke.py target/release/cedar-agent
           cargo build --manifest-path examples/task-profiles-demo/Cargo.toml --offline --locked
           python3 scripts/task_profiles_smoke.py target/release/cedar-agent examples/task-profiles-demo/target/debug/cedar-task-profile-demo
+      - name: Default-feature Windows shipping binaries
+        if: runner.os == 'Windows'
+        run: cargo build --release -p cedar-app -p cedar-agent --bin cedar --bin cedar-agent --locked
+      - name: Verify extracted Windows development bundle
+        timeout-minutes: 3
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows_bundle_acceptance.ps1
+      - name: Windows development ZIP and verification receipt
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cedar-windows-development
+          path: |
+            ${{ runner.temp }}/cedar-windows-development/*.zip
+            ${{ runner.temp }}/cedar-windows-development/BUNDLE_VERIFICATION.json
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
           name: cedar-${{ matrix.os }}
