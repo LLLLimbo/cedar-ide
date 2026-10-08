@@ -13,6 +13,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Native Windows environment lookup contract
+        if: runner.os == 'Windows'
+        timeout-minutes: 2
+        run: python scripts/windows_environment_contract.py
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

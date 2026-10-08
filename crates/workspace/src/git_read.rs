@@ -337,9 +337,9 @@ fn environment_key_matches(name: &OsStr, target: &str, prefix: bool) -> Result<b
         use windows_sys::Win32::Globalization::{
             CompareStringOrdinal, CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN,
         };
-        // Windows Git uses GetEnvironmentVariableW, whose ordinal OS case
-        // comparison includes aliases such as dotless-i. ASCII/Unicode Rust
-        // lowercasing does not establish the same boundary. Bound the prefix
+        // Use the documented native ordinal name comparison, without assuming
+        // a Unicode alias such as dotless-i is equivalent. Native child and Git
+        // acceptance independently check the lookup boundary. Bound the prefix
         // inspection without lossy conversion, preserving all retained pairs.
         let target: Vec<u16> = target.encode_utf16().collect();
         let name: Vec<u16> = name

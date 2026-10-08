@@ -547,20 +547,24 @@ def check_normal(binary, git, base):
                     "GIT_CONFIG_VALUE_0": "true", "GIT_CONFIG_PARAMETERS": "'core.bare=true'",
                     "GIT_EXTERNAL_DIFF": "cedar-deliberately-missing-diff",
                     "GIT_NAMESPACE": "unrelated", "GIT_LITERAL_PATHSPECS": "0"})
-    if os.name == "nt":
-        # Windows ordinal case folding also equates dotless U+0131 with I.
-        # Avoid duplicate aliases in the incoming block; test the real lookup.
-        hostile["GıT_INDEX_FILE"] = hostile.pop("GIT_INDEX_FILE")
-        hostile["GıT_TRACE"] = hostile.pop("GIT_TRACE")
     decoy_before = decoy.snapshot()
-    with Agent(binary, fixture.root, env=hostile) as agent:
-        hello(agent, fixture.root)
-        require(changes(agent, git) == entries, "hostile_status_isolation")
-        require(diff(agent, git, "double.txt", "staged") == staged, "hostile_diff_isolation")
-    require(not any(path.exists() for path in markers) and
-            not (base / "forbidden_index").exists(), "hostile_marker_created")
-    require(fixture.snapshot() == baseline and decoy.snapshot() == decoy_before,
-            "hostile_view_mutation")
+    environments = [hostile]
+    if os.name == "nt":
+        # Keep the mandatory ASCII attack pass. A separate candidate pass avoids
+        # duplicate equivalent keys without assuming dotless-i equivalence.
+        candidate = hostile.copy()
+        candidate["GıT_INDEX_FILE"] = candidate.pop("GIT_INDEX_FILE")
+        candidate["GıT_TRACE"] = candidate.pop("GIT_TRACE")
+        environments.append(candidate)
+    for environment in environments:
+        with Agent(binary, fixture.root, env=environment) as agent:
+            hello(agent, fixture.root)
+            require(changes(agent, git) == entries, "hostile_status_isolation")
+            require(diff(agent, git, "double.txt", "staged") == staged, "hostile_diff_isolation")
+        require(not any(path.exists() for path in markers) and
+                not (base / "forbidden_index").exists(), "hostile_marker_created")
+        require(fixture.snapshot() == baseline and decoy.snapshot() == decoy_before,
+                "hostile_view_mutation")
     return len(entries)
 
 

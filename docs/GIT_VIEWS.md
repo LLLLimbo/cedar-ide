@@ -80,3 +80,12 @@ References: [Git command/environment controls](https://git-scm.com/docs/git),
 [diff options](https://git-scm.com/docs/git-diff),
 [configuration](https://git-scm.com/docs/git-config), and
 [repository layouts](https://git-scm.com/docs/gitrepository-layout).
+
+
+## Native environment verification
+
+Windows name filtering uses the OS ordinal comparison without assuming a
+particular Unicode alias table. CI separately checks that comparison against
+raw native environment lookup in synthetic children, then exercises actual Git
+with both ASCII and Unicode-candidate redirect/trace environments. Disagreement
+or unsafe Git behavior blocks acceptance. No raw host environment is exported.

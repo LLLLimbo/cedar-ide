@@ -167,29 +167,59 @@ fn environment_scrubs_case_insensitive_git_and_hidden_entries_without_global_wri
 
 #[cfg(windows)]
 #[test]
-fn environment_scrubs_native_unicode_git_aliases_and_preserves_unrelated_os_strings() {
-    use std::os::windows::ffi::OsStringExt;
+fn environment_scrub_follows_native_case_rules_and_preserves_unrelated_os_strings() {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Globalization::{
+        CompareStringOrdinal, CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN,
+    };
     let unusual = OsString::from_wide(&[0xd800, b'X' as u16]);
     let unicode_key = OsString::from("雪_KEY");
-    let inherited = vec![
+    let candidates = vec![
+        (
+            OsString::from("gIt_INDEX_FILE"),
+            OsString::from("ascii-redirect"),
+        ),
         (
             OsString::from("GıT_INDEX_FILE"),
             OsString::from("redirected"),
         ),
         (OsString::from("GıT_TRACE"), OsString::from("trace-file")),
         (OsString::from("gıt_dır"), OsString::from("elsewhere")),
+    ];
+    let mut inherited = candidates.clone();
+    inherited.extend([
         (unicode_key.clone(), unusual.clone()),
         (unusual.clone(), OsString::from("retained")),
-    ];
+    ]);
     let environment = child_environment(inherited).unwrap();
-    assert!(environment
+    let prefix: Vec<u16> = "GIT_".encode_utf16().collect();
+    for (name, value) in &candidates {
+        let units: Vec<u16> = name.encode_wide().take(4).collect();
+        assert_eq!(units.len(), 4);
+        // Measure the OS comparison rather than assuming a particular Unicode
+        // case table. An independent native child probe checks this API against
+        // GetEnvironmentVariableW; actual Git redirect/trace tests remain required.
+        // SAFETY: both live buffers contain exactly four UTF-16 units.
+        let comparison = unsafe { CompareStringOrdinal(units.as_ptr(), 4, prefix.as_ptr(), 4, 1) };
+        assert!(matches!(
+            comparison,
+            CSTR_LESS_THAN | CSTR_EQUAL | CSTR_GREATER_THAN
+        ));
+        let matches = comparison == CSTR_EQUAL;
+        assert_eq!(
+            environment_key_matches(name, "GIT_", true).unwrap(),
+            matches
+        );
+        assert_eq!(
+            environment.contains(&(name.clone(), value.clone())),
+            !matches
+        );
+    }
+    assert!(!environment
         .iter()
-        .all(|(_, value)| !["redirected", "trace-file", "elsewhere"]
-            .iter()
-            .any(|blocked| value == *blocked)));
+        .any(|(_, value)| value == "ascii-redirect"));
     assert!(environment.contains(&(unicode_key, unusual.clone())));
     assert!(environment.contains(&(unusual, OsString::from("retained"))));
-    assert!(environment_key_matches(OsStr::new("GıT_INDEX_FILE"), "GIT_", true).unwrap());
 }
 
 #[test]
