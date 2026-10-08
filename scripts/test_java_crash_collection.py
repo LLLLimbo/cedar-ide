@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path, PureWindowsPath
+import shutil
 import stat
 import subprocess
 import sys
@@ -125,6 +126,10 @@ class CrashCollectionTests(unittest.TestCase):
             'advisory_command_skipped': True, 'actual_undo': True, 'actual_redo': True,
             'versions_2_3_4_synced': True, 'correction_change_acknowledged': True,
             'correction_change_result': 'acknowledged', 'correction_diagnostics': True, 'source_unchanged': True,
+            'workflow_success': True, 'correction_recovery_result': 'not_attempted',
+            'correction_recovery_attempts': 0, 'correction_recovery_acknowledged': False,
+            'correction_recovery_witness': False, 'correction_recovery_unversioned': False,
+            'correction_recovery_budget_sufficient': False,
             'root_observed_live': True, 'root_identity_verified': True, 'jdk_symbol_verified': True,
             'shutdown_api_succeeded': True, 'root_handle_signaled': True, 'gracefully_exited': True,
             'root_exit_code': 0, 'shutdown_elapsed_ms': 10 * number,
@@ -133,6 +138,7 @@ class CrashCollectionTests(unittest.TestCase):
             'kind': 'windows_java_cleanup', 'sessions_completed': 3, 'agent_exit_zero': True,
             'source_unchanged': True, 'observed_roots_exited': True, 'synthetic_root_removed': True,
             'success': True, 'primary_failed': False, 'cleanup_failed': False, 'failure_stage': 'none',
+            'spontaneous_success': True, 'workflow_success': True,
         }]
 
     def agent_source(self, records):
@@ -149,6 +155,19 @@ class CrashCollectionTests(unittest.TestCase):
             'expected_severity_diagnostics': 14, 'expected_range_diagnostics': 15,
             'expected_joint_diagnostics': 16, 'eligible_expected_joint_diagnostics': 17,
             'eligible_error_diagnostics': 18, 'matching_batches': 19, 'counters_saturated': False,
+        }
+
+    def correction_recovery_fixture(self):
+        return {
+            'kind': 'windows_java_correction_recovery', 'session': 2,
+            'original_result': 'timeout', 'result': 'matched', 'attempts': 1,
+            'acknowledged': True, 'witness': True, 'unversioned': True,
+            'budget_sufficient': True, 'available_budget_ms': 200000,
+            'required_budget_ms': 165000, 'request_timeout_ms': 75000,
+            'witness_dispatch_window_ms': 15000, 'event_poll_timeout_ms': 75000,
+            'cleanup_reserve_guaranteed': False, 'elapsed_ms': 1100,
+            'elapsed_saturated': False, 'polls': 2, 'events': 1,
+            'counters_saturated': False,
         }
 
     def agent_lifecycle_fixtures(self):
@@ -731,6 +750,138 @@ class CrashCollectionTests(unittest.TestCase):
                     self.assertEqual(source['errors'], ['invalid_field_' + field])
                     self.assertNotIn(field, source['evidence']['records'][0])
                     self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_correction_recovery_retains_original_timeout_and_scalar_only_evidence(self):
+        original = {**self.agent_diagnostics_fixture(), 'session': 2, 'phase': 'correction',
+                    'result': 'timeout', 'elapsed_ms': 60020, 'polls': 593,
+                    'events': 0, 'matching_batches': 0}
+        session = {**self.agent_fixture()[1], 'semantic_checks_passed': False,
+                   'correction_diagnostics': False, 'correction_recovery_result': 'matched',
+                   'correction_recovery_attempts': 1, 'correction_recovery_acknowledged': True,
+                   'correction_recovery_witness': True, 'correction_recovery_unversioned': True,
+                   'correction_recovery_budget_sufficient': True}
+        cleanup = {**self.agent_fixture()[-1], 'spontaneous_success': False}
+        for result in collector.CORRECTION_RECOVERY_RESULTS:
+            expected = {**self.correction_recovery_fixture(), 'result': result}
+            private = {**expected, 'source': 'SECRET_SOURCE', 'uri': 'file:///SECRET_PATH',
+                       'environment': {'TOKEN': 'SECRET_TOKEN'}, 'payload': {'text': 'SECRET_TEXT'},
+                       'message': 'SECRET_MESSAGE', 'raw_logs': 'SECRET_LOGS',
+                       'success': True, 'correction_diagnostics': True}
+            records = [original, private, session, cleanup]
+            report = collector.collect(self.root, agent_transcript=self.agent_source(records))
+            self.assertEqual(report['status'], 'complete')
+            self.assertEqual(report['acceptance_result'], 'not_evaluated')
+            self.assertEqual(report['agent_transcript']['evidence']['records'],
+                             [original, expected, session, cleanup])
+            self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_correction_recovery_rejects_non_scalar_unknown_and_out_of_range_values(self):
+        fixture = self.correction_recovery_fixture()
+        bounds = {'session': (1, 3), 'attempts': (0, 1), 'available_budget_ms': (0, 360000),
+                  'required_budget_ms': (0, 165000), 'request_timeout_ms': (0, 75000),
+                  'witness_dispatch_window_ms': (0, 15000), 'event_poll_timeout_ms': (0, 75000),
+                  'elapsed_ms': (0, 300000), 'polls': (0, 65535), 'events': (0, 65535)}
+        invalid = {field: (low - 1, high + 1, True, False, 1.0, None, 'SECRET_VALUE', [1], {'value': 1})
+                   for field, (low, high) in bounds.items()}
+        invalid.update({field: (0, 1, None, 'SECRET_VALUE', [], {})
+                        for field, value in fixture.items() if type(value) is bool})
+        invalid.update({'result': ('SECRET_RESULT', 1, True, None, ['matched']),
+                        'original_result': ('not_attempted', 'SECRET_ORIGINAL', True, None, ['timeout'])})
+        for field, values in invalid.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    report = collector.collect(self.root, agent_transcript=self.agent_source([
+                        {**fixture, field: value}]))
+                    source = report['agent_transcript']
+                    self.assertEqual(report['status'], 'error')
+                    self.assertNotIn(field, source['evidence']['records'][0])
+                    self.assertIn('invalid_field_' + field, source['errors'])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+        for field, (low, high) in bounds.items():
+            for value in (low, high):
+                expected = {**fixture, field: value}
+                report = collector.collect(self.root, agent_transcript=self.agent_source([expected]))
+                self.assertEqual(report['status'], 'complete')
+                self.assertEqual(report['agent_transcript']['evidence']['records'], [expected])
+        for field, values in {
+            'correction_recovery_result': ('SECRET_RESULT', True, None, ['matched']),
+            'correction_recovery_attempts': (-1, 2, True, 1.0, 'SECRET_COUNT'),
+            'workflow_success': (0, 1, 'SECRET_BOOLEAN', None),
+            'correction_recovery_witness': (0, 1, 'SECRET_BOOLEAN', None),
+        }.items():
+            for value in values:
+                report = collector.collect(self.root, agent_transcript=self.agent_source([
+                    {**self.agent_fixture()[1], field: value}]))
+                self.assertEqual(report['status'], 'error')
+                self.assertNotIn(field, report['agent_transcript']['evidence']['records'][0])
+                self.assertNotIn('SECRET_', json.dumps(report))
+
+    @unittest.skipUnless(shutil.which('pwsh'), 'PowerShell is required to execute the actual release predicate')
+    def test_actual_powershell_editor_gate_accepts_only_the_complete_supported_workflow(self):
+        spontaneous = self.agent_fixture() + [
+            {**self.agent_diagnostics_fixture(), 'session': session, 'phase': phase}
+            for session in (1, 2, 3) for phase in ('initial', 'correction')]
+        recovered = json.loads(json.dumps(spontaneous))
+        recovered[1].update(semantic_checks_passed=False, correction_diagnostics=False,
+                            correction_recovery_result='matched', correction_recovery_attempts=1,
+                            correction_recovery_acknowledged=True, correction_recovery_witness=True,
+                            correction_recovery_unversioned=True, correction_recovery_budget_sufficient=True)
+        recovered[3]['spontaneous_success'] = False
+        recovered[7].update(result='timeout', matching_batches=0, elapsed_ms=60020)
+        recovered.append(self.correction_recovery_fixture())
+        cases = [{'name': 'spontaneous', 'records': spontaneous, 'count': 0, 'accept': True},
+                 {'name': 'recovered', 'records': recovered, 'count': 1, 'accept': True}]
+        def reject(name, index, field, value):
+            records = json.loads(json.dumps(recovered))
+            records[index][field] = value
+            cases.append({'name': name, 'records': records, 'count': 0, 'accept': False})
+        for field in ('exact_diagnostics', 'exact_definition', 'real_completion', 'deferred_import_resolve',
+                      'primary_identity_unchanged', 'two_atomic_edits', 'advisory_command_skipped',
+                      'actual_undo', 'actual_redo', 'versions_2_3_4_synced', 'correction_change_acknowledged',
+                      'source_unchanged', 'root_observed_live', 'root_identity_verified', 'jdk_symbol_verified',
+                      'shutdown_api_succeeded', 'root_handle_signaled', 'gracefully_exited', 'workflow_success'):
+            reject('missing_' + field, 1, field, False)
+        for index, field, value in (
+            (1, 'correction_diagnostics', True), (1, 'semantic_checks_passed', True),
+            (1, 'correction_recovery_unversioned', False), (3, 'spontaneous_success', True),
+            (3, 'cleanup_failed', True), (3, 'synthetic_root_removed', False),
+            (3, 'agent_exit_zero', False), (7, 'result', 'lagged'), (7, 'elapsed_ms', 59999),
+            (6, 'result', 'timeout'), (-1, 'attempts', 2), (-1, 'acknowledged', False),
+            (-1, 'witness', False), (-1, 'result', 'timeout'), (-1, 'budget_sufficient', False),
+            (-1, 'available_budget_ms', 164999), (-1, 'required_budget_ms', 90000),
+            (-1, 'elapsed_ms', 165000), (-1, 'cleanup_reserve_guaranteed', True),
+            (-1, 'original_result', 'closed'), (-1, 'counters_saturated', True),
+        ):
+            reject(f'{index}_{field}', index, field, value)
+        cases.extend([
+            {'name': 'missing_recovery', 'records': recovered[:-1], 'accept': False, 'count': 0},
+            {'name': 'duplicate_recovery', 'records': recovered + [recovered[-1]], 'accept': False, 'count': 0},
+            {'name': 'unrequested_recovery', 'records': spontaneous + [recovered[-1]], 'accept': False, 'count': 0},
+        ])
+        cases_file = self.private_source('gate-cases.json', json.dumps(cases))
+        harness = self.private_source('gate-check.ps1', r'''param($AcceptanceScript, $CasesFile)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($AcceptanceScript, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count -ne 0) { throw 'Acceptance script did not parse.' }
+$function = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-AgentEditorReceipt'
+}, $true)
+if ($null -eq $function) { throw 'Missing actual editor acceptance function.' }
+Invoke-Expression $function.Extent.Text
+foreach ($case in (Get-Content -LiteralPath $CasesFile -Raw | ConvertFrom-Json)) {
+    $accepted = $false; $count = -1
+    try { $count = Assert-AgentEditorReceipt -Receipts @($case.records); $accepted = $true } catch {}
+    if ($accepted -ne $case.accept -or ($accepted -and $count -ne $case.count)) {
+        throw ('Unexpected editor verdict: ' + $case.name)
+    }
+}
+''')
+        result = subprocess.run([shutil.which('pwsh'), '-NoLogo', '-NoProfile', '-File', str(harness),
+                                 '-AcceptanceScript', str(Path(__file__).with_name('windows_java_acceptance.ps1').resolve()),
+                                 '-CasesFile', str(cases_file)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_agent_missing_malformed_and_read_failed_sources_keep_safe_errors(self):
         report = collector.collect(self.root, agent_transcript='missing-private-agent.txt')

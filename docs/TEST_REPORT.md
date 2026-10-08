@@ -1,47 +1,57 @@
-# Verification report · Java build locations / 0.21.0 · 2026-10-08
+# Verification report · Explicit Java recovery acceptance / 0.21.1
 
-This checkpoint adds explicit bounded javac-location extraction from a completed
-command task, followed by workspace-confined file navigation. It retains the
-actual submitted command/session identity and current unsaved drafts. It does
-not add an execution request, project importer or persistent background process.
-See [the feature contract](BUILD_PROBLEMS.md).
+This follow-up deliberately distinguishes spontaneous JDT diagnostic publication
+from the already-supported user-triggered refresh workflow. It does not change
+production Java scheduling or add automatic background validation. The preceding
+[0.21.0 report](TEST_REPORT_PHASE21.md) retains the exact red CI result; its new
+javac navigation passed both native platforms, but its bundle was held.
 
-The preceding [0.20 report](TEST_REPORT_PHASE20.md) records its exact dual-platform
-CI, Organize Imports witnesses and verified bundle. Its normal Java Stop exited
-naturally in that run; forced cleanup remains a supported, honestly reported
-outcome in other runs. The intermittent upstream diagnostic issue remains open.
+## Release criterion and retained limitation
 
-## Finite acceptance
+The rapid edits, original 60-second spontaneous-push wait and its complete
+receipt remain unchanged. A timeout remains a timeout. Only that outcome may
+invoke exactly one fixed, user-equivalent refresh of the same synchronized
+document/version. Successful recovery requires the exact generated source
+witness within the remaining bounded test envelope. No edit is replayed, no
+save is sent, and no retry loop is introduced. The normal source, editor Undo/
+Redo, process identity and cleanup criteria remain required. Recovery failure
+blocks release.
 
-Pure parser tests cover the documented English grammar, per-stream positions,
-Unicode/spaces/CRLF, backend-specific separators, malformed/overflowing lines,
-unsafe paths and bounded work/storage. Headless frontend tests must preserve
-immutable task association, dirty drafts and Undo, reject stale task/session/read
-results, enforce the buffer limit, and never start a command/language server or
-auto-save from extraction/navigation. Ordinary document synchronization to an
-already-running language session remains intact. Historical line numbers must
-not silently clamp to a current source location.
+Recovery admission reserves 165 seconds inside the unchanged 360-second fixture
+deadline: the existing 75-second refresh request bound, a 15-second event-poll
+dispatch window, and one final in-flight 75-second poll. This is not a promise
+of a 15-second wall wait or a guaranteed cleanup reserve. Insufficient remaining
+budget refuses recovery. The previous failure-only hover probe is replaced by
+this explicit recovery; its historical 0.21.0 evidence remains in that report.
 
-An opt-in test uses an explicitly selected JDK 21 javac through the normal agent
-on generated source. It must verify the completed task, extracted relative
-location, normal Read, source invariants and cleanup. The test compiler version
-is recorded; this is not Maven/Gradle or arbitrary localized-output coverage.
+The required workflow may pass with a separately recorded spontaneous timeout
+and successful explicit recovery. Such a result must be reported as recovered,
+never as a spontaneous pass or an upstream fix. The fixture-only permission for
+the existing typed URI operation requires its vetted nonshipping Java session;
+normal generic sessions stay unsupported, including all-features shipping builds.
+
+The pinned public JDT lifecycle source permits a cancellation ordering that
+clears pending reconciliation work before returning on cancellation. The
+inspected current upstream handler has the same body. This supports an upstream
+work-loss hypothesis; it does not prove the native failure took that path.
+Official explicit validation enqueues diagnostic work separately.
+See [the pinned handler](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/08eafe6ff60c7159ef88571d47b6a9ef82fef94e/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/BaseDocumentLifeCycleHandler.java#L207).
 
 ## Verification status
 
-The final local aggregate passed 869 Rust tests across 40 suites, with 23 opt-in
-cases retained for explicit process/native stages. The 26 new parser and actual
-frontend-frame tests passed. Strict host and MSVC all-target/all-feature Clippy,
-formatting and diff checks passed. Python bundle tests passed 28 with one platform
-skip; the two export tests passed. The normal default-feature release app/agent
-build and four actual-agent protocol/capability/language/task smoke suites passed.
-Independent review found and closed an ASCII
-case-variant dirty-buffer ambiguity, with pre-dispatch and response-time tests.
-The guard does not establish physical file identity for other aliases.
+The local aggregate passed 877 Rust tests across 40 suites, with 23 explicit
+opt-in tests retained for native/process stages. All six new recovery policy
+test groups and the new fixture-authorization regressions passed. Strict host
+and MSVC all-target/all-feature Clippy, formatting and diff checks passed.
+The collector ran 78 tests: 75 passed and three were skipped locally. Its new
+test extracts the actual PowerShell release predicate and exercises positive
+and 43 negative receipt cases; that test requires PowerShell and therefore
+awaits native CI here. Bundle tests passed 28 with one skip, and export tests two.
+Independent source review found no blocking issue.
+The normal default-feature release app/agent build and four actual-agent
+protocol, capability, language and task smoke suites also passed.
 
-The local machine has JRE 21 but no javac executable, so the new opt-in compiler
-case has compiled but has not run here. CI must execute it explicitly with each
-runner's selected JDK 21. Cross-compilation is not native runtime evidence. No
-native runtime result or regenerated bundle is claimed for this source yet.
-Existing Java, ownership, Git, save and cancellation gates remain required.
-Native GUI Trust-on, Windows/macOS GUI and authenticated SSH remain separate gaps.
+No new native result or ZIP is claimed yet. The existing user-visible stale/
+unversioned diagnostic notices and explicit Refresh action remain important;
+this change does not guarantee spontaneous diagnostics or general freshness
+for unversioned server events.

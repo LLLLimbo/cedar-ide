@@ -697,30 +697,33 @@ fn await_diagnostics(
     })
 }
 
-fn probe_correction_hover(agent: &mut RawAgent, session: u32) {
+fn recover_correction(
+    agent: &mut RawAgent,
+    uri: &str,
+    failure: DiagnosticWaitFailure,
+    record: &mut SessionEvidence,
+    acceptance_deadline: Instant,
+) -> CheckResult<()> {
     let started = Instant::now();
-    // Only called after the original correction timeout is recorded. Use the
-    // existing feature request deadline and owned request worker; a shorter
-    // harness deadline would abandon the protocol pipes during cleanup.
+    let available = acceptance_deadline.saturating_duration_since(started);
+    let mut receipt = CorrectionRecoveryEvidence::new(record.session, failure.result, available);
     let outcome = checked(|| {
-        let cursor = marker_range(&corrected_source(), "correctedOnly").start;
-        language(
-            agent,
-            Operation::LanguageQuery {
-                path: SOURCE_PATH.into(),
-                line: cursor.line,
-                character: cursor.character,
-                kind: LanguageQueryKind::Hover,
-            },
-            FEATURE_TIMEOUT,
+        receipt.run(
+            uri,
+            available,
+            |operation, timeout| language(agent, operation, timeout),
+            || started.elapsed(),
+            thread::sleep,
         )
     });
-    let receipt =
-        CorrectionHoverEvidence::observed(session, &outcome, started.elapsed().as_millis());
+    receipt.finish_elapsed(started.elapsed().as_millis());
+    record.record_correction_recovery(&receipt);
     println!(
         "{}",
-        serde_json::to_string(&receipt).expect("typed correction hover evidence")
+        serde_json::to_string(&receipt).expect("typed correction recovery evidence")
     );
+    outcome
+        .map_err(|recovery| format!("{}; explicit refresh recovery: {recovery}", failure.message))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -784,6 +787,10 @@ fn start_java_session(
         "JDT did not advertise deferred completion resolve",
     )?;
     require(
+        initialized["initialize"]["cedar_java_diagnostics_refresh"] == true,
+        "vetted Java validation session did not authorize typed diagnostics refresh",
+    )?;
+    require(
         data.join(".metadata").is_dir(),
         "JDT did not use the intended Unicode data directory",
     )?;
@@ -801,6 +808,7 @@ fn run_semantics(
     record: &mut SessionEvidence,
     stage: &Cell<FailureStage>,
     ownership: &mut TaskAcceptance,
+    acceptance_deadline: Instant,
 ) -> CheckResult<()> {
     let source = root.join(SOURCE_PATH);
     start_java_session(agent, root, java, args, data, observed, record, stage)?;
@@ -1005,10 +1013,15 @@ fn run_semantics(
     )?;
     record.correction_change_result = CorrectionChangeResult::Acknowledged;
     record.correction_change_acknowledged = true;
-    await_diagnostics(agent, &uri, record.session, DiagnosticPhase::Correction).map_err(
-        |failure| failure.with_timeout_probe(|| probe_correction_hover(agent, record.session)),
-    )?;
-    record.correction_diagnostics = true;
+    match await_diagnostics(agent, &uri, record.session, DiagnosticPhase::Correction) {
+        Ok(()) => record.correction_diagnostics = true,
+        Err(failure) if failure.result == DiagnosticResult::Timeout => {
+            // The original receipt is already printed and remains a timeout.
+            // Keep the identical version-5 draft; do not replay, change or save.
+            recover_correction(agent, &uri, failure, record, acceptance_deadline)?;
+        }
+        Err(failure) => return Err(failure.message),
+    }
     unchanged(&source)?;
     stage.set(FailureStage::Close);
     language(
@@ -1024,7 +1037,7 @@ fn run_semantics(
         "Java root exited before explicit LanguageStop",
     )?;
     record.source_unchanged = true;
-    record.semantic_checks_passed = true;
+    record.semantic_checks_passed = record.correction_diagnostics;
     Ok(())
 }
 
@@ -1107,11 +1120,13 @@ fn real_windows_agent_java_editor_transactions() -> CheckResult<()> {
     // libtest prints its test-name prefix without a newline under --nocapture.
     // Keep every subsequent typed record a standalone JSON line for sanitation.
     println!();
+    let acceptance_deadline = Instant::now() + Duration::from_secs(360);
     let _watchdog = Watchdog::start_with_timeout(Duration::from_secs(360));
     let mut fixture: Option<tempfile::TempDir> = None;
     let mut agent: Option<RawAgent> = None;
     let mut observed = Vec::new();
     let mut completed = 0;
+    let mut spontaneous_sessions = 0;
     let mut ownership = TaskAcceptance::new();
     let mut cleanup_errors = Vec::new();
     let stage = Cell::new(FailureStage::Setup);
@@ -1163,6 +1178,7 @@ fn real_windows_agent_java_editor_transactions() -> CheckResult<()> {
                     &mut record,
                     &stage,
                     &mut ownership,
+                    acceptance_deadline,
                 )
             });
             if semantics.is_err() {
@@ -1204,6 +1220,10 @@ fn real_windows_agent_java_editor_transactions() -> CheckResult<()> {
             }
             let disk = unchanged(&root.join(SOURCE_PATH));
             record.source_unchanged = disk.is_ok();
+            record.workflow_success = semantics.is_ok() && stop.is_ok() && disk.is_ok();
+            if record.semantic_checks_passed {
+                spontaneous_sessions += 1;
+            }
             println!(
                 "{}",
                 serde_json::to_string(&record).expect("typed session evidence")
@@ -1327,6 +1347,8 @@ fn real_windows_agent_java_editor_transactions() -> CheckResult<()> {
             },
             primary_failed: primary.is_err(),
             cleanup_failed: !cleanup_errors.is_empty(),
+            spontaneous_success: success && spontaneous_sessions == 3,
+            workflow_success: success,
             success,
         })
         .expect("typed cleanup evidence")

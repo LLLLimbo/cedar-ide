@@ -95,7 +95,98 @@ function Assert-ProductionReceipt(
         throw 'A forced exit cannot satisfy the diagnostic control natural-shutdown requirement.'
     }
 }
+function Assert-AgentEditorReceipt([object[]] $Receipts) {
+    $sessions = @($Receipts | Where-Object { $_.kind -ceq 'windows_java_session' })
+    $cleanup = @($Receipts | Where-Object { $_.kind -ceq 'windows_java_cleanup' })
+    $diagnostics = @($Receipts | Where-Object { $_.kind -ceq 'windows_java_diagnostics' })
+    $recoveries = @($Receipts | Where-Object { $_.kind -ceq 'windows_java_correction_recovery' })
+    if ($sessions.Count -ne 3 -or $cleanup.Count -ne 1 -or $diagnostics.Count -ne 6) {
+        throw 'Expected three real agent Java sessions, six diagnostic receipts and one cleanup witness; zero filtered tests cannot pass.'
+    }
+    $expectedModes = @('initial', 'fresh_data', 'reused_data')
+    for ($index = 0; $index -lt 3; $index++) {
+        $record = $sessions[$index]
+        if ($record.session -ne ($index + 1) -or $record.mode -cne $expectedModes[$index] -or
+            -not $record.workflow_success -or -not $record.source_unchanged -or
+            -not $record.root_identity_verified -or -not $record.jdk_symbol_verified -or
+            -not $record.root_handle_signaled -or $record.root_exit_code -ne 0 -or
+            -not $record.gracefully_exited -or -not $record.versions_2_3_4_synced -or
+            -not $record.correction_change_acknowledged -or
+            $record.correction_change_result -cne 'acknowledged') {
+            throw 'Agent Java session evidence did not prove required semantics, identity and natural zero exit.'
+        }
+        foreach ($field in @('exact_diagnostics', 'exact_definition', 'real_completion',
+            'deferred_import_resolve', 'primary_identity_unchanged', 'two_atomic_edits',
+            'advisory_command_skipped', 'actual_undo', 'actual_redo', 'versions_2_3_4_synced',
+            'correction_change_acknowledged', 'source_unchanged', 'root_observed_live',
+            'root_identity_verified', 'jdk_symbol_verified', 'shutdown_api_succeeded',
+            'root_handle_signaled', 'gracefully_exited', 'workflow_success')) {
+            if (-not $record.$field) { throw 'Agent Java session lost a required editor, semantic or cleanup witness.' }
+        }
+    }
+    $spontaneousTimeouts = 0
+    for ($index = 0; $index -lt 6; $index++) {
+        $record = $diagnostics[$index]
+        $expectedSession = [Math]::Floor($index / 2) + 1
+        $expectedPhase = if (($index % 2) -eq 0) { 'initial' } else { 'correction' }
+        if ($record.session -ne $expectedSession -or $record.phase -cne $expectedPhase -or
+            $record.counters_saturated -or $record.elapsed_saturated) {
+            throw 'Original diagnostic receipt identity or bounded counters are invalid.'
+        }
+        $session = $sessions[$expectedSession - 1]
+        $recovery = @($recoveries | Where-Object { $_.session -eq $expectedSession })
+        if ($record.result -ceq 'matched' -and $record.matching_batches -ge 1) {
+            if ($expectedPhase -ceq 'correction' -and
+                (-not $session.correction_diagnostics -or -not $session.semantic_checks_passed -or
+                 $recovery.Count -ne 0 -or $session.correction_recovery_result -cne 'not_attempted' -or
+                 $session.correction_recovery_attempts -ne 0 -or $session.correction_recovery_acknowledged -or
+                 $session.correction_recovery_witness -or $session.correction_recovery_unversioned -or
+                 $session.correction_recovery_budget_sufficient)) {
+                throw 'Spontaneous correction success disagrees with the separate workflow evidence.'
+            }
+        }
+        elseif ($expectedPhase -ceq 'correction' -and $record.result -ceq 'timeout' -and
+            $record.matching_batches -eq 0 -and $record.elapsed_ms -ge 60000) {
+            $spontaneousTimeouts++
+            if ($session.correction_diagnostics -or $session.semantic_checks_passed -or
+                $recovery.Count -ne 1 -or $session.correction_recovery_result -cne 'matched' -or
+                $session.correction_recovery_attempts -ne 1 -or -not $session.correction_recovery_acknowledged -or
+                -not $session.correction_recovery_witness -or -not $session.correction_recovery_budget_sufficient) {
+                throw 'Spontaneous timeout must remain failed and have one supported correction recovery.'
+            }
+            $refresh = $recovery[0]
+            if ($refresh.original_result -cne 'timeout' -or $refresh.result -cne 'matched' -or
+                $refresh.attempts -ne 1 -or -not $refresh.acknowledged -or -not $refresh.witness -or
+                -not $refresh.budget_sufficient -or $refresh.cleanup_reserve_guaranteed -or
+                $refresh.available_budget_ms -lt 165000 -or $refresh.required_budget_ms -ne 165000 -or
+                $refresh.request_timeout_ms -ne 75000 -or $refresh.witness_dispatch_window_ms -ne 15000 -or
+                $refresh.event_poll_timeout_ms -ne 75000 -or $refresh.elapsed_ms -ge 165000 -or
+                $refresh.elapsed_saturated -or $refresh.counters_saturated -or
+                $refresh.polls -lt 1 -or $refresh.events -lt 1 -or
+                $refresh.unversioned -ne $session.correction_recovery_unversioned) {
+                throw 'Explicit correction recovery lacks its exact warning, acknowledgement or existing deadline budget.'
+            }
+        }
+        else {
+            throw 'Only a spontaneous correction timeout can use the explicit single-refresh recovery workflow.'
+        }
+    }
+    if ($recoveries.Count -ne $spontaneousTimeouts) {
+        throw 'Unexpected or repeated correction recovery receipt.'
+    }
+    if ($cleanup[0].sessions_completed -ne 3 -or -not $cleanup[0].success -or
+        -not $cleanup[0].workflow_success -or
+        $cleanup[0].spontaneous_success -ne ($spontaneousTimeouts -eq 0) -or
+        $cleanup[0].primary_failed -or $cleanup[0].cleanup_failed -or
+        $cleanup[0].failure_stage -cne 'none' -or -not $cleanup[0].agent_exit_zero -or
+        -not $cleanup[0].source_unchanged -or -not $cleanup[0].observed_roots_exited -or
+        -not $cleanup[0].synthetic_root_removed) {
+        throw 'Agent Java cleanup evidence did not prove successful completion.'
+    }
+    return $spontaneousTimeouts
+}
 $failure = $null
+$spontaneousTimeouts = 0
 $stage = 'scratch creation'
 $created = $false
 $probeReport = Join-Path $scratch 'owned-java-probe-private.json'
@@ -363,35 +454,7 @@ finally {
             if ($LASTEXITCODE -ne 0) { throw 'JVM crash diagnostic collection was incomplete; inspect the JSON status.' }
             if ($null -eq $failure) {
                 $collected = Get-Content -LiteralPath $CrashEvidencePath -Raw | ConvertFrom-Json
-                $sessions = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_session' })
-                $cleanup = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_cleanup' })
-                $diagnostics = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_diagnostics' })
-                if ($sessions.Count -ne 3 -or $cleanup.Count -ne 1 -or $diagnostics.Count -ne 6) {
-                    throw 'Expected three real agent Java sessions, six diagnostic receipts and one cleanup witness; zero filtered tests cannot pass.'
-                }
-                $expectedModes = @('initial', 'fresh_data', 'reused_data')
-                for ($index = 0; $index -lt 3; $index++) {
-                    $record = $sessions[$index]
-                    if ($record.session -ne ($index + 1) -or $record.mode -cne $expectedModes[$index] -or
-                        -not $record.semantic_checks_passed -or -not $record.source_unchanged -or
-                        -not $record.root_identity_verified -or -not $record.jdk_symbol_verified -or
-                        -not $record.root_handle_signaled -or $record.root_exit_code -ne 0 -or
-                        -not $record.gracefully_exited -or -not $record.versions_2_3_4_synced -or
-                        -not $record.correction_change_acknowledged -or
-                        $record.correction_change_result -cne 'acknowledged') {
-                        throw 'Agent Java session evidence did not prove required semantics, identity and natural zero exit.'
-                    }
-                }
-                for ($index = 0; $index -lt 6; $index++) {
-                    $record = $diagnostics[$index]
-                    $expectedSession = [Math]::Floor($index / 2) + 1
-                    $expectedPhase = if (($index % 2) -eq 0) { 'initial' } else { 'correction' }
-                    if ($record.session -ne $expectedSession -or $record.phase -cne $expectedPhase -or
-                        $record.result -cne 'matched' -or $record.matching_batches -lt 1 -or
-                        $record.counters_saturated -or $record.elapsed_saturated) {
-                        throw 'Diagnostic receipts did not prove both exact assertions in each Java session.'
-                    }
-                }
+                $spontaneousTimeouts = Assert-AgentEditorReceipt -Receipts @($collected.agent_transcript.evidence.records)
                 $concurrency = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_concurrency' })
                 $forced = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_forced_cleanup' })
                 if ($concurrency.Count -ne 1 -or $forced.Count -ne 1) {
@@ -421,13 +484,7 @@ finally {
                     if (-not $record.$field) { throw 'Forced-owner cleanup witness is incomplete.' }
                 }
                 Assert-ProductionReceipt -Receipts @($collected.agent_transcript.evidence.records)
-                if ($cleanup[0].sessions_completed -ne 3 -or -not $cleanup[0].success -or
-                    $cleanup[0].primary_failed -or $cleanup[0].cleanup_failed -or
-                    $cleanup[0].failure_stage -cne 'none' -or -not $cleanup[0].agent_exit_zero -or
-                    -not $cleanup[0].source_unchanged -or -not $cleanup[0].observed_roots_exited -or
-                    -not $cleanup[0].synthetic_root_removed) {
-                    throw 'Agent Java cleanup evidence did not prove successful completion.'
-                }
+
             }
         }
         catch {
@@ -456,4 +513,4 @@ if ($null -ne $failure) {
     Record ('FAIL during ' + $stage + ': ' + $failure.Exception.Message)
     throw $failure
 }
-Record 'PASS: direct Java, fixture ownership, normal-agent editor and two unchanged-recipe long observation runs completed; generated dependency scratch was removed.'
+Record ("PASS: supported Java workflow and owned cleanup completed; spontaneous correction timeouts: $spontaneousTimeouts; each retained timeout used exactly one explicit refresh with an exact warning witness. Generated dependency scratch was removed.")

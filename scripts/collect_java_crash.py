@@ -94,16 +94,26 @@ AGENT_LIFECYCLE_FAILURE_STAGES = (
     'language_stop', 'task_survival', 'task_cancel', 'java_survival', 'owner_death', 'agent_exit',
     'java_exit', 'task_exit', 'source', 'fixture_cleanup',
 )
+CORRECTION_RECOVERY_RESULTS = (
+    'not_attempted', 'not_eligible', 'insufficient_budget', 'request_error',
+    'acknowledgement_mismatch', 'timeout', 'malformed_events', 'truncated',
+    'lagged', 'closed', 'matched',
+)
 AGENT_TRANSCRIPT_FIELDS = {
     'windows_java_session': dict.fromkeys((
         'semantic_checks_passed', 'exact_diagnostics', 'exact_definition', 'real_completion',
         'deferred_import_resolve', 'primary_identity_unchanged', 'two_atomic_edits',
         'advisory_command_skipped', 'actual_undo', 'actual_redo', 'versions_2_3_4_synced',
-        'correction_change_acknowledged', 'correction_diagnostics', 'source_unchanged', 'root_observed_live',
+        'correction_change_acknowledged', 'correction_diagnostics', 'workflow_success',
+        'correction_recovery_acknowledged', 'correction_recovery_witness',
+        'correction_recovery_unversioned', 'correction_recovery_budget_sufficient',
+        'source_unchanged', 'root_observed_live',
         'root_identity_verified', 'jdk_symbol_verified', 'shutdown_api_succeeded',
         'root_handle_signaled', 'gracefully_exited'), 'bool')
         | {'session': ('integer_range', 1, 3), 'mode': ('initial', 'fresh_data', 'reused_data'),
            'initialization_ms': 'count', 'root_exit_code': '?u32', 'shutdown_elapsed_ms': 'count',
+           'correction_recovery_result': CORRECTION_RECOVERY_RESULTS,
+           'correction_recovery_attempts': ('integer_range', 0, 1),
            'correction_change_result': ('not_attempted', 'request_error', 'acknowledgement_mismatch',
                                          'acknowledged')},
     'windows_java_diagnostics': dict.fromkeys((
@@ -122,9 +132,23 @@ AGENT_TRANSCRIPT_FIELDS = {
         'result': ('matched', 'no_match', 'request_error'),
         'elapsed_ms': ('integer_range', 0, 300000), 'elapsed_saturated': 'bool',
     },
+    'windows_java_correction_recovery': dict.fromkeys((
+        'acknowledged', 'witness', 'unversioned', 'budget_sufficient',
+        'cleanup_reserve_guaranteed', 'elapsed_saturated', 'counters_saturated'), 'bool')
+        | {'session': ('integer_range', 1, 3), 'result': CORRECTION_RECOVERY_RESULTS,
+           'original_result': ('matched', 'timeout', 'request_error', 'malformed_events',
+                               'truncated', 'lagged', 'closed'),
+           'attempts': ('integer_range', 0, 1),
+           'available_budget_ms': ('integer_range', 0, 360000),
+           'required_budget_ms': ('integer_range', 0, 165000),
+           'request_timeout_ms': ('integer_range', 0, 75000),
+           'witness_dispatch_window_ms': ('integer_range', 0, 15000),
+           'event_poll_timeout_ms': ('integer_range', 0, 75000),
+           'elapsed_ms': ('integer_range', 0, 300000),
+           'polls': ('integer_range', 0, 65535), 'events': ('integer_range', 0, 65535)},
     'windows_java_cleanup': dict.fromkeys((
         'agent_exit_zero', 'source_unchanged', 'observed_roots_exited', 'synthetic_root_removed',
-        'success', 'primary_failed', 'cleanup_failed'), 'bool')
+        'success', 'spontaneous_success', 'workflow_success', 'primary_failed', 'cleanup_failed'), 'bool')
         | {'sessions_completed': ('integer_range', 0, 3),
            'failure_stage': ('none', 'setup', 'initialize', 'open', 'diagnostics', 'hover',
                              'definition', 'completion', 'resolve', 'apply', 'undo', 'redo',

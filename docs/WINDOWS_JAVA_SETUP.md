@@ -97,10 +97,16 @@ Undo/Redo and file contents are preserved.
 
 This is a best-effort explicit mitigation. JDT still schedules publication
 asynchronously and may fail to publish; the earlier intermittent correction
-failure remains unresolved. The original rapid-edit acceptance still fails if
-diagnostics disappear, and refresh is tested separately afterward rather than
-used to rescue that failure. No background refresh loop or extra Java process
-is introduced; the existing memory and shutdown limitations still apply.
+failure remains unresolved. Starting with 0.21.1, release acceptance explicitly
+separates the unchanged rapid-edit/60-second spontaneous-push verdict from the
+supported user-triggered recovery workflow. A spontaneous timeout stays recorded
+as a timeout. Only one explicit refresh may then be attempted within the existing
+bounded fixture envelope; its exact synthetic source witness and all source/editor/
+cleanup invariants must pass. Failed recovery still blocks release. A recovered
+workflow is not reported as spontaneous success or an upstream fix. General
+freshness of unversioned diagnostics is still unverified.
+No background refresh loop or extra Java process is introduced; the existing
+memory and shutdown limitations still apply.
 
 The extension is defined by the [official JDT protocol](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/08eafe6ff60c7159ef88571d47b6a9ef82fef94e/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/lsp/JavaProtocolExtensions.java#L157)
 and [URI-only parameter](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/08eafe6ff60c7159ef88571d47b6a9ef82fef94e/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/lsp/ValidateDocumentParams.java#L20).

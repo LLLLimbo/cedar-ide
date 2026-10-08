@@ -56,6 +56,23 @@ impl OpenLanguageDocument {
 }
 
 impl LanguageSession {
+    fn java_refresh_session_authorized(&self) -> bool {
+        if self.production_java {
+            return true;
+        }
+        // Only the separate marked-root Java validation constructor can retain
+        // this observed, initialized session. A generic validation host, marker
+        // file, or server-supplied support flag is not a Java refresh grant.
+        #[cfg(feature = "windows-language-validation")]
+        {
+            self.java_validation.is_some()
+        }
+        #[cfg(not(feature = "windows-language-validation"))]
+        {
+            false
+        }
+    }
+
     fn open_document(&self, uri: &str) -> Result<&OpenLanguageDocument, RemoteError> {
         self.opened.get(uri).ok_or_else(|| {
             error(
@@ -84,13 +101,13 @@ fn lsp_error(e: cedar_language::Error) -> RemoteError {
     error("language_error", e.to_string())
 }
 
-fn java_diagnostics_refresh_supported(production_java: bool, initialize: &Value) -> bool {
+fn java_diagnostics_refresh_supported(authorized_java_session: bool, initialize: &Value) -> bool {
     // JDT does not advertise this extension as a server capability. Keep this
     // explicit bridge bounded to the verified Standard server release (the
     // official 1.61.0 milestone reports this Maven SNAPSHOT version). Syntax mode
     // and absent/unrecognized metadata must not imply extension support. This
     // observed identity is compatibility evidence, not binary authentication.
-    production_java
+    authorized_java_session
         && initialize["serverInfo"]["name"].as_str() == Some("JDT Language Server (Standard)")
         && initialize["serverInfo"]["version"].as_str() == Some("1.61.0-SNAPSHOT")
 }
@@ -418,7 +435,7 @@ impl Workspace {
                 let session = self.language.as_ref().ok_or_else(|| {
                     error("language_not_running", "Start a language server first")
                 })?;
-                if !session.production_java || !session.java_diagnostics_refresh {
+                if !session.java_refresh_session_authorized() || !session.java_diagnostics_refresh {
                     return Err(error(
                         "language_refresh_unsupported",
                         "Diagnostic refresh requires a supported Standard JDT session started with the Java route",
@@ -643,7 +660,11 @@ impl Workspace {
             None
         };
         let mut result = result?;
-        let java_diagnostics_refresh = java_diagnostics_refresh_supported(production_java, &result);
+        let authorized_java_refresh = production_java;
+        #[cfg(feature = "windows-language-validation")]
+        let authorized_java_refresh = authorized_java_refresh || java_validation.is_some();
+        let java_diagnostics_refresh =
+            java_diagnostics_refresh_supported(authorized_java_refresh, &result);
         let java_organize_imports = imports::supported(production_java, &result);
         // This field belongs to Cedar, not the language server. Always replace
         // any server-supplied value, including in generic/unsupported sessions.

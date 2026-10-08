@@ -6,7 +6,7 @@ use crate::{completion, editor_state, language_results, model::Document};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::cell::Cell;
+use std::{cell::Cell, time::Duration};
 
 pub(super) const SOURCE: &str = "public class Main {\n    public static void main(String[] args) {\n        String greeting = \"Hello Cedar\";\n        System.out.println(greeting);\n        int broken = \"oops\";\n    }\n}\n";
 pub(super) const PROJECT_DIR: &str = "project with spaces 雪";
@@ -209,6 +209,198 @@ impl DiagnosticWaitFailure {
             probe();
         }
         self.message
+    }
+}
+
+// A user-equivalent refresh may recover the workflow, but never the original
+// spontaneous-push verdict. Admission covers the full request and witness wait;
+// the existing aggregate watchdog does not guarantee a cleanup reserve.
+pub(super) const CORRECTION_REFRESH_REQUEST_TIMEOUT: Duration = Duration::from_secs(75);
+pub(super) const CORRECTION_REFRESH_DISPATCH_WINDOW: Duration = Duration::from_secs(15);
+// Include one final in-flight event poll. Do not shorten RawAgent transport
+// deadlines: its pipes must remain usable for normal owned session cleanup.
+pub(super) const CORRECTION_REFRESH_BUDGET: Duration = Duration::from_secs(165);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CorrectionRecoveryResult {
+    #[default]
+    NotAttempted,
+    NotEligible,
+    InsufficientBudget,
+    RequestError,
+    AcknowledgementMismatch,
+    Timeout,
+    MalformedEvents,
+    Truncated,
+    Lagged,
+    Closed,
+    Matched,
+}
+
+#[derive(Serialize)]
+pub(super) struct CorrectionRecoveryEvidence {
+    kind: &'static str,
+    session: u32,
+    original_result: DiagnosticResult,
+    pub result: CorrectionRecoveryResult,
+    pub attempts: u32,
+    pub acknowledged: bool,
+    pub witness: bool,
+    pub unversioned: bool,
+    pub budget_sufficient: bool,
+    available_budget_ms: u32,
+    required_budget_ms: u32,
+    request_timeout_ms: u32,
+    witness_dispatch_window_ms: u32,
+    event_poll_timeout_ms: u32,
+    cleanup_reserve_guaranteed: bool,
+    elapsed_ms: u32,
+    elapsed_saturated: bool,
+    polls: u32,
+    events: u32,
+    counters_saturated: bool,
+}
+impl CorrectionRecoveryEvidence {
+    pub fn new(session: u32, original_result: DiagnosticResult, available: Duration) -> Self {
+        Self {
+            kind: "windows_java_correction_recovery",
+            session,
+            original_result,
+            result: CorrectionRecoveryResult::NotAttempted,
+            attempts: 0,
+            acknowledged: false,
+            witness: false,
+            unversioned: false,
+            budget_sufficient: false,
+            available_budget_ms: available.as_millis().min(360_000) as u32,
+            required_budget_ms: CORRECTION_REFRESH_BUDGET.as_millis() as u32,
+            request_timeout_ms: CORRECTION_REFRESH_REQUEST_TIMEOUT.as_millis() as u32,
+            witness_dispatch_window_ms: CORRECTION_REFRESH_DISPATCH_WINDOW.as_millis() as u32,
+            event_poll_timeout_ms: CORRECTION_REFRESH_REQUEST_TIMEOUT.as_millis() as u32,
+            cleanup_reserve_guaranteed: false,
+            elapsed_ms: 0,
+            elapsed_saturated: false,
+            polls: 0,
+            events: 0,
+            counters_saturated: false,
+        }
+    }
+
+    pub fn finish_elapsed(&mut self, milliseconds: u128) {
+        self.elapsed_ms = milliseconds.min(300_000) as u32;
+        self.elapsed_saturated = milliseconds > 300_000;
+    }
+
+    /// Only the fixed typed refresh and read-only event polls are available in
+    /// this workflow. In particular, no edit replay, save, or command bridge.
+    pub fn run(
+        &mut self,
+        uri: &str,
+        available: Duration,
+        mut request: impl FnMut(cedar_protocol::Operation, Duration) -> CheckResult<Value>,
+        mut elapsed: impl FnMut() -> Duration,
+        mut pause: impl FnMut(Duration),
+    ) -> CheckResult<()> {
+        use cedar_protocol::Operation;
+        if self.result != CorrectionRecoveryResult::NotAttempted {
+            return Err("correction recovery may only be considered once".into());
+        }
+        if self.original_result != DiagnosticResult::Timeout {
+            self.result = CorrectionRecoveryResult::NotEligible;
+            return Err("only the original correction timeout permits recovery".into());
+        }
+        let started = elapsed();
+        if available.saturating_sub(started) < CORRECTION_REFRESH_BUDGET {
+            self.result = CorrectionRecoveryResult::InsufficientBudget;
+            return Err("insufficient existing watchdog budget for one correction refresh".into());
+        }
+        self.budget_sufficient = true;
+        let deadline = started + CORRECTION_REFRESH_BUDGET;
+        self.result = CorrectionRecoveryResult::RequestError;
+        self.attempts = 1;
+        let acknowledgement = request(
+            Operation::LanguageRefreshJavaDiagnostics {
+                path: SOURCE_PATH.into(),
+                version: 5,
+            },
+            CORRECTION_REFRESH_REQUEST_TIMEOUT,
+        )?;
+        if elapsed() >= deadline {
+            self.result = CorrectionRecoveryResult::Timeout;
+            return Err("correction recovery exceeded its existing budget".into());
+        }
+        if acknowledgement["version"] != 5
+            || acknowledgement["notification_only"] != true
+            || !acknowledgement["diagnostics_refresh_requested"]
+                .as_str()
+                .is_some_and(|actual| same_local_uri(actual, uri))
+        {
+            self.result = CorrectionRecoveryResult::AcknowledgementMismatch;
+            return Err("version-5 correction refresh acknowledgement mismatch".into());
+        }
+        self.acknowledged = true;
+        let dispatch_deadline = elapsed() + CORRECTION_REFRESH_DISPATCH_WINDOW;
+        let mut diagnostics = DiagnosticEvidence::new(self.session, DiagnosticPhase::Correction);
+        loop {
+            let now = elapsed();
+            if now >= dispatch_deadline
+                || deadline.saturating_sub(now) < CORRECTION_REFRESH_REQUEST_TIMEOUT
+            {
+                self.result = CorrectionRecoveryResult::Timeout;
+                return Err(
+                    "single correction refresh produced no exact current-source warning".into(),
+                );
+            }
+            self.result = CorrectionRecoveryResult::RequestError;
+            diagnostics.begin_poll();
+            self.polls = diagnostics.polls;
+            self.counters_saturated = diagnostics.counters_saturated;
+            // Admission reserves this entire final poll, including when it
+            // finishes after the dispatch window. The wall deadline stays fixed.
+            let response = request(
+                Operation::LanguageEvents,
+                CORRECTION_REFRESH_REQUEST_TIMEOUT,
+            )?;
+            if elapsed() >= deadline {
+                self.result = CorrectionRecoveryResult::Timeout;
+                return Err("correction refresh witness arrived after its deadline".into());
+            }
+            let matched = diagnostics.inspect_response(&response, uri);
+            self.events = diagnostics.events;
+            self.counters_saturated = diagnostics.counters_saturated;
+            match matched {
+                Ok(true) => {
+                    self.unversioned = response["events"]
+                        .as_array()
+                        .expect("validated event array")
+                        .iter()
+                        .find(|event| {
+                            event["type"] == "diagnostics"
+                                && diagnostics_match(&event["value"], uri, 5, true)
+                        })
+                        .expect("validated exact correction witness")["value"]["version"]
+                        .is_null();
+                    self.witness = true;
+                    self.result = CorrectionRecoveryResult::Matched;
+                    return Ok(());
+                }
+                Ok(false) => {}
+                Err(result) => {
+                    self.result = match result {
+                        DiagnosticResult::MalformedEvents => {
+                            CorrectionRecoveryResult::MalformedEvents
+                        }
+                        DiagnosticResult::Truncated => CorrectionRecoveryResult::Truncated,
+                        DiagnosticResult::Lagged => CorrectionRecoveryResult::Lagged,
+                        DiagnosticResult::Closed => CorrectionRecoveryResult::Closed,
+                        _ => CorrectionRecoveryResult::RequestError,
+                    };
+                    return Err("correction recovery event stream failed; see typed receipt".into());
+                }
+            }
+            pause(Duration::from_millis(100).min(dispatch_deadline.saturating_sub(elapsed())));
+        }
     }
 }
 
@@ -631,6 +823,13 @@ pub(super) struct SessionEvidence {
     pub correction_change_result: CorrectionChangeResult,
     pub correction_change_acknowledged: bool,
     pub correction_diagnostics: bool,
+    pub correction_recovery_result: CorrectionRecoveryResult,
+    pub correction_recovery_attempts: u32,
+    pub correction_recovery_acknowledged: bool,
+    pub correction_recovery_witness: bool,
+    pub correction_recovery_unversioned: bool,
+    pub correction_recovery_budget_sufficient: bool,
+    pub workflow_success: bool,
     pub source_unchanged: bool,
     pub root_observed_live: bool,
     pub root_identity_verified: bool,
@@ -642,6 +841,15 @@ pub(super) struct SessionEvidence {
     pub shutdown_elapsed_ms: u64,
 }
 impl SessionEvidence {
+    pub fn record_correction_recovery(&mut self, receipt: &CorrectionRecoveryEvidence) {
+        self.correction_recovery_result = receipt.result;
+        self.correction_recovery_attempts = receipt.attempts;
+        self.correction_recovery_acknowledged = receipt.acknowledged;
+        self.correction_recovery_witness = receipt.witness;
+        self.correction_recovery_unversioned = receipt.unversioned;
+        self.correction_recovery_budget_sufficient = receipt.budget_sufficient;
+    }
+
     pub fn new(session: u32, mode: SessionMode) -> Self {
         Self {
             kind: "windows_java_session",
@@ -662,6 +870,13 @@ impl SessionEvidence {
             correction_change_result: CorrectionChangeResult::NotAttempted,
             correction_change_acknowledged: false,
             correction_diagnostics: false,
+            correction_recovery_result: CorrectionRecoveryResult::NotAttempted,
+            correction_recovery_attempts: 0,
+            correction_recovery_acknowledged: false,
+            correction_recovery_witness: false,
+            correction_recovery_unversioned: false,
+            correction_recovery_budget_sufficient: false,
+            workflow_success: false,
             source_unchanged: false,
             root_observed_live: false,
             root_identity_verified: false,
@@ -711,6 +926,8 @@ pub(super) struct CleanupEvidence {
     pub failure_stage: FailureStage,
     pub primary_failed: bool,
     pub cleanup_failed: bool,
+    pub spontaneous_success: bool,
+    pub workflow_success: bool,
     pub success: bool,
 }
 
@@ -1141,6 +1358,361 @@ fn diagnostic_fixture(phase: DiagnosticPhase, version: Option<i32>, uri: &str) -
 }
 fn diagnostic_events(batch: Value) -> Value {
     json!({"truncated":false,"events":[{"type":"diagnostics","value":batch}]})
+}
+
+fn correction_refresh_ack(uri: &str) -> Value {
+    json!({"diagnostics_refresh_requested":uri,"version":5,"notification_only":true})
+}
+
+#[test]
+fn correction_recovery_keeps_the_original_timeout_and_uses_one_typed_refresh() {
+    use cedar_protocol::Operation;
+    let uri = "file:///private-fixture/Main.java";
+    for version in [Some(5), None] {
+        let mut original = DiagnosticEvidence::new(2, DiagnosticPhase::Correction);
+        original.result = DiagnosticResult::Timeout;
+        original.polls = 593;
+        original.finish_elapsed(60_020);
+        let before = serde_json::to_value(&original).unwrap();
+        let mut recovery =
+            CorrectionRecoveryEvidence::new(2, original.result, CORRECTION_REFRESH_BUDGET);
+        let mut refreshes = 0;
+        let mut polls = 0;
+        recovery
+            .run(
+                uri,
+                CORRECTION_REFRESH_BUDGET,
+                |operation, timeout| {
+                    assert_eq!(timeout, Duration::from_secs(75));
+                    match operation {
+                        Operation::LanguageRefreshJavaDiagnostics { path, version } => {
+                            refreshes += 1;
+                            assert_eq!(path, SOURCE_PATH);
+                            assert_eq!(version, 5);
+                            Ok(correction_refresh_ack(uri))
+                        }
+                        Operation::LanguageEvents => {
+                            polls += 1;
+                            Ok(diagnostic_events(diagnostic_fixture(
+                                DiagnosticPhase::Correction,
+                                version,
+                                uri,
+                            )))
+                        }
+                        _ => panic!("recovery replayed or changed the document"),
+                    }
+                },
+                || Duration::ZERO,
+                |_| panic!("exact witness should finish immediately"),
+            )
+            .unwrap();
+        assert_eq!((refreshes, polls), (1, 1));
+        assert_eq!(recovery.result, CorrectionRecoveryResult::Matched);
+        assert!(recovery.acknowledged && recovery.witness && recovery.budget_sufficient);
+        assert_eq!(recovery.unversioned, version.is_none());
+        assert!(!recovery.cleanup_reserve_guaranteed);
+        assert_eq!(serde_json::to_value(&original).unwrap(), before);
+        let mut session = SessionEvidence::new(2, SessionMode::FreshData);
+        session.record_correction_recovery(&recovery);
+        assert!(!session.correction_diagnostics && !session.semantic_checks_passed);
+        assert!(
+            !session.workflow_success,
+            "remaining semantics and cleanup must still pass"
+        );
+        assert!(session.correction_recovery_witness);
+        assert!(recovery
+            .run(
+                uri,
+                CORRECTION_REFRESH_BUDGET,
+                |_, _| panic!("second recovery dispatch"),
+                || Duration::ZERO,
+                |_| {}
+            )
+            .is_err());
+        assert_eq!(recovery.attempts, 1);
+        let serialized = serde_json::to_value(&recovery).unwrap();
+        assert!(serialized
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v.is_boolean() || v.is_string() || v.is_u64()));
+        assert!(!serialized.to_string().contains("private"));
+    }
+}
+
+#[test]
+fn correction_recovery_refuses_other_failures_and_insufficient_existing_budget() {
+    for result in [
+        DiagnosticResult::Matched,
+        DiagnosticResult::RequestError,
+        DiagnosticResult::MalformedEvents,
+        DiagnosticResult::Truncated,
+        DiagnosticResult::Lagged,
+        DiagnosticResult::Closed,
+    ] {
+        let mut recovery = CorrectionRecoveryEvidence::new(1, result, CORRECTION_REFRESH_BUDGET);
+        assert!(recovery
+            .run(
+                "file:///fixture/Main.java",
+                CORRECTION_REFRESH_BUDGET,
+                |_, _| panic!("non-timeout must never dispatch recovery"),
+                || Duration::ZERO,
+                |_| {}
+            )
+            .is_err());
+        assert_eq!(recovery.result, CorrectionRecoveryResult::NotEligible);
+        assert_eq!(recovery.attempts, 0);
+    }
+    for (available, elapsed) in [
+        (Duration::ZERO, Duration::ZERO),
+        (
+            CORRECTION_REFRESH_BUDGET - Duration::from_millis(1),
+            Duration::ZERO,
+        ),
+        (CORRECTION_REFRESH_BUDGET, Duration::from_millis(1)),
+    ] {
+        let mut recovery = CorrectionRecoveryEvidence::new(1, DiagnosticResult::Timeout, available);
+        assert!(recovery
+            .run(
+                "file:///fixture/Main.java",
+                available,
+                |_, _| panic!("insufficient budget must never dispatch recovery"),
+                || elapsed,
+                |_| {}
+            )
+            .is_err());
+        assert_eq!(
+            recovery.result,
+            CorrectionRecoveryResult::InsufficientBudget
+        );
+        assert_eq!(recovery.attempts, 0);
+        assert!(!recovery.budget_sufficient);
+    }
+}
+
+#[test]
+fn correction_recovery_requires_the_exact_acknowledgement_without_retry() {
+    let uri = "file:///fixture/Main.java";
+    for response in [
+        Err("private request error".into()),
+        Ok(Value::Null),
+        Ok(correction_refresh_ack("file:///other.java")),
+        Ok(json!({"diagnostics_refresh_requested":uri,"version":4,"notification_only":true})),
+        Ok(json!({"diagnostics_refresh_requested":uri,"version":5,"notification_only":false})),
+    ] {
+        let mut recovery = CorrectionRecoveryEvidence::new(
+            1,
+            DiagnosticResult::Timeout,
+            CORRECTION_REFRESH_BUDGET,
+        );
+        let mut requests = 0;
+        assert!(recovery
+            .run(
+                uri,
+                CORRECTION_REFRESH_BUDGET,
+                |operation, _| {
+                    assert!(matches!(
+                        operation,
+                        cedar_protocol::Operation::LanguageRefreshJavaDiagnostics {
+                            version: 5,
+                            ..
+                        }
+                    ));
+                    requests += 1;
+                    response.clone()
+                },
+                || Duration::ZERO,
+                |_| {}
+            )
+            .is_err());
+        assert_eq!(requests, 1);
+        assert_eq!(recovery.attempts, 1);
+        assert!(!recovery.acknowledged && !recovery.witness);
+        assert_eq!(
+            recovery.result,
+            if response.is_err() {
+                CorrectionRecoveryResult::RequestError
+            } else {
+                CorrectionRecoveryResult::AcknowledgementMismatch
+            }
+        );
+        assert!(!serde_json::to_string(&recovery)
+            .unwrap()
+            .contains("private"));
+    }
+}
+
+#[test]
+fn correction_recovery_never_accepts_empty_stale_wrong_or_error_bearing_witnesses() {
+    let uri = "file:///fixture/Main.java";
+    let baseline = diagnostic_fixture(DiagnosticPhase::Correction, Some(5), uri);
+    let mut batches = vec![
+        json!({"uri":uri,"version":5,"diagnostics":[]}),
+        diagnostic_fixture(DiagnosticPhase::Correction, Some(4), uri),
+        diagnostic_fixture(DiagnosticPhase::Correction, Some(5), "file:///other.java"),
+    ];
+    for field in ["message", "severity", "range", "residual_error"] {
+        let mut batch = baseline.clone();
+        match field {
+            "message" => batch["diagnostics"][0]["message"] = json!("private wrong warning"),
+            "severity" => batch["diagnostics"][0]["severity"] = json!(3),
+            "range" => batch["diagnostics"][0]["range"]["start"]["character"] = json!(0),
+            "residual_error" => batch["diagnostics"].as_array_mut().unwrap().push(
+                diagnostic_fixture(DiagnosticPhase::Initial, Some(5), uri)["diagnostics"][0]
+                    .clone(),
+            ),
+            _ => unreachable!(),
+        }
+        batches.push(batch);
+    }
+    for batch in batches {
+        let clock = Cell::new(Duration::ZERO);
+        let mut refreshes = 0;
+        let mut recovery = CorrectionRecoveryEvidence::new(
+            1,
+            DiagnosticResult::Timeout,
+            CORRECTION_REFRESH_BUDGET,
+        );
+        assert!(recovery
+            .run(
+                uri,
+                CORRECTION_REFRESH_BUDGET,
+                |operation, _| {
+                    match operation {
+                        cedar_protocol::Operation::LanguageRefreshJavaDiagnostics { .. } => {
+                            refreshes += 1;
+                            Ok(correction_refresh_ack(uri))
+                        }
+                        cedar_protocol::Operation::LanguageEvents => {
+                            clock.set(clock.get() + Duration::from_secs(1));
+                            Ok(diagnostic_events(batch.clone()))
+                        }
+                        _ => panic!("unexpected recovery operation"),
+                    }
+                },
+                || clock.get(),
+                |duration| clock.set(clock.get() + duration)
+            )
+            .is_err());
+        assert_eq!(refreshes, 1);
+        assert_eq!(recovery.result, CorrectionRecoveryResult::Timeout);
+        assert!(recovery.acknowledged);
+        assert!(!recovery.witness);
+    }
+}
+
+#[test]
+fn correction_recovery_rejects_stream_loss_even_after_an_exact_warning() {
+    let uri = "file:///fixture/Main.java";
+    for (response, expected) in [
+        (Value::Null, CorrectionRecoveryResult::MalformedEvents),
+        (
+            json!({"truncated":true,"events":[]}),
+            CorrectionRecoveryResult::Truncated,
+        ),
+        (
+            json!({"truncated":false,"events":[{"type":"lagged"}]}),
+            CorrectionRecoveryResult::Lagged,
+        ),
+        (
+            json!({"truncated":false,"events":[{"type":"closed"}]}),
+            CorrectionRecoveryResult::Closed,
+        ),
+    ] {
+        for preceding_match in [false, true] {
+            let mut response = response.clone();
+            if preceding_match && response["events"].is_array() {
+                response["events"].as_array_mut().unwrap().insert(0,
+                    json!({"type":"diagnostics","value":diagnostic_fixture(DiagnosticPhase::Correction, Some(5), uri)}));
+            }
+            let mut recovery = CorrectionRecoveryEvidence::new(
+                1,
+                DiagnosticResult::Timeout,
+                CORRECTION_REFRESH_BUDGET,
+            );
+            assert!(recovery
+                .run(
+                    uri,
+                    CORRECTION_REFRESH_BUDGET,
+                    |operation, _| {
+                        Ok(
+                            if matches!(
+                                operation,
+                                cedar_protocol::Operation::LanguageRefreshJavaDiagnostics { .. }
+                            ) {
+                                correction_refresh_ack(uri)
+                            } else {
+                                response.clone()
+                            },
+                        )
+                    },
+                    || Duration::ZERO,
+                    |_| {}
+                )
+                .is_err());
+            assert_eq!(recovery.result, expected);
+            assert!(!recovery.witness);
+        }
+    }
+}
+
+#[test]
+fn correction_recovery_reserves_the_last_poll_and_rejects_a_late_exact_witness() {
+    let uri = "file:///fixture/Main.java";
+    // A poll dispatched inside the 15-second window retains its normal 75-second
+    // transport bound. Neither that bound nor its receipt claims a cleanup reserve.
+    for (finished, accepted) in [
+        (Duration::from_secs(120), true),
+        (CORRECTION_REFRESH_BUDGET, false),
+    ] {
+        let clock = Cell::new(Duration::ZERO);
+        let mut recovery = CorrectionRecoveryEvidence::new(
+            1,
+            DiagnosticResult::Timeout,
+            CORRECTION_REFRESH_BUDGET,
+        );
+        let outcome = recovery.run(
+            uri,
+            CORRECTION_REFRESH_BUDGET,
+            |operation, timeout| {
+                assert_eq!(timeout, Duration::from_secs(75));
+                if matches!(
+                    operation,
+                    cedar_protocol::Operation::LanguageRefreshJavaDiagnostics { .. }
+                ) {
+                    clock.set(Duration::from_secs(75));
+                    Ok(correction_refresh_ack(uri))
+                } else {
+                    clock.set(finished);
+                    Ok(diagnostic_events(diagnostic_fixture(
+                        DiagnosticPhase::Correction,
+                        Some(5),
+                        uri,
+                    )))
+                }
+            },
+            || clock.get(),
+            |_| {},
+        );
+        assert_eq!(outcome.is_ok(), accepted);
+        assert_eq!(recovery.witness, accepted);
+        assert_eq!(
+            recovery.result,
+            if accepted {
+                CorrectionRecoveryResult::Matched
+            } else {
+                CorrectionRecoveryResult::Timeout
+            }
+        );
+        assert_eq!(recovery.required_budget_ms, 165_000);
+        assert_eq!(recovery.witness_dispatch_window_ms, 15_000);
+        assert_eq!(recovery.event_poll_timeout_ms, 75_000);
+    }
+    let mut recovery = CorrectionRecoveryEvidence::new(1, DiagnosticResult::Timeout, Duration::MAX);
+    recovery.finish_elapsed(u128::MAX);
+    assert_eq!(recovery.available_budget_ms, 360_000);
+    assert_eq!(recovery.elapsed_ms, 300_000);
+    assert!(recovery.elapsed_saturated);
 }
 
 #[test]

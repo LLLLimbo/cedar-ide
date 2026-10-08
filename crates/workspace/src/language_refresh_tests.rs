@@ -222,6 +222,109 @@ fn refresh_initialization_flag_is_agent_owned_and_unsupported_sessions_never_not
     }
 }
 
+fn marked_root() -> TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    for (name, contents) in [
+        (
+            ".cedar-windows-language-validation",
+            "cedar-windows-language-validation-v1\n",
+        ),
+        (
+            ".cedar-windows-java-validation",
+            "cedar-windows-java-validation-v1\n",
+        ),
+    ] {
+        fs::write(directory.path().join(name), contents).unwrap();
+    }
+    fs::write(
+        directory.path().join("initialize.json"),
+        initialize().to_string(),
+    )
+    .unwrap();
+    directory
+}
+
+fn assert_generic_start_cannot_refresh(
+    directory: &Path,
+    mut workspace: Workspace,
+    startup_supported: bool,
+) {
+    let start = || Operation::LanguageStart {
+        program: peer_binary().to_str().unwrap().into(),
+        args: vec![directory.to_str().unwrap().into()],
+    };
+    assert_eq!(workspace.handle(start()).unwrap_err().code, "run_disabled");
+    assert!(workspace.language.is_none());
+    workspace.set_allow_run(true);
+    let result = workspace.handle(start());
+    if !startup_supported {
+        assert_eq!(result.unwrap_err().code, "unsupported_platform");
+        assert!(workspace.language.is_none());
+        assert!(!directory.join("audit.jsonl").exists());
+        return;
+    }
+    let Payload::Language { value } = result.unwrap() else {
+        panic!("expected start response")
+    };
+    assert_eq!(value["initialize"]["cedar_java_diagnostics_refresh"], false);
+    assert_eq!(value["initialize"]["cedar_java_organize_imports"], false);
+    let session = workspace.language.as_ref().unwrap();
+    assert!(!session.production_java);
+    assert!(!session.java_refresh_session_authorized());
+    #[cfg(feature = "windows-language-validation")]
+    assert!(session.java_validation.is_none());
+    open(&mut workspace, "Hello.java", 1);
+    assert_eq!(
+        workspace.handle(refresh("Hello.java", 1)).unwrap_err().code,
+        "language_refresh_unsupported"
+    );
+    // Defense in depth: even a corrupted agent-owned cached flag is not a
+    // substitute for the production origin or a retained Java fixture session.
+    workspace
+        .language
+        .as_mut()
+        .unwrap()
+        .java_diagnostics_refresh = true;
+    assert_eq!(
+        workspace.handle(refresh("Hello.java", 1)).unwrap_err().code,
+        "language_refresh_unsupported"
+    );
+    assert!(!audit(directory, &mut workspace)
+        .iter()
+        .any(|message| message["method"] == "java/validateDocument"));
+    close(workspace);
+}
+
+#[test]
+fn refresh_markers_cannot_enable_normal_constructors_even_with_all_features() {
+    for backend in [
+        cedar_tasks::BackendMode::InProcess,
+        cedar_tasks::BackendMode::IsolatedAgent,
+    ] {
+        let directory = marked_root();
+        let workspace = Workspace::with_backend_mode(directory.path(), backend).unwrap();
+        #[cfg(feature = "windows-language-validation")]
+        {
+            assert!(!workspace.windows_language_validation);
+            assert!(workspace.windows_java_validation.is_none());
+        }
+        assert_generic_start_cannot_refresh(directory.path(), workspace, !cfg!(windows));
+    }
+    let directory = marked_root();
+    let workspace = Workspace::open(directory.path()).unwrap();
+    assert_generic_start_cannot_refresh(directory.path(), workspace, !cfg!(windows));
+}
+
+#[cfg(feature = "windows-language-validation")]
+#[test]
+fn refresh_requires_java_fixture_session_not_generic_validation_host_or_marker() {
+    let directory = marked_root();
+    let workspace = Workspace::for_windows_language_validation(directory.path()).unwrap();
+    assert!(workspace.windows_language_validation);
+    assert!(workspace.windows_java_validation.is_none());
+    assert_generic_start_cannot_refresh(directory.path(), workspace, true);
+}
+
 #[test]
 fn refresh_rejects_closed_stale_nonpositive_and_outside_documents_before_any_notification() {
     let (directory, mut workspace, _) = start(true, initialize());
