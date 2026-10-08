@@ -115,6 +115,28 @@ class CrashCollectionTests(unittest.TestCase):
             }],
         }
 
+    def agent_fixture(self):
+        sessions = [{
+            'kind': 'windows_java_session', 'session': number, 'mode': mode,
+            'initialization_ms': 1000 * number,
+            'semantic_checks_passed': True, 'exact_diagnostics': True, 'exact_definition': True,
+            'real_completion': True, 'deferred_import_resolve': True,
+            'primary_identity_unchanged': True, 'two_atomic_edits': True,
+            'advisory_command_skipped': True, 'actual_undo': True, 'actual_redo': True,
+            'versions_2_3_4_synced': True, 'correction_diagnostics': True, 'source_unchanged': True,
+            'root_observed_live': True, 'root_identity_verified': True, 'jdk_symbol_verified': True,
+            'shutdown_api_succeeded': True, 'root_handle_signaled': True, 'gracefully_exited': True,
+            'root_exit_code': 0, 'shutdown_elapsed_ms': 10 * number,
+        } for number, mode in enumerate(('initial', 'fresh_data', 'reused_data'), 1)]
+        return sessions + [{
+            'kind': 'windows_java_cleanup', 'sessions_completed': 3, 'agent_exit_zero': True,
+            'source_unchanged': True, 'observed_roots_exited': True, 'synthetic_root_removed': True,
+            'success': True, 'primary_failed': False, 'cleanup_failed': False, 'failure_stage': 'none',
+        }]
+
+    def agent_source(self, records):
+        return self.private_source('private-agent.txt', '\n'.join(json.dumps(record) for record in records))
+
     def link(self, target, path, directory=False):
         try:
             path.symlink_to(target, target_is_directory=directory)
@@ -382,6 +404,226 @@ class CrashCollectionTests(unittest.TestCase):
         self.assertIn('probe_report', report)
         self.assertFalse(report['java_transcript']['evidence']['records'][0]['removed'])
         self.assertNotIn('SECRET_', result.stdout + result.stderr + output.read_text())
+
+    def test_agent_transcript_preserves_typed_records_and_omits_private_payloads(self):
+        expected = self.agent_fixture()
+        records = [{**record, 'payload': {'uri': 'file:///SECRET_WORKSPACE/Main.java'},
+                    'path': 'C:\\SECRET_USER\\fixture', 'env': {'TOKEN': 'SECRET_TOKEN'},
+                    'error': 'SECRET_ERROR', 'stack': ['SECRET_STACK'], 'pid': 12345}
+                   for record in expected]
+        records.extend(({'kind': 'completion', 'result': 'SECRET_COMPLETION'},
+                        {'kind': 'pass', 'windows_full_acceptance': True},
+                        {'kind': ['SECRET_KIND']}, ['SECRET_ARRAY']))
+        raw = ('\ufeff' + '\r\n'.join(json.dumps(record) for record in records)
+               + '\r\nSECRET_STDERR\r\n').encode('utf-8')
+        path = self.private_source('private-agent.txt', raw)
+        report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['acceptance_result'], 'not_evaluated')
+        source = report['agent_transcript']
+        self.assertEqual(source['status'], 'collected')
+        self.assertFalse(source['truncated'])
+        self.assertEqual(source['bytes'], len(raw))
+        self.assertEqual(source['sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(source['evidence']['records'], expected)
+        self.assertEqual(source['evidence']['omitted_other_json_records'], 4)
+        self.assertEqual(source['evidence']['omitted_non_json_lines'], 1)
+        rendered = json.dumps(report)
+        for secret in ('SECRET_', 'file:///', str(self.root), 'payload', 'windows_full_acceptance'):
+            self.assertNotIn(secret, rendered)
+
+    def test_agent_failure_and_false_witnesses_are_collected_without_runtime_acceptance(self):
+        session, cleanup = self.agent_fixture()[0], self.agent_fixture()[-1]
+        for record in (session, cleanup):
+            for key, value in record.items():
+                if type(value) is bool:
+                    record[key] = False
+        session['root_exit_code'] = None
+        cleanup.update(sessions_completed=0, primary_failed=True, cleanup_failed=True, failure_stage='stop')
+        path = self.agent_source([session, cleanup])
+        report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['agent_transcript']['evidence']['records'], [session, cleanup])
+        self.assertEqual(report['acceptance_result'], 'not_evaluated')
+
+    def test_agent_records_do_not_expand_direct_java_transcript_schema(self):
+        agent = self.agent_source(self.agent_fixture())
+        java = self.private_source('private-java.txt', '{"kind":"fixture_cleanup","removed":true}\n')
+        report = collector.collect(self.root, java_transcript=agent, agent_transcript=java)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['java_transcript']['evidence']['records'], [])
+        self.assertEqual(report['agent_transcript']['evidence']['records'], [])
+        self.assertEqual(report['java_transcript']['evidence']['omitted_other_json_records'], 4)
+        self.assertEqual(report['agent_transcript']['evidence']['omitted_other_json_records'], 1)
+
+    def test_agent_session_numbers_require_bounded_integers(self):
+        for kind, field, valid_values in (
+                ('windows_java_session', 'session', (1, 2, 3)),
+                ('windows_java_cleanup', 'sessions_completed', (0, 1, 2, 3))):
+            for value in valid_values + (-1, 0, 4, 2 ** 53, True, False, 1.0, None, '1', 'SECRET_SESSION'):
+                valid = type(value) is int and value in valid_values
+                with self.subTest(kind=kind, value=value):
+                    path = self.agent_source([{'kind': kind, field: value}])
+                    report = collector.collect(self.root, agent_transcript=path)
+                    source = report['agent_transcript']
+                    record = source['evidence']['records'][0]
+                    if valid:
+                        self.assertEqual(report['status'], 'complete')
+                        self.assertEqual(record[field], value)
+                    else:
+                        self.assertEqual(report['status'], 'error')
+                        self.assertNotIn(field, record)
+                        self.assertIn('invalid_field_' + field, source['errors'])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+        path = self.agent_source([{'kind': 'windows_java_session', 'mode': 'initial'}])
+        report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'error')
+        self.assertIn('missing_session', report['agent_transcript']['errors'])
+
+    def test_agent_count_and_exit_code_bounds_reject_wrong_types(self):
+        for field, maximum, nullable in (('initialization_ms', 2 ** 53 - 1, False),
+                                         ('shutdown_elapsed_ms', 2 ** 53 - 1, False),
+                                         ('root_exit_code', 2 ** 32 - 1, True)):
+            for value in (0, maximum, None, -1, maximum + 1, True, 0.0, 'SECRET_NUMBER'):
+                valid = (value is None and nullable) or (type(value) is int and 0 <= value <= maximum)
+                with self.subTest(field=field, value=value):
+                    path = self.agent_source([{'kind': 'windows_java_session', 'session': 1, field: value}])
+                    report = collector.collect(self.root, agent_transcript=path)
+                    record = report['agent_transcript']['evidence']['records'][0]
+                    self.assertEqual(report['status'], 'complete' if valid else 'error')
+                    if valid:
+                        self.assertEqual(record[field], value)
+                    else:
+                        self.assertNotIn(field, record)
+                        self.assertIn('invalid_field_' + field, report['agent_transcript']['errors'])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_agent_enum_and_boolean_fields_reject_untrusted_values(self):
+        path = self.agent_source([
+            {'kind': 'windows_java_session', 'session': 1, 'mode': 'SECRET_MODE',
+             'semantic_checks_passed': 1, 'root_handle_signaled': 'SECRET_BOOLEAN'},
+            {'kind': 'windows_java_cleanup', 'sessions_completed': 0,
+             'failure_stage': 'SECRET_STAGE', 'success': None, 'primary_failed': 0},
+        ])
+        report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'error')
+        self.assertEqual(set(report['agent_transcript']['errors']), {
+            'invalid_field_mode', 'invalid_field_semantic_checks_passed',
+            'invalid_field_root_handle_signaled', 'invalid_field_failure_stage',
+            'invalid_field_success', 'invalid_field_primary_failed',
+        })
+        self.assertNotIn('SECRET_', json.dumps(report))
+        stages = ('none', 'setup', 'initialize', 'open', 'diagnostics', 'hover', 'definition',
+                  'completion', 'resolve', 'apply', 'undo', 'redo', 'sync', 'correction',
+                  'close', 'stop', 'root_exit', 'agent_exit', 'fixture_cleanup')
+        path = self.agent_source([{'kind': 'windows_java_cleanup', 'failure_stage': stage}
+                                  for stage in stages])
+        report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual([record['failure_stage'] for record in report['agent_transcript']['evidence']['records']],
+                         list(stages))
+
+    def test_agent_missing_malformed_and_read_failed_sources_keep_safe_errors(self):
+        report = collector.collect(self.root, agent_transcript='missing-private-agent.txt')
+        self.assertEqual(report['status'], 'error')
+        self.assertEqual(report['agent_transcript']['error_type'], 'FileNotFoundError')
+        path = self.private_source('private-agent.txt', '{"kind":"windows_java_cleanup","SECRET_BROKEN":')
+        report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'error')
+        self.assertIn('malformed_json_line', report['agent_transcript']['errors'])
+        self.assertIsNotNone(report['agent_transcript']['sha256'])
+        self.assertNotIn('SECRET_', json.dumps(report))
+        with mock.patch.object(collector, 'read_checked', side_effect=ValueError('SECRET_IDENTITY_CHANGED')):
+            report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'error')
+        self.assertEqual(report['agent_transcript']['reason'], 'source_read_or_parse_failed')
+        self.assertIsNone(report['agent_transcript']['sha256'])
+        self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_agent_source_cannot_leave_root_or_follow_file_and_directory_links(self):
+        outside = self.base / 'outside-private-agent.txt'
+        outside.write_text('SECRET_OUTSIDE_SOURCE')
+        for path in (outside, Path('../outside-private-agent.txt')):
+            with self.subTest(path=path), \
+                    mock.patch.object(collector, 'read_checked', side_effect=AssertionError('must not read')):
+                report = collector.collect(self.root, agent_transcript=path)
+                self.assertEqual(report['status'], 'error')
+                self.assertEqual(report['agent_transcript']['reason'], 'source_outside_root')
+                self.assertNotIn(str(self.base), json.dumps(report))
+        linked_file = self.root / 'linked-private.txt'
+        self.link(outside, linked_file)
+        linked_directory = self.root / 'linked-directory'
+        self.link(self.base, linked_directory, directory=True)
+        for path in (linked_file, linked_directory / outside.name):
+            with self.subTest(path=path), \
+                    mock.patch.object(collector, 'read_checked', side_effect=AssertionError('must not read')):
+                report = collector.collect(self.root, agent_transcript=path)
+                self.assertEqual(report['agent_transcript']['status'], 'error')
+                self.assertIsNone(report['agent_transcript']['sha256'])
+                self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_agent_source_rejects_hard_links_without_reading(self):
+        outside = self.base / 'outside-private-agent.txt'
+        outside.write_text('SECRET_HARDLINK_SOURCE')
+        path = self.root / 'private-agent.txt'
+        try:
+            os.link(outside, path)
+        except OSError as error:
+            self.skipTest('Runner does not permit hardlinks: ' + type(error).__name__)
+        with mock.patch.object(collector, 'read_checked', side_effect=AssertionError('must not read')):
+            report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'partial')
+        self.assertEqual(report['agent_transcript']['reason'], 'not_unlinked_regular_file')
+        self.assertIsNone(report['agent_transcript']['sha256'])
+
+    def test_agent_source_size_record_and_line_limits_remain_visible(self):
+        record = {'kind': 'windows_java_cleanup', 'success': False}
+        path = self.agent_source([record] * 129)
+        raw = path.read_bytes()
+        report = collector.collect(self.root, agent_transcript=path)
+        source = report['agent_transcript']
+        self.assertEqual(report['status'], 'partial')
+        self.assertEqual(source['status'], 'truncated')
+        self.assertEqual(source['truncation_reasons'], ['transcript_records_limit'])
+        self.assertEqual(len(source['evidence']['records']), 128)
+        self.assertEqual(source['bytes'], len(raw))
+        self.assertEqual(source['sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertTrue(source['truncated'])
+        path.write_text(json.dumps(record) + '\n' + 'SECRET_LONG_LINE' * 5000)
+        report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'partial')
+        self.assertEqual(report['agent_transcript']['truncation_reasons'], ['transcript_line_characters_limit'])
+        self.assertEqual(report['agent_transcript']['evidence']['records'], [record])
+        self.assertNotIn('SECRET_', json.dumps(report))
+        with mock.patch.object(collector, 'read_checked', side_effect=AssertionError('must not read')):
+            report = collector.collect(self.root, self.limits(source_file_bytes=8), agent_transcript=path)
+        self.assertEqual(report['status'], 'partial')
+        self.assertEqual(report['agent_transcript']['status'], 'skipped')
+        self.assertEqual(report['agent_transcript']['reason'], 'source_file_bytes_limit')
+        self.assertIsNone(report['agent_transcript']['sha256'])
+
+    def test_agent_cli_collects_failures_and_errors_without_claiming_acceptance(self):
+        records = self.agent_fixture()
+        records[-1].update(success=False, primary_failed=True, failure_stage='correction',
+                           error='SECRET_FAILURE_ERROR')
+        path = self.agent_source(records)
+        java = self.private_source('private-java.txt', '{"kind":"pass","windows_full_acceptance":false}\n')
+        output = self.base / 'report.json'
+        command = [sys.executable, str(Path(collector.__file__)), '--root', str(self.root),
+                   '--output', str(output), '--agent-transcript', str(path), '--java-transcript', str(java)]
+        collected = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        self.assertEqual(collected.returncode, 0, collected.stderr)
+        report = json.loads(output.read_text())
+        self.assertFalse(report['agent_transcript']['evidence']['records'][-1]['success'])
+        self.assertFalse(report['java_transcript']['evidence']['records'][0]['windows_full_acceptance'])
+        self.assertEqual(report['acceptance_result'], 'not_evaluated')
+        self.assertEqual(json.loads(collected.stdout)['acceptance_result'], 'not_evaluated')
+        self.assertNotIn('SECRET_', collected.stdout + collected.stderr + output.read_text())
+        path.unlink()
+        failed = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        self.assertEqual(failed.returncode, 1)
+        self.assertEqual(json.loads(output.read_text())['agent_transcript']['status'], 'error')
+        self.assertNotIn(str(self.root), failed.stdout + failed.stderr + output.read_text())
 
     def test_oversized_log_is_skipped_without_reading_or_hashing(self):
         self.log('SECRET_OVERSIZED_CONTENT')
@@ -708,6 +950,7 @@ class CrashCollectionTests(unittest.TestCase):
         empty = subprocess.run(command, capture_output=True, text=True, timeout=10)
         self.assertEqual(empty.returncode, 0, empty.stderr)
         self.assertEqual(json.loads(output.read_text())['files'], [])
+        self.assertNotIn('agent_transcript', json.loads(output.read_text()))
         self.log('SECRET_MALFORMED')
         failed = subprocess.run(command, capture_output=True, text=True, timeout=10)
         self.assertEqual(failed.returncode, 1)

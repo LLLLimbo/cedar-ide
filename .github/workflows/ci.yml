@@ -60,7 +60,7 @@ jobs:
           $env:CEDAR_MOCK_LSP_BIN = "$PWD/target/release/cedar-mock-lsp.exe"
           $env:CEDAR_WINPROCESS_FIXTURE_BIN = "$PWD/target/release/cedar-winprocess-fixture.exe"
           cargo test -p cedar-client --features windows-language-validation --test windows_agent_language --locked -- --ignored --test-threads=1
-      - name: Real Windows Java owned-transport acceptance
+      - name: Real Windows Java transport and agent/editor acceptance
         timeout-minutes: 8
         if: runner.os == 'Windows'
         shell: pwsh

@@ -32,9 +32,12 @@ pub struct Watchdog {
 }
 impl Watchdog {
     pub fn start() -> Self {
+        Self::start_with_timeout(Duration::from_secs(45))
+    }
+    pub fn start_with_timeout(timeout: Duration) -> Self {
         let (stop, receiver) = mpsc::channel();
         let thread = thread::spawn(move || {
-            if receiver.recv_timeout(Duration::from_secs(45)).is_err() {
+            if receiver.recv_timeout(timeout).is_err() {
                 eprintln!("Windows agent test exceeded its driver watchdog deadline");
                 std::process::exit(126);
             }
@@ -175,6 +178,7 @@ pub struct RawAgent {
     output: Option<BufReader<ChildStdout>>,
     stderr: Drain,
     next_id: u64,
+    request_worker: Option<JoinHandle<()>>,
 }
 impl RawAgent {
     pub fn new(root: &Path, allow_run: bool) -> Self {
@@ -206,6 +210,7 @@ impl RawAgent {
             output,
             stderr,
             next_id: 0,
+            request_worker: None,
         }
     }
     pub fn diagnostics(&self) -> String {
@@ -224,6 +229,13 @@ impl RawAgent {
         count
     }
     pub fn request(&mut self, op: Operation) -> Result<Payload, RemoteError> {
+        self.request_with_timeout(op, WAIT)
+    }
+    pub fn request_with_timeout(
+        &mut self,
+        op: Operation,
+        timeout: Duration,
+    ) -> Result<Payload, RemoteError> {
         self.next_id += 1;
         let request = Request {
             id: self.next_id,
@@ -232,14 +244,18 @@ impl RawAgent {
         let mut input = self.input.take().expect("agent stdin is open");
         let mut output = self.output.take().expect("agent stdout is open");
         let (send, receive) = mpsc::channel();
-        thread::spawn(move || {
+        assert!(
+            self.request_worker.is_none(),
+            "previous request worker is still owned"
+        );
+        self.request_worker = Some(thread::spawn(move || {
             // Both write and read run under the caller's deadline. An oversized
             // malformed frame or stopped agent cannot block the test thread.
             let result = write_frame(&mut input, &request)
                 .and_then(|_| read_frame::<_, Response>(&mut output));
             let _ = send.send((input, output, result));
-        });
-        let (input, output, response) = receive.recv_timeout(WAIT).unwrap_or_else(|e| {
+        }));
+        let (input, output, response) = receive.recv_timeout(timeout).unwrap_or_else(|e| {
             panic!(
                 "agent request {} exceeded deadline: {e}; {}",
                 self.next_id,
@@ -248,6 +264,11 @@ impl RawAgent {
         });
         self.input = Some(input);
         self.output = Some(output);
+        self.request_worker
+            .take()
+            .unwrap()
+            .join()
+            .expect("agent request worker");
         let response = response
             .unwrap_or_else(|e| panic!("agent protocol: {e}; {}", self.diagnostics()))
             .expect("agent response EOF");
@@ -301,12 +322,25 @@ impl RawAgent {
         }
     }
     pub fn wait_exit(&mut self, context: &str) -> ExitStatus {
-        let deadline = Instant::now() + WAIT;
+        self.wait_exit_with_timeout(context, WAIT)
+    }
+    pub fn wait_exit_with_timeout(&mut self, context: &str, timeout: Duration) -> ExitStatus {
+        let deadline = Instant::now() + timeout;
         loop {
             let exit = self.child.0.try_wait().expect("wait owned agent");
             if let Some(status) = exit {
-                if self.stderr.finished() {
+                if self.stderr.finished()
+                    && self
+                        .request_worker
+                        .as_ref()
+                        .is_none_or(|worker| worker.is_finished())
+                {
                     self.stderr.join();
+                    if let Some(worker) = self.request_worker.take() {
+                        worker
+                            .join()
+                            .expect("agent request worker after process exit");
+                    }
                     return status;
                 }
             }
@@ -319,12 +353,40 @@ impl RawAgent {
         }
     }
     pub fn close_cleanly(&mut self) {
+        self.close_cleanly_with_timeout(WAIT);
+    }
+    pub fn close_cleanly_with_timeout(&mut self, timeout: Duration) {
         self.input.take();
         assert!(
-            self.wait_exit("clean agent stdin EOF").success(),
+            self.wait_exit_with_timeout("clean agent stdin EOF", timeout)
+                .success(),
             "{}",
             self.diagnostics()
         );
+    }
+    #[allow(dead_code)] // Used by the app's longer-running real Java acceptance.
+    pub fn has_protocol_pipes(&self) -> bool {
+        self.input.is_some() && self.output.is_some()
+    }
+    /// Explicit failure cleanup, separate from the Drop backstop. Only the exact
+    /// Child created by this driver can be terminated, never a PID lookup.
+    #[allow(dead_code)] // Used by the app's longer-running real Java acceptance.
+    pub fn abort_and_wait_with_timeout(&mut self, timeout: Duration) -> ExitStatus {
+        self.input.take();
+        self.output.take();
+        if self
+            .child
+            .0
+            .try_wait()
+            .expect("query owned agent")
+            .is_none()
+        {
+            self.child
+                .0
+                .kill()
+                .expect("terminate owned agent after failure");
+        }
+        self.wait_exit_with_timeout("explicit owned-agent failure cleanup", timeout)
     }
     pub fn inject_failure(&mut self, failure: &str) {
         match failure {

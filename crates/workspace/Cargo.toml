@@ -7,7 +7,7 @@ rust-version.workspace = true
 
 [features]
 # Nonshipping acceptance fixture only; normal constructors never use this path.
-windows-language-validation = []
+windows-language-validation = ["dep:windows-sys"]
 
 [dependencies]
 cedar-language = { path = "../language" }
@@ -20,3 +20,6 @@ tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", optional = true, features = ["Win32_Foundation", "Win32_System_Threading"] }

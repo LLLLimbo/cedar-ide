@@ -1,56 +1,63 @@
-# Verification report · checkpoint 9C JDK symbol coverage / 0.8.12 · 2026-10-08
+# Verification report · checkpoint 9D agent/editor preparation / 0.8.13 · 2026-10-08
 
-This checkpoint adds a standard read-only JDK workspace-symbol assertion to the
-direct Java acceptance example. It does not weaken shutdown or enable normal
-Windows IDE language capability.
+This checkpoint adds an opt-in real Windows Java acceptance path through the
+nonshipping agent host and the actual headless editor transaction/history code.
+Normal Windows language capability remains disabled.
 
 ## Verified public baseline
 
-Exact public 0.8.11 commit
-[`9d619568d6aab85286d87034c1ef86f3c47b38cd`](https://github.com/LLLLimbo/cedar-ide/commit/9d619568d6aab85286d87034c1ef86f3c47b38cd)
-[passed Ubuntu CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37713476684).
+Exact public 0.8.12 commit
+[`a64d3ac505b51a02b34521e75bceadf01a38b355`](https://github.com/LLLLimbo/cedar-ide/commit/a64d3ac505b51a02b34521e75bceadf01a38b355)
+[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37714905533).
 Windows passed 21 process cases, 16 transport cases, seven isolated-agent
-task/bundle cases, and all three previously skipped agent-language cases. Those
-three prove explicit trust/default-gate behavior, independent overlapping task
-and language owners, and peer-EOF/forced-agent cleanup of both owned jobs.
+task/bundle cases and three nonshipping agent-language cases.
 
-Real JDT completed initial semantics, but its shutdown still exhausted grace:
-10,115 ms, terminal category grace_expired, retained root exit1067 and graceful
-exit false. Restarts were not accepted. That exact commit remains red on the
-strict real-Java gate.
+Direct real JDT passed initial, fresh-data and reused-data sessions, including
+source semantics, deferred import resolution and the JDK String symbol witness.
+Independent retained root handles observed natural exit0 in all three sessions;
+shutdown took 638, 565 and 1,037 ms. Source bytes remained unchanged and the
+intended data-directory witnesses were present. This establishes the direct
+transport path; it does not establish an editor, GUI or authenticated SSH path.
 
-## Added assertion
+## New agent/editor acceptance
 
-The example checks advertised workspaceSymbolProvider support, then sends the
-standard workspace/symbol request for java.lang.String after its existing source
-semantic checks. It requires a Class symbol named String in container java.lang,
-a nonempty jdt://contents/ URI prefix without whitespace/control characters,
-and an ordered range bounded to LSP unsigned31-bit coordinates. It then checks unchanged
-source bytes again before document close and shutdown.
+The validation-only constructor requires two exact synthetic-root markers and
+explicit allow-run. It validates the selected distribution, relative launcher,
+configuration and data locations while preserving the verified ordinary Java
+executable spelling. Location checks are not a complete argv allowlist or an
+OS sandbox. Normal constructors, shipping CLI and Hello capability gates retain
+their existing behavior, including in all-feature builds.
 
-For this direct example, JDT's documented classFileContentsSupport initialization
-option is enabled and search scope is all, allowing JDK-library symbol results.
-This is a symbol-validation profile; it does not claim a class-file viewer or
-change normal client capability advertisements. Completion documentation and lazy
-import resolution remain enabled. Maven/Gradle import remains disabled for the
-generated Eclipse fixture, and no server command is executed.
+The ignored native test drives three sequential real Java sessions through the
+agent protocol: initial, fresh data and reused data. It checks exact source
+diagnostics and definition, obtains and resolves a real completion, and invokes
+the actual frontend apply path. It requires the primary edit and deferred import
+to apply atomically without executing the advisory server command. Actual
+Document undo/redo must restore text and cursor state, advance edit versions, and
+synchronize versions 2, 3 and 4. Correction diagnostics and unchanged disk bytes
+are checked separately. This test does not operate an OS window.
 
-The symbol result witnesses the requested indexed JDK type. It is not a formal
-join of every internal server job, and no universal graceful-exit guarantee is
-inferred. All three sessions still require the existing semantic checks, unchanged
-source, intended data-directory witnesses and independently observed Windows
-root exit0 within the original ten-second grace. New evidence fields are a fixed
-boolean/check enum; raw symbol payloads are not added to public artifacts.
+Each session records an independently observed live root identity before stop,
+then requires the same retained handle to signal with exit0. The validation
+profile performs the same bounded JDK symbol witness before shutdown. Successful
+cleanup requires joined request workers and a reaped owned agent; forced cleanup
+cannot satisfy graceful acceptance. Synthetic files are removed only after the
+required ownership checks succeed. These root observations are not an
+independent real-JVM Job-zero or listener-inventory measurement.
+
+Raw transcripts remain in temporary private storage. Public evidence contains
+only bounded typed session and cleanup fields through the existing sanitizer.
+The PowerShell gate requires all three ordered sessions and one successful
+cleanup receipt, so an empty or accidentally filtered cargo test run cannot pass.
+The existing direct Java acceptance remains required.
 
 ## Verification boundary
 
-Local aggregate verification passed 560 Rust tests, all five Python smoke
-chains, two export tests and 39 sanitizer tests (two Windows-only skips).
-MSVC all-target/all-feature clippy and optimized workspace build passed.
-Independent static review found no remaining blocker. The next exact native
-CI must establish the new symbol assertion and full Java lifecycle outcome.
-GUI Trust, authenticated SSH and actual IDE/headless Java edit acceptance remain
-separate pending boundaries. No private diagnostic findings are included here.
+Local focused tests cover strict semantic predicates, the real completion fixture
+through Document history/version changes, and bounded typed lifecycle receipts.
+Independent static review found no remaining implementation or public-evidence
+boundary blocker. Exact native CI for this checkpoint remains pending; no
+Windows agent/editor success is claimed before that run.
 
-Sources: [JDT LS 1.61 workspace-symbol handling](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/v1.61.0/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/WorkspaceSymbolHandler.java),
-[JDT client capability checks](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/v1.61.0/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/preferences/ClientPreferences.java).
+GUI Trust and authenticated SSH remain separate pending boundaries. No private
+diagnostic findings are included in this report.

@@ -10,8 +10,16 @@
 //! permissions, not merely workspace access.
 
 mod capabilities;
+#[cfg(feature = "windows-language-validation")]
+mod java_validation;
 mod language;
 mod tasks;
+
+#[cfg(feature = "windows-language-validation")]
+pub use java_validation::{
+    WINDOWS_JAVA_EVIDENCE_FILE, WINDOWS_JAVA_VALIDATION_MARKER,
+    WINDOWS_JAVA_VALIDATION_MARKER_CONTENTS,
+};
 
 use cedar_protocol::{
     Entry, Operation, Payload, RemoteError, SearchMatch, MAX_FILE_BYTES, PROTOCOL_VERSION,
@@ -48,6 +56,8 @@ pub struct Workspace {
     allow_run: bool,
     #[cfg(feature = "windows-language-validation")]
     windows_language_validation: bool,
+    #[cfg(feature = "windows-language-validation")]
+    windows_java_validation: Option<java_validation::JavaValidationProfile>,
     language: Option<language::LanguageSession>,
     tasks: Option<cedar_tasks::TaskManager>,
 }
@@ -74,6 +84,8 @@ impl Workspace {
             allow_run: false,
             #[cfg(feature = "windows-language-validation")]
             windows_language_validation: false,
+            #[cfg(feature = "windows-language-validation")]
+            windows_java_validation: None,
             language: None,
             tasks: None,
         })
@@ -108,6 +120,22 @@ impl Workspace {
             ));
         }
         workspace.windows_language_validation = true;
+        Ok(workspace)
+    }
+
+    /// Nonshipping, marked-root Java fixture. Does not grant execution trust,
+    /// advertise Windows language support, or change ordinary constructors.
+    #[cfg(feature = "windows-language-validation")]
+    pub fn for_windows_java_validation(
+        root: impl AsRef<Path>,
+        distribution: impl AsRef<Path>,
+    ) -> Result<Self, RemoteError> {
+        let mut workspace = Self::for_windows_language_validation(root)?;
+        java_validation::require_marker(&workspace)?;
+        workspace.windows_java_validation = Some(java_validation::JavaValidationProfile::new(
+            &workspace,
+            distribution.as_ref(),
+        )?);
         Ok(workspace)
     }
 

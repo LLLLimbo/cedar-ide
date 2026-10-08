@@ -15,6 +15,8 @@ pub(super) const fn platform_supported() -> bool {
 pub(super) struct LanguageSession {
     client: LspClient,
     opened: HashMap<String, OpenLanguageDocument>,
+    #[cfg(feature = "windows-language-validation")]
+    java_validation: Option<super::java_validation::JavaValidationSession>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -111,19 +113,57 @@ impl Workspace {
                 let mut config = ProcessConfig::new(program);
                 config.args = args.into_iter().map(Into::into).collect();
                 config.working_directory = Some(self.root.clone());
-                let client = LspClient::spawn(config, options).map_err(lsp_error)?;
+                let initialization_options = Value::Null;
+                #[cfg(feature = "windows-language-validation")]
+                let initialization_options = match &self.windows_java_validation {
+                    Some(profile) => profile.configure(&mut config, &mut options)?,
+                    None => initialization_options,
+                };
                 let uri = url::Url::from_directory_path(&self.root)
                     .map_err(|_| error("invalid_path", "Cannot create root URI"))?;
+                let client = LspClient::spawn(config, options).map_err(lsp_error)?;
+                #[cfg(feature = "windows-language-validation")]
+                let java_validation = match self.windows_java_validation.as_mut() {
+                    Some(profile) => match profile.begin(&client) {
+                        Ok(session) => Some(session),
+                        Err(error) => {
+                            let _ = client.shutdown();
+                            drop(client);
+                            return Err(error);
+                        }
+                    },
+                    None => None,
+                };
                 let result = client
                     .initialize_with_timeout(
                         Some(uri.as_str()),
-                        Value::Null,
+                        initialization_options,
                         Duration::from_secs(60),
                     )
-                    .map_err(lsp_error)?;
+                    .map_err(lsp_error);
+                #[cfg(feature = "windows-language-validation")]
+                let java_validation = if let Some(mut validation) = java_validation {
+                    let initialized = match &result {
+                        Ok(value) => validation.initialized(value),
+                        Err(error) => Err(error.clone()),
+                    };
+                    if let Err(error) = initialized {
+                        self.windows_java_validation
+                            .as_mut()
+                            .expect("validation session has a profile")
+                            .finish(client, validation, Some(error))?;
+                        unreachable!("failed initialization cannot pass Java validation");
+                    }
+                    Some(validation)
+                } else {
+                    None
+                };
+                let result = result?;
                 self.language = Some(LanguageSession {
                     client,
                     opened: HashMap::new(),
+                    #[cfg(feature = "windows-language-validation")]
+                    java_validation,
                 });
                 Ok(Payload::Language {
                     value: json!({"started":true,"initialize":result,"root_uri":uri.as_str()}),
@@ -364,6 +404,16 @@ impl Workspace {
             }
             Operation::LanguageStop => {
                 if let Some(session) = self.language.take() {
+                    #[cfg(feature = "windows-language-validation")]
+                    if let Some(validation) = session.java_validation {
+                        self.windows_java_validation
+                            .as_mut()
+                            .expect("validation session has a profile")
+                            .finish(session.client, validation, None)?;
+                    } else {
+                        session.client.shutdown().map_err(lsp_error)?;
+                    }
+                    #[cfg(not(feature = "windows-language-validation"))]
                     session.client.shutdown().map_err(lsp_error)?;
                 }
                 Ok(Payload::Language {

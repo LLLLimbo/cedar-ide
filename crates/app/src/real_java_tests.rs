@@ -11,6 +11,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "windows-language-validation")]
+#[path = "real_java_acceptance_tests.rs"]
+mod acceptance;
+
 fn language(client: &mut Client, op: Operation) -> Result<Value, Box<dyn Error>> {
     match client.request(op)? {
         Payload::Language { value } => Ok(value),

@@ -14,6 +14,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let mut root = None;
+    let mut java_distribution = None;
     let mut allow_run = false;
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -23,6 +24,12 @@ fn run() -> Result<(), String> {
                 ));
             }
             Some("--allow-run") if !allow_run => allow_run = true,
+            Some("--java-distribution") if java_distribution.is_none() => {
+                java_distribution = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("--java-distribution requires a directory")?,
+                ));
+            }
             _ => {
                 return Err(format!(
                     "unknown or duplicate argument: {}",
@@ -32,8 +39,11 @@ fn run() -> Result<(), String> {
         }
     }
     let root = root.ok_or("--synthetic-root PATH is required")?;
-    let mut workspace =
-        Workspace::for_windows_language_validation(root).map_err(|error| error.to_string())?;
+    let mut workspace = match java_distribution {
+        Some(distribution) => Workspace::for_windows_java_validation(root, distribution),
+        None => Workspace::for_windows_language_validation(root),
+    }
+    .map_err(|error| error.to_string())?;
     workspace.set_allow_run(allow_run);
     let stdin = io::stdin();
     let stdout = io::stdout();

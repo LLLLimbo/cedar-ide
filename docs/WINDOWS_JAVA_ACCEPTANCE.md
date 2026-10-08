@@ -1,4 +1,4 @@
-# Prepared direct Windows Java acceptance
+# Windows Java direct and agent/editor acceptance
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -344,3 +344,29 @@ checked again afterward. This is a semantic index witness, not a formal join of
 all server jobs. Documentation/resolve coverage, existing deadlines and the
 independent Windows exit0 requirement remain unchanged. See
 [JDK symbol coverage](TEST_REPORT_PHASE9C_JDK_SYMBOL.md).
+
+
+## 0.8.13 nonshipping agent and headless editor gate
+
+The same PowerShell acceptance script now runs the ignored
+`real_windows_agent_java_editor_transactions` test after the direct probe. It
+uses the explicitly opted-in `cedar-agent-language-validation` fixture with
+`--java-distribution`, two exact synthetic-root markers and `--allow-run`. The
+normal application and agent capability gates remain closed. This constructor
+validates launch locations; it is not a complete argument allowlist or sandbox.
+
+Three sessions exercise initial, fresh-data and reused-data JDT state. Real
+completion resolution flows through the frontend transaction, actual Document
+undo/redo and protocol versions 2/3/4. Exact diagnostics, definition, correction
+and unchanged source bytes are required. Separate native handles verify the
+started root identity and natural exit0 after each stop. Agent exit, request
+worker joins and generated-root removal are required before the final receipt.
+The test is headless and does not enable GUI Trust or use SSH. It does not claim
+an independent actual-JVM Job-zero or network-listener inventory.
+
+Agent output is redirected to a private transcript. The collector's separate
+`--agent-transcript` schema emits only typed enum/boolean/count records; arbitrary
+text, source payloads, paths and raw diagnostics are omitted. The PowerShell
+consumer requires three ordered successful sessions and one successful cleanup
+receipt, rejecting zero selected tests. The native test and outer CI budgets
+remain failure boundaries, never substitutes for cleanup evidence.

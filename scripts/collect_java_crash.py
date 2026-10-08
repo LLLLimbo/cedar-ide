@@ -86,6 +86,25 @@ TRANSCRIPT_FIELDS = {
                          'retained_windows_observation_handle': 'bool'},
     'data_directory_witness': {'session': SESSIONS, 'metadata_in_expected_directory': 'bool'},
 }
+AGENT_TRANSCRIPT_FIELDS = {
+    'windows_java_session': dict.fromkeys((
+        'semantic_checks_passed', 'exact_diagnostics', 'exact_definition', 'real_completion',
+        'deferred_import_resolve', 'primary_identity_unchanged', 'two_atomic_edits',
+        'advisory_command_skipped', 'actual_undo', 'actual_redo', 'versions_2_3_4_synced',
+        'correction_diagnostics', 'source_unchanged', 'root_observed_live',
+        'root_identity_verified', 'jdk_symbol_verified', 'shutdown_api_succeeded',
+        'root_handle_signaled', 'gracefully_exited'), 'bool')
+        | {'session': ('integer_range', 1, 3), 'mode': ('initial', 'fresh_data', 'reused_data'),
+           'initialization_ms': 'count', 'root_exit_code': '?u32', 'shutdown_elapsed_ms': 'count'},
+    'windows_java_cleanup': dict.fromkeys((
+        'agent_exit_zero', 'source_unchanged', 'observed_roots_exited', 'synthetic_root_removed',
+        'success', 'primary_failed', 'cleanup_failed'), 'bool')
+        | {'sessions_completed': ('integer_range', 0, 3),
+           'failure_stage': ('none', 'setup', 'initialize', 'open', 'diagnostics', 'hover',
+                             'definition', 'completion', 'resolve', 'apply', 'undo', 'redo',
+                             'sync', 'correction', 'close', 'stop', 'root_exit', 'agent_exit',
+                             'fixture_cleanup')},
+}
 
 
 def is_link(info):
@@ -345,6 +364,8 @@ def safe_fields(value, schema, errors):
         elif kind in ('count', 'u32', 'u64'):
             maximum = {'count': 2 ** 53 - 1, 'u32': 2 ** 32 - 1, 'u64': 2 ** 64 - 1}[kind]
             valid = type(item) is int and 0 <= item <= maximum
+        elif isinstance(kind, tuple) and kind and kind[0] == 'integer_range':
+            valid = type(item) is int and kind[1] <= item <= kind[2]
         elif isinstance(kind, tuple) and kind and kind[0] == 'enum_list':
             valid = (isinstance(item, list) and len(item) <= len(kind[1])
                      and all(isinstance(part, str) and part in kind[1] for part in item))
@@ -462,10 +483,11 @@ def sanitize_probe(data, limits):
     return report, errors, truncation
 
 
-def sanitize_transcript(data, limits):
+def sanitize_transcript(data, limits, schema=TRANSCRIPT_FIELDS):
     errors, truncation = set(), set()
     report = {'records': [], 'omitted_non_json_lines': 0, 'omitted_other_json_records': 0}
-    # Only complete JSON lines of seven known kinds can contribute output.
+    # Each private source has a separate whitelist; arbitrary payloads never
+    # become public evidence even when they appear alongside a known record.
     for line in data.decode('utf-8-sig', errors='replace').splitlines():
         if not line.strip():
             continue
@@ -479,18 +501,22 @@ def sanitize_transcript(data, limits):
                 errors.add('malformed_json_line')
             report['omitted_non_json_lines'] += 1
             continue
-        if not isinstance(value, dict) or not isinstance(value.get('kind'), str) or value['kind'] not in TRANSCRIPT_FIELDS:
+        if not isinstance(value, dict) or not isinstance(value.get('kind'), str) or value['kind'] not in schema:
             report['omitted_other_json_records'] += 1
             continue
         if len(report['records']) >= limits['transcript_records']:
             truncation.add('transcript_records_limit')
             continue
         kind = value['kind']
-        record = {'kind': kind} | safe_fields(value, TRANSCRIPT_FIELDS[kind], errors)
-        if 'session' in TRANSCRIPT_FIELDS[kind] and 'session' not in record:
+        record = {'kind': kind} | safe_fields(value, schema[kind], errors)
+        if 'session' in schema[kind] and 'session' not in record:
             errors.add('missing_session')
         report['records'].append(record)
     return report, errors, truncation
+
+
+def sanitize_agent_transcript(data, limits):
+    return sanitize_transcript(data, limits, AGENT_TRANSCRIPT_FIELDS)
 
 
 def collect_source(root, source_path, root_info, limits, sanitizer):
@@ -527,7 +553,7 @@ def collect_source(root, source_path, root_info, limits, sanitizer):
     return item
 
 
-def collect(root, limits=None, probe_report=None, java_transcript=None):
+def collect(root, limits=None, probe_report=None, java_transcript=None, agent_transcript=None):
     limits = dict(LIMITS if limits is None else limits)
     root = Path(os.path.abspath(root))
     report = {'schema_version': 1, 'purpose': 'sanitized_jvm_crash_diagnostics',
@@ -620,7 +646,8 @@ def collect(root, limits=None, probe_report=None, java_transcript=None):
     report['files'].sort(key=lambda item: item['relative_filename'])
     sources = []
     for key, path, sanitizer in (('probe_report', probe_report, sanitize_probe),
-                                 ('java_transcript', java_transcript, sanitize_transcript)):
+                                 ('java_transcript', java_transcript, sanitize_transcript),
+                                 ('agent_transcript', agent_transcript, sanitize_agent_transcript)):
         if path is not None:
             report[key] = collect_source(root, path, root_info, limits, sanitizer)
             sources.append(report[key])
@@ -661,8 +688,10 @@ def main():
     parser.add_argument('--output', type=Path, required=True, help='Sanitized JSON report; parent must exist')
     parser.add_argument('--probe-report', type=Path, help='Private probe JSON stdout file inside root')
     parser.add_argument('--java-transcript', type=Path, help='Private real-Java output file inside root')
+    parser.add_argument('--agent-transcript', type=Path, help='Private headless-agent output file inside root')
     args = parser.parse_args()
-    report = collect(args.root, probe_report=args.probe_report, java_transcript=args.java_transcript)
+    report = collect(args.root, probe_report=args.probe_report, java_transcript=args.java_transcript,
+                     agent_transcript=args.agent_transcript)
     try:
         write_report(args.output, report)
     except (OSError, ValueError) as error:

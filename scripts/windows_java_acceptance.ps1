@@ -64,6 +64,7 @@ $stage = 'scratch creation'
 $created = $false
 $probeReport = Join-Path $scratch 'owned-java-probe-private.json'
 $javaTranscript = Join-Path $scratch 'real-java-private.txt'
+$agentTranscript = Join-Path $scratch 'agent-java-editor-private.txt'
 try {
     New-Item -ItemType Directory -Path $scratch | Out-Null
     $created = $true
@@ -150,6 +151,19 @@ try {
     $stage = 'real Java semantic and lifecycle assertions'
     & cargo run --target $target -p cedar-language --example java_smoke --locked -- $distribution $Java --resolve-imports *> $javaTranscript
     if ($LASTEXITCODE -ne 0) { throw 'Real Windows Java acceptance failed.' }
+    $stage = 'real agent and headless Java editor assertions'
+    $agentErrors = Join-Path $scratch 'agent-jdt-errors'
+    New-Item -ItemType Directory -Path $agentErrors | Out-Null
+    $env:CEDAR_JAVA_ERROR_DIR = $agentErrors
+    $env:CEDAR_JDTLS_HOME = $distribution
+    $env:CEDAR_AGENT_LANGUAGE_VALIDATION_BIN = [IO.Path]::GetFullPath('target/release/cedar-agent-language-validation.exe')
+    if (-not (Test-Path -LiteralPath $env:CEDAR_AGENT_LANGUAGE_VALIDATION_BIN -PathType Leaf)) {
+        throw 'Build the separate nonshipping agent language validation fixture before this test.'
+    }
+    # All protocol/panic/JVM text stays private. Only typed status records survive
+    # the collector; a zero-test filter cannot satisfy the witness checks below.
+    & cargo test -p cedar-app --all-features --locked real_windows_agent_java_editor_transactions -- --ignored --nocapture --test-threads=1 *> $agentTranscript
+    if ($LASTEXITCODE -ne 0) { throw 'Real Windows agent and headless Java acceptance failed.' }
 }
 catch {
     $failure = $_
@@ -164,14 +178,44 @@ finally {
             $collectorArgs = @('scripts/collect_java_crash.py', '--root', $scratch, '--output', $CrashEvidencePath)
             if (Test-Path -LiteralPath $probeReport -PathType Leaf) { $collectorArgs += @('--probe-report', $probeReport) }
             if (Test-Path -LiteralPath $javaTranscript -PathType Leaf) { $collectorArgs += @('--java-transcript', $javaTranscript) }
+            if (Test-Path -LiteralPath $agentTranscript -PathType Leaf) { $collectorArgs += @('--agent-transcript', $agentTranscript) }
             & python @collectorArgs
             if ($LASTEXITCODE -ne 0) { throw 'JVM crash diagnostic collection was incomplete; inspect the JSON status.' }
+            if ($null -eq $failure) {
+                $collected = Get-Content -LiteralPath $CrashEvidencePath -Raw | ConvertFrom-Json
+                $sessions = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_session' })
+                $cleanup = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_cleanup' })
+                if ($sessions.Count -ne 3 -or $cleanup.Count -ne 1) {
+                    throw 'Expected three real agent Java sessions and one cleanup witness; zero filtered tests cannot pass.'
+                }
+                $expectedModes = @('initial', 'fresh_data', 'reused_data')
+                for ($index = 0; $index -lt 3; $index++) {
+                    $record = $sessions[$index]
+                    if ($record.session -ne ($index + 1) -or $record.mode -cne $expectedModes[$index] -or
+                        -not $record.semantic_checks_passed -or -not $record.source_unchanged -or
+                        -not $record.root_identity_verified -or -not $record.jdk_symbol_verified -or
+                        -not $record.root_handle_signaled -or $record.root_exit_code -ne 0 -or
+                        -not $record.gracefully_exited -or -not $record.versions_2_3_4_synced) {
+                        throw 'Agent Java session evidence did not prove required semantics, identity and natural zero exit.'
+                    }
+                }
+                if ($cleanup[0].sessions_completed -ne 3 -or -not $cleanup[0].success -or
+                    $cleanup[0].primary_failed -or $cleanup[0].cleanup_failed -or
+                    $cleanup[0].failure_stage -cne 'none' -or -not $cleanup[0].agent_exit_zero -or
+                    -not $cleanup[0].source_unchanged -or -not $cleanup[0].observed_roots_exited -or
+                    -not $cleanup[0].synthetic_root_removed) {
+                    throw 'Agent Java cleanup evidence did not prove successful completion.'
+                }
+            }
         }
         catch {
             if ($null -eq $failure) { $stage = 'sanitized crash evidence collection'; $failure = $_ }
             else { Add-Content -LiteralPath $EvidencePath -Value ('Crash evidence collection also failed: ' + $_.Exception.Message) }
         }
-        if (Test-Path -LiteralPath 'Env:CEDAR_JAVA_ERROR_DIR') { Remove-Item -LiteralPath 'Env:CEDAR_JAVA_ERROR_DIR' }
+        foreach ($name in @('CEDAR_JAVA_ERROR_DIR', 'CEDAR_JDTLS_HOME', 'CEDAR_AGENT_LANGUAGE_VALIDATION_BIN')) {
+            $environmentPath = 'Env:' + $name
+            if (Test-Path -LiteralPath $environmentPath) { Remove-Item -LiteralPath $environmentPath }
+        }
         if ($null -eq $failure) { $stage = 'generated dependency cleanup' }
         try {
             Remove-Item -LiteralPath $scratch -Recurse -Force
@@ -190,4 +234,4 @@ if ($null -ne $failure) {
     Record ('FAIL during ' + $stage + ': ' + $failure.Exception.Message)
     throw $failure
 }
-Record 'PASS: real Windows Java example completed all assertions and generated dependency scratch was removed.'
+Record 'PASS: direct Java plus real agent/headless editor assertions completed and generated dependency scratch was removed.'
