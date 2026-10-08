@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 15 / 0.15.4
+# 功能矩阵与后续验收 · checkpoint 16 / 0.16.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -13,15 +13,15 @@
 | 恢复隐私 | 前端本地明文、Unix 私有权限、单写者锁、完整性校验、有界配额、错误可见；不恢复执行信任 | 无加密/秘密保险箱；Windows 原生恢复和 ACL 隐私验收未完成；无恶意同账户写入者隔离；无静默淘汰旧稿 |
 | 远程 | 系统 OpenSSH、stdio agent、统一后端、显式重连；有界传输故障测试；后台直接子进程回收；SSH 配置硬化；唯一有效握手与有界后端能力发现 | **真实 SSH 认证/断网互操作仍是核心门槛**；自动部署/升级、跨协议版本协商、跨应用重启的事务恢复、旧任务接管、端口管理；旧 OpenSSH 客户端运行验收 |
 | Java/Kotlin | 文本编辑、语法着色、JDT LS 诊断/补全/跳转；第二阶段真实 Java 与旧版社区 Kotlin 语义链验证 | 完整 Maven/Gradle 工程模型、SDK 管理、当前官方 Kotlin 许可/兼容性验证、生产项目回归 |
-| LSP / 重构 | 自动同步、诊断、悬浮/定义、补全与延迟 import；只读格式化预览、显式 Apply/Cancel、单文档撤销；同步匹配草稿后查引用；显式层级/平面大纲；有界队列/超时 | 引用是无版本结果，不保证目标时效；多文件重命名需先解决快照/资源操作/跨文档撤销安全；inline diagnostics、代码操作、snippets、服务多路化 |
+| LSP / 重构 | 自动同步、诊断、悬浮/定义、补全与延迟 import；显式Java刷新与待到达/过期/无版本提示；只读格式化预览、显式 Apply/Cancel、单文档撤销；同步匹配草稿后查引用；显式层级/平面大纲；有界队列/超时 | 0.16刷新待原生验收，Java偶发诊断缺失根因仍未确认；引用是无版本结果，不保证目标时效；多文件重命名需先解决快照/资源操作/跨文档撤销安全；inline diagnostics、代码操作、snippets、服务多路化 |
 | 调试 | 独立异步 DAP 传输；第二阶段真实 Python 断点/栈/变量/继续/停止验证 | IDE 调试 UI/远程桥接、可靠后代进程回收、监听安全、Java/JVM 调试 |
 | 命令运行 | 明确 executable + 字面量 argv；RunStart/Poll/Cancel、实时有界输出、终态区分、运行中继续编辑保存、关闭/重连保护 | 本阶段原生显式 Run/Cancel/重连复核待批准启用信任；Windows 0.7.1 隔离 agent 实际 CI 已通过，原生 GUI 待验收；交互式 PTY、测试结果树、并行任务；macOS 运行未验收 |
 | 保存的命令配置 | 显式 Load/选择/新建/Save；`cedar.tasks.json` 严格有界格式；字面量参数行与预览；普通编辑器版本检查、单次撤销和恢复；重连显式复核 | 不是完整运行/调试配置系统；无自动发现、预设、环境变量、目录覆盖、变量展开或 autorun；未序列化表单只在当前会话 |
 | Windows进程基础 | 原子Job绑定、私有本机管道、完成后回收的异步I/O、严格argv、固定64KiB owned stdin；0.8.3的48单元+21生命周期+12语言传输全部实际通过 | 0.8.12直接真实Java三会话与3项agent语言夹具已通过；0.8.15真实agent/编辑器三会话已通过；0.8.16真实任务并发/强制所有者清理已通过；不等同GUI或恶意代码沙箱 |
-| Windows本地后端 | 同目录精确cedar-agent.exe；固定IsolatedAgent模式、信任独立、异步任务三项能力；绝对原生.exe路径；完整u32退出码 | 无PATH/PATHEXT或batch解析；缺失bundle无回退；旧GitStatus/同步Run/通用LSP/DAP仍禁用；新增显式Git变更/单文件diff待0.15同提交原生验收；新增专用Java/JDT正常路径已通过0.9.0 CI；原生 Windows GUI 待验收；LSP Job底层已验证，直接真实Java和非分发agent并发夹具已通过；0.8.15真实agent/编辑器已通过；0.8.16任务并发已通过；0.9.0正式Java路径已通过 |
+| Windows本地后端 | 同目录精确cedar-agent.exe；固定IsolatedAgent模式、信任独立、异步任务三项能力；绝对原生.exe路径；完整u32退出码 | 无PATH/PATHEXT或batch解析；缺失bundle无回退；旧GitStatus/同步Run/通用LSP/DAP仍禁用；显式Git变更/单文件diff已通过0.15.4同提交原生验收；新增专用Java/JDT正常路径已通过0.9.0 CI；原生 Windows GUI 待验收；LSP Job底层已验证，直接真实Java和非分发agent并发夹具已通过；0.8.15真实agent/编辑器已通过；0.8.16任务并发已通过；0.9.0正式Java路径已通过 |
 | 任务安全 | 配置操作零自动执行；每连接一个异步任务、1–300 秒、每流 256 KiB、8 个历史记录；Linux 普通进程组清理；不自动重试不明结果 | 非 OS 沙箱，恶意逃逸后代可能存活；Unix 强杀 agent 不保证任务清理；Windows 已验证 Job 随所有者退出清理；遗留同步 Run/Git/LSP/DAP 不计入异步任务限额 |
 | 搜索 | 有界文本搜索、结果跳转；语言服务引用查找与工作区边界导航 | 正则、替换、全工作区符号索引 |
-| Git | 可信工作区显式状态与单文件 staged/unstaged diff；明确Git 2.45+路径；根目录/字面量路径/有界进程；旧agent保留状态回退 | 0.15新路径原生验收待完成；过滤器仍可执行代码；无后台轮询/暂存/提交/重置/抓取；linked worktree、子模块、冲突diff、blame/merge、分支/远端管理尚缺 |
+| Git | 可信工作区显式状态与单文件 staged/unstaged diff；明确Git 2.45+路径；根目录/字面量路径/有界进程；旧agent保留状态回退 | 0.15.4新路径已通过双平台真实Git验收；过滤器仍可执行代码；无后台轮询/暂存/提交/重置/抓取；linked worktree、子模块、冲突diff、blame/merge、分支/远端管理尚缺 |
 | 插件 | Rust crate 扩展边界 | 稳定插件 ABI/协议、权限、生命周期、市场；无 IDEA 插件兼容承诺 |
 | 企业功能 | 无 | 数据库、Spring、Web、容器、应用服务器、Profiler、协作等需分别设计 |
 | 性能 | 懒加载、按需重绘、有界读取/输出/传输/恢复存储 | 无本阶段新内存基准；历史短时前端读数与 JVM 分开；同项目可复现基线、远程延迟、长会话泄漏、生产项目回归、完整进程树核算 |

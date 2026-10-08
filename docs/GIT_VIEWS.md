@@ -105,3 +105,5 @@ no bundle is delivered until every required gate passes.
 The 0.15.3 Windows Git probe executed but failed in the missing-promisor fixture. Its generated loose object was read-only; 0.15.4 adjusts only that verified
 synthetic object's writable bit before deletion and retains all no-fetch checks.
 Actual Windows Git acceptance remains pending the corrected native run.
+
+The corrected 0.15.4 source subsequently passed [exact Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37787319950): 1,421 Windows and 1,283 Linux real-Git assertions, including missing-object refusal, unchanged repositories, hostile inherited environments and owned cleanup. The Windows-only forced-agent-death case passed. The rebuilt development bundle passed its separate Unicode extraction and trust-off file-operation probe.

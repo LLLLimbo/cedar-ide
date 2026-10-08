@@ -211,6 +211,7 @@ impl Workspace {
             | Operation::LanguageClose { .. }
             | Operation::LanguageQuery { .. }
             | Operation::LanguageFormat { .. }
+            | Operation::LanguageRefreshJavaDiagnostics { .. }
             | Operation::LanguageReferences { .. }
             | Operation::LanguageDocumentSymbols { .. }
             | Operation::LanguageResolveUri { .. }

@@ -40,6 +40,7 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
         [
             "git_changes",
             "git_diff",
+            "java_diagnostics_refresh",
             "language_change",
             "language_close",
             "language_document_symbols",
@@ -80,6 +81,10 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
             java_executable: String::new(),
             distribution: String::new(),
             data_directory: String::new(),
+        },
+        Operation::LanguageRefreshJavaDiagnostics {
+            path: "must-not-be-opened.java".into(),
+            version: 1,
         },
         Operation::GitChanges {
             git_executable: String::new(),

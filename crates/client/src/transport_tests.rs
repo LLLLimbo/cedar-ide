@@ -670,6 +670,10 @@ fn advanced_operations() -> Vec<Operation> {
             tab_size: 4,
             insert_spaces: true,
         },
+        Operation::LanguageRefreshJavaDiagnostics {
+            path: "fixture.txt".into(),
+            version: 1,
+        },
         Operation::LanguageReferences {
             path: "fixture.txt".into(),
             line: 0,
@@ -888,6 +892,7 @@ fn java_capabilities() -> Vec<&'static str> {
         .into_iter()
         .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES.iter().copied())
         .chain([
+            "java_diagnostics_refresh",
             "language_query",
             "language_format",
             "language_references",
@@ -896,6 +901,83 @@ fn java_capabilities() -> Vec<&'static str> {
             "language_resolve_completion",
         ])
         .collect()
+}
+
+#[test]
+fn java_refresh_requires_its_optional_bridge_and_complete_typed_java_lifecycle() {
+    let refresh = Operation::LanguageRefreshJavaDiagnostics {
+        path: "Hello.java".into(),
+        version: 7,
+    };
+    for missing in std::iter::once(&"java_diagnostics_refresh")
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES.iter())
+    {
+        let capabilities: Vec<_> = java_capabilities()
+            .into_iter()
+            .chain(["language_start"])
+            .filter(|capability| capability != missing)
+            .collect();
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+        let error = client.request(refresh.clone()).unwrap_err();
+        assert!(error.starts_with("unsupported_operation:"), "{error}");
+        assert!(error.contains(missing), "{error}");
+        assert_eq!(recorded_requests(directory.path()).len(), 1);
+        read_fixture(&mut client);
+        assert_eq!(recorded_requests(directory.path()).len(), 2);
+    }
+    // An older typed Java peer keeps ordinary language operations; this bridge
+    // is optional and cannot become an implicit startup prerequisite.
+    let capabilities: Vec<_> = java_capabilities()
+        .into_iter()
+        .filter(|capability| *capability != "java_diagnostics_refresh")
+        .collect();
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+    client.request(start_java_language()).unwrap();
+    client.request(Operation::LanguageEvents).unwrap();
+    assert!(client
+        .request(refresh)
+        .unwrap_err()
+        .contains("java_diagnostics_refresh"));
+    client.request(Operation::LanguageStop).unwrap();
+    assert_eq!(recorded_requests(directory.path()).len(), 4);
+}
+
+#[test]
+fn java_refresh_ack_is_returned_unchanged_without_retry_or_diagnostic_poll() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&java_capabilities())));
+    client.request(start_java_language()).unwrap();
+    let acknowledgment = serde_json::json!({
+        "diagnostics_refresh_requested":"file:///fixture/Hello%20%23.java",
+        "version":7,"notification_only":true
+    });
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({
+            "Ok":{"type":"language","value":acknowledgment}
+        }),
+    );
+    let response = client
+        .request(Operation::LanguageRefreshJavaDiagnostics {
+            path: "Hello #.java".into(),
+            version: 7,
+        })
+        .unwrap();
+    assert!(matches!(response, Payload::Language { value } if value == acknowledgment));
+    assert!(process(&mut client).java_language_session);
+    let requests = recorded_requests(directory.path());
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[2]["op"],
+        serde_json::json!({
+            "type":"language_refresh_java_diagnostics","path":"Hello #.java","version":7
+        })
+    );
+    read_fixture(&mut client);
+    assert_eq!(recorded_requests(directory.path()).len(), 4);
 }
 
 fn process(client: &mut Client) -> &mut ProcessClient {

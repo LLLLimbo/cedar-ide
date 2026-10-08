@@ -24,6 +24,9 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
     }
     if java_language {
         capabilities.push("language_start_java");
+        // A bridge implementation claim, never JDT/server-version support or
+        // permission to execute it. Startup reports guarded session support.
+        capabilities.push("java_diagnostics_refresh");
     }
     if generic_language || java_language {
         capabilities.extend([
@@ -133,6 +136,10 @@ mod tests {
                 tab_size: 4,
                 insert_spaces: true,
             },
+            Operation::LanguageRefreshJavaDiagnostics {
+                path: "a.java".into(),
+                version: 1,
+            },
             Operation::LanguageReferences {
                 path: "a.rs".into(),
                 line: 0,
@@ -179,11 +186,12 @@ mod tests {
             let java_language = cfg!(windows) && backend_mode == BackendMode::IsolatedAgent;
             let language_operation_supported = |name: &str| match name {
                 "language_start" => generic_language,
-                "language_start_java" => java_language,
+                "language_start_java" | "java_diagnostics_refresh" => java_language,
                 _ => generic_language || java_language,
             };
             for capability in LANGUAGE_SESSION_CAPABILITIES.iter().chain(&[
                 "language_start_java",
+                "java_diagnostics_refresh",
                 "language_query",
                 "language_resolve_uri",
                 "language_format",
@@ -200,15 +208,16 @@ mod tests {
             let mut expected = vec!["list", "read", "write", "search"];
             for operation in execution_operations() {
                 let name = operation.capability_name().unwrap();
-                let supported = if name.starts_with("language_") {
-                    language_operation_supported(name)
-                } else if name == "git_changes" || name == "git_diff" {
-                    super::super::git_read::platform_supported(backend_mode)
-                } else if RUN_TASK_CAPABILITIES.contains(&name) {
-                    task_platform
-                } else {
-                    command_platform
-                };
+                let supported =
+                    if name.starts_with("language_") || name == "java_diagnostics_refresh" {
+                        language_operation_supported(name)
+                    } else if name == "git_changes" || name == "git_diff" {
+                        super::super::git_read::platform_supported(backend_mode)
+                    } else if RUN_TASK_CAPABILITIES.contains(&name) {
+                        task_platform
+                    } else {
+                        command_platform
+                    };
                 if supported {
                     expected.push(name);
                 }

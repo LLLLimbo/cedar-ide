@@ -1,6 +1,8 @@
 //! Native language UI. Remote payloads remain inert; edits are snapshot-checked transactions.
 #[path = "language_features.rs"]
 mod features;
+#[path = "java_diagnostics.rs"]
+mod java_diagnostics;
 
 use crate::{
     completion::{self, Candidate, Position, Range},
@@ -52,6 +54,9 @@ pub(super) enum ActionKind {
         kind: LanguageQueryKind,
     },
     Events,
+    RefreshJavaDiagnostics {
+        context: java_diagnostics::RefreshContext,
+    },
     Feature {
         request: features::FeatureRequest,
     },
@@ -112,6 +117,10 @@ pub(super) struct LanguagePanel {
     language_id: String,
     capabilities: Value,
     diagnostics: Diagnostics,
+    diagnostics_exited: bool,
+    java_diagnostics_refresh_supported: bool,
+    diagnostic_refresh: Option<java_diagnostics::RefreshState>,
+    diagnostic_refresh_sequence: u64,
     definitions: Vec<Location>,
     hover: String,
     output: String,
@@ -132,7 +141,8 @@ impl Default for LanguagePanel {
             running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), next_version: 1, closed_uris: HashSet::new(),
             mode: ServerMode::Generic, java: JavaConfiguration::default(), restart_blocked: false,
             program: String::new(), args: "[]".into(), language_id: "rust".into(), capabilities: Value::Null,
-            diagnostics: Diagnostics::default(), definitions: Vec::new(), hover: String::new(),
+            diagnostics: Diagnostics::default(), diagnostics_exited: false, java_diagnostics_refresh_supported: false,
+            diagnostic_refresh: None, diagnostic_refresh_sequence: 0, definitions: Vec::new(), hover: String::new(),
             output: "Start an installed stdio language server. Java/Kotlin servers and their JDK must be installed on the workspace host.".into(),
             view: View::Problems, automatic: true, paused_reason: None, next_events: 0.0,
             intent: None, completions: None, completion_popup: false, acceptance_sequence: 0, navigation_sequence: 0, deferred_navigation: HashMap::new(),
@@ -149,6 +159,9 @@ impl LanguagePanel {
         self.next_version = 1;
         self.closed_uris.clear();
         self.diagnostics.clear();
+        self.diagnostics_exited = false;
+        self.java_diagnostics_refresh_supported = false;
+        self.diagnostic_refresh = None;
         self.definitions.clear();
         self.hover.clear();
         self.intent = None;
@@ -302,6 +315,7 @@ impl CedarApp {
     }
 
     pub(super) fn stop_language(&mut self) {
+        self.language.diagnostic_refresh = None;
         self.language.features.reset();
         self.language.intent = None;
         self.language.automatic = false;
@@ -366,6 +380,14 @@ impl CedarApp {
         }
     }
     pub(super) fn close_language_document(&mut self, document: u64) {
+        if self
+            .language
+            .diagnostic_refresh
+            .as_ref()
+            .is_some_and(|refresh| refresh.context.document == document)
+        {
+            self.language.diagnostic_refresh = None;
+        }
         self.language.features.cancel_pending();
         let opening = self.pending.values().any(|job| matches!(job, Job::Language(Action { kind: ActionKind::Sync { document: id, .. }, .. }) if *id == document));
         if self.ready()
@@ -437,6 +459,11 @@ impl CedarApp {
                 self.language.paused_reason = Some(error.into());
             }
             ActionKind::Start => self.language.running = false,
+            ActionKind::RefreshJavaDiagnostics { ref context } => {
+                if self.java_diagnostics_refresh_is_current(context) {
+                    self.language.diagnostic_refresh = None;
+                }
+            }
             ActionKind::Stop if self.language.mode == ServerMode::Java => {
                 self.language.reset();
                 self.language.restart_blocked = true;
@@ -503,6 +530,7 @@ impl CedarApp {
         self.language.paused_reason = None;
     }
     pub(super) fn language_tick(&mut self, ctx: &egui::Context) {
+        self.invalidate_diagnostics_refresh();
         self.invalidate_language_features();
         if !self.ready() || !self.language.running || self.close_after_language_stop {
             return;
@@ -603,6 +631,10 @@ impl CedarApp {
         if action.session != self.language.session {
             return;
         }
+        if let ActionKind::RefreshJavaDiagnostics { context } = &action.kind {
+            self.apply_java_diagnostics_refresh(context, &value);
+            return;
+        }
         if matches!(action.kind, ActionKind::Stop) {
             if self.language.mode == ServerMode::Java {
                 let outcome = JavaStopOutcome::parse(&value);
@@ -645,6 +677,14 @@ impl CedarApp {
                     .and_then(|value| value.get("capabilities"))
                     .cloned()
                     .unwrap_or(Value::Null);
+                self.language.java_diagnostics_refresh_supported = self.language.mode
+                    == ServerMode::Java
+                    && value
+                        .get("initialize")
+                        .and_then(|value| value.get("cedar_java_diagnostics_refresh"))
+                        .and_then(Value::as_bool)
+                        == Some(true);
+                self.language.diagnostics_exited = false;
                 self.language.next_events = 0.0;
                 self.language.automatic = true;
                 self.language.view = View::Problems;
@@ -694,6 +734,9 @@ impl CedarApp {
                 }
             }
             ActionKind::Events => self.apply_language_events(&value),
+            ActionKind::RefreshJavaDiagnostics { .. } => {
+                unreachable!("refresh acknowledgements are handled before activity output")
+            }
             ActionKind::Feature { request } => self.apply_language_feature(request, value),
             ActionKind::Query { context, kind } => {
                 if self.language.features.has_request_or_preview()
@@ -799,11 +842,14 @@ impl CedarApp {
                 .any(|event| event.get("type").and_then(Value::as_str) == Some("lagged"))
         {
             self.language.diagnostics.invalidate();
+            self.language.diagnostic_refresh = None;
         }
         for event in events.iter().take(32) {
             match event.get("type").and_then(Value::as_str) {
                 Some("diagnostics") => {
                     if let Some(value) = event.get("value") {
+                        let normalized = self.normalize_known_java_diagnostic(value);
+                        let value = normalized.as_ref();
                         if let Some(uri) = value.get("uri").and_then(Value::as_str) {
                             if self.language.closed_uris.contains(uri) {
                                 continue;
@@ -821,12 +867,23 @@ impl CedarApp {
                             }
                         }
                         if let Err(error) = self.language.diagnostics.apply(value) {
-                            self.language.diagnostics.incomplete = true;
+                            self.reject_diagnostics_batch(Some(value));
                             self.language.paused_reason = Some(error);
+                        } else {
+                            self.observe_diagnostics_refresh(value);
                         }
+                    } else {
+                        self.reject_diagnostics_batch(None);
+                        self.language.paused_reason = Some(
+                            "Diagnostic publication has no batch; freshness could not be verified"
+                                .into(),
+                        );
                     }
                 }
                 Some("closed") => {
+                    self.language.diagnostics_exited = true;
+                    self.language.java_diagnostics_refresh_supported = false;
+                    self.language.diagnostic_refresh = None;
                     self.language.features.reset();
                     self.language.automatic = false;
                     self.language.intent = None;
@@ -1127,6 +1184,7 @@ impl CedarApp {
             });
         }
         self.language_feature_controls(ui);
+        self.java_diagnostics_refresh_controls(ui);
         if let Some(reason) = &self.language.paused_reason {
             ui.colored_label(AMBER, reason);
         }
@@ -1230,6 +1288,8 @@ impl CedarApp {
         }
     }
     fn problems_view(&mut self, ui: &mut egui::Ui) {
+        let status = self.active_diagnostics_status();
+        ui.colored_label(if status.current { GREEN } else { AMBER }, status.message);
         if self.language.diagnostics.incomplete {
             ui.colored_label(AMBER, "Some language events were lost or exceeded limits. This problem list may be incomplete; resync or restart to refresh it.");
         }
@@ -1240,7 +1300,7 @@ impl CedarApp {
                 if self.language.diagnostics.len() == 0 {
                     ui.label(
                         RichText::new(if self.language.running {
-                            "No reported problems yet. Diagnostics update while the server runs"
+                            "No problem rows to display. See the active document's diagnostic status above."
                         } else {
                             "Start a language server to see project diagnostics"
                         })
@@ -1256,7 +1316,7 @@ impl CedarApp {
                         .find(|(_, ack)| ack.uri == *uri);
                     let doc =
                         known.and_then(|(id, _)| self.documents.iter().find(|doc| doc.id == *id));
-                    let current = known.zip(doc).is_some_and(|((_, ack), doc)| {
+                    let current = self.ready() && self.language.running && !self.language.diagnostics_exited && known.zip(doc).is_some_and(|((_, ack), doc)| {
                         batch.version == Some(ack.version) && doc.edit_version == ack.edit_version
                     });
                     let freshness = if batch.version.is_none() {

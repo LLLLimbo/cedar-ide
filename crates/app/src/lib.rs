@@ -725,6 +725,21 @@ impl CedarApp {
         let Some(job) = self.pending.remove(&event.id) else {
             return;
         };
+        if let Job::Language(language_ui::Action {
+            kind: language_ui::ActionKind::RefreshJavaDiagnostics { context },
+            ..
+        }) = &job
+        {
+            // An obsolete snapshot cannot publish errors or unexpected payloads,
+            // but it must not hide a failure of the current transport.
+            if !event.connected {
+                self.disconnected("The connection closed while requesting Java diagnostics. Your unsaved draft is retained.".into());
+                return;
+            }
+            if !self.java_diagnostics_refresh_is_current(context) {
+                return;
+            }
+        }
         if let Job::GitRead(action) = job {
             // A stale view must not hide a current transport failure. Conversely,
             // a late Git result/error cannot replace a newer selection or config.
@@ -929,6 +944,16 @@ impl CedarApp {
             (Job::Run(action), _) => self.run_error(&action, true, "Unexpected command response"),
             (Job::Language(action), Payload::Language { value }) => {
                 self.apply_language_action(action, value)
+            }
+            (Job::Language(action), _)
+                if matches!(
+                    action.kind,
+                    language_ui::ActionKind::RefreshJavaDiagnostics { .. }
+                ) =>
+            {
+                let error = "Unexpected Java diagnostic refresh response; diagnostic freshness is unchanged".to_owned();
+                self.language_error(&action, &error);
+                self.error = Some(error);
             }
             _ => {
                 self.error =

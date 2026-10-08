@@ -270,6 +270,37 @@ fn production_diagnostics(
     // The strict fixture's six diagnostic receipts remain a separate stream.
     Err("normal Java diagnostic witness timed out".into())
 }
+
+fn production_refresh_diagnostics(client: &mut Client, uri: &str) -> CheckResult<bool> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline {
+        let value = client_language(client, Operation::LanguageEvents)?;
+        require(
+            value["truncated"] == false,
+            "refresh event stream was truncated",
+        )?;
+        let events = value["events"]
+            .as_array()
+            .ok_or("refresh event array missing")?;
+        let mut witness = None;
+        for event in events {
+            match event["type"].as_str() {
+                Some("diagnostics") => {
+                    if let Some(unversioned) = refresh_diagnostics_match(&event["value"], uri) {
+                        witness = Some(unversioned);
+                    }
+                }
+                Some("notification" | "unsupported_server_request") => {}
+                _ => return Err("refresh event stream closed, lagged or malformed".into()),
+            }
+        }
+        if let Some(unversioned) = witness {
+            return Ok(unversioned);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err("explicit refresh synthetic diagnostic witness timed out".into())
+}
 fn verify_java_image(process: &RootObservation, expected: &Path) -> CheckResult<()> {
     let mut image = vec![0u16; 32_768];
     let mut length = image.len() as u32;
@@ -457,6 +488,14 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         record.root_observed_live = true;
         verify_java_image(observed.as_ref().unwrap(), &java)?;
         record.root_identity_verified = true;
+        if profile == ObservationProfile::Quick {
+            record.diagnostics_refresh_exercised = true;
+            require(
+                initialized["initialize"]["cedar_java_diagnostics_refresh"] == true,
+                "vetted Standard JDT refresh support was not established",
+            )?;
+            record.diagnostics_refresh_supported = true;
+        }
         resource_latency(
             profile,
             started,
@@ -671,6 +710,45 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             correction_started,
             ResourceLatency::CorrectionExactDiagnostics,
         );
+        if profile == ObservationProfile::Quick {
+            // A separate explicit action after all original rapid-edit criteria
+            // passed. This does not rescue that acceptance or replay an edit.
+            let changed = client_language(
+                client,
+                Operation::LanguageChange {
+                    path: SOURCE_PATH.into(),
+                    version: 6,
+                    text: refreshed_source(),
+                },
+            )?;
+            require(
+                changed["version"] == 6
+                    && changed["changed"]
+                        .as_str()
+                        .is_some_and(|actual| same_local_uri(actual, &uri)),
+                "refresh draft synchronization mismatch",
+            )?;
+            unchanged(&source)?;
+            let requested = client_language(
+                client,
+                Operation::LanguageRefreshJavaDiagnostics {
+                    path: SOURCE_PATH.into(),
+                    version: 6,
+                },
+            )?;
+            require(
+                requested["version"] == 6
+                    && requested["notification_only"] == true
+                    && requested["diagnostics_refresh_requested"]
+                        .as_str()
+                        .is_some_and(|actual| same_local_uri(actual, &uri)),
+                "explicit refresh acknowledgement mismatch",
+            )?;
+            record.diagnostics_refresh_requested = true;
+            record.diagnostics_refresh_unversioned = production_refresh_diagnostics(client, &uri)?;
+            record.diagnostics_refresh_witness = true;
+            unchanged(&source)?;
+        }
         if profile.observes_resources() {
             resource_phase(started, ResourcePhase::CorrectionReadyIdle);
             // A second fixed observation window, not an indexing-settled claim.
@@ -848,6 +926,11 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         && record.root_handle_signaled
         && record.client_reaped
         && record.synthetic_root_removed
+        && (profile != ObservationProfile::Quick
+            || (record.diagnostics_refresh_exercised
+                && record.diagnostics_refresh_supported
+                && record.diagnostics_refresh_requested
+                && record.diagnostics_refresh_witness))
         && (profile != ObservationProfile::GcDiagnostic || natural_shutdown_verified);
     record.failure_stage = if record.success {
         FailureStage::None

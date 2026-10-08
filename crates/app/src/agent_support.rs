@@ -38,6 +38,11 @@ impl CedarApp {
         }
     }
     pub(super) fn operation_problem(&self, operation: &Operation) -> Option<String> {
+        if let Operation::LanguageRefreshJavaDiagnostics { path, version } = operation {
+            if let Some(problem) = self.java_diagnostics_operation_problem(path, *version) {
+                return Some(problem);
+            }
+        }
         if matches!(
             operation,
             Operation::GitChanges { .. } | Operation::GitDiff { .. }

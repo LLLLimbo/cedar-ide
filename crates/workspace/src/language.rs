@@ -19,6 +19,7 @@ pub(super) const fn java_platform_supported(backend: cedar_tasks::BackendMode) -
 pub(super) struct LanguageSession {
     client: LspClient,
     production_java: bool,
+    java_diagnostics_refresh: bool,
     opened: HashMap<String, OpenLanguageDocument>,
     #[cfg(feature = "windows-language-validation")]
     java_validation: Option<super::java_validation::JavaValidationSession>,
@@ -28,6 +29,7 @@ pub(super) struct LanguageSession {
 struct OpenLanguageDocument {
     version: i32,
     bytes: usize,
+    is_java: bool,
 }
 
 impl OpenLanguageDocument {
@@ -35,7 +37,7 @@ impl OpenLanguageDocument {
         if self.version != expected {
             return Err(error(
                 "language_stale_version",
-                "Document changed since the formatting request; synchronize and try again",
+                "Document changed since the request; synchronize and try again",
             ));
         }
         Ok(())
@@ -70,6 +72,21 @@ impl std::fmt::Debug for LanguageSession {
 fn lsp_error(e: cedar_language::Error) -> RemoteError {
     error("language_error", e.to_string())
 }
+
+fn java_diagnostics_refresh_supported(production_java: bool, initialize: &Value) -> bool {
+    // JDT does not advertise this extension as a server capability. Keep this
+    // explicit bridge bounded to the verified Standard server release (the
+    // official 1.61.0 milestone reports this Maven SNAPSHOT version). Syntax mode
+    // and absent/unrecognized metadata must not imply extension support. This
+    // observed identity is compatibility evidence, not binary authentication.
+    production_java
+        && initialize["serverInfo"]["name"].as_str() == Some("JDT Language Server (Standard)")
+        && initialize["serverInfo"]["version"].as_str() == Some("1.61.0-SNAPSHOT")
+}
+
+#[cfg(test)]
+#[path = "language_refresh_tests.rs"]
+mod java_refresh_tests;
 fn stop_production_java(client: LspClient) -> Result<Payload, RemoteError> {
     // Do not run a semantic/indexing query on user Stop. The typed transport
     // outcome distinguishes a natural exit from joined forced cleanup.
@@ -255,6 +272,7 @@ impl Workspace {
                     OpenLanguageDocument {
                         version,
                         bytes: text.len(),
+                        is_java: language_id == "java" && path.ends_with(".java"),
                     },
                 );
                 Ok(Payload::Language {
@@ -271,6 +289,10 @@ impl Workspace {
                 let session = self.language.as_mut().ok_or_else(|| {
                     error("language_not_running", "Start a language server first")
                 })?;
+                let is_java = session
+                    .opened
+                    .get(&uri)
+                    .is_some_and(|document| document.is_java);
                 session
                     .client
                     .did_change(&uri, version, &text)
@@ -280,6 +302,7 @@ impl Workspace {
                     OpenLanguageDocument {
                         version,
                         bytes: text.len(),
+                        is_java,
                     },
                 );
                 Ok(Payload::Language {
@@ -335,6 +358,41 @@ impl Workspace {
                     .formatting(&uri, tab_size, insert_spaces)
                     .map_err(lsp_error)?;
                 Ok(Payload::Language { value })
+            }
+            Operation::LanguageRefreshJavaDiagnostics { path, version } => {
+                let uri = self.language_uri(&path)?;
+                let session = self.language.as_ref().ok_or_else(|| {
+                    error("language_not_running", "Start a language server first")
+                })?;
+                if !session.production_java || !session.java_diagnostics_refresh {
+                    return Err(error(
+                        "language_refresh_unsupported",
+                        "Diagnostic refresh requires a supported Standard JDT session started with the Java route",
+                    ));
+                }
+                if version <= 0 {
+                    return Err(error(
+                        "invalid_version",
+                        "Diagnostic refresh requires a positive synchronized document version",
+                    ));
+                }
+                let document = session.open_document(&uri)?;
+                if !document.is_java {
+                    return Err(error(
+                        "invalid_language",
+                        "Diagnostic refresh requires a .java source document synchronized as Java",
+                    ));
+                }
+                document.require_version(version)?;
+                // No caller-selected method, arbitrary parameters, source text,
+                // synthetic change/save, retry, or diagnostic-completion claim.
+                session
+                    .client
+                    .notify("java/validateDocument", json!({"textDocument":{"uri":uri}}))
+                    .map_err(lsp_error)?;
+                Ok(Payload::Language {
+                    value: json!({"diagnostics_refresh_requested":uri,"version":version,"notification_only":true}),
+                })
             }
             Operation::LanguageReferences {
                 path,
@@ -526,11 +584,16 @@ impl Workspace {
         } else {
             None
         };
-        let result = result?;
+        let mut result = result?;
+        let java_diagnostics_refresh = java_diagnostics_refresh_supported(production_java, &result);
+        // This field belongs to Cedar, not the language server. Always replace
+        // any server-supplied value, including in generic/unsupported sessions.
+        result["cedar_java_diagnostics_refresh"] = json!(java_diagnostics_refresh);
         let process_id = client.process_id();
         self.language = Some(LanguageSession {
             client,
             production_java,
+            java_diagnostics_refresh,
             opened: HashMap::new(),
             #[cfg(feature = "windows-language-validation")]
             java_validation,
@@ -663,7 +726,11 @@ mod tests {
     #[test]
     fn formatting_requires_exact_synced_version_including_signed_boundaries() {
         for version in [i32::MIN, -1, 0, 1, i32::MAX] {
-            let document = OpenLanguageDocument { version, bytes: 42 };
+            let document = OpenLanguageDocument {
+                version,
+                bytes: 42,
+                is_java: false,
+            };
             document.require_version(version).unwrap();
             for stale in [version.wrapping_sub(1), version.wrapping_add(1)] {
                 assert_eq!(

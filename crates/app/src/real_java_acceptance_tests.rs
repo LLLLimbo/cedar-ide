@@ -36,6 +36,62 @@ pub(super) fn corrected_source() -> String {
     SOURCE.replace("int broken = \"oops\";", "int correctedOnly = 42;")
 }
 
+pub(super) fn refreshed_source() -> String {
+    corrected_source().replace("correctedOnly", "refreshedOnly")
+}
+
+/// Synthetic content witness, not a general freshness rule for unversioned
+/// diagnostics. Earlier fixture versions never contain this identifier.
+pub(super) fn refresh_diagnostics_match(value: &Value, uri: &str) -> Option<bool> {
+    let actual_uri = value["uri"].as_str()?;
+    if !same_local_uri(actual_uri, uri) {
+        return None;
+    }
+    let mut parsed = language_results::Diagnostics::default();
+    parsed.apply(value).ok()?;
+    let batch = parsed.files.get(actual_uri)?;
+    if batch.version.is_some_and(|version| version != 6)
+        || batch.items.iter().any(|item| item.severity == 1)
+        || !batch.items.iter().any(|item| {
+            item.severity == 2
+                && item.message.contains("refreshedOnly")
+                && item.message.contains("not used")
+                && item.range == marker_range(&refreshed_source(), "refreshedOnly")
+        })
+    {
+        return None;
+    }
+    Some(batch.version.is_none())
+}
+
+#[test]
+fn refresh_witness_requires_the_new_unsaved_identifier_and_preserves_unversioned_uncertainty() {
+    let uri = "file:///project/Main.java";
+    let range = marker_range(&refreshed_source(), "refreshedOnly");
+    let batch = json!({"uri":uri,"diagnostics":[{
+        "severity":2,"message":"The value of the local variable refreshedOnly is not used",
+        "range":{"start":{"line":range.start.line,"character":range.start.character},
+                 "end":{"line":range.end.line,"character":range.end.character}}
+    }]});
+    assert_eq!(refresh_diagnostics_match(&batch, uri), Some(true));
+    let mut versioned = batch.clone();
+    versioned["version"] = json!(6);
+    assert_eq!(refresh_diagnostics_match(&versioned, uri), Some(false));
+    versioned["version"] = json!(5);
+    assert_eq!(refresh_diagnostics_match(&versioned, uri), None);
+    let mut old = batch.clone();
+    old["diagnostics"][0]["message"] = json!("correctedOnly is not used");
+    assert_eq!(refresh_diagnostics_match(&old, uri), None);
+    assert_eq!(
+        refresh_diagnostics_match(&batch, "file:///other.java"),
+        None
+    );
+    assert_eq!(
+        refresh_diagnostics_match(&json!({"uri":uri,"diagnostics":[]}), uri),
+        None
+    );
+}
+
 pub(super) fn marker_range(source: &str, marker: &str) -> completion::Range {
     let start = source.find(marker).expect("synthetic source marker");
     completion::Range {
@@ -931,6 +987,11 @@ pub(super) struct ProductionEvidence {
     pub versions_2_3_4_synced: bool,
     pub correction_acknowledged: bool,
     pub correction_diagnostics: bool,
+    pub diagnostics_refresh_exercised: bool,
+    pub diagnostics_refresh_supported: bool,
+    pub diagnostics_refresh_requested: bool,
+    pub diagnostics_refresh_witness: bool,
+    pub diagnostics_refresh_unversioned: bool,
     pub source_unchanged: bool,
     pub stop_outcome_verified: bool,
     pub shutdown_response_received: bool,

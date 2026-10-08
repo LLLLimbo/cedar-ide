@@ -68,3 +68,41 @@ Native GUI interaction and authenticated SSH remain independently unverified.
 Normal agent/Client headless tests exercise the production route; the separate
 native bundle suite covers sibling-agent discovery. These claims do not imply
 full IntelliJ IDEA feature or plugin compatibility.
+
+
+## Explicit diagnostic refresh
+
+When Java diagnostics stop arriving, first inspect the Problems panel's active
+file status. Pending, stale and unversioned results do not verify the current
+draft. Even an empty list may be pending or unversioned. Editing, closing or
+reopening a document, reconnecting, malformed event data and lost events must
+not leave an older snapshot marked current.
+
+For a trusted typed-Java session, synchronize the current `.java` draft with
+**Sync now**, then explicitly choose **Refresh Java diagnostics**. This optional
+operation requires a compatible agent and the vetted server identity
+`JDT Language Server (Standard)` / `1.61.0-SNAPSHOT` (the Maven version reported
+by the tested JDT LS 1.61 milestone). Other versions, Syntax mode and generic
+language sessions do not enable it. The identity is compatibility evidence,
+not authentication of distribution bytes.
+
+The agent sends one official JDT `java/validateDocument` notification for the
+already-open URI after checking the exact synchronized document version. It
+sends no replacement source, save, close/reopen, arbitrary method or retry.
+**Request sent** only acknowledges notification transmission. A matching
+versioned diagnostic batch can establish that snapshot; JDT's unversioned
+batches remain labeled unverified, even when they arrive after the request.
+No notification response or causal link is assumed. Existing drafts, editor
+Undo/Redo and file contents are preserved.
+
+This is a best-effort explicit mitigation. JDT still schedules publication
+asynchronously and may fail to publish; the earlier intermittent correction
+failure remains unresolved. The original rapid-edit acceptance still fails if
+diagnostics disappear, and refresh is tested separately afterward rather than
+used to rescue that failure. No background refresh loop or extra Java process
+is introduced; the existing memory and shutdown limitations still apply.
+
+The extension is defined by the [official JDT protocol](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/08eafe6ff60c7159ef88571d47b6a9ef82fef94e/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/lsp/JavaProtocolExtensions.java#L157)
+and [URI-only parameter](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/08eafe6ff60c7159ef88571d47b6a9ef82fef94e/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/lsp/ValidateDocumentParams.java#L20).
+Its [unversioned publication](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/08eafe6ff60c7159ef88571d47b6a9ef82fef94e/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/BaseDiagnosticsHandler.java#L144)
+limits what the UI can establish.

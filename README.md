@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十五阶段显式 Git 变更查看工程（**0.15.4**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十六阶段显式 Java 诊断刷新工程（**0.16.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -21,6 +21,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - **显式 Git 变更查看**：配置工作区主机上的 Git 2.45+，刷新结构化状态、查看单文件暂存/未暂存差异；不自动轮询，不提供提交/暂存/重置/抓取，差异不会改动草稿
 - agent 侧真实 LSP：启动、初始化、文件同步、补全/定义/悬浮请求、诊断事件、停止与重启
 - 350ms 防抖自动同步、自动诊断列表、F12 定义跳转、类型悬浮、Ctrl+Space 补全
+- 显式 Java 诊断刷新；待到达、过期、无版本和当前版本状态分开显示，请求发送成功不等于诊断已更新
 - **安全格式化预览**：只读 Before / After，显式 Apply / Cancel；校验精确草稿版本后单次撤销事务，不自动保存
 - **引用查找**：同步所有匹配语言的打开草稿，可选择包含声明；显示无版本结果的时效边界，跳转由 agent 校验工作区
 - **文档大纲**：显式刷新，保留层级或平面符号结果，按声明选择范围导航；编辑后失效
@@ -39,7 +40,7 @@ cargo run -p cedar-app --bin cedar -- examples/demo
 
 Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`，本地连接还要求同目录的 `cedar-agent.exe`；不要只复制前端。缺失或损坏的 agent 会报错，不搜索 PATH 或回退到进程内执行。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.9.0 提交 [`270119b45eea1d37581a497e1bbe9a2d4ba3764a`](https://github.com/LLLLimbo/cedar-ide/commit/270119b45eea1d37581a497e1bbe9a2d4ba3764a) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37727806345)：正常 Windows 隔离 agent 的专用 Java/JDT 路径与真实编辑器事务通过；Stop 如实报告超时后的强制清理，不冒充自然退出。0.10.0 显式、只读的[断线保存核对](docs/INTERRUPTED_SAVES.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37736569381)，两端九项实际进程故障用例全部执行通过；保留后续输入和 Undo，不自动重放写入。0.11.0 的有界[连接与读取取消](docs/CONNECTION_CANCELLATION.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37741303276)。0.11.1 的 CPU 计时窗口修正也已通过[精确提交验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37744067995)。0.12.0 的[两次长观察基线](docs/LONG_JAVA_BASELINE.md)已通过[原生双平台验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37749233834)。0.13.0 一次固定、非发布版的[GC 数值诊断](docs/GC_DIAGNOSTIC_CONTROL.md)已通过[同提交原生验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37758115385)：实际 G1，末次 GC 后堆占用 378 MiB、容量 512 MiB；它不是最终空闲存活对象量，生产堆和收集器设置不变。0.15.0 增加有界、显式的[Git 状态与单文件差异](docs/GIT_VIEWS.md)，原生同提交验收仍待完成；旧 `git_status` 仍不在 Windows 开放。**同步 Run 和通用 Windows LSP 仍不启用**。Java 配置见[使用说明](docs/WINDOWS_JAVA_SETUP.md)；原生 GUI 与真实 SSH 仍待独立验收，当前证据见[测试报告](docs/TEST_REPORT.md)。
+公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.9.0 提交 [`270119b45eea1d37581a497e1bbe9a2d4ba3764a`](https://github.com/LLLLimbo/cedar-ide/commit/270119b45eea1d37581a497e1bbe9a2d4ba3764a) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37727806345)：正常 Windows 隔离 agent 的专用 Java/JDT 路径与真实编辑器事务通过；Stop 如实报告超时后的强制清理，不冒充自然退出。0.10.0 显式、只读的[断线保存核对](docs/INTERRUPTED_SAVES.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37736569381)，两端九项实际进程故障用例全部执行通过；保留后续输入和 Undo，不自动重放写入。0.11.0 的有界[连接与读取取消](docs/CONNECTION_CANCELLATION.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37741303276)。0.11.1 的 CPU 计时窗口修正也已通过[精确提交验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37744067995)。0.12.0 的[两次长观察基线](docs/LONG_JAVA_BASELINE.md)已通过[原生双平台验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37749233834)。0.13.0 一次固定、非发布版的[GC 数值诊断](docs/GC_DIAGNOSTIC_CONTROL.md)已通过[同提交原生验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37758115385)：实际 G1，末次 GC 后堆占用 378 MiB、容量 512 MiB；它不是最终空闲存活对象量，生产堆和收集器设置不变。0.15.4 的有界、显式[Git 状态与单文件差异](docs/GIT_VIEWS.md)已通过[同提交双平台验收](https://github.com/LLLLimbo/cedar-ide/actions/runs/37787319950)，Windows 真实 Git 1,421 项断言通过；旧 `git_status` 仍不在 Windows 开放。**同步 Run 和通用 Windows LSP 仍不启用**。0.16.0 增加受限的显式 Java 诊断刷新和时效提示，尚待精确提交原生验收；之前偶发的 Java 诊断缺失仍未证明根因已修复。Java 配置见[使用说明](docs/WINDOWS_JAVA_SETUP.md)；原生 GUI 与真实 SSH 仍待独立验收，当前证据见[测试报告](docs/TEST_REPORT.md)。
 
 ## Windows 开发包
 

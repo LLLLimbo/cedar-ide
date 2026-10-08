@@ -246,7 +246,7 @@ fn validation_enforces_inclusive_byte_and_entry_bounds() {
 }
 
 #[test]
-fn capability_names_match_every_existing_operation_wire_discriminant() {
+fn capability_names_match_each_operation_or_its_explicit_bridge_name() {
     let operations = [
         json!({"type":"hello"}),
         json!({"type":"list","path":""}),
@@ -261,6 +261,7 @@ fn capability_names_match_every_existing_operation_wire_discriminant() {
         json!({"type":"language_close","path":"a"}),
         json!({"type":"language_query","path":"a","line":0,"character":0,"kind":"hover"}),
         json!({"type":"language_format","path":"a","version":1,"tab_size":4,"insert_spaces":true}),
+        json!({"type":"language_refresh_java_diagnostics","path":"a.java","version":1}),
         json!({"type":"language_references","path":"a","line":0,"character":0,"include_declaration":true}),
         json!({"type":"language_document_symbols","path":"a"}),
         json!({"type":"language_resolve_uri","uri":"file:///a"}),
@@ -277,6 +278,12 @@ fn capability_names_match_every_existing_operation_wire_discriminant() {
         let operation: Operation = serde_json::from_value(wire.clone()).unwrap();
         if wire["type"] == "hello" {
             assert_eq!(operation.capability_name(), None);
+        } else if wire["type"] == "language_refresh_java_diagnostics" {
+            assert_eq!(
+                operation.capability_name(),
+                Some("java_diagnostics_refresh")
+            );
+            names.push(operation.capability_name().unwrap());
         } else {
             assert_eq!(operation.capability_name(), wire["type"].as_str());
             names.push(operation.capability_name().unwrap());
@@ -310,6 +317,7 @@ fn capability_names_match_every_existing_operation_wire_discriminant() {
         &LANGUAGE_SESSION_CAPABILITIES[1..]
     );
     for optional in [
+        "java_diagnostics_refresh",
         "language_query",
         "language_resolve_uri",
         "language_format",

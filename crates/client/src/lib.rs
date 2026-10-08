@@ -266,7 +266,10 @@ impl Client {
         let lifecycle = match op {
             Operation::RunStart { .. } => RUN_TASK_CAPABILITIES,
             Operation::LanguageStart { .. } => LANGUAGE_SESSION_CAPABILITIES,
-            Operation::LanguageStartJava { .. } => JAVA_LANGUAGE_SESSION_CAPABILITIES,
+            Operation::LanguageStartJava { .. }
+            | Operation::LanguageRefreshJavaDiagnostics { .. } => {
+                JAVA_LANGUAGE_SESSION_CAPABILITIES
+            }
             _ if is_language_session_operation(op) => match &self.backend {
                 Backend::Process(process) if process.java_language_session => {
                     JAVA_LANGUAGE_SESSION_CAPABILITIES
@@ -452,6 +455,7 @@ fn is_language_session_operation(op: &Operation) -> bool {
             | Operation::LanguageClose { .. }
             | Operation::LanguageQuery { .. }
             | Operation::LanguageFormat { .. }
+            | Operation::LanguageRefreshJavaDiagnostics { .. }
             | Operation::LanguageReferences { .. }
             | Operation::LanguageDocumentSymbols { .. }
             | Operation::LanguageResolveUri { .. }

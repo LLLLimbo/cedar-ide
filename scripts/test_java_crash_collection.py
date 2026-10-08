@@ -178,6 +178,9 @@ class CrashCollectionTests(unittest.TestCase):
             'exact_definition': True, 'real_completion': True, 'deferred_import_resolve': True,
             'actual_editor_apply_undo_redo': True, 'versions_2_3_4_synced': True,
             'correction_acknowledged': True, 'correction_diagnostics': True, 'source_unchanged': True,
+            'diagnostics_refresh_exercised': True, 'diagnostics_refresh_supported': True,
+            'diagnostics_refresh_requested': True, 'diagnostics_refresh_witness': True,
+            'diagnostics_refresh_unversioned': True,
             'stop_outcome_verified': True, 'shutdown_response_received': True, 'exit_frame_completed': True,
             'cleanup_joined': True, 'root_handle_signaled': True, 'client_reaped': True,
             'synthetic_root_removed': True, 'primary_failed': False, 'cleanup_failed': False,
@@ -854,7 +857,7 @@ class CrashCollectionTests(unittest.TestCase):
     def test_agent_production_booleans_require_actual_boolean_values(self):
         fixture = self.agent_production_fixture()
         fields = [key for key, value in fixture.items() if type(value) is bool]
-        self.assertEqual(len(fields), 25)
+        self.assertEqual(len(fields), 30)
         for field in fields:
             for value in (True, False, 0, 1, 0.0, None, 'SECRET_BOOLEAN', []):
                 valid = type(value) is bool

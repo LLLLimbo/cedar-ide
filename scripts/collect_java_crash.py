@@ -149,6 +149,9 @@ AGENT_TRANSCRIPT_FIELDS = {
         'root_identity_verified', 'semantic_diagnostics', 'exact_definition', 'real_completion',
         'deferred_import_resolve', 'actual_editor_apply_undo_redo', 'versions_2_3_4_synced',
         'correction_acknowledged', 'correction_diagnostics', 'source_unchanged', 'stop_outcome_verified',
+        'diagnostics_refresh_exercised', 'diagnostics_refresh_supported',
+        'diagnostics_refresh_requested', 'diagnostics_refresh_witness',
+        'diagnostics_refresh_unversioned',
         'shutdown_response_received', 'exit_frame_completed', 'cleanup_joined', 'root_handle_signaled',
         'client_reaped', 'synthetic_root_removed', 'primary_failed', 'cleanup_failed', 'success',
         'elapsed_saturated'), 'bool')

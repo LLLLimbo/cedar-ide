@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, io::Write};
 
 pub const MAX_DIAGNOSTICS: usize = 2_000;
 pub const MAX_DIAGNOSTIC_FILES: usize = 128;
+pub const MAX_DIAGNOSTIC_URI_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct Location {
@@ -41,7 +42,7 @@ impl Diagnostics {
         self.files.values().map(|batch| batch.items.len()).sum()
     }
     pub fn apply(&mut self, value: &Value) -> Result<(), String> {
-        let uri = bounded_string(value.get("uri"), 16 * 1024)
+        let uri = bounded_string(value.get("uri"), MAX_DIAGNOSTIC_URI_BYTES)
             .ok_or("Diagnostic batch has an invalid URI")?;
         let version = match value.get("version") {
             None | Some(Value::Null) => None,

@@ -179,6 +179,12 @@ pub enum Operation {
         tab_size: u32,
         insert_spaces: bool,
     },
+    /// Explicit Java-only validation notification for the current open version.
+    /// A successful response acknowledges the write, never diagnostic completion.
+    LanguageRefreshJavaDiagnostics {
+        path: String,
+        version: i32,
+    },
     LanguageReferences {
         path: String,
         line: u32,
@@ -215,8 +221,9 @@ pub enum Operation {
 }
 
 impl Operation {
-    /// Names are the existing protocol-4 operation discriminants. Hello is
-    /// always available so support discovery cannot depend on its own result.
+    /// Protocol-4 capability names. The Java diagnostic refresh bridge has a
+    /// separate capability from its operation discriminant. Hello is always
+    /// available so support discovery cannot depend on its own result.
     pub fn capability_name(&self) -> Option<&'static str> {
         Some(match self {
             Self::Hello => return None,
@@ -234,6 +241,7 @@ impl Operation {
             Self::LanguageClose { .. } => "language_close",
             Self::LanguageQuery { .. } => "language_query",
             Self::LanguageFormat { .. } => "language_format",
+            Self::LanguageRefreshJavaDiagnostics { .. } => "java_diagnostics_refresh",
             Self::LanguageReferences { .. } => "language_references",
             Self::LanguageDocumentSymbols { .. } => "language_document_symbols",
             Self::LanguageResolveUri { .. } => "language_resolve_uri",
@@ -486,6 +494,29 @@ mod tests {
             serde_json::json!({"type":"language_references","path":"a.java","line":0,"character":0}),
         ] {
             assert!(serde_json::from_value::<Operation>(op).is_err());
+        }
+    }
+    #[test]
+    fn java_diagnostics_refresh_is_a_typed_additive_protocol_four_operation() {
+        let wire = serde_json::json!({
+            "type":"language_refresh_java_diagnostics", "path":"src/你好 #.java", "version":7
+        });
+        let operation: Operation = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(
+            operation.capability_name(),
+            Some("java_diagnostics_refresh")
+        );
+        assert_eq!(serde_json::to_value(operation).unwrap(), wire);
+        assert!(!supports_capability(None, "java_diagnostics_refresh"));
+        assert!(!JAVA_LANGUAGE_SESSION_CAPABILITIES.contains(&"java_diagnostics_refresh"));
+        assert_eq!(PROTOCOL_VERSION, 4);
+        for invalid in [
+            serde_json::json!({"type":"language_refresh_java_diagnostics","path":"a.java"}),
+            serde_json::json!({"type":"language_refresh_java_diagnostics","path":"a.java","version":"7"}),
+            serde_json::json!({"type":"language_refresh_java_diagnostics","path":"a.java","version":2147483648_i64}),
+            serde_json::json!({"type":"language_notify","method":"java/validateDocument","params":{}}),
+        ] {
+            assert!(serde_json::from_value::<Operation>(invalid).is_err());
         }
     }
     #[test]
