@@ -22,6 +22,7 @@ mod recovery_actor;
 #[cfg(test)]
 mod recovery_tests;
 mod recovery_ui;
+mod replace;
 mod run_ui;
 mod syntax;
 mod system_fonts;
@@ -250,6 +251,7 @@ pub struct CedarApp {
     find_query: String,
     find_index: Option<usize>,
     find_focus: bool,
+    replace: replace::Replace,
     disk_review: disk_review::DiskReview,
     interrupted_save_check: interrupted_save::Check,
     font_size: f32,
@@ -345,6 +347,7 @@ impl CedarApp {
             find_query: String::new(),
             find_index: None,
             find_focus: false,
+            replace: replace::Replace::default(),
             disk_review: disk_review::DiskReview::default(),
             interrupted_save_check: interrupted_save::Check::default(),
             font_size: 14.0,
@@ -508,6 +511,7 @@ impl CedarApp {
     }
 
     fn navigation_changed(&mut self) {
+        self.replace.invalidate();
         self.dismiss_navigation();
         self.dismiss_disk_review();
         self.interrupted_save_check.invalidate();
@@ -1124,7 +1128,9 @@ impl CedarApp {
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.dismiss_disk_review();
-            self.find_open = false;
+            if self.find_open {
+                self.close_find(ctx);
+            }
             self.confirm = None;
             self.new_file = false;
             if !self.documents.is_empty() {
@@ -1534,19 +1540,22 @@ impl CedarApp {
         }
         let mut next = false;
         let mut previous = false;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("FIND").small().color(MUTED));
+            let input_id = egui::Id::new(replace::FIND_INPUT);
+            if self.find_focus && !self.navigation.blocks_editor() && ui.is_enabled() {
+                ui.ctx().memory_mut(|memory| memory.request_focus(input_id));
+                self.find_focus = false;
+            }
             let response = ui.add(
                 egui::TextEdit::singleline(&mut self.find_query)
+                    .id(input_id)
                     .hint_text("Case-sensitive text")
                     .desired_width(230.0),
             );
-            if self.find_focus && !self.navigation.blocks_editor() {
-                response.request_focus();
-                self.find_focus = false;
-            }
             if response.changed() {
                 self.find_index = None;
+                self.replace.invalidate();
             }
             if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 next = true;
@@ -1567,10 +1576,12 @@ impl CedarApp {
                 .color(MUTED),
             );
             if ui.small_button("x").clicked() {
-                self.find_open = false;
+                self.close_find(ui.ctx());
             }
         });
         if next || previous {
+            self.replace.invalidate();
+            replace::discard_keyboard(ui.ctx());
             if let Some(doc) = self
                 .documents
                 .iter_mut()
@@ -1609,6 +1620,9 @@ impl CedarApp {
                     ui.ctx().memory_mut(|memory| memory.request_focus(id));
                 }
             }
+        }
+        if self.find_open {
+            self.replace_bar(ui);
         }
         ui.separator();
     }
@@ -1732,6 +1746,7 @@ impl CedarApp {
         }
         let navigation_blocked = self.navigation.blocks_editor();
         ui.add_enabled_ui(!navigation_blocked, |ui| self.find_bar(ui));
+        let find_open = self.find_open;
         if let Some(doc) = self
             .documents
             .iter_mut()
@@ -1777,6 +1792,9 @@ impl CedarApp {
                 .join("\n");
             egui::ScrollArea::both()
                 .id_salt(("editor_scroll", doc.id))
+                // egui's background drag surface uses last frame's rect. The
+                // expanding Find preview must not be covered by that old rect.
+                .drag_to_scroll(!find_open)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.horizontal_top(|ui| {
@@ -1911,6 +1929,7 @@ impl eframe::App for CedarApp {
                 || system_fonts::contains_cjk(&self.form.remote_root)
                 || system_fonts::contains_cjk(&self.search_query)
                 || system_fonts::contains_cjk(&self.find_query)
+                || system_fonts::contains_cjk(&self.replace.replacement)
                 || self.navigation.has_cjk()
                 || system_fonts::contains_cjk(&self.profiles.draft.name)
                 || system_fonts::contains_cjk(&self.profiles.draft.program)
@@ -1961,6 +1980,7 @@ impl eframe::App for CedarApp {
         self.finish_profile_actions();
         self.finish_interrupted_save_check();
         self.finish_tab_close();
+        self.finish_replace_frame(ctx);
         self.language_tick(ctx);
         self.recovery_tick(ctx);
         self.finish_recovery_close_frame(ctx);

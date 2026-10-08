@@ -185,7 +185,7 @@ impl CedarApp {
             || self.run_state.transition_pending()
     }
 
-    fn foreign_modal_owns_input(&self, ctx: &egui::Context) -> bool {
+    pub(super) fn foreign_modal_owns_input(&self, ctx: &egui::Context) -> bool {
         self.foreign_modal_pending()
             || ctx.memory(|memory| {
                 memory.top_modal_layer().is_some_and(|layer| {

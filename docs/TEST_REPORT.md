@@ -1,82 +1,88 @@
-# Verification report · Keyboard navigation / 0.18.0 · 2026-10-08
+# Verification report · Literal replace preview / 0.19.0 · 2026-10-08
 
-This checkpoint adds bounded frontend navigation: a keyboard-selectable chooser
-for existing buffers and files in the already-loaded current directory, plus
-Go To Line. It introduces no backend operation, recursive index, background scan
-or project persistence. Both features are available with execution trust off.
+This checkpoint adds explicit literal replacement to the active editor buffer.
+The existing Find bar gains a replacement field, Preview one / Preview all and
+Apply / Cancel. No regular expressions, project-wide replacement, backend
+operation or execution permission is introduced. Save remains a separate action.
 
-The previous [0.17.0 exact Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37811229491)
-passed, including real asynchronous Java startup and all previous semantic,
-cleanup, Git and bundle checks. Its completed evidence is preserved in the
-[phase-17 report](TEST_REPORT_PHASE17.md). The earlier intermittent JDT diagnostic
-publication cause remains unresolved; explicit refresh remains a mitigation.
+The previous [0.18.0 exact Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37818623076)
+and portable ZIP verification passed. Its keyboard navigation and actual Linux
+trust-off evidence are retained in the [phase-18 report](TEST_REPORT_PHASE18.md).
+The intermittent upstream JDT diagnostic-publication cause remains unresolved.
 
-## Navigation contract
+## Transaction contract
 
-Ctrl/Cmd+P combines open buffers and current-directory files, deduplicates exact
-paths and shows at most 64 substring matches. Open buffers appear first. Up/Down
-selects a result and Enter opens it. An explicit typed-path action remains
-available. Selected paths retain their literal spelling, including Unicode.
-The chooser does not enumerate other directories or traverse the workspace.
+Matching is case-sensitive literal text. An empty query is invalid; an empty
+replacement deletes the chosen match or matches. Replace one uses an exact
+selected match, otherwise the next match from the cursor with wraparound.
+Replace all uses non-overlapping matches from the captured source.
 
-Opening reuses existing document ownership and asynchronous navigation checks:
-dirty buffers are retained, pending reads are deduplicated, stale replies cannot
-steal focus from newer navigation, and the 32-buffer limit remains enforced.
+The preview binds the exact document/path, connection and navigation identity,
+source text/edit version, query/replacement and editor selection. Apply checks
+that same snapshot after the editor frame. Later typing, selection changes,
+navigation or changed replacement inputs cannot apply a stale proposal.
 
-Ctrl/Cmd+G accepts a valid 1-based line in the current document. It moves the
-cursor through the existing editor navigation path without changing text,
-saved revision or edit version. Cursor navigation retains native Undo/Redo.
+Apply changes only the in-memory draft through the existing single editor
+transaction. Undo restores the previous text and Redo restores the replacement.
+Saved text, disk revision and ordinary recovery/language synchronization retain
+their existing behavior. Identical output does not create a history checkpoint
+or increment the edit version. No write is submitted automatically.
 
-## Acceptance scope
+## Bounds and acceptance
 
-Headless event tests must cover opening and repeated shortcuts, modal keyboard
-focus, typing/arrow/Enter/Escape isolation, exact Unicode paths, dirty-buffer
-reuse, tab limits, stale reads and navigation-only Undo/Redo. Go To Line must
-reject invalid, overflowing and out-of-range input against the current document.
+Plans beyond 10,000 matches or the existing one-MiB document/result limit are
+rejected rather than applying a truncated prefix. Preview display bounds must
+be visible and separate from the complete replacement count. Unicode scalar
+cursor positions and UTF-8 byte limits are handled separately; literal matching
+does not normalize the document's text or line endings.
 
-Native Linux verification, if available through the cloud desktop, uses only a
-new synthetic workspace with execution trust off. Windows correctness remains
-subject to exact native CI; a headless bundle probe does not establish Windows
-GUI acceptance. Authenticated SSH and GUI Trust-on testing remain separate gaps.
+Headless acceptance covers one/all planning, empty inputs, Unicode/CRLF, exact
+selection and stale-source guards, byte/count bounds, no-op history, Undo/Redo,
+and actual Find/preview input frames. Native Linux verification uses only newly
+generated files with execution trust off and compares disk hashes afterward.
+Windows GUI, authenticated SSH and GUI Trust-on testing remain separate gaps.
 
 ## Verification status
 
-The final local aggregate passed 793 Rust tests across 40 suites, with 22 opt-in
-cases left to their explicit native/process CI stages. All 15 new navigation
-regressions and the populated-completion precedence test passed. Strict host
-and MSVC Clippy and formatting passed. The normal default-feature release
-app/agent build passed, followed by actual-agent protocol, capability, language
-bridge and task bridge smoke tests. Python checks passed: export two, bundle 28 plus one
+The final local aggregate passed 808 Rust tests across 40 suites, with 22 opt-in
+cases retained for their explicit process/native CI stages. All 15 new planner,
+transaction and actual-frame replacement tests passed, along with the existing
+navigation regressions. Independent static review found no remaining blocker.
+
+Strict host and MSVC Clippy, formatting and diff checks passed. The normal
+default-feature release app/agent build and all four actual-agent protocol,
+capability, language-bridge and task-bridge smoke checks passed. Python checks
+passed: export two, bundle 28 plus one
 platform skip, Git fixtures six, crash collector 70 plus two platform skips,
-process observer 79 and GC collector 36.
+process observer 79 and GC collector 36. Exact dual-platform CI and the
+regenerated bundle remain required for this commit.
 
-The first aggregate attempt ran out of build-cache disk space before tests. A
-reviewed removal of obsolete generated test executables restored space while
-keeping source, logs and current/delivered artifacts. The next run exposed modal
-sizing/focus bugs, which were corrected and covered by the final passing suite.
-The initial disabled sizing pass now retains bounded keyboard input for exactly
-one interactive processing; cancellation or identity changes discard it. This
-is frontend input handling and does not replay backend operations.
+The inline preview has a 120-pixel scrolling body with Apply/Cancel outside it.
+While Find is open, background drag-to-scroll is disabled to prevent egui's
+previous editor rectangle from intercepting newly visible preview buttons.
+Text selection, wheel scrolling and scrollbars remain available. Actual click
+regressions cover the first visible Apply/Cancel at the minimum window size.
+## Native Linux trust-off acceptance
 
-## Native Linux trust-off navigation
+The final default-feature release passed 21 recorded checks on five newly
+generated synthetic files with execution trust off. Preview and Cancel left
+buffers unchanged; selected replacement and all-match replacement worked, with
+one Undo/Redo restoring/reapplying the complete transaction. Later typing expired
+the preview and removed Apply. Literal punctuation and `$&` remained literal;
+empty replacement deleted matches. Mixed CJK, emoji, accented and Greek text
+remained intact; CRLF markers were observed in the changed draft preview.
 
-The final default-feature release was exercised through the cloud Linux desktop
-on five newly generated synthetic files, with execution trust kept off. The
-chooser passed current-directory filtering, keyboard Up/Down/Enter, open-buffer
-ordering and deduplication, explicit nested typed paths and literal Unicode
-selection. Dirty-buffer reuse retained edits without duplicating a tab. Go To
-Line passed valid, invalid and Unicode line targets. Typing immediately after
-Enter or Escape worked without clicking the editor; Undo/Redo remained usable.
-After changing the current directory, an unopened root-only file was absent
-while existing buffers remained available. All five on-disk file hashes matched
-the initial baseline; temporary edits were undone without saving.
+The bounded 100-match preview showed three locations with reachable actions.
+Editor wheel scrolling and scrollbar dragging worked while Find was open. All
+temporary edits were undone, all tabs were clean and every fixture disk hash
+matched its baseline. No Save was requested, so this does not establish a new
+CRLF save roundtrip. After clicking a different tab, Undo requires editor focus;
+Apply restores that focus for its own transaction.
 
-Tested Linux frontend SHA-256:
-`ddd46f343c222c1c7ebd05712ce9aa4288e2545b339ba06bb3b182781a642394`.
+Tested Linux app SHA-256:
+`9aa770ba30c282e6346c64365169488f67e6328ce1674a0853ea9435f6c01137`.
 Tested adjacent normal agent SHA-256:
-`c2c81bdf6f06a6367c279f4d53c3efb00a1e806cccb9d9faf81d2047364f2ff8`.
+`cea965ab405c8507b52c4163edef4e403c790e6edb2ff527c09fda34a5334323`.
 
-Exact native Windows execution and regenerated bundle verification remain
-required for this commit. Linux window testing does not establish Windows GUI
-or authenticated SSH acceptance.
-No resource-reduction or IntelliJ IDEA equivalence claim follows from this slice.
+Native Windows/macOS GUI and authenticated SSH remain unverified. No
+resource-reduction or IntelliJ IDEA equivalence claim follows from this slice.

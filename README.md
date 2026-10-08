@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十八阶段键盘文件导航工程（**0.18.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十九阶段单文档替换预览工程（**0.19.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -10,7 +10,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - 本地目录与 SSH 工作区，共用同一文件、搜索、工具和语言服务后端
 - **远程能力发现**：缓存一次有效握手，报告后端版本/平台/操作支持；按后端实际能力启用功能，声明不授予执行信任
 - 目录浏览、多标签编辑、新建文件、行号、简单 Java/Kotlin/Rust 高亮
-- Ctrl/Cmd+P 键盘选择已打开标签/当前目录文件或输入路径、Ctrl/Cmd+G 跳到行、Ctrl/Cmd+F 文件内查找、Ctrl/Cmd+S 保存、Ctrl/Cmd+W 关闭标签
+- Ctrl/Cmd+P 键盘选择已打开标签/当前目录文件或输入路径、Ctrl/Cmd+G 跳到行、Ctrl/Cmd+F 文件内查找与单文档字面量替换预览、Ctrl/Cmd+S 保存、Ctrl/Cmd+W 关闭标签
 - SHA-256 版本检查；文件在外部改变时拒绝覆盖；原子替换和权限保留
 - **磁盘对比与干净标签重载**：显式双栏比较当前草稿与磁盘；只允许干净标签重载，二次读取复核，撤销后保留新的磁盘基线
 - 脏标签/退出确认；断线保留当前进程中的草稿；显式重连
