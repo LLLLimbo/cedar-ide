@@ -1,8 +1,8 @@
-# Verification report · Windows environment lookup contract / 0.15.1 · 2026-10-08
+# Verification report · Windows environment lookup contract and Git selection / 0.15.2 · 2026-10-08
 
-This checkpoint corrects an unsupported Unicode assumption in a Windows-only
-Git environment unit test and adds an independent native lookup gate. Production
-Git filtering and owned process-launch behavior are unchanged. The Windows Git
+This checkpoint selects exactly one native Git application in the Windows CI
+driver. It retains 0.15.1's corrected Unicode unit and independent native lookup
+gate. Production Git filtering and owned process-launch behavior are unchanged. The Windows Git
 route remains pending exact native acceptance; the previous green user-download
 baseline is 0.14.1, not the failed 0.15.0 Windows build.
 
@@ -43,11 +43,11 @@ is removed or replaced by a successful comparison test alone.
 
 Microsoft recommends ordinal comparison for environment names but does not
 promise the asserted dotless-i equivalence: [official guidance](https://learn.microsoft.com/en-us/windows/win32/intl/handling-sorting-in-your-applications).
-The actual native relationship remains for this checkpoint's CI to establish.
+The observed relationship from 0.15.1 is recorded below; the gate remains required on later CI runs.
 
 ## Verification status
 
-Local Python syntax/help and non-Windows fail-closed checks passed; 94 focused
+At 0.15.1, local Python syntax/help and non-Windows fail-closed checks passed; 94 focused
 workspace tests, strict workspace/winprocess MSVC checks and formatting passed.
 Package regressions passed 28 with one Windows-only skip; export passed two.
 Independent static review found no remaining blocker in scope. Full exact-commit native CI must pass the new lookup gate,
@@ -55,3 +55,36 @@ existing environment units and all 25 lifecycle cases, real Git acceptance,
 required Java/ownership/file suites, and regenerated default-feature Windows
 bundle before a Windows feature or delivery claim. GUI and authenticated SSH
 acceptance remain separate open work.
+
+
+## Native 0.15.1 result and 0.15.2 correction
+
+Exact public commit
+[`2b7622ffd5174598f6135a46956184db781fcd89`](https://github.com/LLLLimbo/cedar-ide/commit/2b7622ffd5174598f6135a46956184db781fcd89)
+[passed Ubuntu; Windows reached the Git invocation step](https://github.com/LLLLimbo/cedar-ide/actions/runs/37778174600).
+The seven-case native lookup probe passed. Exact ASCII, mixed ASCII and the
+Greek case control compared equal and returned the synthetic value. Dotless-i
+candidates and the unrelated-name control compared distinct and returned
+ERROR_ENVVAR_NOT_FOUND (203). Raw spelling and exact-key lookup were verified in
+every child; parent environment was unchanged. On this runner, the earlier
+failure was an incorrect test/comment assumption, not evidence requiring a
+production filtering change. This is a finite observed matrix, not a claim about
+every possible Unicode name.
+
+Windows aggregate tests, all 25 process lifecycle tests, required Java suites
+and the default-feature shipping rebuild passed. The real-Git smoke did not
+start: PowerShell application discovery returned multiple git.exe entries, which
+expanded into extra argparse arguments. The bundle step was consequently skipped.
+There is still no Windows real-Git or 0.15 bundle acceptance claim.
+
+Version 0.15.2 changes only CI selection plus version/documentation metadata:
+choose one ApplicationInfo result, validate a scalar existing absolute path, and
+pass it as one argument. Production Rust and probe implementation are unchanged.
+The actual-Git ASCII/Unicode redirect tests, ownership checks, lookup gate and
+all previous required suites remain required on the new exact commit.
+
+
+For the 0.15.2 selection/documentation change, local package regressions again
+passed 28 with one native-only skip, export regressions passed two and diff checks
+passed. Rust and Python probe source are byte-identical to 0.15.1; native CI will
+perform the full rebuild and actual Git invocation before a delivery claim.

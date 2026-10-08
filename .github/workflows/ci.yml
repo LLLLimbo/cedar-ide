@@ -136,8 +136,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $GitExecutable = (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source
-          python scripts/git_views_smoke.py --agent "$PWD/target/release/cedar-agent.exe" --git $GitExecutable
+          $GitCommands = @(Get-Command git.exe -CommandType Application -ErrorAction Stop)
+          if ($GitCommands.Count -lt 1) { throw 'No native Git application was found.' }
+          $GitExecutable = $GitCommands[0].Source
+          if ($GitExecutable -isnot [string] -or -not [IO.Path]::IsPathFullyQualified($GitExecutable)) {
+            throw 'Git selection must be one absolute executable path.'
+          }
+          if (-not (Test-Path -LiteralPath $GitExecutable -PathType Leaf)) { throw 'Selected Git executable is missing.' }
+          python scripts/git_views_smoke.py --agent "$PWD/target/release/cedar-agent.exe" --git "$GitExecutable"
       - name: Verify extracted Windows development bundle
         timeout-minutes: 3
         if: runner.os == 'Windows'

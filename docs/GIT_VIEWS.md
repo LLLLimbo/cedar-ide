@@ -89,3 +89,10 @@ particular Unicode alias table. CI separately checks that comparison against
 raw native environment lookup in synthetic children, then exercises actual Git
 with both ASCII and Unicode-candidate redirect/trace environments. Disagreement
 or unsafe Git behavior blocks acceptance. No raw host environment is exported.
+
+
+The 0.15.1 Windows runner observed dotless-i candidates as distinct through both
+APIs; ASCII/mixed-case and Greek-case controls matched. The earlier unconditional
+alias assertion was corrected without changing production filtering. Actual Git
+acceptance remains separately required; that run's Git driver was blocked by a
+multiple-application discovery argument error, corrected in 0.15.2.
