@@ -63,6 +63,28 @@ jobs:
         run: |
           $env:CEDAR_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
           cargo test -p cedar-client --test stdio_roundtrip --locked -- --ignored
+      - name: Real javac build locations (Unix, synthetic workspace)
+        if: runner.os != 'Windows'
+        timeout-minutes: 3
+        run: |
+          unset JDK_JAVA_OPTIONS JDK_JAVAC_OPTIONS JAVA_TOOL_OPTIONS _JAVA_OPTIONS CLASSPATH
+          test -n "${JAVA_HOME_21_X64:-}"
+          export CEDAR_AGENT_BIN="$PWD/target/release/cedar-agent"
+          export CEDAR_JAVAC_BIN="$JAVA_HOME_21_X64/bin/javac"
+          cargo test -p cedar-app --lib build_problem_process_tests::real_javac_run_extract_read_navigation_preserves_draft_history --locked -- --ignored --exact --nocapture --test-threads=1
+      - name: Real javac build locations (Windows, synthetic workspace)
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          foreach ($name in @('JDK_JAVA_OPTIONS', 'JDK_JAVAC_OPTIONS', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'CLASSPATH')) {
+            $path = 'Env:' + $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path }
+          }
+          if ([string]::IsNullOrWhiteSpace($env:JAVA_HOME_21_X64)) { throw 'Runner JDK 21 installation is missing.' }
+          $env:CEDAR_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
+          $env:CEDAR_JAVAC_BIN = Join-Path $env:JAVA_HOME_21_X64 'bin/javac.exe'
+          cargo test -p cedar-app --lib build_problem_process_tests::real_javac_run_extract_read_navigation_preserves_draft_history --locked -- --ignored --exact --nocapture --test-threads=1
       - name: Windows owned-process primitives (isolated fixtures)
         timeout-minutes: 5
         if: runner.os == 'Windows'

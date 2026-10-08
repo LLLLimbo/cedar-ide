@@ -1,5 +1,10 @@
 //! Cedar IDE — a native Rust frontend for a local or SSH workspace agent.
 mod agent_support;
+#[cfg(test)]
+mod build_problem_process_tests;
+#[cfg(test)]
+mod build_problem_ui_tests;
+mod build_problems;
 pub mod completion;
 #[cfg(test)]
 mod connection_cancel_tests;
@@ -78,7 +83,7 @@ struct ConnectForm {
 }
 // Keep endpoint fields separate: paths and SSH hosts can contain colons. Trust
 // changes intentionally retain the workspace identity; Hello checks its root.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum WorkspaceKey {
     Local {
         root: String,
@@ -172,6 +177,12 @@ enum Job {
         path: String,
         line: Option<usize>,
         navigation: u64,
+    },
+    BuildProblemOpen {
+        path: String,
+        line: Option<usize>,
+        navigation: u64,
+        source: run_ui::BuildSource,
     },
     Save {
         document: u64,
@@ -522,6 +533,28 @@ impl CedarApp {
     }
 
     fn open(&mut self, path: String, line: Option<usize>) {
+        self.open_with_build_source(path, line, None);
+    }
+
+    fn open_with_build_source(
+        &mut self,
+        path: String,
+        line: Option<usize>,
+        source: Option<run_ui::BuildSource>,
+    ) {
+        if source.is_some_and(|source| !self.build_source_is_current(source)) {
+            return;
+        }
+        if source.is_some() {
+            if self.build_path_ambiguous(&path) {
+                return;
+            }
+            if let Some(doc) = self.documents.iter().find(|doc| doc.path == path) {
+                if !self.build_line_available(&doc.text.clone(), line) {
+                    return;
+                }
+            }
+        }
         self.navigation_changed();
         let navigation = self.navigation_epoch;
         if let Some(doc) = self.documents.iter_mut().find(|doc| doc.path == path) {
@@ -539,28 +572,33 @@ impl CedarApp {
             );
             return;
         }
-        for job in self.pending.values_mut() {
-            if let Job::Open {
-                path: pending,
-                line: pending_line,
-                navigation: pending_navigation,
-            } = job
+        let pending = self.pending.iter().find_map(|(id, job)| match job {
+            Job::Open { path: pending, .. } | Job::BuildProblemOpen { path: pending, .. }
+                if pending == &path =>
             {
-                if pending == &path {
-                    *pending_line = line;
-                    *pending_navigation = navigation;
-                    return;
-                }
+                Some(*id)
             }
-        }
-        self.request(
-            Operation::Read { path: path.clone() },
-            Job::Open {
+            _ => None,
+        });
+        let op = Operation::Read { path: path.clone() };
+        let job = match source {
+            Some(source) => Job::BuildProblemOpen {
+                path,
+                line,
+                navigation,
+                source,
+            },
+            None => Job::Open {
                 path,
                 line,
                 navigation,
             },
-        );
+        };
+        if let Some(id) = pending {
+            self.pending.insert(id, job);
+        } else {
+            self.request(op, job);
+        }
     }
 
     fn save(&mut self) {
@@ -732,6 +770,53 @@ impl CedarApp {
         }
         let Some(job) = self.pending.remove(&event.id) else {
             return;
+        };
+        // A build location is historical output from one completed command.
+        // Late reads must not open tabs after a new task/session/navigation.
+        let job = if let Job::BuildProblemOpen {
+            path,
+            line,
+            navigation,
+            source,
+        } = job
+        {
+            if !event.connected {
+                self.disconnected(event.result.err().unwrap_or_else(|| {
+                    "The connection closed while opening a build location".into()
+                }));
+                return;
+            }
+            if navigation != self.navigation_epoch || !self.build_source_is_current(source) {
+                return;
+            }
+            if self.build_path_ambiguous(&path) {
+                return;
+            }
+            if let Ok(Payload::File {
+                path: returned,
+                text,
+                ..
+            }) = &event.result
+            {
+                if returned == &path {
+                    let current = self
+                        .documents
+                        .iter()
+                        .find(|doc| doc.path == path)
+                        .map_or(text, |doc| &doc.text)
+                        .clone();
+                    if !self.build_line_available(&current, line) {
+                        return;
+                    }
+                }
+            }
+            Job::Open {
+                path,
+                line,
+                navigation,
+            }
+        } else {
+            job
         };
         if matches!(&job, Job::Language(action) if action.is_java_startup()) {
             let Job::Language(action) = job else {

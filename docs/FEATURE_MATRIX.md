@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 20 / 0.20.0
+# 功能矩阵与后续验收 · checkpoint 21 / 0.21.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -13,9 +13,10 @@
 | 恢复隐私 | 前端本地明文、Unix 私有权限、单写者锁、完整性校验、有界配额、错误可见；不恢复执行信任 | 无加密/秘密保险箱；Windows 原生恢复和 ACL 隐私验收未完成；无恶意同账户写入者隔离；无静默淘汰旧稿 |
 | 远程 | 系统 OpenSSH、stdio agent、统一后端、显式重连；有界传输故障测试；后台直接子进程回收；SSH 配置硬化；唯一有效握手与有界后端能力发现 | **真实 SSH 认证/断网互操作仍是核心门槛**；自动部署/升级、跨协议版本协商、跨应用重启的事务恢复、旧任务接管、端口管理；旧 OpenSSH 客户端运行验收 |
 | Java/Kotlin | 文本编辑、语法着色、JDT LS 诊断/补全/跳转；第二阶段真实 Java 与旧版社区 Kotlin 语义链验证 | 完整 Maven/Gradle 工程模型、SDK 管理、当前官方 Kotlin 许可/兼容性验证、生产项目回归 |
-| LSP / 重构 | 自动同步、诊断、悬浮/定义、补全与延迟 import；显式Java刷新与待到达/过期/无版本提示；当前Java导入整理预览（本提交验收中）；只读格式化预览、显式 Apply/Cancel、单文档撤销；同步匹配草稿后查引用；显式层级/平面大纲；有界队列/超时 | 0.16刷新已通过原生验收，Java偶发诊断缺失根因仍未确认；0.17后台启动/取消已通过精确提交双平台验收；引用是无版本结果，不保证目标时效；多文件重命名需先解决快照/资源操作/跨文档撤销安全；inline diagnostics、代码操作、snippets、服务多路化 |
+| LSP / 重构 | 自动同步、诊断、悬浮/定义、补全与延迟 import；显式Java刷新与待到达/过期/无版本提示；当前Java导入整理预览（0.20精确双平台CI已通过）；只读格式化预览、显式 Apply/Cancel、单文档撤销；同步匹配草稿后查引用；显式层级/平面大纲；有界队列/超时 | 0.16刷新已通过原生验收，Java偶发诊断缺失根因仍未确认；0.17后台启动/取消已通过精确提交双平台验收；引用是无版本结果，不保证目标时效；多文件重命名需先解决快照/资源操作/跨文档撤销安全；inline diagnostics、代码操作、snippets、服务多路化 |
 | 调试 | 独立异步 DAP 传输；第二阶段真实 Python 断点/栈/变量/继续/停止验证 | IDE 调试 UI/远程桥接、可靠后代进程回收、监听安全、Java/JVM 调试 |
 | 命令运行 | 明确 executable + 字面量 argv；RunStart/Poll/Cancel、实时有界输出、终态区分、运行中继续编辑保存、关闭/重连保护 | 本阶段原生显式 Run/Cancel/重连复核待批准启用信任；Windows 0.7.1 隔离 agent 实际 CI 已通过，原生 GUI 待验收；交互式 PTY、测试结果树、并行任务；macOS 运行未验收 |
+| Java 编译位置 | 已完成任务的显式英文 javac 位置提取、命令/会话绑定、相对路径导航、脏稿保留 | 本提交原生验收中；历史行号不保证当前草稿位置，绝对路径禁用；无本地化/构建工具格式、测试树或自动编译 |
 | 保存的命令配置 | 显式 Load/选择/新建/Save；`cedar.tasks.json` 严格有界格式；字面量参数行与预览；普通编辑器版本检查、单次撤销和恢复；重连显式复核 | 不是完整运行/调试配置系统；无自动发现、预设、环境变量、目录覆盖、变量展开或 autorun；未序列化表单只在当前会话 |
 | Windows进程基础 | 原子Job绑定、私有本机管道、完成后回收的异步I/O、严格argv、固定64KiB owned stdin；0.8.3的48单元+21生命周期+12语言传输全部实际通过 | 0.8.12直接真实Java三会话与3项agent语言夹具已通过；0.8.15真实agent/编辑器三会话已通过；0.8.16真实任务并发/强制所有者清理已通过；不等同GUI或恶意代码沙箱 |
 | Windows本地后端 | 同目录精确cedar-agent.exe；固定IsolatedAgent模式、信任独立、异步任务三项能力；绝对原生.exe路径；完整u32退出码 | 无PATH/PATHEXT或batch解析；缺失bundle无回退；旧GitStatus/同步Run/通用LSP/DAP仍禁用；显式Git变更/单文件diff已通过0.15.4同提交原生验收；新增专用Java/JDT正常路径已通过0.9.0 CI；原生 Windows GUI 待验收；LSP Job底层已验证，直接真实Java和非分发agent并发夹具已通过；0.8.15真实agent/编辑器已通过；0.8.16任务并发已通过；0.9.0正式Java路径已通过 |

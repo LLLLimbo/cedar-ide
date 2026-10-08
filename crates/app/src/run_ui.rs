@@ -1,11 +1,31 @@
 //! Explicit asynchronous commands: bounded full snapshots, no automatic restart.
-use crate::{CedarApp, Job, Tool, AMBER, GREEN, MUTED, RED};
+use crate::{
+    build_problems::{parse_javac_locations, BuildProblems},
+    CedarApp, Job, Tool, WorkspaceKey, AMBER, GREEN, MUTED, RED,
+};
 use cedar_protocol::Operation;
 use cedar_tasks::{TaskSnapshot, TaskState};
 use eframe::egui::{self, RichText};
 use std::time::Duration;
 
 const POLL_SECONDS: f64 = 0.25;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct SubmittedCommand {
+    pub program: String,
+    pub args: Vec<String>,
+    pub backend_os: String,
+    generation: u64,
+    epoch: u64,
+    workspace: Option<WorkspaceKey>,
+    root: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BuildSource {
+    generation: u64,
+    epoch: u64,
+    task: u64,
+}
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Kind {
     Start,
@@ -32,8 +52,17 @@ pub(super) struct RunPanel {
     unknown: Option<String>,
     unknown_acknowledged: bool,
     transition: Option<Transition>,
+    pub submitted: Option<SubmittedCommand>,
+    pub problems: Option<BuildProblems>,
+    problems_source: Option<BuildSource>,
+    pub problems_message: Option<String>,
 }
 impl RunPanel {
+    fn clear_build_problems(&mut self) {
+        self.problems = None;
+        self.problems_source = None;
+        self.problems_message = None;
+    }
     pub fn transition_pending(&self) -> bool {
         self.transition.is_some()
     }
@@ -56,6 +85,8 @@ impl RunPanel {
         !self.active() && self.unknown.is_none()
     }
     pub fn reset(&mut self) {
+        self.clear_build_problems();
+        self.submitted = None;
         self.epoch = self.epoch.wrapping_add(1);
         self.snapshot = None;
         self.starting = false;
@@ -65,6 +96,8 @@ impl RunPanel {
         self.next_poll = 0.0;
     }
     pub fn disconnected(&mut self) {
+        self.clear_build_problems();
+        self.submitted = None;
         if self.active() {
             self.unknown = Some("Connection lost while a command was active. Its outcome is unknown; it may still be running. Verify it on the workspace host before running it again".into());
             self.unknown_acknowledged = false;
@@ -75,6 +108,7 @@ impl RunPanel {
         self.epoch = self.epoch.wrapping_add(1);
     }
     fn mark_unknown(&mut self, message: String) {
+        self.clear_build_problems();
         self.starting = false;
         self.unknown = Some(message);
         self.unknown_acknowledged = false;
@@ -130,6 +164,7 @@ impl RunPanel {
         self.unknown = None;
         self.unknown_acknowledged = false;
         self.next_poll = now + POLL_SECONDS;
+        self.clear_build_problems();
         self.snapshot = Some(task);
         Ok(())
     }
@@ -157,6 +192,104 @@ fn state_label(state: TaskState) -> &'static str {
     }
 }
 impl CedarApp {
+    fn completed_build_source(&self) -> Option<BuildSource> {
+        let submitted = self.run_state.submitted.as_ref()?;
+        let task = self.run_state.snapshot.as_ref()?;
+        (self.ready()
+            && !self.run_state.starting
+            && self.run_state.unknown.is_none()
+            && task.state.is_terminal()
+            && submitted.epoch == self.run_state.epoch
+            && submitted.generation == self.generation
+            && submitted.workspace == self.workspace_key
+            && submitted.root == self.root
+            && self
+                .agent_info
+                .as_ref()
+                .is_some_and(|info| info.os == submitted.backend_os))
+        .then_some(BuildSource {
+            generation: self.generation,
+            epoch: self.run_state.epoch,
+            task: task.id,
+        })
+    }
+
+    pub(super) fn build_source_is_current(&self, source: BuildSource) -> bool {
+        self.run_state.problems_source == Some(source)
+            && self.completed_build_source() == Some(source)
+            && self.run_state.problems.is_some()
+    }
+
+    pub(super) fn extract_build_problems(&mut self) {
+        let Some(source) = self.completed_build_source() else {
+            self.run_state.clear_build_problems();
+            self.run_state.problems_message = Some("Complete an explicitly started command in this workspace before extracting locations".into());
+            return;
+        };
+        let task = self.run_state.snapshot.as_ref().unwrap();
+        let submitted = self.run_state.submitted.as_ref().unwrap();
+        let problems = parse_javac_locations(&task.stdout, &task.stderr, &submitted.backend_os);
+        self.cjk_seen |= problems.rows.iter().any(|row| {
+            crate::system_fonts::contains_cjk(&row.path)
+                || crate::system_fonts::contains_cjk(&row.message)
+        });
+        self.run_state.problems = Some(problems);
+        self.run_state.problems_source = Some(source);
+        self.run_state.problems_message = None;
+    }
+
+    pub(super) fn open_build_problem(&mut self, index: usize) {
+        let Some(source) = self
+            .run_state
+            .problems_source
+            .filter(|source| self.build_source_is_current(*source))
+        else {
+            return;
+        };
+        let Some(row) = self
+            .run_state
+            .problems
+            .as_ref()
+            .and_then(|problems| problems.rows.get(index))
+        else {
+            return;
+        };
+        let Some(path) = row.navigation_path.clone() else {
+            self.run_state.problems_message = row.disabled_reason.map(str::to_owned);
+            return;
+        };
+        let line = row.line;
+        self.run_state.problems_message = Some("Historical build location: the current file or draft may have changed since the command ran".into());
+        self.open_with_build_source(path, Some(line), Some(source));
+    }
+
+    pub(super) fn build_path_ambiguous(&mut self, path: &str) -> bool {
+        let ambiguous = self
+            .run_state
+            .submitted
+            .as_ref()
+            .is_some_and(|submitted| submitted.backend_os == "windows")
+            && self
+                .documents
+                .iter()
+                .any(|doc| doc.path != path && doc.path.eq_ignore_ascii_case(path));
+        if ambiguous {
+            self.run_state.problems_message = Some("An open tab has a different case spelling of this Windows path. Build navigation cannot establish file identity; use the existing tab or open the intended file explicitly".into());
+        }
+        ambiguous
+    }
+
+    pub(super) fn build_line_available(&mut self, text: &str, line: Option<usize>) -> bool {
+        if line.is_some_and(|line| {
+            line > 0 && line <= 1 + text.bytes().filter(|byte| *byte == b'\n').count()
+        }) {
+            true
+        } else {
+            self.run_state.problems_message = Some("This historical build line is unavailable in the current file or draft; the location may be outdated".into());
+            false
+        }
+    }
+
     fn run_request_pending(&self) -> bool {
         self.pending.values().any(|job| matches!(job, Job::Run(_)))
     }
@@ -202,11 +335,26 @@ impl CedarApp {
         let args = args.clone();
         let preview = format!("Executable: {program:?}\nargv: {args:?}");
         self.run_state.epoch = self.run_state.epoch.wrapping_add(1);
+        self.run_state.clear_build_problems();
+        self.run_state.submitted = None;
         let action = Action {
             epoch: self.run_state.epoch,
             kind: Kind::Start,
         };
         self.run_state.snapshot = None;
+        let submitted = SubmittedCommand {
+            program: program.clone(),
+            args: args.clone(),
+            backend_os: self
+                .agent_info
+                .as_ref()
+                .map(|info| info.os.clone())
+                .unwrap_or_default(),
+            generation: self.generation,
+            epoch: self.run_state.epoch,
+            workspace: self.workspace_key.clone(),
+            root: self.root.clone(),
+        };
         let id = self.request(
             Operation::RunStart {
                 program: program.clone(),
@@ -216,6 +364,7 @@ impl CedarApp {
             Job::Run(action),
         );
         if id != 0 {
+            self.run_state.submitted = Some(submitted);
             self.run_state.starting = true;
             self.run_state.output = format!("{preview}\nWaiting for command acceptance...");
         }
@@ -391,6 +540,17 @@ impl CedarApp {
         });
         self.profile_fields(ui);
         ui.label(RichText::new("Runs explicitly in the workspace with literal argv and no implicit shell. Live bounded output; editing and saving remain available. Commands are never automatically restarted.").small().color(MUTED));
+        ui.label(RichText::new("Commands read saved files on disk. Unsaved drafts and saves with unknown outcomes may differ from those files.").small().color(AMBER));
+        let dirty = self.documents.iter().filter(|doc| doc.dirty()).count();
+        let unknown = self
+            .documents
+            .iter()
+            .filter(|doc| doc.interrupted_save.is_some())
+            .count();
+        let saving = self.documents.iter().filter(|doc| doc.saving).count();
+        if dirty > 0 || unknown > 0 || saving > 0 {
+            ui.colored_label(AMBER, format!("Current buffers: {dirty} unsaved · {unknown} save outcomes unknown · {saving} saves pending"));
+        }
         if self.run_state.starting {
             ui.colored_label(AMBER, "Waiting for command acceptance...");
         }
@@ -402,6 +562,16 @@ impl CedarApp {
                     AMBER
                 },
                 format!("Task {} · {}", task.id, state_label(task.state)),
+            );
+        }
+        if let Some(submitted) = &self.run_state.submitted {
+            ui.label(
+                RichText::new(format!(
+                    "Submitted executable: {:?}\nSubmitted argv: {:?}\nBackend: {}",
+                    submitted.program, submitted.args, submitted.backend_os
+                ))
+                .small()
+                .color(MUTED),
             );
         }
         if let Some(unknown) = self.run_state.unknown.clone() {
@@ -431,6 +601,104 @@ impl CedarApp {
                         .frame(false),
                 );
             });
+        self.build_problems_panel(ui);
+    }
+
+    pub(super) fn build_problems_panel(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.label("Build problems");
+        ui.label(RichText::new("Extracts retained output only. Supported English javac form: path.java:line: error|warning: message. Locations are historical; navigation reads the current file or keeps its open draft.").small().color(MUTED));
+        if ui
+            .add_enabled(
+                self.completed_build_source().is_some(),
+                egui::Button::new("Extract javac locations"),
+            )
+            .clicked()
+        {
+            self.extract_build_problems();
+        }
+        if let Some(message) = &self.run_state.problems_message {
+            ui.colored_label(AMBER, message);
+        }
+        let Some(problems) = &self.run_state.problems else {
+            return;
+        };
+        let source = self.run_state.problems_source;
+        let current = source.is_some_and(|source| self.build_source_is_current(source));
+        if let Some(source) = source {
+            ui.label(format!(
+                "Extracted from task {} · {} location(s)",
+                source.task,
+                problems.rows.len()
+            ));
+        }
+        let summary = &problems.summary;
+        ui.label(
+            RichText::new(format!(
+                "{} ignored lines · {} skipped lines · {} shortened messages · {} unscanned bytes",
+                summary.ignored_lines,
+                summary.skipped_lines,
+                summary.truncated_messages,
+                summary.unscanned_bytes
+            ))
+            .small()
+            .color(MUTED),
+        );
+        if summary.row_limit_reached || summary.text_limit_reached {
+            ui.colored_label(
+                AMBER,
+                "Location display limit reached; some locations were skipped",
+            );
+        }
+        if self
+            .run_state
+            .snapshot
+            .as_ref()
+            .is_some_and(|task| task.truncated)
+        {
+            ui.colored_label(
+                AMBER,
+                "Task output was truncated; extracted locations are incomplete",
+            );
+        }
+        if problems.rows.is_empty() {
+            ui.label("No supported javac locations in the retained output");
+        }
+        let mut selected = None;
+        egui::ScrollArea::vertical()
+            .id_salt("build_problem_rows")
+            .max_height(230.0)
+            .show(ui, |ui| {
+                for (index, row) in problems.rows.iter().enumerate() {
+                    let label = format!(
+                        "{}:{} · {} · {}:{}",
+                        row.path,
+                        row.line,
+                        row.severity.label(),
+                        row.stream.label(),
+                        row.output_line
+                    );
+                    if ui
+                        .add_enabled(
+                            current && row.navigation_path.is_some(),
+                            egui::Button::new(label).wrap(),
+                        )
+                        .clicked()
+                    {
+                        selected = Some(index);
+                    }
+                    ui.label(&row.message);
+                    if row.message_truncated {
+                        ui.colored_label(AMBER, "Message shortened for display");
+                    }
+                    if let Some(reason) = row.disabled_reason {
+                        ui.label(RichText::new(reason).small().color(AMBER));
+                    }
+                }
+            });
+        if let Some(index) = selected {
+            self.open_build_problem(index);
+        }
     }
     pub(super) fn run_dialog(&mut self, ctx: &egui::Context) {
         let Some(transition) = self.run_state.transition else {
