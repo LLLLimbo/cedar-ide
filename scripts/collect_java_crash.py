@@ -86,6 +86,11 @@ TRANSCRIPT_FIELDS = {
                          'retained_windows_observation_handle': 'bool'},
     'data_directory_witness': {'session': SESSIONS, 'metadata_in_expected_directory': 'bool'},
 }
+AGENT_LIFECYCLE_FAILURE_STAGES = (
+    'none', 'setup', 'initialize', 'open', 'diagnostics', 'hover', 'task_start', 'task_identity',
+    'language_stop', 'task_survival', 'task_cancel', 'java_survival', 'owner_death', 'agent_exit',
+    'java_exit', 'task_exit', 'source', 'fixture_cleanup',
+)
 AGENT_TRANSCRIPT_FIELDS = {
     'windows_java_session': dict.fromkeys((
         'semantic_checks_passed', 'exact_diagnostics', 'exact_definition', 'real_completion',
@@ -117,6 +122,20 @@ AGENT_TRANSCRIPT_FIELDS = {
                              'definition', 'completion', 'resolve', 'apply', 'undo', 'redo',
                              'sync', 'correction', 'close', 'stop', 'root_exit', 'agent_exit',
                              'fixture_cleanup')},
+    'windows_java_concurrency': dict.fromkeys((
+        'language_stop_preserved_task', 'task_cancel_preserved_java', 'hover_after_cancel',
+        'task_identities_verified', 'task_locks_verified', 'tasks_exited', 'task_locks_released',
+        'task_caps_not_reached', 'source_unchanged', 'primary_failed', 'cleanup_failed', 'success'), 'bool')
+        | {'tasks_started': ('integer_range', 0, 2), 'tasks_completed': ('integer_range', 0, 2),
+           'failure_stage': AGENT_LIFECYCLE_FAILURE_STAGES},
+    'windows_java_forced_cleanup': dict.fromkeys((
+        'java_observed_live', 'java_identity_verified', 'task_observed_live', 'task_identity_verified',
+        'task_lock_verified', 'owner_death_injected', 'agent_exit_observed', 'agent_exit_nonzero',
+        'java_exit_observed', 'task_exit_observed', 'task_lock_released', 'task_cap_not_reached',
+        'source_unchanged', 'synthetic_root_removed', 'primary_failed', 'cleanup_failed', 'success',
+        'elapsed_saturated'), 'bool')
+        | {'java_exit_code': '?u32', 'task_exit_code': '?u32',
+           'failure_stage': AGENT_LIFECYCLE_FAILURE_STAGES, 'elapsed_ms': ('integer_range', 0, 300000)},
 }
 
 

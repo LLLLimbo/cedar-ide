@@ -603,6 +603,174 @@ pub(super) struct CleanupEvidence {
     pub success: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum OwnershipStage {
+    #[default]
+    None,
+    Setup,
+    Initialize,
+    Open,
+    Diagnostics,
+    Hover,
+    TaskStart,
+    TaskIdentity,
+    LanguageStop,
+    TaskSurvival,
+    TaskCancel,
+    JavaSurvival,
+    OwnerDeath,
+    AgentExit,
+    JavaExit,
+    TaskExit,
+    Source,
+    FixtureCleanup,
+}
+
+#[derive(Default, Serialize)]
+pub(super) struct ConcurrencyEvidence {
+    pub kind: &'static str,
+    pub tasks_started: u32,
+    pub tasks_completed: u32,
+    pub language_stop_preserved_task: bool,
+    pub task_cancel_preserved_java: bool,
+    pub hover_after_cancel: bool,
+    pub task_identities_verified: bool,
+    pub task_locks_verified: bool,
+    pub tasks_exited: bool,
+    pub task_locks_released: bool,
+    pub task_caps_not_reached: bool,
+    pub source_unchanged: bool,
+    pub primary_failed: bool,
+    pub cleanup_failed: bool,
+    pub success: bool,
+    pub failure_stage: OwnershipStage,
+}
+impl ConcurrencyEvidence {
+    pub fn new() -> Self {
+        Self {
+            kind: "windows_java_concurrency",
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Default, Serialize)]
+pub(super) struct ForcedCleanupEvidence {
+    pub kind: &'static str,
+    pub java_observed_live: bool,
+    pub java_identity_verified: bool,
+    pub task_observed_live: bool,
+    pub task_identity_verified: bool,
+    pub task_lock_verified: bool,
+    pub owner_death_injected: bool,
+    pub agent_exit_observed: bool,
+    pub agent_exit_nonzero: bool,
+    pub java_exit_observed: bool,
+    pub task_exit_observed: bool,
+    pub task_lock_released: bool,
+    pub task_cap_not_reached: bool,
+    pub source_unchanged: bool,
+    pub synthetic_root_removed: bool,
+    pub primary_failed: bool,
+    pub cleanup_failed: bool,
+    pub success: bool,
+    pub java_exit_code: Option<u32>,
+    pub task_exit_code: Option<u32>,
+    pub failure_stage: OwnershipStage,
+    pub elapsed_ms: u32,
+    pub elapsed_saturated: bool,
+}
+impl ForcedCleanupEvidence {
+    pub fn new() -> Self {
+        Self {
+            kind: "windows_java_forced_cleanup",
+            ..Self::default()
+        }
+    }
+}
+
+pub(super) fn parse_task_identity(bytes: &[u8]) -> CheckResult<(u32, u64)> {
+    if bytes.len() > 64 || !bytes.ends_with(b"\n") {
+        return Err("invalid bounded task identity record".into());
+    }
+    let text = std::str::from_utf8(&bytes[..bytes.len() - 1])
+        .map_err(|_| "task identity must contain ASCII decimal fields")?;
+    let (pid, created) = text
+        .split_once(' ')
+        .ok_or("task identity requires two fields")?;
+    if pid.is_empty()
+        || created.is_empty()
+        || !pid.bytes().all(|b| b.is_ascii_digit())
+        || !created.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err("task identity requires two decimal fields".into());
+    }
+    let pid = pid.parse::<u32>().map_err(|_| "task PID exceeds bounds")?;
+    let created = created
+        .parse::<u64>()
+        .map_err(|_| "task creation time exceeds bounds")?;
+    if pid == 0 || created == 0 {
+        return Err("task identity fields must be nonzero".into());
+    }
+    Ok((pid, created))
+}
+
+pub(super) fn hover_has_source_variable(value: &Value) -> bool {
+    let Some(contents) = value.get("contents") else {
+        return false;
+    };
+    let text = language_results::hover_text(&json!({"contents": contents}));
+    ["String", "greeting"].iter().all(|expected| {
+        text.split(|ch: char| !ch.is_alphanumeric() && ch != '_' && ch != '$')
+            .any(|word| word == *expected)
+    })
+}
+
+#[test]
+fn task_identity_requires_exact_bounded_nonzero_decimal_fields() {
+    assert_eq!(
+        parse_task_identity(b"42 134359011488974354\n").unwrap(),
+        (42, 134359011488974354)
+    );
+    for invalid in [
+        b"".as_slice(),
+        b"42 1",
+        b"0 1\n",
+        b"1 0\n",
+        b"+1 2\n",
+        b"1  2\n",
+        b"1 2 3\n",
+        b"1 2\r\n",
+        b"4294967296 1\n",
+        b"1 18446744073709551616\n",
+    ] {
+        assert!(parse_task_identity(invalid).is_err());
+    }
+    assert!(parse_task_identity(&[b'1'; 65]).is_err());
+}
+
+#[test]
+fn hover_witness_requires_actual_symbol_and_type_tokens() {
+    for contents in [
+        json!("String greeting"),
+        json!({"kind":"markdown","value":"String greeting"}),
+        json!([{"language":"java","value":"String greeting"}]),
+    ] {
+        assert!(hover_has_source_variable(&json!({"contents":contents})));
+    }
+    for value in [
+        Value::Null,
+        json!({}),
+        json!({"contents":""}),
+        json!({"contents":"Strings greeting"}),
+        json!({"contents":"String greetingSuffix"}),
+        json!({"contents":"int greeting"}),
+    ] {
+        assert!(!hover_has_source_variable(&value));
+    }
+}
+
 #[cfg(windows)]
 #[path = "windows_java_agent_tests.rs"]
 mod windows;

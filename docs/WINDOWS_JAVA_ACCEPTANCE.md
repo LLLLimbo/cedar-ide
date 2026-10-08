@@ -393,3 +393,31 @@ sessions and cleanup receipt. Predicates, changes and timeouts are unchanged.
 The 0.8.14 first real-agent editor session passed, but the fresh-data session
 failed at correction; the new evidence distinguishes acknowledgement, transport
 and diagnostic predicate failures without inferring a timeout from a stage name.
+
+
+## 0.8.16 finite real-task ownership gate
+
+The three-session editor case now also checks that stopping Java preserves an
+independent task, and cancelling a task preserves the same Java session plus a
+real source hover result. A separate `real_windows_agent_java_forced_owner_cleanup`
+case starts both, kills only their owned agent, and checks retained process
+identities, exit and lifetime-lock release. It does not call forced exit graceful.
+
+A separately named native task fixture has a fixed 210-second cap; cap exit124 or
+an expired marker invalidates cleanup evidence. Existing five-second fixtures
+remain unchanged. Native mock suites retain the descendant/Job-zero assertions;
+these real-Java cases observe their exact root handles without claiming a new
+independent JVM Job inventory.
+
+Both new typed receipts use the existing sanitizer boundary. The PowerShell
+script runs the forced-owner case after the editor case even when the latter
+fails, then requires both exit codes and receipts. The containing CI step allows
+twelve minutes for the additional startup and ownership workload. The normal
+editor watchdog stays 360 seconds and the forced-owner test has 180 seconds; Java
+request and shutdown grace budgets remain unchanged.
+
+The activation criteria are finite: real agent/editor semantics and undo,
+independent task concurrency, normal/forced owned cleanup, and safe default/trust
+gates. A later normal bundled-agent/Client test must verify the scoped production
+Java route. Native GUI, SSH, listener inventories and benchmarks remain separate
+claims and do not indefinitely block unrelated functionality.

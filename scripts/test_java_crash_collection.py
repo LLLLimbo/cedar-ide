@@ -151,6 +151,25 @@ class CrashCollectionTests(unittest.TestCase):
             'eligible_error_diagnostics': 18, 'matching_batches': 19, 'counters_saturated': False,
         }
 
+    def agent_lifecycle_fixtures(self):
+        return [{
+            'kind': 'windows_java_concurrency', 'tasks_started': 2, 'tasks_completed': 2,
+            'language_stop_preserved_task': True, 'task_cancel_preserved_java': True,
+            'hover_after_cancel': True, 'task_identities_verified': True, 'task_locks_verified': True,
+            'tasks_exited': True, 'task_locks_released': True, 'task_caps_not_reached': True,
+            'source_unchanged': True, 'primary_failed': False, 'cleanup_failed': False,
+            'success': True, 'failure_stage': 'none',
+        }, {
+            'kind': 'windows_java_forced_cleanup', 'java_observed_live': True,
+            'java_identity_verified': True, 'task_observed_live': True, 'task_identity_verified': True,
+            'task_lock_verified': True, 'owner_death_injected': True, 'agent_exit_observed': True,
+            'agent_exit_nonzero': True, 'java_exit_observed': True, 'task_exit_observed': True,
+            'task_lock_released': True, 'task_cap_not_reached': True, 'source_unchanged': True,
+            'synthetic_root_removed': True, 'primary_failed': False, 'cleanup_failed': False,
+            'success': True, 'java_exit_code': 3221225786, 'task_exit_code': 1,
+            'failure_stage': 'none', 'elapsed_ms': 1250, 'elapsed_saturated': False,
+        }]
+
     def link(self, target, path, directory=False):
         try:
             path.symlink_to(target, target_is_directory=directory)
@@ -462,13 +481,14 @@ class CrashCollectionTests(unittest.TestCase):
         self.assertEqual(report['acceptance_result'], 'not_evaluated')
 
     def test_agent_records_do_not_expand_direct_java_transcript_schema(self):
-        agent = self.agent_source(self.agent_fixture() + [self.agent_diagnostics_fixture()])
+        agent = self.agent_source(self.agent_fixture() + [self.agent_diagnostics_fixture()]
+                                  + self.agent_lifecycle_fixtures())
         java = self.private_source('private-java.txt', '{"kind":"fixture_cleanup","removed":true}\n')
         report = collector.collect(self.root, java_transcript=agent, agent_transcript=java)
         self.assertEqual(report['status'], 'complete')
         self.assertEqual(report['java_transcript']['evidence']['records'], [])
         self.assertEqual(report['agent_transcript']['evidence']['records'], [])
-        self.assertEqual(report['java_transcript']['evidence']['omitted_other_json_records'], 5)
+        self.assertEqual(report['java_transcript']['evidence']['omitted_other_json_records'], 7)
         self.assertEqual(report['agent_transcript']['evidence']['omitted_other_json_records'], 1)
 
     def test_agent_session_numbers_require_bounded_integers(self):
@@ -646,6 +666,104 @@ class CrashCollectionTests(unittest.TestCase):
         self.assertIsNone(report['agent_transcript']['sha256'])
         self.assertNotIn('SECRET_', json.dumps(report))
 
+    def test_agent_lifecycle_records_keep_only_their_own_fields_and_preserve_failure(self):
+        expected = self.agent_lifecycle_fixtures()
+        failed = [{key: False if type(value) is bool else value for key, value in record.items()}
+                  for record in self.agent_lifecycle_fixtures()]
+        for record in failed:
+            record.update(primary_failed=True, cleanup_failed=True, failure_stage='owner_death')
+        failed[0].update(tasks_started=0, tasks_completed=0)
+        failed[1].update(java_exit_code=None, task_exit_code=None)
+        expected.extend(failed)
+        records = [{**record, 'uri': 'file:///SECRET_LIFECYCLE/Main.java',
+                    'path': 'C:\\SECRET_PRIVATE\\task.lock', 'error': 'SECRET_FAILURE',
+                    'source': 'SECRET_SOURCE', 'payload': {'raw': 'SECRET_PAYLOAD'},
+                    'stack': ['SECRET_STACK'], 'environment': {'TOKEN': 'SECRET_ENV'}}
+                   for record in expected]
+        # Even known fields from another receipt are ignored outside its schema.
+        records[0].update(java_exit_code='SECRET_WRONG_SCHEMA', elapsed_ms='SECRET_ELAPSED')
+        records[1].update(tasks_started='SECRET_WRONG_SCHEMA', mode='SECRET_MODE')
+        path = self.agent_source(records)
+        raw = path.read_bytes()
+        report = collector.collect(self.root, agent_transcript=path)
+        source = report['agent_transcript']
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['acceptance_result'], 'not_evaluated')
+        self.assertEqual(source['status'], 'collected')
+        self.assertFalse(source['truncated'])
+        self.assertEqual(source['sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(source['bytes'], len(raw))
+        self.assertEqual(source['evidence']['records'], expected)
+        for secret in ('SECRET_', 'file:///', str(self.root), 'payload', 'environment'):
+            self.assertNotIn(secret, json.dumps(report))
+
+    def test_agent_lifecycle_numbers_have_strict_bounds_and_nullable_exit_codes(self):
+        concurrency, forced = self.agent_lifecycle_fixtures()
+        for fixture, field, maximum, nullable in (
+                (concurrency, 'tasks_started', 2, False),
+                (concurrency, 'tasks_completed', 2, False),
+                (forced, 'java_exit_code', 2 ** 32 - 1, True),
+                (forced, 'task_exit_code', 2 ** 32 - 1, True),
+                (forced, 'elapsed_ms', 300000, False)):
+            for value in (0, 1, maximum, -1, maximum + 1, 2 ** 53, True, False, 1.0, None, 'SECRET_NUMBER'):
+                valid = (value is None and nullable) or (type(value) is int and 0 <= value <= maximum)
+                with self.subTest(kind=fixture['kind'], field=field, value=value):
+                    path = self.agent_source([{**fixture, field: value}])
+                    report = collector.collect(self.root, agent_transcript=path)
+                    source = report['agent_transcript']
+                    record = source['evidence']['records'][0]
+                    self.assertEqual(report['status'], 'complete' if valid else 'error')
+                    if valid:
+                        self.assertEqual(record[field], value)
+                    else:
+                        self.assertNotIn(field, record)
+                        self.assertEqual(source['errors'], ['invalid_field_' + field])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_agent_lifecycle_boolean_fields_are_strict_and_preserve_false(self):
+        for fixture in self.agent_lifecycle_fixtures():
+            fields = [key for key, value in fixture.items() if type(value) is bool]
+            for field in fields:
+                for value in (True, False, 0, 1, 0.0, None, 'SECRET_BOOLEAN', []):
+                    valid = type(value) is bool
+                    with self.subTest(kind=fixture['kind'], field=field, value=value):
+                        path = self.agent_source([{**fixture, field: value}])
+                        report = collector.collect(self.root, agent_transcript=path)
+                        source = report['agent_transcript']
+                        record = source['evidence']['records'][0]
+                        self.assertEqual(report['status'], 'complete' if valid else 'error')
+                        if valid:
+                            self.assertIs(record[field], value)
+                        else:
+                            self.assertNotIn(field, record)
+                            self.assertEqual(source['errors'], ['invalid_field_' + field])
+                        self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_agent_lifecycle_failure_stages_accept_only_the_fixed_namespace(self):
+        stages = ('none', 'setup', 'initialize', 'open', 'diagnostics', 'hover', 'task_start',
+                  'task_identity', 'language_stop', 'task_survival', 'task_cancel', 'java_survival',
+                  'owner_death', 'agent_exit', 'java_exit', 'task_exit', 'source', 'fixture_cleanup')
+        for fixture in self.agent_lifecycle_fixtures():
+            for stage in stages + ('SECRET_STAGE', 'root_exit', 'correction', 'stop', 0, True, None, []):
+                valid = isinstance(stage, str) and stage in stages
+                with self.subTest(kind=fixture['kind'], stage=stage):
+                    path = self.agent_source([{**fixture, 'failure_stage': stage}])
+                    report = collector.collect(self.root, agent_transcript=path)
+                    source = report['agent_transcript']
+                    record = source['evidence']['records'][0]
+                    self.assertEqual(report['status'], 'complete' if valid else 'error')
+                    if valid:
+                        self.assertEqual(record['failure_stage'], stage)
+                    else:
+                        self.assertNotIn('failure_stage', record)
+                        self.assertEqual(source['errors'], ['invalid_field_failure_stage'])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+        # Adding lifecycle stages does not loosen the original cleanup record.
+        path = self.agent_source([{'kind': 'windows_java_cleanup', 'failure_stage': 'owner_death'}])
+        report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'error')
+        self.assertEqual(report['agent_transcript']['errors'], ['invalid_field_failure_stage'])
+
     def test_agent_source_cannot_leave_root_or_follow_file_and_directory_links(self):
         outside = self.base / 'outside-private-agent.txt'
         outside.write_text('SECRET_OUTSIDE_SOURCE')
@@ -712,6 +830,7 @@ class CrashCollectionTests(unittest.TestCase):
         records = self.agent_fixture()
         records.insert(1, {**self.agent_diagnostics_fixture(), 'result': 'timeout',
                            'message': 'SECRET_TIMEOUT_DIAGNOSTIC'})
+        records[2:2] = self.agent_lifecycle_fixtures()
         records[-1].update(success=False, primary_failed=True, failure_stage='correction',
                            error='SECRET_FAILURE_ERROR')
         path = self.agent_source(records)
@@ -724,6 +843,7 @@ class CrashCollectionTests(unittest.TestCase):
         report = json.loads(output.read_text())
         self.assertFalse(report['agent_transcript']['evidence']['records'][-1]['success'])
         self.assertEqual(report['agent_transcript']['evidence']['records'][1]['result'], 'timeout')
+        self.assertEqual(report['agent_transcript']['evidence']['records'][2:4], self.agent_lifecycle_fixtures())
         self.assertFalse(report['java_transcript']['evidence']['records'][0]['windows_full_acceptance'])
         self.assertEqual(report['acceptance_result'], 'not_evaluated')
         self.assertEqual(json.loads(collected.stdout)['acceptance_result'], 'not_evaluated')

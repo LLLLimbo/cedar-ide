@@ -2,7 +2,8 @@
 #Requires -PSEdition Core
 # Real Windows JDT LS acceptance. External test dependencies are never bundled.
 # Run from repository root in an isolated CI/test process, not inside an agent.
-# CI supplies an eight-minute process-tree deadline. A direct caller must supply
+# CI supplies a twelve-minute process-tree deadline for the direct, editor and
+# forced-owner workloads. A direct caller must supply
 # its own enclosing deadline; forced cancellation is failure, never cleanup proof.
 [CmdletBinding()]
 param(
@@ -157,13 +158,24 @@ try {
     $env:CEDAR_JAVA_ERROR_DIR = $agentErrors
     $env:CEDAR_JDTLS_HOME = $distribution
     $env:CEDAR_AGENT_LANGUAGE_VALIDATION_BIN = [IO.Path]::GetFullPath('target/release/cedar-agent-language-validation.exe')
+    $env:CEDAR_WINPROCESS_FIXTURE_BIN = [IO.Path]::GetFullPath('target/release/cedar-winprocess-fixture.exe')
+    if (-not (Test-Path -LiteralPath $env:CEDAR_WINPROCESS_FIXTURE_BIN -PathType Leaf)) {
+        throw 'Build the native owned task fixture before this test.'
+    }
     if (-not (Test-Path -LiteralPath $env:CEDAR_AGENT_LANGUAGE_VALIDATION_BIN -PathType Leaf)) {
         throw 'Build the separate nonshipping agent language validation fixture before this test.'
     }
     # All protocol/panic/JVM text stays private. Only typed status records survive
     # the collector; a zero-test filter cannot satisfy the witness checks below.
     & cargo test -p cedar-app --all-features --locked real_windows_agent_java_editor_transactions -- --ignored --nocapture --test-threads=1 *> $agentTranscript
-    if ($LASTEXITCODE -ne 0) { throw 'Real Windows agent and headless Java acceptance failed.' }
+    $editorExitCode = $LASTEXITCODE
+    # This independent ownership case must still execute if an editor assertion
+    # fails. Both exit codes remain required; neither failure is masked.
+    & cargo test -p cedar-app --all-features --locked real_windows_agent_java_forced_owner_cleanup -- --ignored --nocapture --test-threads=1 *>> $agentTranscript
+    $forcedExitCode = $LASTEXITCODE
+    if ($editorExitCode -ne 0 -or $forcedExitCode -ne 0) {
+        throw 'Real Windows Java editor or forced-owner acceptance failed.'
+    }
 }
 catch {
     $failure = $_
@@ -212,6 +224,34 @@ finally {
                         throw 'Diagnostic receipts did not prove both exact assertions in each Java session.'
                     }
                 }
+                $concurrency = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_concurrency' })
+                $forced = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_forced_cleanup' })
+                if ($concurrency.Count -ne 1 -or $forced.Count -ne 1) {
+                    throw 'Expected one task-concurrency and one forced-owner receipt.'
+                }
+                $record = $concurrency[0]
+                if ($record.tasks_started -ne 2 -or $record.tasks_completed -ne 2 -or
+                    $record.primary_failed -or $record.cleanup_failed -or $record.failure_stage -cne 'none') {
+                    throw 'Real Java task-concurrency did not complete both independent task lifetimes.'
+                }
+                foreach ($field in @('language_stop_preserved_task', 'task_cancel_preserved_java', 'hover_after_cancel',
+                    'task_identities_verified', 'task_locks_verified', 'tasks_exited', 'task_locks_released',
+                    'task_caps_not_reached', 'source_unchanged', 'success')) {
+                    if (-not $record.$field) { throw 'Real Java task-concurrency witness is incomplete.' }
+                }
+                $record = $forced[0]
+                if ($record.primary_failed -or $record.cleanup_failed -or $record.failure_stage -cne 'none' -or
+                    $record.elapsed_saturated -or $null -eq $record.java_exit_code -or
+                    $null -eq $record.task_exit_code -or $record.task_exit_code -eq 124 -or
+                    $record.task_exit_code -eq 125) {
+                    throw 'Forced-owner cleanup did not establish bounded owned termination.'
+                }
+                foreach ($field in @('java_observed_live', 'java_identity_verified', 'task_observed_live',
+                    'task_identity_verified', 'task_lock_verified', 'owner_death_injected', 'agent_exit_observed',
+                    'agent_exit_nonzero', 'java_exit_observed', 'task_exit_observed', 'task_lock_released',
+                    'task_cap_not_reached', 'source_unchanged', 'synthetic_root_removed', 'success')) {
+                    if (-not $record.$field) { throw 'Forced-owner cleanup witness is incomplete.' }
+                }
                 if ($cleanup[0].sessions_completed -ne 3 -or -not $cleanup[0].success -or
                     $cleanup[0].primary_failed -or $cleanup[0].cleanup_failed -or
                     $cleanup[0].failure_stage -cne 'none' -or -not $cleanup[0].agent_exit_zero -or
@@ -225,7 +265,7 @@ finally {
             if ($null -eq $failure) { $stage = 'sanitized crash evidence collection'; $failure = $_ }
             else { Add-Content -LiteralPath $EvidencePath -Value ('Crash evidence collection also failed: ' + $_.Exception.Message) }
         }
-        foreach ($name in @('CEDAR_JAVA_ERROR_DIR', 'CEDAR_JDTLS_HOME', 'CEDAR_AGENT_LANGUAGE_VALIDATION_BIN')) {
+        foreach ($name in @('CEDAR_JAVA_ERROR_DIR', 'CEDAR_JDTLS_HOME', 'CEDAR_AGENT_LANGUAGE_VALIDATION_BIN', 'CEDAR_WINPROCESS_FIXTURE_BIN')) {
             $environmentPath = 'Env:' + $name
             if (Test-Path -LiteralPath $environmentPath) { Remove-Item -LiteralPath $environmentPath }
         }

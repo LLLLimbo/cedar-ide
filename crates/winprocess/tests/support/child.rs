@@ -1,7 +1,8 @@
 //! Short-lived, synthetic executable for the opt-in Windows lifecycle suite.
 //!
 //! No shell, network, toolchain discovery, or persistent state is used. Every
-//! invocation exits within five seconds, including descendants and crash owners.
+//! ordinary invocation exits within five seconds, including descendants and crash
+//! owners. The separate Windows Java acceptance root has a fixed 210-second cap.
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -16,6 +17,14 @@ const LIFETIME_CAP_EXIT: i32 = 124;
 const OWNER_CRASH_EXIT: i32 = 79;
 
 fn main() {
+    #[cfg(windows)]
+    if env::args().nth(1).as_deref() == Some("java-validation-live") {
+        if let Err(error) = java_validation_live() {
+            eprintln!("fixture error: {error}");
+            process::exit(125);
+        }
+        return;
+    }
     // Deliberately do not join: a hung pipe write or child cannot outlive the
     // cap. process::exit does not run Rust destructors, including job cleanup.
     thread::spawn(|| {
@@ -217,6 +226,97 @@ fn publish_pid(path: &Path) -> io::Result<()> {
     let staging = path.with_extension("writing");
     fs::write(&staging, process::id().to_string())?;
     fs::rename(staging, path)
+}
+
+#[cfg(windows)]
+fn java_validation_live() -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+
+    // These are fresh paths in the acceptance driver's private generated task
+    // directory, never paths inferred from a workspace or searched on disk.
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.len() != 4 {
+        return Err(invalid_argument(
+            "java-validation-live requires lifetime, ready, and expired paths",
+        ));
+    }
+    let lifetime = Path::new(argument(&args, 1)?);
+    let ready = Path::new(argument(&args, 2)?);
+    let expired = Path::new(argument(&args, 3)?);
+    let staging = ready.with_extension("writing");
+    let paths = [lifetime, ready, expired, staging.as_path()];
+    for (index, path) in paths.iter().enumerate() {
+        if !path.is_absolute() || paths[..index].contains(path) {
+            return Err(invalid_argument(
+                "Java fixture paths must be distinct absolute paths",
+            ));
+        }
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+            Ok(_) => return Err(invalid_argument("Java fixture path already exists")),
+        }
+    }
+
+    let expired = expired.to_owned();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(210));
+        // The cap is a failed acceptance, never evidence of owner cleanup.
+        // Preserve the distinct exit code even if writing the marker fails.
+        let _ = fs::write(expired, b"java-validation-lifetime-expired\n");
+        process::exit(LIFETIME_CAP_EXIT);
+    });
+
+    // Deny all sharing for the full process lifetime. Once readiness appears,
+    // the driver must observe sharing denial while live and reopening after
+    // cancellation or owner cleanup, alongside a held process observation.
+    let _lifetime = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .share_mode(0)
+        .open(lifetime)?;
+    let mut times = [FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    }; 4];
+    // SAFETY: GetCurrentProcess supplies this process's borrowed pseudo-handle.
+    // The four FILETIME outputs are distinct and writable for the entire call.
+    let ok = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut times[0],
+            &mut times[1],
+            &mut times[2],
+            &mut times[3],
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let created = (u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime);
+    if created == 0 {
+        return Err(io::Error::other("Java fixture creation time is zero"));
+    }
+    println!("java-validation-stdout-ready");
+    eprintln!("java-validation-stderr-ready");
+    io::stdout().flush()?;
+    io::stderr().flush()?;
+
+    // Atomic readiness also carries the identity for verification with a held
+    // observation handle. No stdout/stderr writes follow publication, so
+    // losing the owner's readers cannot masquerade as successful cancellation.
+    let mut identity = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)?;
+    writeln!(identity, "{} {created}", process::id())?;
+    identity.flush()?;
+    drop(identity);
+    fs::rename(staging, ready)?;
+    idle();
 }
 
 fn wait_for_file(path: &Path) -> io::Result<()> {
