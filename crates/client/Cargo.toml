@@ -14,6 +14,9 @@ tempfile.workspace = true
 serde_json.workspace = true
 cedar-tasks = { path = "../tasks" }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 

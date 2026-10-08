@@ -88,7 +88,8 @@ mod lifecycle {
     use cedar_protocol::{read_frame, write_frame, Request, Response};
     use std::{
         fs,
-        io::{BufReader, Read, Write},
+        io::{self, BufReader, PipeWriter, Read, Write},
+        os::fd::{AsFd, AsRawFd, OwnedFd},
         path::Path,
         process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
         sync::{mpsc, Arc, Mutex},
@@ -103,6 +104,13 @@ mod lifecycle {
     }
     fn eventually(context: &str, mut predicate: impl FnMut() -> Result<(), String>) {
         let deadline = Instant::now() + Duration::from_secs(4);
+        eventually_before(context, deadline, &mut predicate);
+    }
+    fn eventually_before(
+        context: &str,
+        deadline: Instant,
+        mut predicate: impl FnMut() -> Result<(), String>,
+    ) {
         while let Err(detail) = predicate() {
             assert!(
                 Instant::now() < deadline,
@@ -110,6 +118,34 @@ mod lifecycle {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+    fn pipe_has_no_readers(writer: &PipeWriter) -> io::Result<bool> {
+        let mut descriptor = libc::pollfd {
+            fd: writer.as_raw_fd(),
+            events: 0,
+            revents: 0,
+        };
+        // Linux reports POLLERR on a pipe's write end only once every read
+        // descriptor is closed. This passive check cannot fill/block the pipe.
+        // https://man7.org/linux/man-pages/man2/poll.2.html
+        // SAFETY: descriptor is live, initialized, and valid for this one-entry
+        // poll. The writer remains owned for the entire nonblocking call.
+        if unsafe { libc::poll(&mut descriptor, 1, 0) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if descriptor.revents & libc::POLLNVAL != 0 {
+            return Err(io::Error::other("stdout probe descriptor is invalid"));
+        }
+        Ok(descriptor.revents & libc::POLLERR != 0)
+    }
+    fn wait_for_no_pipe_readers(writer: &PipeWriter, deadline: Instant) {
+        eventually_before("broken_pipe: all stdout readers closed", deadline, || {
+            if pipe_has_no_readers(writer).map_err(|error| error.to_string())? {
+                Ok(())
+            } else {
+                Err("stdout still has a retained read descriptor".into())
+            }
+        });
     }
     fn live_command() -> Operation {
         Operation::RunStart {
@@ -294,12 +330,21 @@ mod lifecycle {
     }
     impl RawAgent {
         fn new(root: &Path) -> Self {
+            Self::with_stdout(root, Stdio::piped())
+        }
+        fn with_stdout_probe(root: &Path) -> (Self, PipeWriter) {
+            let (reader, writer) = io::pipe().unwrap();
+            let mut agent = Self::with_stdout(root, writer.try_clone().unwrap().into());
+            agent.output = Some(BufReader::new(ChildStdout::from(OwnedFd::from(reader))));
+            (agent, writer)
+        }
+        fn with_stdout(root: &Path, stdout: Stdio) -> Self {
             let mut child = Command::new(agent())
                 .arg("--root")
                 .arg(root)
                 .arg("--allow-run")
                 .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
+                .stdout(stdout)
                 .stderr(Stdio::piped())
                 .spawn()
                 .unwrap();
@@ -362,21 +407,33 @@ mod lifecycle {
             response.result.unwrap()
         }
         fn exit(&mut self, context: &str, task_pids: &[u32]) -> ExitStatus {
+            self.exit_before(context, task_pids, Instant::now() + Duration::from_secs(4))
+        }
+        fn exit_before(
+            &mut self,
+            context: &str,
+            task_pids: &[u32],
+            deadline: Instant,
+        ) -> ExitStatus {
             let mut status = None;
-            eventually(&format!("{context}: agent exit and stderr EOF"), || {
-                status = self.child.try_wait().unwrap();
-                let stderr_finished = self.stderr_reader.as_ref().unwrap().is_finished();
-                if status.is_some() && stderr_finished {
-                    Ok(())
-                } else {
-                    Err(format!(
+            eventually_before(
+                &format!("{context}: agent exit and stderr EOF"),
+                deadline,
+                || {
+                    status = self.child.try_wait().unwrap();
+                    let stderr_finished = self.stderr_reader.as_ref().unwrap().is_finished();
+                    if status.is_some() && stderr_finished {
+                        Ok(())
+                    } else {
+                        Err(format!(
                         "exit={status:?}; stderr EOF={stderr_finished}; agent: {}; task: {}; stderr={:?}",
                         process_diagnostics(&[self.child.id()]),
                         process_diagnostics(task_pids),
                         self.diagnostics()
                     ))
-                }
-            });
+                    }
+                },
+            );
             self.stderr_reader.take().unwrap().join().unwrap();
             status.unwrap()
         }
@@ -433,7 +490,12 @@ mod lifecycle {
     fn real_agent_eof_broken_pipe_and_malformed_input_unwind_active_tasks() {
         for failure in ["eof", "broken_pipe", "truncated", "oversized"] {
             let root = tempfile::tempdir().unwrap();
-            let mut agent = RawAgent::new(root.path());
+            let (mut agent, stdout_probe) = if failure == "broken_pipe" {
+                let (agent, probe) = RawAgent::with_stdout_probe(root.path());
+                (agent, Some(probe))
+            } else {
+                (RawAgent::new(root.path()), None)
+            };
             task_id(agent.request(live_command()));
             let pids = pids(root.path(), failure);
             assert!(
@@ -441,14 +503,22 @@ mod lifecycle {
                 "{failure}: task fixture must be live before fault injection: {}",
                 process_diagnostics(&pids)
             );
+            let mut broken_pipe_deadline = None;
             match failure {
                 "eof" => {
                     agent.input.take();
                 }
                 "broken_pipe" => {
-                    // The response pipe is gone, but stdin stays open so the
-                    // failure is specifically write_frame -> BrokenPipe.
+                    let deadline = Instant::now() + Duration::from_secs(4);
+                    broken_pipe_deadline = Some(deadline);
                     agent.output.take();
+                    // A parallel fork can retain a CLOEXEC read descriptor
+                    // until exec. Prove every reader is gone before sending
+                    // the one response that must fail; merely dropping our
+                    // reader can let that response succeed and strand the
+                    // agent waiting on still-open stdin. Readiness and exit
+                    // share the original four-second bound.
+                    wait_for_no_pipe_readers(stdout_probe.as_ref().unwrap(), deadline);
                     write_frame(
                         agent.input.as_mut().unwrap(),
                         &Request {
@@ -483,7 +553,11 @@ mod lifecycle {
                 }
                 _ => unreachable!(),
             }
-            let status = agent.exit(failure, &pids);
+            let status = if let Some(deadline) = broken_pipe_deadline {
+                agent.exit_before(failure, &pids, deadline)
+            } else {
+                agent.exit(failure, &pids)
+            };
             assert_eq!(status.success(), failure == "eof", "{failure}: {status}");
             assert_task_stopped(&pids, failure);
             let diagnostics = agent.diagnostics();
@@ -500,6 +574,64 @@ mod lifecycle {
                 );
             }
         }
+    }
+
+    #[test]
+    #[ignore = "requires compiled cedar-agent; scripts/verify.sh and CI run this explicitly"]
+    fn broken_pipe_probe_accounts_for_a_retained_stdout_reader() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut agent, stdout_probe) = RawAgent::with_stdout_probe(root.path());
+        task_id(agent.request(live_command()));
+        let pids = pids(root.path(), "retained stdout reader");
+        assert!(pids.iter().all(|pid| running(*pid)));
+        let duplicate = agent
+            .output
+            .as_ref()
+            .unwrap()
+            .get_ref()
+            .as_fd()
+            .try_clone_to_owned()
+            .unwrap();
+        agent.output.take();
+        assert!(
+            !pipe_has_no_readers(&stdout_probe).unwrap(),
+            "closing one reader must not establish a broken response pipe"
+        );
+        // Deterministically model the descriptor retained by a concurrent
+        // fork: the first response succeeds even after our usual reader closes.
+        // request() bounds the read and verifies its response ID.
+        agent.output = Some(BufReader::new(ChildStdout::from(duplicate)));
+        assert!(matches!(
+            agent.request(Operation::Hello),
+            Payload::Hello { .. }
+        ));
+        assert!(agent.child.try_wait().unwrap().is_none());
+        assert!(pids.iter().all(|pid| running(*pid)));
+
+        let deadline = Instant::now() + Duration::from_secs(4);
+        agent.output.take();
+        wait_for_no_pipe_readers(&stdout_probe, deadline);
+        write_frame(
+            agent.input.as_mut().unwrap(),
+            &Request {
+                id: 99,
+                op: Operation::Hello,
+            },
+        )
+        .unwrap();
+        assert!(!agent
+            .exit_before("retained stdout reader", &pids, deadline)
+            .success());
+        assert_task_stopped(&pids, "retained stdout reader");
+        let diagnostics = agent.diagnostics();
+        assert!(
+            diagnostics.contains("protocol stream closed:"),
+            "{diagnostics}"
+        );
+        assert!(
+            diagnostics.to_ascii_lowercase().contains("broken pipe"),
+            "{diagnostics}"
+        );
     }
 }
 

@@ -163,15 +163,21 @@ fn java_executable(argument: Option<&std::ffi::OsString>) -> SmokeResult<PathBuf
                     .into(),
             );
         }
-        Ok(path.canonicalize()?)
+        let executable = java_local_path(path)?;
+        if !executable.to_str().is_some_and(str::is_ascii) {
+            return Err("Windows Java acceptance requires an ASCII JDK installation path".into());
+        }
+        Ok(executable)
     }
     #[cfg(not(windows))]
     Ok(argument.map(PathBuf::from).unwrap_or_else(|| "java".into()))
 }
 
 // Java 21's java.io parser treats Rust's \\?\ canonical prefix as UNC-like.
-// Keep the executable's native path, but use a verified ordinary local-drive
-// spelling for Java's cwd. This probe does not cover UNC/device paths.
+// The native 0.8.8 matrix also isolates JVM startup crashes to the verbatim
+// executable spelling. Use an identity-checked ordinary local-drive spelling
+// only in this Java launch recipe. Generic WindowsCommand remains literal.
+// This probe does not cover UNC/device paths.
 #[cfg(windows)]
 fn ordinary_windows_local_path(path: &Path) -> SmokeResult<PathBuf> {
     use std::path::{Component, Prefix};
@@ -193,7 +199,7 @@ fn ordinary_windows_local_path(path: &Path) -> SmokeResult<PathBuf> {
     Ok(PathBuf::from(plain))
 }
 
-fn java_working_directory(path: &Path) -> SmokeResult<PathBuf> {
+fn java_local_path(path: &Path) -> SmokeResult<PathBuf> {
     #[cfg(windows)]
     {
         let canonical = path.canonicalize()?;
@@ -235,7 +241,7 @@ fn crash_report_arguments(directory: &Path) -> SmokeResult<Vec<std::ffi::OsStrin
     if !directory.is_absolute() || !directory.is_dir() {
         return Err("CEDAR_JAVA_ERROR_DIR must name an existing absolute directory".into());
     }
-    let directory = java_working_directory(directory)?;
+    let directory = java_local_path(directory)?;
     let text = directory.to_str().ok_or("crash directory must be ASCII")?;
     if !text.is_ascii()
         || text
@@ -524,7 +530,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let root_uri = file_uri(&project)?;
     let document_uri = file_uri(&source)?;
     let mut config = ProcessConfig::new(java);
-    config.working_directory = Some(java_working_directory(&jdtls)?);
+    config.working_directory = Some(java_local_path(&jdtls)?);
     config.args = [
         "-Declipse.application=org.eclipse.jdt.ls.core.id1",
         "-Dosgi.bundles.defaultStartLevel=4",
@@ -578,7 +584,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "java_executable":config.program, "jdtls_directory":jdtls,
             "launcher":jars[0], "configuration":configuration,
             "working_directory":config.working_directory,
-            "launch_representation":"Unicode distribution cwd; ASCII-relative jar; encoded location URLs",
+            "launch_representation":"verified ordinary Java executable; Unicode distribution cwd; ASCII-relative jar; encoded location URLs",
             "literal_launch_arguments_before_data":config.args,
             "shutdown_grace_secs":options.shutdown_timeout.as_secs(),
             "document_uri":document_uri, "sessions":3, "resolve_imports":resolve_imports
@@ -893,11 +899,11 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn java_working_directory_strips_only_verified_local_drive_prefixes() {
+    fn java_local_path_strips_only_verified_local_drive_prefixes() {
         use std::path::{Component, Prefix};
         let temp = tempfile::tempdir().unwrap();
         let canonical = temp.path().canonicalize().unwrap();
-        let argument = java_working_directory(&canonical).unwrap();
+        let argument = java_local_path(&canonical).unwrap();
         assert!(matches!(argument.components().next(),
             Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))));
         assert_eq!(argument.canonicalize().unwrap(), canonical);
@@ -1095,10 +1101,23 @@ mod tests {
         assert!(java_executable(Some(&missing.as_os_str().to_owned())).is_err());
         // Path validation only: this unit test never tries to execute the file.
         std::fs::write(&missing, b"fixture").unwrap();
+        let canonical = missing.canonicalize().unwrap();
+        let executable = java_executable(Some(&missing.as_os_str().to_owned())).unwrap();
+        assert_eq!(executable.canonicalize().unwrap(), canonical);
+        assert!(matches!(
+            executable.components().next(),
+            Some(std::path::Component::Prefix(prefix))
+                if matches!(prefix.kind(), std::path::Prefix::Disk(_))
+        ));
         assert_eq!(
-            java_executable(Some(&missing.as_os_str().to_owned())).unwrap(),
-            missing.canonicalize().unwrap()
+            java_executable(Some(&canonical.as_os_str().to_owned())).unwrap(),
+            executable
         );
+        let unicode = temp.path().join("JDK 雪");
+        std::fs::create_dir(&unicode).unwrap();
+        let unicode = unicode.join("java.exe");
+        std::fs::write(&unicode, b"fixture").unwrap();
+        assert!(java_executable(Some(&unicode.as_os_str().to_owned())).is_err());
         let wrapper = temp.path().join("java.cmd");
         std::fs::write(&wrapper, b"fixture").unwrap();
         assert!(java_executable(Some(&wrapper.as_os_str().to_owned())).is_err());

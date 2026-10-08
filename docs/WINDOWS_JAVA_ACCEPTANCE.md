@@ -25,7 +25,8 @@ or establish a Windows runtime pass. The broader gate remains in
   remains present alongside restart semantics, not an independent new write.
   Windows cwd uses a verified ordinary local-drive
   spelling; canonical equivalence is checked and UNC/device forms rejected.
-  The executable retains its native path. This is a scoped Java-launch recipe,
+  The executable uses an identity-checked ordinary absolute local-drive spelling
+  under an ASCII JDK installation. This is a scoped Java-launch recipe,
   not a change to Cedar's literal UTF-16 process transport or a claim of arbitrary
   Unicode Java argv, Unicode JDK-home, UNC or long-path support.
 - Rejects inherited `CLIENT_PORT`, `CLIENT_HOST`, `socket.stream.debug`,
@@ -125,7 +126,7 @@ Example PowerShell, after archive/hash verification and scratch extraction:
 ```powershell
 $ErrorActionPreference = 'Stop'
 $Jdt = (Resolve-Path 'C:\acceptance with spaces 雪\jdtls').Path
-$Java = (Resolve-Path 'C:\acceptance with spaces 雪\jdk\bin\java.exe').Path
+$Java = (Resolve-Path 'C:\acceptance with spaces\jdk\bin\java.exe').Path
 $env:JAVA_HOME = Split-Path (Split-Path $Java -Parent) -Parent
 foreach ($Name in @('CLIENT_PORT', 'CLIENT_HOST', 'socket.stream.debug',
     'JDK_JAVA_OPTIONS', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS')) {
@@ -318,3 +319,12 @@ DirEntry identity fields and short/long path spelling comparison while retaining
 link/reparse and opened-file identity checks. The primary JVM crash remains
 unknown; neither a collector fix nor a local Linux pass establishes Java success.
 See [collector portability report](TEST_REPORT_PHASE9C_COLLECTOR.md).
+
+The 0.8.8 six-case native matrix isolated JVM startup failure to the verbatim
+canonical executable spelling: ordinary spelling passed all three cases,
+including Unicode cwd and binary stdin/stdout; canonical spelling failed all
+three with the same Internal Error/native frames as JDT. Version 0.8.9 therefore
+uses an identity-checked ordinary absolute Java executable in this example only.
+The selected JDK installation must be ASCII; Unicode JDT/project/data coverage
+is unchanged. Generic WindowsCommand remains literal, and actual JDT semantics
+still require the next native run. See [launch report](TEST_REPORT_PHASE9C_LAUNCH.md).
