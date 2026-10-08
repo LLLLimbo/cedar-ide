@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十一阶段连接取消与资源观测工程（**0.11.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第十一阶段连接取消与资源观测工程（**0.11.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -38,7 +38,7 @@ cargo run -p cedar-app --bin cedar -- examples/demo
 
 Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`，本地连接还要求同目录的 `cedar-agent.exe`；不要只复制前端。缺失或损坏的 agent 会报错，不搜索 PATH 或回退到进程内执行。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
-公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.9.0 提交 [`270119b45eea1d37581a497e1bbe9a2d4ba3764a`](https://github.com/LLLLimbo/cedar-ide/commit/270119b45eea1d37581a497e1bbe9a2d4ba3764a) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37727806345)：正常 Windows 隔离 agent 的专用 Java/JDT 路径与真实编辑器事务通过；Stop 如实报告超时后的强制清理，不冒充自然退出。0.10.0 显式、只读的[断线保存核对](docs/INTERRUPTED_SAVES.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37736569381)，两端九项实际进程故障用例全部执行通过；保留后续输入和 Undo，不自动重放写入。0.11.0 增加有界[连接与读取取消](docs/CONNECTION_CANCELLATION.md)，尚待精确提交 CI。**Windows Git、同步 Run 和通用 LSP 仍不启用**。Java 配置见[使用说明](docs/WINDOWS_JAVA_SETUP.md)；原生 GUI 与真实 SSH 仍待独立验收，当前证据见[测试报告](docs/TEST_REPORT.md)。
+公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.9.0 提交 [`270119b45eea1d37581a497e1bbe9a2d4ba3764a`](https://github.com/LLLLimbo/cedar-ide/commit/270119b45eea1d37581a497e1bbe9a2d4ba3764a) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37727806345)：正常 Windows 隔离 agent 的专用 Java/JDT 路径与真实编辑器事务通过；Stop 如实报告超时后的强制清理，不冒充自然退出。0.10.0 显式、只读的[断线保存核对](docs/INTERRUPTED_SAVES.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37736569381)，两端九项实际进程故障用例全部执行通过；保留后续输入和 Undo，不自动重放写入。0.11.0 的有界[连接与读取取消](docs/CONNECTION_CANCELLATION.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37741303276)。0.11.1 修正 CPU 观测的计时窗口，仍待新提交验证。**Windows Git、同步 Run 和通用 LSP 仍不启用**。Java 配置见[使用说明](docs/WINDOWS_JAVA_SETUP.md)；原生 GUI 与真实 SSH 仍待独立验收，当前证据见[测试报告](docs/TEST_REPORT.md)。
 
 ## 磁盘对比与重载
 
@@ -110,7 +110,7 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端可连接 Linux 远程工作
 
 按需重绘，无常驻全项目索引；I/O 与工具执行不阻塞 UI；单文件后端上限 1 MiB、编辑标签上限 32、协议帧上限 8 MiB；搜索、进程输出、语言事件和恢复队列有界。大文本降级为无高亮显示。项目代码不发送到云模型或分析服务；恢复副本留在前端本地，用户自选同步目录等外部分享行为不在此保证内。
 
-这些是架构措施，不等于“比 IDEA 节省 X%”。目前没有在同一机器、项目与功能集下完成 IDEA 对照基准。第三阶段历史记录包含一次 112.597 秒 release 前端小样例：CJK、默认恢复开启、信任关闭且无 JVM，前端观察到的 HWM 为 117.97 MiB。它与第二阶段交互不同，不能证明恢复开销、内存改善或 IDEA 相对优势。前端与 Java/Kotlin JVM 读数分别报告，不能拼成同时测得的总占用。0.11.0 增加同一次真实 Java 验收中的进程树观测，分别记录无界面测试驱动、agent 与 JVM；这是带构建类型和采样完整性标记的基线，尚待精确提交原生 CI，不能代替 GUI 总占用或 IDEA 对照。详见 [进程树基线](docs/RESOURCE_BASELINE.md)、[资源说明](docs/PERFORMANCE.md) 与 [第五阶段测试报告](docs/TEST_REPORT_PHASE5.md)。
+这些是架构措施，不等于“比 IDEA 节省 X%”。目前没有在同一机器、项目与功能集下完成 IDEA 对照基准。第三阶段历史记录包含一次 112.597 秒 release 前端小样例：CJK、默认恢复开启、信任关闭且无 JVM，前端观察到的 HWM 为 117.97 MiB。它与第二阶段交互不同，不能证明恢复开销、内存改善或 IDEA 相对优势。前端与 Java/Kotlin JVM 读数分别报告，不能拼成同时测得的总占用。0.11.0 增加同一次真实 Java 验收中的进程树观测，分别记录无界面测试驱动、agent 与 JVM；原生同提交观测的全树工作集采样峰值约 826 MiB，其中 JVM 约 803 MiB；包含调试版无界面测试驱动和发行版 agent，不是 GUI 总占用。CPU 计时窗口发现误差，0.11.1 正在修正，旧 CPU 峰值不可作为容量结论。不能据此作 IDEA 对照。详见 [进程树基线](docs/RESOURCE_BASELINE.md)、[资源说明](docs/PERFORMANCE.md) 与 [第五阶段测试报告](docs/TEST_REPORT_PHASE5.md)。
 
 ## 验证
 

@@ -9,6 +9,7 @@ import argparse
 import ctypes
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -19,7 +20,13 @@ import time
 ROLES = ('headless_driver', 'agent', 'jvm', 'other_descendant')
 PHASES = ('starting', 'java_initialized', 'semantic_ready_idle', 'query_workload',
           'cleanup', 'complete')
-METRICS = ('rss_bytes', 'cpu_percent_one_core', 'threads', 'handles')
+LIVE_METRICS = ('rss_bytes', 'threads', 'handles')
+CPU_SUM = 'cpu_percent_one_core_sum_of_process_estimates'
+METRICS = (*LIVE_METRICS, CPU_SUM)
+CPU_ISSUES = frozenset(('cpu_timing_invalid', 'cpu_counter_invalid'))
+CPU_INTERVAL_FIELDS = ('cpu_delta_ns', 'elapsed_ns', 'elapsed_min_ns', 'elapsed_max_ns',
+                       'previous_read_span_ns', 'current_read_span_ns',
+                       'percent_lower_from_timing', 'percent_upper_from_timing')
 MAX_PROCESSES = 64
 MAX_SAMPLES = 1600
 MAX_SYSTEM_PROCESSES = 32768
@@ -30,7 +37,7 @@ ISSUES = frozenset(('discovery_failed', 'discovery_limit', 'identity_or_cpu_unav
                    'descendant_unavailable', 'image_unavailable', 'identity_changed',
                    'liveness_unavailable', 'sample_raced_exit', 'sample_unavailable',
                    'root_image_mismatch', 'process_limit', 'metric_unavailable',
-                   'parent_identity_unavailable', 'observation_failed'))
+                   'parent_identity_unavailable', 'observation_failed')) | CPU_ISSUES
 
 
 class ObservationError(Exception):
@@ -57,7 +64,7 @@ class Process:
     role: str = 'other_descendant'
     instance: int = 0
     previous_cpu: object = None
-    previous_time: object = None
+    previous_read: object = None
     previous_phase: object = None
     exited: bool = False
     exit_time: object = None
@@ -66,8 +73,10 @@ class Process:
 class Windows:
     """Query-only retained handles pin identities, including after reparenting."""
     handle_metric = 'windows_process_handle_count'
+    cpu_counter_unit_ns = 100  # Representation unit, not guaranteed accuracy.
 
-    def __init__(self):
+    def __init__(self, clock=None):
+        self.clock = clock or time.perf_counter_ns
         from ctypes import wintypes as w
         self.w = w
         self.k = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -147,7 +156,13 @@ class Windows:
             raise
 
     def read(self, process, scan):
+        # CPython 3.12 Windows monotonic_ns uses coarse GetTickCount64;
+        # perf_counter_ns uses QPC. Bracket only the actual CPU counter query.
+        cpu_start = self.clock()
         created, exited_at, kernel, user = self.times(process.native)
+        cpu_end = self.clock()
+        cpu = {'cpu_ns': (kernel + user) * 100,
+               'cpu_read_start_ns': cpu_start, 'cpu_read_end_ns': cpu_end}
         if created != process.created:
             raise ObservationError('identity_changed')
         wait = self.k.WaitForSingleObject(process.native, 0)
@@ -156,8 +171,7 @@ class Windows:
         process.exit_time = exited_at or None
         if wait == 0:
             process.exited = True
-            return {'rss_bytes': 0, 'cpu_ns': (kernel + user) * 100,
-                    'threads': 0, 'handles': 0}
+            return {'rss_bytes': 0, **cpu, 'threads': 0, 'handles': 0}
         memory = self.Memory()
         memory.size = ctypes.sizeof(memory)
         rss = memory.rss if self.p.GetProcessMemoryInfo(
@@ -168,7 +182,7 @@ class Windows:
         # Recheck liveness after reading; never turn a raced exit into zeros.
         if self.k.WaitForSingleObject(process.native, 0) != 258:
             raise ObservationError('sample_raced_exit')
-        return {'rss_bytes': rss, 'cpu_ns': (kernel + user) * 100,
+        return {'rss_bytes': rss, **cpu,
                 'threads': scan.get(process.pid, (None, None, None))[1], 'handles': handles}
 
     def owns_child(self, parent, child):
@@ -184,8 +198,10 @@ class Linux:
     """Supporting /proc backend; file descriptors are explicitly not Win32 handles."""
     handle_metric = 'linux_open_file_descriptor_count'
 
-    def __init__(self):
+    def __init__(self, clock=None):
+        self.clock = clock or time.perf_counter_ns
         self.tick_ns = 1_000_000_000 / os.sysconf('SC_CLK_TCK')
+        self.cpu_counter_unit_ns = self.tick_ns
         self.page_bytes = os.sysconf('SC_PAGE_SIZE')
 
     @staticmethod
@@ -231,12 +247,15 @@ class Linux:
                 handles = sum(1 for _ in Path('/proc', str(process.pid), 'fd').iterdir())
             except OSError:
                 handles = None
+            cpu_start = self.clock()
             after = self.stat(process.pid)
+            cpu_end = self.clock()
             if after['created'] != process.created or after['zombie'] != before['zombie']:
                 raise ObservationError('sample_raced_exit')
             process.exited = after['zombie']
             return {'rss_bytes': 0 if process.exited else after['rss'] * self.page_bytes,
                     'cpu_ns': round(after['cpu'] * self.tick_ns),
+                    'cpu_read_start_ns': cpu_start, 'cpu_read_end_ns': cpu_end,
                     'threads': 0 if process.exited else after['threads'],
                     'handles': 0 if process.exited else handles}
         except (FileNotFoundError, ProcessLookupError):
@@ -290,15 +309,76 @@ def phase_events(path):
 
 
 def aggregate(records, complete):
-    """Sum only observations from this sampling sweep, never individual peaks."""
-    return {metric: sum(row[metric] for row in records)
-            if complete and records and all(row[metric] is not None for row in records) else None
-            for metric in METRICS}
+    """Live resources share a sweep; CPU estimates have independent intervals."""
+    result = {}
+    for metric in METRICS:
+        source = 'cpu_percent_one_core' if metric == CPU_SUM else metric
+        result[metric] = (sum(row[source] for row in records)
+                          if complete and records and all(row[source] is not None for row in records)
+                          else None)
+    return result
+
+
+def empty_cpu_interval(status):
+    return {'status': status, **dict.fromkeys(CPU_INTERVAL_FIELDS)}
+
+
+def cpu_interval(process, values, phase, resolution_ns):
+    """Estimate CPU using this identity's read brackets, never a sweep timestamp.
+
+    The interval bounds model read placement with clock-resolution assumptions.
+    Physical clock accuracy and OS CPU accounting error/quantization are not
+    included; these are not confidence bounds for actual CPU consumption.
+    """
+    result = empty_cpu_interval('unavailable')
+    cpu = values.get('cpu_ns')
+    start, end = values.get('cpu_read_start_ns'), values.get('cpu_read_end_ns')
+    previous_cpu, previous_read, previous_phase = (process.previous_cpu,
+                                                   process.previous_read,
+                                                   process.previous_phase)
+    # A failed observation must not let the next interval bridge unknown data.
+    process.previous_cpu = process.previous_read = process.previous_phase = None
+    if type(cpu) is not int or cpu < 0:
+        result['status'] = 'counter_invalid'
+        return None, result, 'cpu_counter_invalid'
+    if (type(start) is not int or type(end) is not int or end < start
+            or type(resolution_ns) is not int or resolution_ns <= 0):
+        result['status'] = 'clock_invalid'
+        return None, result, 'cpu_timing_invalid'
+    result['current_read_span_ns'] = end - start
+    if previous_read is not None:
+        result['previous_read_span_ns'] = previous_read[1] - previous_read[0]
+    if previous_cpu is None or previous_phase != phase:
+        result['status'] = 'warming_up' if previous_cpu is None else 'phase_boundary'
+    elif cpu < previous_cpu:
+        result['status'] = 'counter_regressed'
+        return None, result, 'cpu_counter_invalid'
+    else:
+        # Each timestamp can be quantized by one clock-resolution unit. A
+        # midpoint estimate uses both brackets and includes any scheduler pause.
+        minimum = start - previous_read[1] - 2 * resolution_ns
+        maximum = end - previous_read[0] + 2 * resolution_ns
+        elapsed = ((start - previous_read[0]) + (end - previous_read[1])) / 2
+        result.update(cpu_delta_ns=cpu - previous_cpu, elapsed_ns=elapsed,
+                      elapsed_min_ns=minimum, elapsed_max_ns=maximum)
+        if minimum <= 0 or maximum < minimum:
+            result['status'] = 'interval_unresolved'
+            return None, result, 'cpu_timing_invalid'
+        result.update(status='estimated',
+                      percent_lower_from_timing=100 * (cpu - previous_cpu) / maximum,
+                      percent_upper_from_timing=100 * (cpu - previous_cpu) / minimum)
+    process.previous_cpu, process.previous_read = cpu, (start, end)
+    process.previous_phase = phase
+    percent = (100 * result['cpu_delta_ns'] / result['elapsed_ns']
+               if result['status'] == 'estimated' else None)
+    return percent, result, None
 
 
 class Sampler:
-    def __init__(self, backend, root_pid, roles):
+    def __init__(self, backend, root_pid, roles, resolution_ns=None):
         self.backend = backend
+        self.resolution_ns = (math.ceil(time.get_clock_info('perf_counter').resolution * 1e9)
+                              if resolution_ns is None else resolution_ns)
         if set(roles) - set(ROLES):
             raise ObservationError('root_image_mismatch')
         self.required_roles = set(roles)
@@ -316,7 +396,7 @@ class Sampler:
         process.instance = len(self.processes) + 1
         self.processes.append(process)
 
-    def sample(self, now, phase):
+    def sample(self, phase):
         issues = set()
         try:
             scan = self.backend.scan()
@@ -364,26 +444,25 @@ class Sampler:
                 continue
             row = {'instance': process.instance, 'role': process.role,
                    'identity_verified': True, 'exited': False,
-                   **dict.fromkeys(METRICS)}
+                   **dict.fromkeys((*LIVE_METRICS, 'cpu_percent_one_core')),
+                   'cpu_interval': empty_cpu_interval('unavailable')}
             try:
                 values = self.backend.read(process, scan)
-                row.update({key: values[key] for key in ('rss_bytes', 'threads', 'handles')})
+                row.update({key: values[key] for key in LIVE_METRICS})
                 row['exited'] = process.exited
-                cpu = values['cpu_ns']
-                if (process.previous_cpu is not None and process.previous_phase == phase
-                        and now > process.previous_time and cpu >= process.previous_cpu):
-                    row['cpu_percent_one_core'] = round(
-                        100 * (cpu - process.previous_cpu) / (now - process.previous_time), 4)
-                process.previous_cpu, process.previous_time = cpu, now
-                process.previous_phase = phase
-                if any(values[key] is None for key in ('rss_bytes', 'threads', 'handles')):
+                percent, interval, cpu_issue = cpu_interval(process, values, phase, self.resolution_ns)
+                row['cpu_percent_one_core'], row['cpu_interval'] = percent, interval
+                if cpu_issue:
+                    issues.add(cpu_issue)
+                if any(values[key] is None for key in LIVE_METRICS):
                     issues.add('metric_unavailable')
             except ObservationError as error:
                 issues.add(issue(error))
                 row['identity_verified'] = False
                 process.previous_cpu = None
             rows.append(row)
-        discovery_complete = not issues
+        # A clock problem invalidates CPU alone, not independently read RSS.
+        discovery_complete = not (issues - CPU_ISSUES)
         known_roles = {process.role for process in self.processes}
         roles_observed = self.required_roles <= known_roles
         totals = aggregate(rows, discovery_complete and roles_observed)
@@ -408,12 +487,13 @@ class Sampler:
             return
         sample['phase_stable'] = False
         sample['complete'] = False
-        sample['metric_complete']['cpu_percent_one_core'] = False
-        sample['aggregate']['cpu_percent_one_core'] = None
+        sample['metric_complete'][CPU_SUM] = False
+        sample['aggregate'][CPU_SUM] = None
         for row in sample['processes']:
             row['cpu_percent_one_core'] = None
+            row['cpu_interval'] = empty_cpu_interval('phase_unstable')
         for values in sample['by_role'].values():
-            values['cpu_percent_one_core'] = None
+            values[CPU_SUM] = None
         # Neither endpoint of an accepted CPU interval may straddle a marker.
         for process in self.processes:
             process.previous_phase = None
@@ -440,8 +520,9 @@ def summary(samples):
 
 def run(args):
     backend = Windows() if sys.platform == 'win32' else Linux()
+    resolution_ns = math.ceil(time.get_clock_info('perf_counter').resolution * 1e9)
     report = {
-        'schema_version': 1, 'purpose': 'observational_process_tree_baseline',
+        'schema_version': 2, 'purpose': 'observational_process_tree_baseline',
         'status': 'incomplete', 'acceptance_evaluated': False,
         'platform': 'windows' if sys.platform == 'win32' else 'linux',
         'metadata': {'source_commit': args.source_commit, 'driver_build': 'cargo_test_debug',
@@ -453,7 +534,11 @@ def run(args):
         'measurement': {'interval_ms': args.interval_ms, 'timeout_seconds': args.timeout_seconds,
                         'maximum_processes': MAX_PROCESSES, 'maximum_samples': MAX_SAMPLES,
                         'rss': 'sum_of_sampled_resident_working_sets_may_double_count_shared_pages',
-                        'cpu': 'percent_of_one_logical_core_can_exceed_100',
+                        'clock': 'time.perf_counter_ns', 'clock_resolution_ns': resolution_ns,
+                        'cpu': 'per_process_read_midpoint_estimate_percent_of_one_logical_core',
+                        'cpu_aggregation': 'sum_of_process_estimates_not_same_window_tree_cpu',
+                        'cpu_timing_bounds': 'read_placement_with_clock_resolution_excludes_clock_accuracy_and_cpu_accounting_error',
+                        'cpu_counter_unit_ns': backend.cpu_counter_unit_ns,
                         'handles': backend.handle_metric,
                         'discovery': 'sampled_descendants_short_lived_children_may_be_missed',
                         'idle': 'two_seconds_after_exact_initial_diagnostics_background_work_may_continue',
@@ -465,7 +550,7 @@ def run(args):
     issues = set()
     sampler = None
     child = None
-    start = time.monotonic_ns()
+    start = time.perf_counter_ns()
     env = os.environ.copy()
     env.pop('CEDAR_RESOURCE_PHASE_PATH', None)
     try:
@@ -482,29 +567,30 @@ def run(args):
                                      stdout=transcript, stderr=subprocess.STDOUT, env=env)
             try:
                 sampler = Sampler(backend, child.pid, {'headless_driver': args.driver,
-                                                       'agent': args.agent, 'jvm': args.java})
+                                                       'agent': args.agent, 'jvm': args.java},
+                                  resolution_ns=resolution_ns)
             except ObservationError as error:
                 issues.add(issue(error))
             while True:
-                sweep = time.monotonic_ns()
+                sweep = time.perf_counter_ns()
                 events, event_issues = phase_events(args.phase_file)
                 issues.update(event_issues)
                 report['phase_events'] = events
                 if sampler is not None and len(report['samples']) < MAX_SAMPLES:
-                    sample = sampler.sample(sweep, events[-1]['phase'] if events else 'starting')
+                    sample = sampler.sample(events[-1]['phase'] if events else 'starting')
                     after_events, after_issues = phase_events(args.phase_file)
                     issues.update(after_issues)
                     sampler.validate_phase(sample, after_events[-1]['phase'] if after_events else 'starting',
                                            event_issues + after_issues)
                     report['phase_events'] = after_events
                     sample['elapsed_ms'] = round((sweep - start) / 1_000_000, 3)
-                    sample['sweep_ms'] = round((time.monotonic_ns() - sweep) / 1_000_000, 3)
+                    sample['sweep_ms'] = round((time.perf_counter_ns() - sweep) / 1_000_000, 3)
                     report['samples'].append(sample)
                 elif sampler is not None:
                     issues.add('sample_limit')
                 if child.poll() is not None:
                     break
-                if (time.monotonic_ns() - start) / 1e9 >= args.timeout_seconds:
+                if (time.perf_counter_ns() - start) / 1e9 >= args.timeout_seconds:
                     report['timed_out'] = True
                     issues.add('driver_deadline')
                     # Only the directly owned driver is killed; never adopt a PID
@@ -515,7 +601,7 @@ def run(args):
                     except subprocess.TimeoutExpired:
                         issues.add('driver_join_timeout')
                     break
-                time.sleep(max(0, args.interval_ms / 1000 - (time.monotonic_ns() - sweep) / 1e9))
+                time.sleep(max(0, args.interval_ms / 1000 - (time.perf_counter_ns() - sweep) / 1e9))
             report['driver_exit_code'] = child.returncode
     except (OSError, ValueError, ObservationError):
         issues.add('observer_setup_or_io_failed')
@@ -524,7 +610,7 @@ def run(args):
                 # A failed observer still awaits the authorized workload, with
                 # the same bounded deadline; observation is not its gate.
                 try:
-                    child.wait(timeout=max(0.1, args.timeout_seconds - (time.monotonic_ns() - start) / 1e9))
+                    child.wait(timeout=max(0.1, args.timeout_seconds - (time.perf_counter_ns() - start) / 1e9))
                 except subprocess.TimeoutExpired:
                     child.kill()
                     child.wait(timeout=5)
@@ -541,7 +627,7 @@ def run(args):
         issues.add('phase_witness_incomplete')
     report['phase_summary'] = summary(report['samples'])
     idle = report['phase_summary']['semantic_ready_idle']
-    if idle['cpu_percent_one_core']['valid_samples'] < 2:
+    if idle[CPU_SUM]['valid_samples'] < 2:
         issues.add('idle_interval_incomplete')
     report['issues'] = sorted(issues)
     report['status'] = 'complete' if not issues else 'incomplete'

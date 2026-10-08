@@ -1,60 +1,62 @@
-# Verification report · connection cancellation / 0.11.0 · 2026-10-08
+# Verification report · CPU observation timing / 0.11.1 · 2026-10-08
 
-This checkpoint adds bounded cancellation of process connection/read waits and
-observational process-tree resource evidence. Local verification passed; exact native CI for this checkpoint is pending.
+This checkpoint repairs the observational CPU timing introduced in 0.11.0.
+It does not change the Java launch recipe, heap ceiling, semantic workload,
+shutdown policy or connection cancellation behavior. Exact native CI is pending.
 
 ## Verified public baseline
 
-Exact public 0.10.0 commit
-[`77cb3b8d50c30f6daf2ba4276822e9f7416c4dac`](https://github.com/LLLLimbo/cedar-ide/commit/77cb3b8d50c30f6daf2ba4276822e9f7416c4dac)
-[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37736569381).
-All nine interrupted-save process cases actually executed on each platform with
-zero ignored cases. The prior direct Java, agent/editor, task independence,
-forced-owner and normal production Java acceptance also passed.
+Exact public 0.11.0 commit
+[`c257571ed3a39e3683ae3aeec535d4bcf457e9dc`](https://github.com/LLLLimbo/cedar-ide/commit/c257571ed3a39e3683ae3aeec535d4bcf457e9dc)
+[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37741303276).
+Each platform actually ran eight public client cancellation cases, one isolated
+resource-count regression, three app process cancellation cases and nine
+interrupted-save cases. All prior Java, editor, task and owned-cleanup gates passed.
+The native Windows observer test suite passed 17 cases with one Linux-only skip.
 
-Production Java Stop remained honestly forced with grace_expired and root exit
-1067, completed shutdown protocol, joined cleanup and verified client reap.
-That is not a natural production-exit claim. The independent strict direct and
-fixture sessions retain their own natural-exit requirements.
+The sanitized process-tree artifact had 107 samples, no reported observation
+issues, and a successful driver exit. Its maximum same-sweep summed working set
+was 825.99 MiB, including 802.79 MiB for the JVM at that peak. The defined two-second
+post-diagnostics interval had an observed maximum of 652.77 MiB. These are
+resident working sets of a debug headless test driver, release agent, JVM and
+observed descendants; shared pages may be double-counted. They are not a release
+GUI footprint, settled-idle guarantee or IntelliJ IDEA comparison.
 
-## Changes and limits
+Production Java Stop remained accurately forced with grace_expired and root
+exit 1067, completed protocol witnesses, joined cleanup and verified client reap.
+This is not a natural production-exit claim.
 
-[Connection cancellation](CONNECTION_CANCELLATION.md) uses a permanent per-session
-token and 50 ms maximum receive slices only while process Hello/List/Read/Search
-is pending. Original absolute deadlines remain unchanged. Already process-enqueued
-mutations retain their normal replies; old app-queue work is discarded. No writes
-or commands are replayed. Existing save, language and task reconnect guards remain.
+## CPU timing limitation and repair
 
-Cancellation completion, direct-child reaping and resource-count settling are
-separate assertions. The change does not join detached pipe threads or establish
-arbitrary descendant cleanup. No idle-connection polling or additional transport
-thread is added. Embedded synchronous workspace calls and OS process creation
-remain outside the interruption guarantee.
+The old report contained a 487.45% JVM CPU estimate on a four-logical-CPU host.
+That sample used a 234 ms interval between sweep starts, although the current
+sweep took 78 ms. Per-process CPU counters were queried later in each sweep,
+so that denominator did not represent the counters' own observation interval.
+CPython 3.12 on Windows also used a coarse clock for monotonic_ns.
+The old CPU peak is not evidence of JVM capacity above four CPUs.
 
-The resource baseline is observational. It cannot establish an IntelliJ IDEA
-comparison, a complete GUI footprint, authenticated SSH interoperability or fully
-settled project indexing. Native GUI execution-trust and real SSH testing remain
-separate uncompleted validation.
+The repair uses high-resolution per-counter observation brackets, explicit
+timing uncertainty and clearly labeled sums of process estimates. It does not
+clip CPU readings to an assumed machine capacity. Memory accounting remains a
+same-sweep sum with the existing identity and missing-observation checks.
+Details and interpretation are in [the resource baseline](RESOURCE_BASELINE.md).
 
-The sealed 0.10.0 behavior and local verification record is retained in
-[the preceding report](TEST_REPORT_PHASE10.md); later CI outcomes are stated above
-rather than retroactively changing that report.
+The same two-second workload is retained for the corrected native measurement.
+Longer idle and memory/latency experiments are separate future work; this
+checkpoint makes no memory-optimization or heap-tuning claim.
+
+The preceding sealed local report is retained in
+[the 0.11.0 report](TEST_REPORT_PHASE11.md). Its later native result is stated
+above rather than rewriting the historical report.
 
 ## Local verification
 
-Rust 1.99.0 host aggregate: 637 passed, zero failed. Explicit acceptance added
-three new app process cases, nine interrupted-save cases and seven normal-agent
-process cases: 656 executed Rust cases in total. Five Python agent protocol/tool
-smoke chains passed. Strict whole-workspace host and MSVC cross-target clippy,
-formatting and the optimized workspace build passed. The export regressions
-passed two tests; the existing Java evidence sanitizer passed 62 with two
-native-Windows skips. The resource observer passed 18 synthetic/accounting/privacy
-tests, including a generated native Linux Python process tree. Its actual Windows
-backend and real Java measurements remain pending native CI.
-
-The client subset separately passed 44 unit tests, eight public cancellation
-cases and one isolated resource-count regression. After warmup, Linux descriptor
-and thread counts were 4 and 3 at baseline and after each eight-cycle batch.
-This is a debug-test cleanup observation, not Cedar product-memory evidence.
-MSVC cross-checking is not native Windows execution. Exact commit CI must run
-the new cancellation cases and obtain the real agent/JVM observation.
+The final version passed 637 aggregate Rust tests plus 19 explicit process
+acceptance cases (656 total), five Python agent smoke chains, strict host and
+MSVC cross-target workspace checks, formatting and the optimized build.
+The repaired observer passed 34 tests, independently rerun by review: native
+Linux child-tree sampling, simulated Windows counter placement, delayed sweeps,
+preemption, uncertainty, invalid timing, phase boundaries, privacy and failure
+status. Export tests passed two; the Java evidence collector passed 62 with two
+native-only skips. Cross-checking and simulation do not replace the pending
+exact-commit Windows resource observation.

@@ -23,9 +23,9 @@ Java diagnostics, completion/import resolution, editor apply/undo/redo and
 shutdown. It does not render or measure a GUI.
 
 Windows records resident working set bytes, cumulative CPU deltas, thread counts
-and process handle counts for the observed tree every 200 ms. CPU percentages
-use one logical core as 100%, so a process or tree can exceed 100%. Aggregates
-sum only the measurements within the same sampling sweep. Reported peak RSS is
+and process handle counts for the observed tree every 200 ms. Per-process CPU
+estimates use one logical core as 100%, so values can exceed 100%. Live-resource
+aggregates sum measurements within the same sampling sweep. Reported peak RSS is
 the maximum such tree sum, never the sum of independently timed process peaks.
 Summed resident working sets can double-count shared pages and are not private
 or proportional memory. `sweep_ms` exposes the skew of sequential process
@@ -43,6 +43,46 @@ test. It verifies process start ticks around reads and treats disappearance,
 PID reuse and denied reads as unknown. Its `handles` field explicitly means
 open file descriptors, which is not equivalent to Windows handle count. This
 supporting test is not a Linux Cedar, GUI or Java resource result.
+
+## CPU counter timing
+
+Each native CPU counter read is bracketed with `time.perf_counter_ns`: Windows
+uses QueryPerformanceCounter in CPython 3.12.10. Windows brackets GetProcessTimes;
+Linux brackets the `/proc` stat read whose CPU value is returned. Later memory,
+handle or discovery work cannot silently enter the CPU denominator. Scheduling,
+elapsed and sweep measurements use the same high-resolution clock.
+
+A process's `cpu_percent_one_core` is an estimate using the midpoints of its two
+read brackets. Its `cpu_interval` reports the counter delta, midpoint elapsed
+time, lower/upper elapsed bounds, both read spans and the corresponding
+`percent_lower_from_timing`/`percent_upper_from_timing`. Clock-resolution padding
+is included in those timing bounds. They describe read placement only: they do
+not bound physical clock accuracy or OS CPU accounting quantization/error.
+The reported counter unit is a unit, not a guarantee of accounting precision.
+
+Missing, overlapping, nonpositive or invalid timing and regressing counters
+produce null CPU values with fixed status codes. A failed observation cannot
+bridge to the next valid reading. Values are never clipped to the logical CPU
+count; a surprising estimate remains evidence to inspect, not a capacity claim.
+
+Processes are read sequentially and therefore have different time intervals.
+Aggregate, per-role, completeness and phase-summary CPU fields are named
+`cpu_percent_one_core_sum_of_process_estimates`. This is explicitly a sum of
+estimates over different windows, not exact whole-tree CPU over one common
+window. The old aggregate `cpu_percent_one_core` field is absent in schema 2.
+
+The first 0.11.0 Windows report used a shared sweep-start timestamp and
+`monotonic_ns`. In CPython 3.12 on Windows that clock uses GetTickCount64, with
+coarse resolution. A reported 487.45% sample also had a 78 ms sweep duration
+against only 234 ms between sweep starts. Its artifact lacks the per-counter
+timestamps needed to reconstruct a corrected result. Keep those historical CPU
+values marked unreliable; do not retroactively replace them with guessed rates.
+The independent working-set observations are not derived from that CPU clock.
+
+Primary references: [CPython 3.12.10 clock implementation](https://github.com/python/cpython/blob/v3.12.10/Python/pytime.c),
+[Python performance counter](https://docs.python.org/3.12/library/time.html#time.perf_counter_ns),
+[GetTickCount64 resolution](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-gettickcount64),
+and [GetProcessTimes accounting](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes).
 
 ## Readiness and repeatability
 
@@ -81,7 +121,7 @@ is included and is a debug test executable, so it is not a release GUI proxy.
 
 ## Schema and incomplete observations
 
-Schema version 1 has fixed metadata, measurement definitions, typed phase
+Schema version 2 has fixed metadata, measurement definitions, typed phase
 events, a bounded list of samples, per-phase summaries, driver exit status,
 timeout status and fixed issue codes. Each sample includes numeric resource
 values per instance and role, their same-sweep aggregate, per-metric
@@ -90,7 +130,7 @@ completeness, required-role observation and phase stability.
 An unseen role has null values. A verified exited identity can contribute zero
 live resources. Denied access, missing/raced reads, PID identity mismatch,
 enumeration failure or process limits make the affected sweep incomplete;
-missing data never becomes an invented zero. CPU without two stable endpoints
+missing data never becomes an invented zero. CPU without two stable, usable counter-read intervals
 is null. Summaries expose the number of valid samples behind each maximum.
 Values in incomplete reports are partial observations, not a complete baseline.
 
