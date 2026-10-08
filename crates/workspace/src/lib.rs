@@ -72,6 +72,7 @@ pub struct Workspace {
     #[cfg(feature = "windows-java-gc-diagnostic")]
     windows_java_gc_diagnostic: Option<java_gc_diagnostic::JavaGcDiagnosticProfile>,
     language: Option<language::LanguageSession>,
+    java_startup: language::JavaStartup,
     tasks: Option<cedar_tasks::TaskManager>,
 }
 
@@ -102,6 +103,7 @@ impl Workspace {
             #[cfg(feature = "windows-java-gc-diagnostic")]
             windows_java_gc_diagnostic: None,
             language: None,
+            java_startup: language::JavaStartup::default(),
             tasks: None,
         })
     }
@@ -206,6 +208,9 @@ impl Workspace {
             }
             op @ (Operation::LanguageStart { .. }
             | Operation::LanguageStartJava { .. }
+            | Operation::LanguageStartJavaBegin { .. }
+            | Operation::LanguageStartJavaPoll { .. }
+            | Operation::LanguageStartJavaCancel { .. }
             | Operation::LanguageOpen { .. }
             | Operation::LanguageChange { .. }
             | Operation::LanguageClose { .. }

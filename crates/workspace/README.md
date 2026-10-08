@@ -115,3 +115,47 @@ On Windows the handler owns a separate kill-on-close job, bounded capture and
 exact process wait. It terminates descendants after root exit or a control
 limit, joins pending pipe I/O, and finishes ownership before publishing a result.
 It does not use or interfere with user Run tasks or Java language sessions.
+
+## Owned asynchronous Java startup
+
+An isolated Windows agent advertises the optional three-operation
+`language_start_java_begin`, `language_start_java_poll`, and
+`language_start_java_cancel` group. Execution trust is checked before allocating
+an owner or inspecting launch paths. The existing `LanguageStartJava` operation
+remains synchronous, with its original response shape and launch recipe.
+
+Begin returns a positive, monotonically increasing startup ID and a `starting`
+snapshot. One joined worker owns validation, launch, initialization, and abort
+cleanup while the ordinary workspace handler continues serving sequential file,
+save, and command-task requests. Only one startup or language session may exist.
+Duplicate starts and legacy Stop during pending startup return
+`language_start_in_progress`; Stop does not implicitly wait for or cancel it.
+
+Poll never renews the original 75-second Ready eligibility deadline. The
+initialize request is additionally capped at 60 seconds, and its final
+`initialized` notification shares the original deadline. A prepared client stays
+with its startup owner until Poll atomically adopts it into the language session;
+without a poll, the owner aborts it at the deadline. A successful client is never
+left inside an unconsumed worker result. Cleanup may continue beyond the Ready
+deadline while kernel cancellation and joins complete.
+
+Cancel signals below LSP lifecycle and pipe-write gates, returns promptly, and
+remains `cancelling` until joined cleanup is observed. The startup ID stays on an
+adopted session so Cancel can resolve a crossing Ready response without touching
+any later session. One terminal snapshot is retained; replacing it makes older
+IDs unknown. Legacy Stop retires an adopted startup ID. Repeated terminal polls
+and cancellations cannot revive a session.
+Revoking execution trust still permits Poll and Cancel for an exact already-owned
+startup ID, while Begin and unknown-ID operations remain denied.
+
+Cancellation before any child is launched reports `cancelled` with
+`cleanup_verified: true` after the startup owner is joined. Once a child has
+launched, that response requires observed root termination and joined, error-free
+Windows ownership cleanup. Failure snapshots contain a bounded error and
+explicit cleanup evidence. Spawn errors lack a typed partial
+cleanup report and conservatively report unverified cleanup. Any unverified
+cleanup blocks subsequent starts until reconnect. Workspace destruction and
+agent EOF cancel and join pending owners, including prepared, unadopted clients.
+Language cancellation does not cancel independent command tasks or change file
+save acknowledgements. The nonshipping fixed GC diagnostic host continues using
+its synchronous one-shot operation.

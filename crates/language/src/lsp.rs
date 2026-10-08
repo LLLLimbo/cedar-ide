@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Zero-based UTF-16 code-unit coordinates (not UTF-8 bytes or Rust chars).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +104,18 @@ struct OpenDocument {
     end: Position,
 }
 
+/// Cloneable cancellation signal below the lifecycle gate and outbound queue.
+/// It retains no process or worker ownership. Signaling never joins or reports
+/// cleanup; the owning worker must still call [`LspClient::abort_and_join`].
+#[derive(Clone)]
+pub struct LspAbortHandle(crate::transport::AbortHandle);
+
+impl LspAbortHandle {
+    pub fn signal(&self) {
+        self.0.signal();
+    }
+}
+
 /// LSP 3.17 subset with lifecycle, capability negotiation and document tracking.
 /// Wrap in `Arc` to issue concurrent feature requests while a separate consumer
 /// polls [`Self::next_event`]. Do not hold the GUI thread during blocking calls.
@@ -128,6 +140,26 @@ impl LspClient {
         self.rpc.process_id()
     }
 
+    pub fn abort_handle(&self) -> LspAbortHandle {
+        LspAbortHandle(self.rpc.abort_handle())
+    }
+
+    /// Consume the owner, abort and wait for its cleanup. Windows returns the
+    /// recorded observation only after worker join and process/I/O destruction.
+    /// Kernel cancellation may delay this call; the signal has no such wait.
+    /// Portable cleanup retains its legacy direct-child-only guarantee and
+    /// therefore returns no Windows ownership observation.
+    pub fn abort_and_join(self) -> ShutdownOutcome {
+        self.rpc
+            .abort(Error::Closed("language client aborted".into()));
+        let mut outcome = match &*self.lifecycle.lock().unwrap() {
+            Lifecycle::Stopped { outcome, .. } => *outcome,
+            _ => ShutdownOutcome::default(),
+        };
+        outcome.windows = self.rpc.windows_shutdown_outcome();
+        outcome
+    }
+
     /// Return the complete InitializeResult. Capabilities are retained and checked
     /// by the convenience methods. Failure closes the session; create a new client
     /// rather than retrying initialize on an uncertain server state.
@@ -136,7 +168,7 @@ impl LspClient {
         root_uri: Option<&str>,
         initialization_options: Value,
     ) -> Result<Value, Error> {
-        self.initialize_impl(root_uri, initialization_options, None)
+        self.initialize_impl(root_uri, initialization_options, None, None)
     }
 
     /// Use a separate cold-start deadline without lengthening normal feature
@@ -148,7 +180,27 @@ impl LspClient {
         initialization_options: Value,
         timeout: Duration,
     ) -> Result<Value, Error> {
-        self.initialize_impl(root_uri, initialization_options, Some(timeout))
+        self.initialize_impl(root_uri, initialization_options, Some(timeout), None)
+    }
+
+    /// Use one absolute startup deadline supplied by the startup owner, measured
+    /// from accepted begin. The initialize response is additionally bounded by
+    /// `initialize_timeout`; the initialized write uses only the remaining total
+    /// budget, capped by the ordinary write timeout. Cleanup may outlast the
+    /// deadline because live kernel I/O is always canceled and joined safely.
+    pub fn initialize_with_deadline(
+        &self,
+        root_uri: Option<&str>,
+        initialization_options: Value,
+        initialize_timeout: Duration,
+        startup_deadline: Instant,
+    ) -> Result<Value, Error> {
+        self.initialize_impl(
+            root_uri,
+            initialization_options,
+            Some(initialize_timeout),
+            Some(startup_deadline),
+        )
     }
 
     fn initialize_impl(
@@ -156,6 +208,7 @@ impl LspClient {
         root_uri: Option<&str>,
         initialization_options: Value,
         timeout: Option<Duration>,
+        startup_deadline: Option<Instant>,
     ) -> Result<Value, Error> {
         let _gate = self.gate.write().unwrap();
         {
@@ -190,11 +243,17 @@ impl LspClient {
                     }
                 }
             });
-            let result = match timeout {
-                Some(timeout) => self
-                    .rpc
-                    .request_with_timeout("initialize", params, timeout)?,
-                None => self.rpc.request("initialize", params)?,
+            let result = match (timeout, startup_deadline) {
+                (Some(timeout), Some(deadline)) => self.rpc.request_with_deadline(
+                    "initialize",
+                    params,
+                    crate::transport::clipped_deadline(Instant::now(), timeout, deadline)?,
+                )?,
+                (Some(timeout), None) => {
+                    self.rpc
+                        .request_with_timeout("initialize", params, timeout)?
+                }
+                _ => self.rpc.request("initialize", params)?,
             };
             let capabilities = result
                 .get("capabilities")
@@ -211,7 +270,11 @@ impl LspClient {
                 }
             }
             let sync = synchronization(&capabilities)?;
-            self.rpc.notify("initialized", json!({}))?;
+            if let Some(deadline) = startup_deadline {
+                self.rpc.notify_before("initialized", json!({}), deadline)?;
+            } else {
+                self.rpc.notify("initialized", json!({}))?;
+            }
             *self.lifecycle.lock().unwrap() = Lifecycle::Ready {
                 capabilities: Arc::new(capabilities),
                 sync,

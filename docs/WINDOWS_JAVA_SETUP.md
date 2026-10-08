@@ -106,3 +106,30 @@ The extension is defined by the [official JDT protocol](https://github.com/eclip
 and [URI-only parameter](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/08eafe6ff60c7159ef88571d47b6a9ef82fef94e/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/lsp/ValidateDocumentParams.java#L20).
 Its [unversioned publication](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/08eafe6ff60c7159ef88571d47b6a9ef82fef94e/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/BaseDiagnosticsHandler.java#L144)
 limits what the UI can establish.
+
+
+## Starting and cancelling Java
+
+With the complete optional startup capability group, **Start server** begins a
+background startup owned by the agent. **Starting Java server** means the server
+is not yet ready for language queries; ordinary file reads, saves and task
+controls remain available. Choose **Cancel startup** to cancel that exact owner.
+A ready/cancel race does not activate another session or cancel a later one.
+
+Startup has a fixed 75-second readiness envelope, including an initialize
+response capped at 60 seconds and its final notification. Expiry requests
+cancellation. **Cancelling** remains visible until real cleanup finishes; it may
+outlast the readiness deadline. Do not treat the spinner disappearing, elapsed
+time or a sent Cancel request as verified cleanup. Unverified cleanup blocks
+another start on that connection and requires reconnecting. Cancellation does
+not roll back work an external server already performed.
+
+Only one startup is owned at a time. Closing/reconnecting must resolve startup
+and the existing pending-save/draft safeguards. No start, edit or save is replayed
+automatically. The implementation adds a transient owner, not another JVM.
+Ready means the LSP initialization handshake completed; background indexing may
+continue. Once Ready, language queries and ordinary Stop retain their existing
+synchronous behavior and cleanup reporting, so a slow query can still delay
+queued workspace requests. An older agent without all three startup
+capabilities keeps the original synchronous launch; its notice explains that
+Stop is available only after launch returns.

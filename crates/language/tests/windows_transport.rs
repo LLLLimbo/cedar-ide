@@ -490,6 +490,51 @@ fn blocked_stdin_deadline_poisoning_joins_cleanup() {
 
 #[test]
 #[ignore = "requires native Windows owned-process runtime"]
+fn startup_abort_interrupts_a_partially_written_initialize_and_joins_cleanup() {
+    let _watchdog = ShutdownWatchdog::start();
+    let dir = temp();
+    let mut config = ProcessConfig::new(env!("CARGO_BIN_EXE_cedar-mock-lsp"));
+    config.args = vec!["win-initialize-partial".into(), dir.path().into()];
+    config.working_directory = Some(dir.path().to_path_buf());
+    let client = Arc::new(LspClient::spawn(config, ClientOptions::default()).unwrap());
+    let abort = client.abort_handle();
+    let root = ObservedRoot::open(client.process_id());
+    assert!(matches!(
+        client.next_event(Duration::from_secs(3)).unwrap(),
+        Some(LspEvent::Notification { method, .. }) if method == "mock/ready"
+    ));
+    let initializer = Arc::clone(&client);
+    let worker = thread::spawn(move || {
+        initializer.initialize_with_deadline(
+            None,
+            json!({"data":"x".repeat(900_000)}),
+            Duration::from_secs(60),
+            Instant::now() + Duration::from_secs(75),
+        )
+    });
+    assert!(matches!(
+        client.next_event(Duration::from_secs(3)).unwrap(),
+        Some(LspEvent::Notification { method, .. }) if method == "mock/initializePartial"
+    ));
+    abort.signal();
+    assert!(matches!(worker.join().unwrap(), Err(Error::Closed(_))));
+    let outcome = Arc::try_unwrap(client)
+        .ok()
+        .unwrap()
+        .abort_and_join()
+        .windows
+        .unwrap();
+    assert_eq!(outcome.reason, WindowsShutdownReason::Aborted);
+    assert!(!outcome.transport_failure_observed);
+    assert_eq!(outcome.cleanup, WindowsCleanupStatus::Joined);
+    assert_eq!(outcome.errors, WindowsCleanupErrors::default());
+    assert_eq!(root.exit_code(), 1067);
+    assert_dead(dir.path(), false);
+    abort.signal();
+}
+
+#[test]
+#[ignore = "requires native Windows owned-process runtime"]
 fn abort_bypasses_full_outbound_queue_and_wakes_waiters() {
     let dir = temp();
     let rpc = Arc::new(launch("win-tree-blocked", dir.path(), true));

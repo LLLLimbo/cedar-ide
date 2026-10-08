@@ -173,6 +173,8 @@ class CrashCollectionTests(unittest.TestCase):
     def agent_production_fixture(self):
         return {
             'kind': 'windows_java_production', 'route': 'normal_agent_client',
+            'async_start_exercised': True, 'async_start_begin_acknowledged': True,
+            'async_start_read_while_starting': True, 'async_start_ready': True,
             'java_capabilities': True, 'generic_start_rejected': True, 'untrusted_start_rejected': True,
             'root_observed_live': True, 'root_identity_verified': True, 'semantic_diagnostics': True,
             'exact_definition': True, 'real_completion': True, 'deferred_import_resolve': True,
@@ -857,7 +859,7 @@ class CrashCollectionTests(unittest.TestCase):
     def test_agent_production_booleans_require_actual_boolean_values(self):
         fixture = self.agent_production_fixture()
         fields = [key for key, value in fixture.items() if type(value) is bool]
-        self.assertEqual(len(fields), 30)
+        self.assertEqual(len(fields), 34)
         for field in fields:
             for value in (True, False, 0, 1, 0.0, None, 'SECRET_BOOLEAN', []):
                 valid = type(value) is bool

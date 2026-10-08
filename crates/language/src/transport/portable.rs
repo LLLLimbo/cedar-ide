@@ -1,15 +1,19 @@
 //! Existing blocking stdio implementation for non-Windows hosts.
-use super::{route_message, ClientOptions, Error, ProcessConfig, Shared, WriteCommand};
+use super::{
+    route_message, AbortHandle, ClientOptions, Error, ProcessConfig, Shared, WriteCommand,
+};
 use crate::framing::{read_frame, write_frame};
 use serde_json::Value;
 use std::io::BufReader;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub(super) struct Backend {
     child: Mutex<Child>,
+    abort: AbortHandle,
 }
 
 impl Backend {
@@ -42,6 +46,10 @@ impl Backend {
         // Own the child before fallible thread creation, including unwind.
         let backend = Self {
             child: Mutex::new(child),
+            abort: AbortHandle {
+                stop: Arc::new(AtomicBool::new(false)),
+                wake: None,
+            },
         };
         let writer_shared = Arc::clone(&shared);
         let limits = options.frame_limits;
@@ -121,6 +129,10 @@ impl Backend {
         self.child.lock().unwrap().id()
     }
 
+    pub(super) fn abort_handle(&self) -> AbortHandle {
+        self.abort.clone()
+    }
+
     pub(super) fn wake(&self) {}
 
     pub(super) fn begin_shutdown(&self, _timeout: Duration) {}
@@ -154,6 +166,7 @@ impl Backend {
     }
 
     pub(super) fn abort(&self) {
+        self.abort.signal();
         let mut child = self.child.lock().unwrap();
         let _ = child.kill();
         let _ = child.wait();

@@ -5,7 +5,7 @@ use cedar_language::{
 };
 use serde_json::{json, Value};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -474,6 +474,154 @@ fn cold_initialize_timeout_can_be_extended_without_changing_feature_deadlines() 
     ));
     assert!(start.elapsed() < Duration::from_millis(600));
     extended.shutdown().unwrap();
+}
+
+#[test]
+fn startup_signal_interrupts_initialize_without_waiting_for_lifecycle_gate() {
+    let client = Arc::new(LspClient::spawn(config("initialize-never", None), options()).unwrap());
+    let abort = client.abort_handle();
+    let initializer = Arc::clone(&client);
+    let owner = thread::spawn(move || {
+        initializer.initialize_with_deadline(
+            None,
+            json!({}),
+            Duration::from_secs(60),
+            Instant::now() + Duration::from_secs(75),
+        )
+    });
+    assert!(matches!(
+        client.next_event(Duration::from_secs(2)).unwrap(),
+        Some(LspEvent::Notification { method, .. }) if method == "mock/initializePending"
+    ));
+    let started = Instant::now();
+    abort.signal();
+    assert!(matches!(owner.join().unwrap(), Err(Error::Closed(_))));
+    assert!(started.elapsed() < Duration::from_secs(3));
+    let outcome = Arc::try_unwrap(client).ok().unwrap().abort_and_join();
+    assert!(!outcome.is_graceful());
+    #[cfg(windows)]
+    assert_eq!(
+        outcome.windows.unwrap().cleanup,
+        cedar_language::WindowsCleanupStatus::Joined
+    );
+    #[cfg(not(windows))]
+    assert_eq!(outcome.windows, None);
+    abort.signal(); // a surviving signal does not retain the process owner
+}
+
+#[test]
+fn cloned_abort_signal_bypasses_full_transport_queue() {
+    let mut opts = options();
+    opts.request_timeout = Duration::from_secs(5);
+    opts.outbound_capacity = 2;
+    opts.max_pending_requests = 8;
+    let client = Arc::new(LspClient::spawn(config("ready-blocked-stdin", None), opts).unwrap());
+    client.initialize(None, json!({})).unwrap();
+    assert!(matches!(
+        client.next_event(Duration::from_secs(2)).unwrap(),
+        Some(LspEvent::Notification { method, .. }) if method == "mock/readyBlocked"
+    ));
+    let abort = client.abort_handle();
+    let start = Arc::new(Barrier::new(7));
+    let (finished, replies) = mpsc::channel();
+    let callers: Vec<_> = (0..6)
+        .map(|_| {
+            let client = Arc::clone(&client);
+            let start = Arc::clone(&start);
+            let finished = finished.clone();
+            thread::spawn(move || {
+                let params = json!({"data":"x".repeat(900_000)});
+                start.wait();
+                finished.send(client.request("mock/large", params)).unwrap();
+            })
+        })
+        .collect();
+    start.wait();
+    // Six callers cannot reach the eight-pending limit. This proves the
+    // outbound queue is full while another frame is partly transported.
+    assert!(matches!(
+        replies.recv_timeout(Duration::from_secs(2)).unwrap(),
+        Err(Error::QueueFull)
+    ));
+    abort.clone().signal();
+    let mut canceled = 0;
+    for _ in 1..6 {
+        match replies.recv_timeout(Duration::from_secs(2)).unwrap() {
+            Err(Error::Closed(_)) => canceled += 1,
+            Err(Error::QueueFull) => {}
+            result => panic!("unexpected canceled request: {result:?}"),
+        }
+    }
+    for caller in callers {
+        caller.join().unwrap();
+    }
+    assert!(canceled > 0);
+    let outcome = Arc::try_unwrap(client).ok().unwrap().abort_and_join();
+    #[cfg(windows)]
+    assert_eq!(
+        outcome.windows.unwrap().cleanup,
+        cedar_language::WindowsCleanupStatus::Joined
+    );
+    #[cfg(not(windows))]
+    assert_eq!(outcome.windows, None);
+}
+
+#[test]
+fn accepted_startup_deadline_clips_the_initialize_response_budget() {
+    let client = LspClient::spawn(config("delayed-initialize", None), options()).unwrap();
+    let started = Instant::now();
+    assert!(matches!(
+        client.initialize_with_deadline(
+            None,
+            json!({}),
+            Duration::from_secs(60),
+            started + Duration::from_millis(50),
+        ),
+        Err(Error::Timeout(_))
+    ));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(!client.abort_and_join().is_graceful());
+}
+
+#[test]
+fn initialized_write_uses_remaining_startup_budget_after_a_successful_response() {
+    let mut opts = options();
+    opts.request_timeout = Duration::from_secs(5);
+    let client = LspClient::spawn(config("initialize-blocked-notification", None), opts).unwrap();
+    let started = Instant::now();
+    let result = client.initialize_with_deadline(
+        None,
+        json!({}),
+        Duration::from_secs(60),
+        started + Duration::from_secs(1),
+    );
+    assert!(
+        matches!(result, Err(Error::Timeout(ref reason)) if reason == "write notification initialized"),
+        "{result:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+    let outcome = client.abort_and_join();
+    assert!(!outcome.is_graceful());
+    #[cfg(windows)]
+    assert_eq!(
+        outcome.windows.unwrap().cleanup,
+        cedar_language::WindowsCleanupStatus::Joined
+    );
+}
+
+#[test]
+fn already_expired_startup_does_not_send_initialize() {
+    let temp = tempfile::tempdir().unwrap();
+    let audit = temp.path().join("expired.jsonl");
+    let client = LspClient::spawn(config("normal", Some(&audit)), options()).unwrap();
+    assert!(matches!(
+        client.initialize_with_deadline(None, json!({}), Duration::from_secs(60), Instant::now()),
+        Err(Error::Timeout(_))
+    ));
+    client.abort_and_join();
+    assert!(std::fs::read_to_string(audit)
+        .unwrap_or_default()
+        .is_empty());
 }
 
 #[test]

@@ -24,6 +24,7 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
     }
     if java_language {
         capabilities.push("language_start_java");
+        capabilities.extend_from_slice(cedar_protocol::JAVA_STARTUP_CAPABILITIES);
         // A bridge implementation claim, never JDT/server-version support or
         // permission to execute it. Startup reports guarded session support.
         capabilities.push("java_diagnostics_refresh");
@@ -110,6 +111,13 @@ mod tests {
                 distribution: "must-not-be-inspected".into(),
                 data_directory: "must-not-be-inspected".into(),
             },
+            Operation::LanguageStartJavaBegin {
+                java_executable: "must-not-be-inspected".into(),
+                distribution: "must-not-be-inspected".into(),
+                data_directory: "must-not-be-inspected".into(),
+            },
+            Operation::LanguageStartJavaPoll { startup_id: 1 },
+            Operation::LanguageStartJavaCancel { startup_id: 1 },
             Operation::LanguageOpen {
                 path: "a.rs".into(),
                 language_id: "rust".into(),
@@ -186,11 +194,18 @@ mod tests {
             let java_language = cfg!(windows) && backend_mode == BackendMode::IsolatedAgent;
             let language_operation_supported = |name: &str| match name {
                 "language_start" => generic_language,
-                "language_start_java" | "java_diagnostics_refresh" => java_language,
+                "language_start_java"
+                | "java_diagnostics_refresh"
+                | "language_start_java_begin"
+                | "language_start_java_poll"
+                | "language_start_java_cancel" => java_language,
                 _ => generic_language || java_language,
             };
             for capability in LANGUAGE_SESSION_CAPABILITIES.iter().chain(&[
                 "language_start_java",
+                "language_start_java_begin",
+                "language_start_java_poll",
+                "language_start_java_cancel",
                 "java_diagnostics_refresh",
                 "language_query",
                 "language_resolve_uri",

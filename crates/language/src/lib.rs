@@ -11,7 +11,9 @@ mod lsp;
 mod shutdown;
 mod transport;
 
-pub use lsp::{Diagnostic, LspClient, LspEvent, Position, PublishDiagnostics, Range};
+pub use lsp::{
+    Diagnostic, LspAbortHandle, LspClient, LspEvent, Position, PublishDiagnostics, Range,
+};
 pub use shutdown::{
     ShutdownOutcome, WindowsCleanupErrors, WindowsCleanupStatus, WindowsRootExit,
     WindowsShutdownOutcome, WindowsShutdownReason,

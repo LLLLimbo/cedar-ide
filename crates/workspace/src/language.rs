@@ -6,6 +6,10 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
 
+#[path = "language_startup.rs"]
+mod startup;
+pub(super) use startup::JavaStartup;
+
 pub(super) const fn platform_supported() -> bool {
     // Match this service's existing startup guard, independently of the more
     // restrictive Linux/macOS command-task and Git implementations.
@@ -18,6 +22,9 @@ pub(super) const fn java_platform_supported(backend: cedar_tasks::BackendMode) -
 
 pub(super) struct LanguageSession {
     client: LspClient,
+    // Retained through adoption so an ID-scoped cancel can close only the
+    // session it started, including when ready and cancel cross on the wire.
+    startup_id: Option<u64>,
     production_java: bool,
     java_diagnostics_refresh: bool,
     opened: HashMap<String, OpenLanguageDocument>,
@@ -171,11 +178,19 @@ impl Workspace {
             .map_err(|_| error("invalid_path", "Cannot represent path as a file URI"))
     }
     pub(super) fn handle_language(&mut self, op: Operation) -> Result<Payload, RemoteError> {
-        if !self.allow_run {
+        // Revoking execution trust cannot strand a startup already owned by
+        // this workspace. Only its exact ID may still be observed or cancelled;
+        // this exception never allocates an owner or starts another process.
+        let owned_cleanup = matches!(&op,
+            Operation::LanguageStartJavaPoll { startup_id }
+            | Operation::LanguageStartJavaCancel { startup_id }
+            if self.owns_java_startup(*startup_id));
+        if !self.allow_run && !owned_cleanup {
             return Err(error("run_disabled","Language servers execute code. Enable trusted tool execution before starting a server."));
         }
         match op {
             Operation::LanguageStart { program, args } => {
+                self.require_language_start_available()?;
                 if !self.language_platform_supported() {
                     return Err(error("unsupported_platform", "Generic language startup is unavailable on Windows; use the Java/JDT start operation in an isolated agent."));
                 }
@@ -213,6 +228,7 @@ impl Workspace {
                         "Java startup requires an isolated Windows agent",
                     ));
                 }
+                self.require_language_start_available()?;
                 if self.language.is_some() {
                     return Err(error(
                         "language_running",
@@ -239,6 +255,37 @@ impl Workspace {
                     launch.initialization_options,
                     true,
                 )
+            }
+            Operation::LanguageStartJavaBegin {
+                java_executable,
+                distribution,
+                data_directory,
+            } => {
+                if !java_platform_supported(self.backend_mode) {
+                    return Err(error(
+                        "unsupported_platform",
+                        "Java startup requires an isolated Windows agent",
+                    ));
+                }
+                self.begin_java_startup(java_executable, distribution, data_directory)
+            }
+            Operation::LanguageStartJavaPoll { startup_id } => {
+                if !java_platform_supported(self.backend_mode) {
+                    return Err(error(
+                        "unsupported_platform",
+                        "Java startup requires an isolated Windows agent",
+                    ));
+                }
+                self.poll_java_startup(startup_id)
+            }
+            Operation::LanguageStartJavaCancel { startup_id } => {
+                if !java_platform_supported(self.backend_mode) {
+                    return Err(error(
+                        "unsupported_platform",
+                        "Java startup requires an isolated Windows agent",
+                    ));
+                }
+                self.cancel_java_startup(startup_id)
             }
             Operation::LanguageOpen {
                 path,
@@ -515,9 +562,13 @@ impl Workspace {
                 })
             }
             Operation::LanguageStop => {
+                self.require_language_start_settled()?;
                 if let Some(session) = self.language.take() {
                     if session.production_java {
-                        return stop_production_java(session.client);
+                        let startup_id = session.startup_id;
+                        let result = stop_production_java(session.client);
+                        self.retire_java_startup(startup_id, &result);
+                        return result;
                     }
                     #[cfg(feature = "windows-language-validation")]
                     if let Some(validation) = session.java_validation {
@@ -592,6 +643,7 @@ impl Workspace {
         let process_id = client.process_id();
         self.language = Some(LanguageSession {
             client,
+            startup_id: None,
             production_java,
             java_diagnostics_refresh,
             opened: HashMap::new(),

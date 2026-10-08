@@ -644,6 +644,9 @@ fn advanced_operations() -> Vec<Operation> {
         },
         start_language(),
         start_java_language(),
+        begin_java_language(),
+        Operation::LanguageStartJavaPoll { startup_id: 1 },
+        Operation::LanguageStartJavaCancel { startup_id: 1 },
         Operation::LanguageOpen {
             path: "fixture.txt".into(),
             language_id: "text".into(),
@@ -841,6 +844,19 @@ fn every_operation_requires_its_own_declared_capability() {
     let directory = tempfile::tempdir().unwrap();
     let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
     for operation in operations {
+        let startup = match &operation {
+            Operation::LanguageStartJavaBegin { .. } => {
+                Some(serde_json::json!({"startup_id":1,"state":"starting","process_id":null}))
+            }
+            Operation::LanguageStartJavaPoll { startup_id } => Some(startup_ready(*startup_id)),
+            Operation::LanguageStartJavaCancel { startup_id } => Some(
+                serde_json::json!({"startup_id":startup_id,"state":"cancelled","cleanup_verified":true}),
+            ),
+            _ => None,
+        };
+        if let Some(value) = startup {
+            startup_result(directory.path(), &mut client, value);
+        }
         client.request(operation).unwrap();
     }
     assert_eq!(
@@ -1372,4 +1388,216 @@ fn cached_hello_cannot_hide_an_already_detected_disconnect() {
         .unwrap_err()
         .starts_with("disconnected:"));
     assert_eq!(recorded_requests(directory.path()).len(), 2);
+}
+
+fn begin_java_language() -> Operation {
+    Operation::LanguageStartJavaBegin {
+        java_executable: "/synthetic/java.exe".into(),
+        distribution: "/synthetic/jdt".into(),
+        data_directory: "/synthetic/data".into(),
+    }
+}
+fn async_java_capabilities() -> Vec<&'static str> {
+    java_capabilities()
+        .into_iter()
+        .chain(JAVA_STARTUP_CAPABILITIES.iter().copied())
+        .collect()
+}
+fn startup_result(root: &std::path::Path, client: &mut Client, value: serde_json::Value) {
+    next_result(
+        root,
+        client,
+        serde_json::json!({"Ok":{"type":"language","value":value}}),
+    );
+}
+fn startup_ready(id: u64) -> serde_json::Value {
+    serde_json::json!({"startup_id":id,"state":"ready","language":{
+        "started":true,"initialize":{"capabilities":{}},"root_uri":"file:///fixture","process_id":42
+    }})
+}
+
+#[test]
+fn async_java_requires_complete_optional_and_legacy_lifecycle_before_any_wire_request() {
+    for missing in JAVA_STARTUP_CAPABILITIES
+        .iter()
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let caps: Vec<_> = async_java_capabilities()
+            .into_iter()
+            .filter(|name| name != missing)
+            .collect();
+        let mut client = capability_client(directory.path(), Some(agent_info(&caps)));
+        for operation in [
+            begin_java_language(),
+            Operation::LanguageStartJavaPoll { startup_id: 1 },
+            Operation::LanguageStartJavaCancel { startup_id: 1 },
+        ] {
+            let error = client.request(operation).unwrap_err();
+            assert!(error.contains(missing), "{missing}: {error}");
+        }
+        assert_eq!(recorded_requests(directory.path()).len(), 1);
+        read_fixture(&mut client);
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let mut legacy = capability_client(directory.path(), Some(agent_info(&java_capabilities())));
+    legacy.request(start_java_language()).unwrap();
+    assert!(process(&mut legacy).java_language_session);
+    assert!(legacy
+        .request(begin_java_language())
+        .unwrap_err()
+        .contains("language_start_java_begin"));
+}
+
+#[test]
+fn async_java_tracks_authoritative_ready_and_cancellation_without_replay_or_polling() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(
+        directory.path(),
+        Some(agent_info(&async_java_capabilities())),
+    );
+    startup_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"startup_id":1,"state":"starting","process_id":null}),
+    );
+    client.request(begin_java_language()).unwrap();
+    assert!(!process(&mut client).java_language_session);
+    assert_eq!(process(&mut client).java_startup.pending, Some(1));
+    assert_eq!(recorded_requests(directory.path()).len(), 2);
+    read_fixture(&mut client);
+    startup_result(directory.path(), &mut client, startup_ready(1));
+    client
+        .request(Operation::LanguageStartJavaPoll { startup_id: 1 })
+        .unwrap();
+    assert!(process(&mut client).java_language_session);
+    assert_eq!(process(&mut client).java_startup.active, Some(1));
+    assert_eq!(
+        process(&mut client).request_timeout(&Operation::LanguageEvents),
+        Duration::from_secs(75)
+    );
+    for operation in [
+        begin_java_language(),
+        Operation::LanguageStartJavaPoll { startup_id: 1 },
+        Operation::LanguageStartJavaCancel { startup_id: 1 },
+    ] {
+        assert_eq!(
+            process(&mut client).request_timeout(&operation),
+            Duration::from_secs(30)
+        );
+    }
+    startup_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"startup_id":1,"state":"cancelling","process_id":42}),
+    );
+    client
+        .request(Operation::LanguageStartJavaCancel { startup_id: 1 })
+        .unwrap();
+    assert!(!process(&mut client).java_language_session);
+    assert_eq!(process(&mut client).java_startup.cancelling, Some(1));
+    read_fixture(&mut client);
+    startup_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"startup_id":1,"state":"cancelled","cleanup_verified":true}),
+    );
+    client
+        .request(Operation::LanguageStartJavaPoll { startup_id: 1 })
+        .unwrap();
+    assert_eq!(process(&mut client).java_startup.active, None);
+    assert_eq!(process(&mut client).java_startup.pending, None);
+    assert_eq!(recorded_requests(directory.path()).len(), 7);
+    assert!(client.is_connected());
+}
+
+#[test]
+fn async_java_pending_stop_refusal_and_old_snapshots_do_not_clear_new_owner() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(
+        directory.path(),
+        Some(agent_info(&async_java_capabilities())),
+    );
+    startup_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"startup_id":2,"state":"starting","process_id":null}),
+    );
+    client.request(begin_java_language()).unwrap();
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Err":{"code":"language_start_in_progress","message":"cancel startup first"}}),
+    );
+    assert!(client
+        .request(Operation::LanguageStop)
+        .unwrap_err()
+        .contains("language_start_in_progress"));
+    assert_eq!(process(&mut client).java_startup.pending, Some(2));
+    startup_result(directory.path(), &mut client, startup_ready(2));
+    client
+        .request(Operation::LanguageStartJavaPoll { startup_id: 2 })
+        .unwrap();
+    startup_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"startup_id":1,"state":"cancelled","cleanup_verified":true}),
+    );
+    client
+        .request(Operation::LanguageStartJavaCancel { startup_id: 1 })
+        .unwrap();
+    assert!(process(&mut client).java_language_session);
+    assert_eq!(process(&mut client).java_startup.active, Some(2));
+    startup_result(directory.path(), &mut client, startup_ready(1));
+    client
+        .request(Operation::LanguageStartJavaPoll { startup_id: 1 })
+        .unwrap();
+    assert_eq!(process(&mut client).java_startup.active, Some(2));
+    client.request(Operation::LanguageStop).unwrap();
+    assert!(!process(&mut client).java_language_session);
+    assert_eq!(process(&mut client).java_startup.active, None);
+    startup_result(directory.path(), &mut client, startup_ready(2));
+    client
+        .request(Operation::LanguageStartJavaPoll { startup_id: 2 })
+        .unwrap();
+    assert!(!process(&mut client).java_language_session);
+}
+
+#[test]
+fn async_java_malformed_snapshots_disconnect_without_automatic_cancel_or_restart() {
+    for malformed in [
+        serde_json::json!({"startup_id":1,"state":"starting"}),
+        serde_json::json!({"startup_id":1,"state":"ready","language":{"started":true,"initialize":{},"root_uri":"file:///fixture","process_id":42}}),
+        serde_json::json!({"startup_id":2,"state":"starting","process_id":null}),
+        serde_json::json!({"startup_id":1,"state":"ready","language":{"started":true}}),
+        serde_json::json!({"startup_id":1,"state":"cancelled","cleanup_verified":false}),
+        serde_json::json!({"startup_id":1,"state":"failed","cleanup_verified":"yes","error":{}}),
+        serde_json::json!({"startup_id":1,"state":"starting","process_id":-1}),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = capability_client(
+            directory.path(),
+            Some(agent_info(&async_java_capabilities())),
+        );
+        startup_result(
+            directory.path(),
+            &mut client,
+            serde_json::json!({"startup_id":1,"state":"starting","process_id":null}),
+        );
+        client.request(begin_java_language()).unwrap();
+        startup_result(directory.path(), &mut client, malformed);
+        assert!(client
+            .request(Operation::LanguageStartJavaPoll { startup_id: 1 })
+            .unwrap_err()
+            .starts_with("protocol_error:"));
+        assert!(!client.is_connected());
+        assert!(!process(&mut client).java_language_session);
+        assert_eq!(process(&mut client).java_startup.pending, None);
+        process(&mut client)
+            .reaped
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(recorded_requests(directory.path()).len(), 3);
+    }
 }

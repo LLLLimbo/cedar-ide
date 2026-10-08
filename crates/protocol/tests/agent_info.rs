@@ -1,8 +1,8 @@
 use cedar_protocol::{
     read_frame, supports_capability, write_frame, AgentInfo, Operation, Payload, RemoteError,
-    Response, AGENT_INFO_SCHEMA, JAVA_LANGUAGE_SESSION_CAPABILITIES, LANGUAGE_SESSION_CAPABILITIES,
-    MAX_AGENT_CAPABILITIES, MAX_AGENT_PLATFORM_BYTES, MAX_AGENT_VERSION_BYTES,
-    MAX_CAPABILITY_BYTES, PROTOCOL_VERSION, RUN_TASK_CAPABILITIES,
+    Response, AGENT_INFO_SCHEMA, JAVA_LANGUAGE_SESSION_CAPABILITIES, JAVA_STARTUP_CAPABILITIES,
+    LANGUAGE_SESSION_CAPABILITIES, MAX_AGENT_CAPABILITIES, MAX_AGENT_PLATFORM_BYTES,
+    MAX_AGENT_VERSION_BYTES, MAX_CAPABILITY_BYTES, PROTOCOL_VERSION, RUN_TASK_CAPABILITIES,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -256,6 +256,9 @@ fn capability_names_match_each_operation_or_its_explicit_bridge_name() {
         json!({"type":"git_status"}),
         json!({"type":"language_start","program":"server","args":[]}),
         json!({"type":"language_start_java","java_executable":"C:\\jdk\\bin\\java.exe","distribution":"C:\\JDT 雪","data_directory":"C:\\data 雪"}),
+        json!({"type":"language_start_java_begin","java_executable":"java.exe","distribution":"jdt","data_directory":"data"}),
+        json!({"type":"language_start_java_poll","startup_id":1}),
+        json!({"type":"language_start_java_cancel","startup_id":1}),
         json!({"type":"language_open","path":"a","language_id":"rust","version":1,"text":""}),
         json!({"type":"language_change","path":"a","version":1,"text":""}),
         json!({"type":"language_close","path":"a"}),
@@ -293,6 +296,7 @@ fn capability_names_match_each_operation_or_its_explicit_bridge_name() {
         .iter()
         .chain(LANGUAGE_SESSION_CAPABILITIES)
         .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
+        .chain(JAVA_STARTUP_CAPABILITIES)
     {
         assert!(names.contains(name), "unknown session prerequisite {name}");
     }
@@ -356,4 +360,32 @@ fn java_start_is_an_additive_protocol_four_operation_with_literal_paths() {
             "{field}"
         );
     }
+}
+
+#[test]
+fn asynchronous_java_startup_is_optional_protocol_four_with_exact_unsigned_ids() {
+    for wire in [
+        json!({"type":"language_start_java_begin","java_executable":"C:\\jdk\\java.exe","distribution":"C:\\JDT 雪","data_directory":"C:\\data"}),
+        json!({"type":"language_start_java_poll","startup_id":1}),
+        json!({"type":"language_start_java_cancel","startup_id":u64::MAX}),
+    ] {
+        let operation: Operation = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&operation).unwrap(), wire);
+        assert!(JAVA_STARTUP_CAPABILITIES.contains(&operation.capability_name().unwrap()));
+    }
+    for method in ["language_start_java_poll", "language_start_java_cancel"] {
+        for id in [json!(-1), json!(1.5), json!("1"), json!(null), json!([])] {
+            assert!(
+                serde_json::from_value::<Operation>(json!({"type":method,"startup_id":id}))
+                    .is_err()
+            );
+        }
+        assert!(serde_json::from_value::<Operation>(json!({"type":method})).is_err());
+    }
+    for capability in JAVA_STARTUP_CAPABILITIES {
+        assert!(!JAVA_LANGUAGE_SESSION_CAPABILITIES.contains(capability));
+        assert!(!LANGUAGE_SESSION_CAPABILITIES.contains(capability));
+        assert!(!supports_capability(None, capability));
+    }
+    assert_eq!(PROTOCOL_VERSION, 4);
 }

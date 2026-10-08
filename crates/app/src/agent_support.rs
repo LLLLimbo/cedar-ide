@@ -1,8 +1,8 @@
 //! Connection-scoped, unverified agent support claims. Trust stays user-owned.
 use crate::{CedarApp, Operation};
 use cedar_protocol::{
-    supports_capability, JAVA_LANGUAGE_SESSION_CAPABILITIES, LANGUAGE_SESSION_CAPABILITIES,
-    RUN_TASK_CAPABILITIES,
+    supports_capability, JAVA_LANGUAGE_SESSION_CAPABILITIES, JAVA_STARTUP_CAPABILITIES,
+    LANGUAGE_SESSION_CAPABILITIES, RUN_TASK_CAPABILITIES,
 };
 
 impl CedarApp {
@@ -21,6 +21,12 @@ impl CedarApp {
         JAVA_LANGUAGE_SESSION_CAPABILITIES
             .iter()
             .all(|name| self.backend_supports(name))
+    }
+    pub(super) fn backend_java_startup_supported(&self) -> bool {
+        self.backend_java_language_supported()
+            && JAVA_STARTUP_CAPABILITIES
+                .iter()
+                .all(|name| self.backend_supports(name))
     }
     pub(super) fn backend_generic_language_supported(&self) -> bool {
         LANGUAGE_SESSION_CAPABILITIES
@@ -63,6 +69,17 @@ impl CedarApp {
         {
             return Some(self.unsupported_message("the complete Java language session lifecycle"));
         }
+        if matches!(
+            operation,
+            Operation::LanguageStartJavaBegin { .. }
+                | Operation::LanguageStartJavaPoll { .. }
+                | Operation::LanguageStartJavaCancel { .. }
+        ) && !self.backend_java_startup_supported()
+        {
+            return Some(
+                self.unsupported_message("the complete cancellable Java startup lifecycle"),
+            );
+        }
         if let Some(name) = operation.capability_name() {
             if !self.backend_supports(name) {
                 return Some(self.unsupported_message(name));
@@ -76,6 +93,7 @@ impl CedarApp {
                 | Operation::Run { .. }
                 | Operation::LanguageStart { .. }
                 | Operation::LanguageStartJava { .. }
+                | Operation::LanguageStartJavaBegin { .. }
                 | Operation::GitStatus
                 | Operation::GitChanges { .. }
                 | Operation::GitDiff { .. }

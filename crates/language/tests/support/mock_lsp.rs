@@ -89,6 +89,28 @@ fn main() {
         let result = match method {
             "initialize" => {
                 assert!(!initialized);
+                if mode == "initialize-never" {
+                    send(
+                        &mut output,
+                        json!({"jsonrpc":"2.0","method":"mock/initializePending","params":{}}),
+                    );
+                    continue;
+                }
+                if mode == "initialize-blocked-notification" {
+                    // The mandatory method-not-found reply exceeds the pipe's
+                    // capacity. Leave it ahead of initialized and stop reading
+                    // stdin after returning a successful initialize response.
+                    send(
+                        &mut output,
+                        json!({"jsonrpc":"2.0","id":"x".repeat(2 * 1024 * 1024),"method":"workspace/applyEdit","params":{}}),
+                    );
+                    send(
+                        &mut output,
+                        json!({"jsonrpc":"2.0","id":id,"result":{"capabilities":{}}}),
+                    );
+                    thread::sleep(Duration::from_secs(8));
+                    return;
+                }
                 if mode == "delayed-initialize" {
                     thread::sleep(Duration::from_millis(250));
                 }
@@ -127,6 +149,14 @@ fn main() {
             }
             "initialized" => {
                 initialized = true;
+                if mode == "ready-blocked-stdin" {
+                    send(
+                        &mut output,
+                        json!({"jsonrpc":"2.0","method":"mock/readyBlocked","params":{}}),
+                    );
+                    thread::sleep(Duration::from_secs(8));
+                    return;
+                }
                 continue;
             }
             "textDocument/didOpen" | "textDocument/didChange" => {
@@ -404,6 +434,18 @@ mod windows_fixture {
                 close_standard_handle(io::stdout().as_raw_handle());
                 // Root and descendants retain stderr; stdout EOF must stop the
                 // connection without waiting for any of them to exit naturally.
+                idle();
+            }
+            "win-initialize-partial" => {
+                use std::io::Read;
+                ready();
+                // Observe exactly one byte, then stop consuming. A large
+                // initialize frame is now partly delivered and cannot replay.
+                io::stdin().read_exact(&mut [0_u8; 1]).unwrap();
+                send(
+                    &mut io::stdout().lock(),
+                    json!({"jsonrpc":"2.0","method":"mock/initializePartial","params":{}}),
+                );
                 idle();
             }
             "win-blocked-stdin" => {

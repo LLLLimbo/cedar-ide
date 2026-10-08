@@ -32,6 +32,13 @@ pub const JAVA_LANGUAGE_SESSION_CAPABILITIES: &[&str] = &[
     "language_stop",
 ];
 
+/// Optional owned startup lifecycle. Legacy Java startup stays synchronous.
+pub const JAVA_STARTUP_CAPABILITIES: &[&str] = &[
+    "language_start_java_begin",
+    "language_start_java_poll",
+    "language_start_java_cancel",
+];
+
 /// Unverified implementation information, never execution permission or identity.
 /// Validate received information before retaining it as a connection snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +158,17 @@ pub enum Operation {
         distribution: String,
         data_directory: String,
     },
+    LanguageStartJavaBegin {
+        java_executable: String,
+        distribution: String,
+        data_directory: String,
+    },
+    LanguageStartJavaPoll {
+        startup_id: u64,
+    },
+    LanguageStartJavaCancel {
+        startup_id: u64,
+    },
     LanguageOpen {
         path: String,
         language_id: String,
@@ -236,6 +254,9 @@ impl Operation {
             Self::GitDiff { .. } => "git_diff",
             Self::LanguageStart { .. } => "language_start",
             Self::LanguageStartJava { .. } => "language_start_java",
+            Self::LanguageStartJavaBegin { .. } => "language_start_java_begin",
+            Self::LanguageStartJavaPoll { .. } => "language_start_java_poll",
+            Self::LanguageStartJavaCancel { .. } => "language_start_java_cancel",
             Self::LanguageOpen { .. } => "language_open",
             Self::LanguageChange { .. } => "language_change",
             Self::LanguageClose { .. } => "language_close",

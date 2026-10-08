@@ -2,7 +2,9 @@
 //! No blocking host stderr writes, detached I/O threads, PID-based termination,
 //! or flush-to-child-consumption operations are used here.
 use super::owned::{retain_tail, ActiveWrite, DurableJoin, Incoming, TerminalState};
-use super::{route_message, ClientOptions, Error, ProcessConfig, Shared, WriteCommand};
+use super::{
+    route_message, AbortHandle, ClientOptions, Error, ProcessConfig, Shared, WriteCommand,
+};
 use crate::{WindowsRootExit, WindowsShutdownOutcome, WindowsShutdownReason};
 use cedar_winprocess::{
     LaunchSpec, StdinWriteProgress, Stream, WindowsCommand, MAX_STDIN_WRITE_BYTES,
@@ -17,7 +19,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const FINAL_DRAIN: Duration = Duration::from_millis(250);
 
 struct Control {
-    stop: AtomicBool,
+    stop: Arc<AtomicBool>,
     graceful_deadline: Mutex<Option<Instant>>,
     done: Mutex<bool>,
     completed: Condvar,
@@ -77,7 +79,7 @@ impl Backend {
                 .map_err(|e| Error::Io(format!("read working directory: {e}")))?,
         };
         let control = Arc::new(Control {
-            stop: AtomicBool::new(false),
+            stop: Arc::new(AtomicBool::new(false)),
             graceful_deadline: Mutex::new(None),
             done: Mutex::new(false),
             completed: Condvar::new(),
@@ -179,6 +181,13 @@ impl Backend {
         self.process_id
     }
 
+    pub(super) fn abort_handle(&self) -> AbortHandle {
+        AbortHandle {
+            stop: Arc::clone(&self.control.stop),
+            wake: Some(self.wake.clone()),
+        }
+    }
+
     pub(super) fn wake(&self) {
         // Never wait for a concurrent joiner or compete for queue space.
         self.wake.unpark();
@@ -220,8 +229,7 @@ impl Backend {
 
     pub(super) fn abort(&self) {
         self.begin_abort(); // independent of outbound queue fullness and pipe progress
-        self.control.stop.store(true, Ordering::Release);
-        self.wake();
+        self.abort_handle().signal();
         let _ = self.join();
     }
 
@@ -308,6 +316,7 @@ impl Connection {
         let mut exited = None;
         loop {
             if control.stop.load(Ordering::Acquire) {
+                control.record_reason(WindowsShutdownReason::Aborted);
                 return Error::Closed("language worker stopped".into());
             }
             if let Some(error) = shared.routing.lock().unwrap().terminal.clone() {
@@ -587,9 +596,50 @@ mod tests {
     use crate::WindowsCleanupStatus;
 
     #[test]
+    fn signal_does_not_wait_for_join_or_terminal_bookkeeping_locks() {
+        let (release, released) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || released.recv().unwrap());
+        let backend = Backend {
+            process_id: 0,
+            control: Arc::new(Control {
+                stop: Arc::new(AtomicBool::new(false)),
+                graceful_deadline: Mutex::new(None),
+                done: Mutex::new(false),
+                completed: Condvar::new(),
+                terminal: Mutex::new(TerminalState::default()),
+            }),
+            wake: worker.thread().clone(),
+            worker: Mutex::new(WorkerState {
+                join: DurableJoin::Running(worker),
+                outcome: None,
+            }),
+        };
+        let signal = backend.abort_handle();
+        let join_lock = backend.worker.lock().unwrap();
+        let terminal_lock = backend.control.terminal.lock().unwrap();
+        let (completed, returned) = mpsc::sync_channel(1);
+        let signaler = thread::spawn(move || {
+            signal.signal();
+            completed.send(()).unwrap();
+        });
+        let result = returned.recv_timeout(Duration::from_secs(1));
+        assert!(join_lock.outcome.is_none()); // a signal supplies no join evidence
+        drop(terminal_lock);
+        drop(join_lock);
+        release.send(()).unwrap();
+        signaler.join().unwrap();
+        backend.abort();
+        result.expect("signal waited for join or terminal bookkeeping");
+        assert_eq!(
+            backend.shutdown_outcome().unwrap().cleanup,
+            WindowsCleanupStatus::Joined
+        );
+    }
+
+    #[test]
     fn panicked_worker_keeps_failed_join_and_unverified_report_on_repeat() {
         let control = Arc::new(Control {
-            stop: AtomicBool::new(false),
+            stop: Arc::new(AtomicBool::new(false)),
             graceful_deadline: Mutex::new(None),
             done: Mutex::new(true),
             completed: Condvar::new(),

@@ -2,8 +2,8 @@
 //! No passwords, host-key acceptance, key generation, port listeners, or telemetry.
 use cedar_protocol::{
     read_frame, supports_capability, write_frame, Operation, Payload, Request, Response,
-    JAVA_LANGUAGE_SESSION_CAPABILITIES, LANGUAGE_SESSION_CAPABILITIES, PROTOCOL_VERSION,
-    RUN_TASK_CAPABILITIES,
+    JAVA_LANGUAGE_SESSION_CAPABILITIES, JAVA_STARTUP_CAPABILITIES, LANGUAGE_SESSION_CAPABILITIES,
+    PROTOCOL_VERSION, RUN_TASK_CAPABILITIES,
 };
 #[cfg(not(windows))]
 use cedar_workspace::Workspace;
@@ -261,12 +261,25 @@ impl Client {
         if let Some(capability) = op.capability_name() {
             require(capability)?;
         }
+        if matches!(
+            op,
+            Operation::LanguageStartJavaBegin { .. }
+                | Operation::LanguageStartJavaPoll { .. }
+                | Operation::LanguageStartJavaCancel { .. }
+        ) {
+            for capability in JAVA_STARTUP_CAPABILITIES {
+                require(capability)?;
+            }
+        }
         // Do not launch a process whose required lifecycle cannot be managed.
         // In particular, never downgrade RunStart to the legacy blocking Run.
         let lifecycle = match op {
             Operation::RunStart { .. } => RUN_TASK_CAPABILITIES,
             Operation::LanguageStart { .. } => LANGUAGE_SESSION_CAPABILITIES,
             Operation::LanguageStartJava { .. }
+            | Operation::LanguageStartJavaBegin { .. }
+            | Operation::LanguageStartJavaPoll { .. }
+            | Operation::LanguageStartJavaCancel { .. }
             | Operation::LanguageRefreshJavaDiagnostics { .. } => {
                 JAVA_LANGUAGE_SESSION_CAPABILITIES
             }
@@ -475,6 +488,125 @@ struct ProcessClient {
     next_id: u64,
     connected: bool,
     java_language_session: bool,
+    java_startup: JavaStartupMode,
+}
+
+#[derive(Default)]
+struct JavaStartupMode {
+    pending: Option<u64>,
+    active: Option<u64>,
+    cancelling: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+enum JavaStartupRequest {
+    Begin,
+    Poll(u64),
+    Cancel(u64),
+}
+
+impl JavaStartupMode {
+    fn observe(
+        &mut self,
+        request: JavaStartupRequest,
+        result: &Result<Payload, cedar_protocol::RemoteError>,
+        java_session: &mut bool,
+    ) -> Result<(), &'static str> {
+        let value = match result {
+            Err(_) => return Ok(()),
+            Ok(Payload::Language { value }) => value,
+            Ok(_) => return Err("Java startup returned an unexpected payload"),
+        };
+        let id = value["startup_id"]
+            .as_u64()
+            .filter(|id| *id != 0)
+            .ok_or("Java startup response has no positive identity")?;
+        if matches!(request, JavaStartupRequest::Poll(expected) | JavaStartupRequest::Cancel(expected) if expected != id)
+        {
+            return Err("Java startup response identity mismatch");
+        }
+        let state = value["state"]
+            .as_str()
+            .ok_or("Java startup response has no state")?;
+        if matches!(request, JavaStartupRequest::Begin) && state != "starting" {
+            return Err("Java startup Begin did not acknowledge Starting");
+        }
+        if matches!(request, JavaStartupRequest::Cancel(_))
+            && !matches!(state, "cancelling" | "cancelled" | "failed")
+        {
+            return Err("Java startup Cancel returned an invalid state");
+        }
+        match state {
+            "starting" | "cancelling" => {
+                let pid = value
+                    .get("process_id")
+                    .ok_or("Java startup response omitted process identity")?;
+                if !pid.is_null()
+                    && !pid
+                        .as_u64()
+                        .is_some_and(|pid| pid > 0 && pid <= u32::MAX as u64)
+                {
+                    return Err("Java startup process identity is invalid");
+                }
+            }
+            "ready" => {
+                let ready = &value["language"];
+                if ready["started"] != true
+                    || !ready["initialize"]["capabilities"].is_object()
+                    || !ready["root_uri"]
+                        .as_str()
+                        .is_some_and(|uri| !uri.is_empty())
+                    || !ready["process_id"]
+                        .as_u64()
+                        .is_some_and(|pid| pid > 0 && pid <= u32::MAX as u64)
+                {
+                    return Err("Java startup Ready response is malformed");
+                }
+            }
+            "cancelled" if value["cleanup_verified"] == true => {}
+            "failed"
+                if value["cleanup_verified"].is_boolean()
+                    && value["error"]["code"].is_string()
+                    && value["error"]["message"].is_string() => {}
+            _ => return Err("Java startup terminal response is malformed"),
+        }
+        if matches!(request, JavaStartupRequest::Begin) {
+            if self.active.is_some()
+                || self.cancelling.is_some()
+                || self.pending.is_some_and(|pending| pending != id)
+            {
+                return Err("Java startup response overlaps an existing owner");
+            }
+            self.pending = Some(id);
+            self.cancelling = None;
+            return Ok(());
+        }
+        // A well-formed stale poll cannot activate or clear an unrelated newer
+        // Java session. The agent is authoritative about whether its ID exists.
+        if self.pending != Some(id) && self.active != Some(id) {
+            return Ok(());
+        }
+        match state {
+            "ready" => {
+                if self.cancelling == Some(id) {
+                    return Err("Java startup became Ready after cancellation was accepted");
+                }
+                self.pending = None;
+                self.active = Some(id);
+                *java_session = true;
+            }
+            "cancelling" => {
+                self.cancelling = Some(id);
+                *java_session = false;
+            }
+            "cancelled" | "failed" => {
+                *self = Self::default();
+                *java_session = false;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 impl ProcessClient {
     fn spawn(cmd: Command, cancellation: Option<ConnectionCancellation>) -> Result<Self, String> {
@@ -599,6 +731,7 @@ impl ProcessClient {
             next_id: 0,
             connected: true,
             java_language_session: false,
+            java_startup: JavaStartupMode::default(),
         })
     }
     fn fail(&mut self, message: String) -> String {
@@ -646,6 +779,16 @@ impl ProcessClient {
         let starts_java = matches!(op, Operation::LanguageStartJava { .. });
         let starts_generic = matches!(op, Operation::LanguageStart { .. });
         let stops_language = matches!(op, Operation::LanguageStop);
+        let startup_request = match &op {
+            Operation::LanguageStartJavaBegin { .. } => Some(JavaStartupRequest::Begin),
+            Operation::LanguageStartJavaPoll { startup_id } => {
+                Some(JavaStartupRequest::Poll(*startup_id))
+            }
+            Operation::LanguageStartJavaCancel { startup_id } => {
+                Some(JavaStartupRequest::Cancel(*startup_id))
+            }
+            _ => None,
+        };
         let interruptible = self.cancellation.is_some()
             && matches!(
                 op,
@@ -707,23 +850,39 @@ impl ProcessClient {
         // recoverable, so only an authoritative absent session clears the mode.
         // Stop consumes the agent session even if bounded cleanup reports error.
         match &response.result {
-            _ if stops_language => self.java_language_session = false,
+            Err(error) if stops_language && error.code == "language_start_in_progress" => {}
+            _ if stops_language => {
+                self.java_language_session = false;
+                self.java_startup = JavaStartupMode::default();
+            }
             Ok(Payload::Language { value })
                 if (starts_java || starts_generic)
                     && value.get("started").and_then(|v| v.as_bool()) == Some(true) =>
             {
                 self.java_language_session = starts_java;
+                self.java_startup = JavaStartupMode::default();
             }
             Err(error) if error.code == "language_not_running" => {
                 self.java_language_session = false;
+                self.java_startup.active = None;
             }
             _ => {}
+        }
+        if let Some(request) = startup_request {
+            if let Err(error) = self.java_startup.observe(
+                request,
+                &response.result,
+                &mut self.java_language_session,
+            ) {
+                return Err(self.fail(format!("protocol_error: {error}")));
+            }
         }
         response.result.map_err(|e| e.to_string())
     }
     fn close(&mut self) {
         self.connected = false;
         self.java_language_session = false;
+        self.java_startup = JavaStartupMode::default();
         // Dropping the only request sender lets the writer close child stdin.
         // Drop the receiver too, releasing readers blocked on a full queue.
         self.requests.take();

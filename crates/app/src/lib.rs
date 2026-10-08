@@ -371,12 +371,13 @@ impl CedarApp {
         versions
     }
     fn mutation_pending(&self) -> bool {
-        self.pending.values().any(|job| {
-            matches!(
-                job,
-                Job::Save { .. } | Job::Git | Job::GitRead(_) | Job::Language(_)
-            )
-        })
+        self.language.startup_active()
+            || self.pending.values().any(|job| {
+                matches!(
+                    job,
+                    Job::Save { .. } | Job::Git | Job::GitRead(_) | Job::Language(_)
+                )
+            })
     }
     fn active(&self) -> Option<&Document> {
         self.documents
@@ -479,6 +480,10 @@ impl CedarApp {
     }
 
     fn disconnected(&mut self, message: String) {
+        // Transport loss is never proof that language cleanup finished, even
+        // when an ordinary file/task request reports the loss first.
+        self.close_after_language_stop = false;
+        self.close_snapshot = None;
         self.retain_interrupted_saves();
         self.reset_git(false);
         self.dismiss_disk_review();
@@ -725,6 +730,13 @@ impl CedarApp {
         let Some(job) = self.pending.remove(&event.id) else {
             return;
         };
+        if matches!(&job, Job::Language(action) if action.is_java_startup()) {
+            let Job::Language(action) = job else {
+                unreachable!()
+            };
+            self.apply_java_startup_event(action, event.result, event.connected);
+            return;
+        }
         if let Job::Language(language_ui::Action {
             kind: language_ui::ActionKind::RefreshJavaDiagnostics { context },
             ..
@@ -983,7 +995,11 @@ impl CedarApp {
         self.request(Operation::GitStatus, Job::Git);
     }
     fn finish_pending_close(&mut self, ctx: &egui::Context) {
-        if self.close_after_language_stop && !self.language.running && !self.language_busy() {
+        if self.close_after_language_stop
+            && !self.language.running
+            && !self.language.startup_active()
+            && !self.language_busy()
+        {
             self.close_after_language_stop = false;
             let current = self.draft_versions();
             if self.close_snapshot.take().as_ref() != Some(&current) && self.dirty() {
@@ -995,13 +1011,42 @@ impl CedarApp {
         }
     }
 
+    fn request_window_close(&mut self, ctx: &egui::Context) {
+        if self.close_after_language_stop {
+            // A repeated window-close event must not create a second discard
+            // dialog while the original approval waits for verified cleanup.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.notice = "Waiting for language cleanup before closing".into();
+        } else if self.recovery.closing.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.recovery.visible = true;
+        } else if !self.guard_run_transition(run_ui::Transition::Close) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        } else if self.pending.values().any(|job| match job {
+            Job::Save { .. } | Job::Git | Job::GitRead(_) => true,
+            Job::Language(action) => !action.is_java_startup() || !self.language.startup_active(),
+            _ => false,
+        }) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.error = Some(
+                "A save, Git, command, or language request is still running. Wait for it to finish before quitting"
+                    .into(),
+            );
+        } else if self.dirty() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm = Some(Confirm::CloseWindow);
+        } else {
+            self.begin_close(ctx);
+        }
+    }
+
     fn begin_close(&mut self, ctx: &egui::Context) {
         if !self.guard_run_transition(run_ui::Transition::Close) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             return;
         }
         self.dismiss_disk_review();
-        if self.language.running && self.ready() {
+        if (self.language.running || self.language.startup_active()) && self.ready() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_after_language_stop = true;
             self.close_snapshot = Some(self.draft_versions());
@@ -1946,23 +1991,7 @@ impl eframe::App for CedarApp {
         }
         self.finish_pending_close(ctx);
         if ctx.input(|input| input.viewport().close_requested()) && !self.allow_close {
-            if self.recovery.closing.is_some() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.recovery.visible = true;
-            } else if !self.guard_run_transition(run_ui::Transition::Close) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            } else if self.mutation_pending() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.error = Some(
-                    "A save, Git, command, or language request is still running. Wait for it to finish before quitting"
-                        .into(),
-                );
-            } else if self.dirty() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.confirm = Some(Confirm::CloseWindow);
-            } else {
-                self.begin_close(ctx);
-            }
+            self.request_window_close(ctx);
         }
         if self.confirm.is_none() {
             self.shortcuts(ctx);

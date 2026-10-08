@@ -3,6 +3,8 @@
 mod features;
 #[path = "java_diagnostics.rs"]
 mod java_diagnostics;
+#[path = "java_startup.rs"]
+mod java_startup;
 
 use crate::{
     completion::{self, Candidate, Position, Range},
@@ -40,6 +42,13 @@ pub(super) struct Action {
 }
 pub(super) enum ActionKind {
     Start,
+    JavaStartBegin,
+    JavaStartPoll {
+        startup_id: u64,
+    },
+    JavaStartCancel {
+        startup_id: u64,
+    },
     Stop,
     Sync {
         document: u64,
@@ -72,6 +81,14 @@ pub(super) enum ActionKind {
     },
 }
 impl Action {
+    pub fn is_java_startup(&self) -> bool {
+        matches!(
+            self.kind,
+            ActionKind::JavaStartBegin
+                | ActionKind::JavaStartPoll { .. }
+                | ActionKind::JavaStartCancel { .. }
+        )
+    }
     pub fn is_stop(&self) -> bool {
         matches!(self.kind, ActionKind::Stop)
     }
@@ -112,6 +129,7 @@ pub(super) struct LanguagePanel {
     mode: ServerMode,
     java: JavaConfiguration,
     restart_blocked: bool,
+    startup: Option<java_startup::Startup>,
     program: String,
     args: String,
     language_id: String,
@@ -139,7 +157,7 @@ impl Default for LanguagePanel {
     fn default() -> Self {
         Self {
             running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), next_version: 1, closed_uris: HashSet::new(),
-            mode: ServerMode::Generic, java: JavaConfiguration::default(), restart_blocked: false,
+            mode: ServerMode::Generic, java: JavaConfiguration::default(), restart_blocked: false, startup: None,
             program: String::new(), args: "[]".into(), language_id: "rust".into(), capabilities: Value::Null,
             diagnostics: Diagnostics::default(), diagnostics_exited: false, java_diagnostics_refresh_supported: false,
             diagnostic_refresh: None, diagnostic_refresh_sequence: 0, definitions: Vec::new(), hover: String::new(),
@@ -155,6 +173,7 @@ impl LanguagePanel {
         self.session = self.session.wrapping_add(1);
         self.running = false;
         self.restart_blocked = false;
+        self.startup = None;
         self.sync.clear();
         self.next_version = 1;
         self.closed_uris.clear();
@@ -173,6 +192,11 @@ impl LanguagePanel {
         self.paused_reason = None;
         self.capabilities = Value::Null;
         self.output = "Language session stopped. Start a server when needed.".into();
+    }
+    pub fn startup_active(&self) -> bool {
+        self.startup
+            .as_ref()
+            .is_some_and(java_startup::Startup::active)
     }
     pub(super) fn cancel_navigation(&mut self) {
         self.features.cancel_pending();
@@ -246,6 +270,7 @@ impl CedarApp {
     fn start_language(&mut self) {
         if !self.ready()
             || self.language.running
+            || self.language.startup_active()
             || self.language_busy()
             || self.recovery.closing.is_some()
             || self.close_after_language_stop
@@ -311,10 +336,30 @@ impl CedarApp {
         if self.language.mode == ServerMode::Java {
             self.language.language_id = "java".into();
         }
-        self.language_request(operation, ActionKind::Start);
+        if self.language.mode == ServerMode::Java && self.backend_java_startup_supported() {
+            let Operation::LanguageStartJava {
+                java_executable,
+                distribution,
+                data_directory,
+            } = operation
+            else {
+                unreachable!()
+            };
+            self.begin_java_startup(Operation::LanguageStartJavaBegin {
+                java_executable,
+                distribution,
+                data_directory,
+            });
+        } else {
+            self.language_request(operation, ActionKind::Start);
+        }
     }
 
     pub(super) fn stop_language(&mut self) {
+        if self.language.startup_active() {
+            self.cancel_java_startup();
+            return;
+        }
         self.language.diagnostic_refresh = None;
         self.language.features.reset();
         self.language.intent = None;
@@ -322,6 +367,9 @@ impl CedarApp {
         self.language_request(Operation::LanguageStop, ActionKind::Stop);
     }
     fn sync_document(&mut self, document: u64) {
+        if !self.language.running {
+            return;
+        }
         let Some(doc) = self.documents.iter().find(|doc| doc.id == document) else {
             return;
         };
@@ -530,6 +578,10 @@ impl CedarApp {
         self.language.paused_reason = None;
     }
     pub(super) fn language_tick(&mut self, ctx: &egui::Context) {
+        if self.language.startup_active() {
+            self.java_startup_tick(ctx);
+            return;
+        }
         self.invalidate_diagnostics_refresh();
         self.invalidate_language_features();
         if !self.ready() || !self.language.running || self.close_after_language_stop {
@@ -631,6 +683,10 @@ impl CedarApp {
         if action.session != self.language.session {
             return;
         }
+        if action.is_java_startup() {
+            self.apply_java_startup_action(action, value);
+            return;
+        }
         if let ActionKind::RefreshJavaDiagnostics { context } = &action.kind {
             self.apply_java_diagnostics_refresh(context, &value);
             return;
@@ -690,6 +746,11 @@ impl CedarApp {
                 self.language.view = View::Problems;
                 self.notice =
                     "Language server ready; matching open files synchronize automatically".into();
+            }
+            ActionKind::JavaStartBegin
+            | ActionKind::JavaStartPoll { .. }
+            | ActionKind::JavaStartCancel { .. } => {
+                unreachable!("startup responses handled before language activation")
             }
             ActionKind::Stop => self.language.reset(),
             ActionKind::Sync {
@@ -1069,6 +1130,7 @@ impl CedarApp {
     pub(super) fn language_panel(&mut self, ui: &mut egui::Ui) {
         let trusted = self.execution_trusted();
         let busy = self.language_busy();
+        let starting = self.language.startup_active();
         let supported = self.backend_language_supported();
         if !supported {
             ui.colored_label(
@@ -1081,11 +1143,11 @@ impl CedarApp {
         }
         let generic_supported = self.backend_generic_language_supported();
         let java_supported = self.backend_java_language_supported();
-        if !self.language.running && !busy && !generic_supported && java_supported {
+        if !self.language.running && !starting && !busy && !generic_supported && java_supported {
             self.language.mode = ServerMode::Java;
         }
         egui::CollapsingHeader::new("Server configuration").default_open(!self.language.running).show(ui, |ui| {
-            ui.add_enabled_ui(trusted && supported && self.ready() && !self.language.running && !busy && !self.language.restart_blocked, |ui| {
+            ui.add_enabled_ui(trusted && supported && self.ready() && !self.language.running && !starting && !busy && !self.language.restart_blocked, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if generic_supported { ui.selectable_value(&mut self.language.mode, ServerMode::Generic, "Installed stdio server"); }
                     if java_supported { ui.selectable_value(&mut self.language.mode, ServerMode::Java, "Java / JDT LS"); }
@@ -1108,8 +1170,15 @@ impl CedarApp {
             });
             ui.label(RichText::new("One explicitly started server per workspace. The server and JDK must be installed on the workspace host.").small().color(MUTED));
         });
-        if busy {
-            ui.label(RichText::new("Language startup and queries block queued workspace requests until they finish. Stop becomes available afterward.").small().color(MUTED));
+        self.java_startup_controls(ui);
+        if busy && !starting {
+            ui.label(RichText::new("This synchronous language request blocks queued workspace requests until it finishes. Stop becomes available afterward.").small().color(MUTED));
+        }
+        if self.language.mode == ServerMode::Java
+            && !self.backend_java_startup_supported()
+            && !self.language.running
+        {
+            ui.label(RichText::new("This agent uses blocking Java startup. Stop becomes available after startup finishes.").small().color(MUTED));
         }
         if self.language.restart_blocked {
             ui.colored_label(

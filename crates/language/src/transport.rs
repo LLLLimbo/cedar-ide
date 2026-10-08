@@ -3,8 +3,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -156,6 +157,63 @@ struct WriteCommand {
     ack: Option<mpsc::SyncSender<Result<(), Error>>>,
 }
 
+/// Cancellation authority only: no process, I/O or join ownership is retained.
+#[derive(Clone)]
+pub(crate) struct AbortHandle {
+    stop: Arc<AtomicBool>,
+    wake: Option<thread::Thread>,
+}
+
+enum WaitError {
+    Aborted,
+    Timeout,
+    Disconnected,
+}
+
+impl AbortHandle {
+    pub(crate) fn signal(&self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(wake) = &self.wake {
+            wake.unpark();
+        }
+    }
+
+    fn requested(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+
+    fn receive<T>(&self, receiver: &mpsc::Receiver<T>, deadline: Instant) -> Result<T, WaitError> {
+        loop {
+            if self.requested() {
+                return Err(WaitError::Aborted);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(WaitError::Timeout);
+            }
+            // Windows wakes its owner directly. This small bounded wait also
+            // releases legacy portable callers without claiming joined I/O.
+            match receiver.recv_timeout(remaining.min(Duration::from_millis(10))) {
+                Ok(_) if self.requested() => return Err(WaitError::Aborted),
+                Ok(_) if Instant::now() >= deadline => return Err(WaitError::Timeout),
+                Ok(value) => return Ok(value),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(WaitError::Disconnected),
+            }
+        }
+    }
+}
+
+pub(crate) fn clipped_deadline(
+    now: Instant,
+    timeout: Duration,
+    absolute: Instant,
+) -> Result<Instant, Error> {
+    now.checked_add(timeout)
+        .map(|deadline| deadline.min(absolute))
+        .ok_or_else(|| Error::InvalidState("timeout overflow".into()))
+}
+
 /// Thread-safe stdio JSON-RPC transport. Requests may be made concurrently; a
 /// background worker routes IDs and notifications independently. Poll events
 /// from one consumer. Every queue and payload is bounded.
@@ -166,6 +224,7 @@ struct WriteCommand {
 /// This transport does not make a caller's sequential protocol handler concurrent.
 pub struct StdioRpc {
     backend: Backend,
+    abort: AbortHandle,
     outbound: Option<mpsc::SyncSender<WriteCommand>>,
     shared: Arc<Shared>,
     events: Mutex<mpsc::Receiver<RpcEvent>>,
@@ -227,8 +286,10 @@ impl StdioRpc {
             outbound.clone(),
             writes,
         )?;
+        let abort = backend.abort_handle();
         Ok(Self {
             backend,
+            abort,
             outbound: Some(outbound),
             shared,
             events: Mutex::new(events_rx),
@@ -239,6 +300,10 @@ impl StdioRpc {
 
     pub fn process_id(&self) -> u32 {
         self.backend.process_id()
+    }
+
+    pub(crate) fn abort_handle(&self) -> AbortHandle {
+        self.abort.clone()
     }
 
     pub fn request(&self, method: &str, params: Value) -> Result<Value, Error> {
@@ -256,6 +321,18 @@ impl StdioRpc {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| Error::InvalidState("timeout overflow".into()))?;
+        self.request_with_deadline(method, params, deadline)
+    }
+
+    pub(crate) fn request_with_deadline(
+        &self,
+        method: &str,
+        params: Value,
+        deadline: Instant,
+    ) -> Result<Value, Error> {
+        if Instant::now() >= deadline {
+            return Err(Error::Timeout(method.into()));
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if id > i32::MAX as u64 {
             return Err(Error::InvalidState(
@@ -283,9 +360,9 @@ impl StdioRpc {
             self.shared.routing.lock().unwrap().pending.remove(&id);
             return Err(error);
         }
-        match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        match self.abort.receive(&receiver, deadline) {
             Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err(WaitError::Timeout) => {
                 self.shared.routing.lock().unwrap().pending.remove(&id);
                 if let Ok(bytes) = self.encode(
                     &json!({"jsonrpc":"2.0", "method":"$/cancelRequest", "params":{"id":id}}),
@@ -299,9 +376,11 @@ impl StdioRpc {
                 }
                 Err(Error::Timeout(method.into()))
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                Err(Error::Closed("response router stopped".into()))
+            Err(WaitError::Aborted) => {
+                self.shared.routing.lock().unwrap().pending.remove(&id);
+                Err(self.abort_error())
             }
+            Err(WaitError::Disconnected) => Err(Error::Closed("response router stopped".into())),
         }
     }
 
@@ -312,22 +391,51 @@ impl StdioRpc {
     }
 
     fn notify_impl(&self, method: &str, params: Value, close_stdin: bool) -> Result<(), Error> {
+        self.notify_with_deadline_impl(
+            method,
+            params,
+            close_stdin,
+            Instant::now() + self.options.request_timeout,
+        )
+    }
+
+    pub(crate) fn notify_before(
+        &self,
+        method: &str,
+        params: Value,
+        absolute: Instant,
+    ) -> Result<(), Error> {
+        let deadline = clipped_deadline(Instant::now(), self.options.request_timeout, absolute)?;
+        self.notify_with_deadline_impl(method, params, false, deadline)
+    }
+
+    fn notify_with_deadline_impl(
+        &self,
+        method: &str,
+        params: Value,
+        close_stdin: bool,
+        deadline: Instant,
+    ) -> Result<(), Error> {
+        if Instant::now() >= deadline {
+            return Err(Error::Timeout(format!("write notification {method}")));
+        }
         let bytes = self.encode(&outgoing_message(method, params, None)?)?;
         let (sender, receiver) = mpsc::sync_channel(1);
         self.enqueue(WriteCommand {
             close_stdin,
             bytes,
-            deadline: Instant::now() + self.options.request_timeout,
+            deadline,
             ack: Some(sender),
         })?;
-        match receiver.recv_timeout(self.options.request_timeout) {
+        match self.abort.receive(&receiver, deadline) {
             Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err(WaitError::Timeout) => {
                 let error = Error::Timeout(format!("write notification {method}"));
                 self.abort_after_failure(error.clone());
                 Err(error)
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(WaitError::Aborted) => Err(self.abort_error()),
+            Err(WaitError::Disconnected) => {
                 let routing = self.shared.routing.lock().unwrap();
                 Err(routing
                     .terminal
@@ -394,8 +502,20 @@ impl StdioRpc {
     }
 
     pub(crate) fn abort_after_failure(&self, reason: Error) {
-        self.backend.transport_failed();
+        if !self.abort.requested() {
+            self.backend.transport_failed();
+        }
         self.abort(reason);
+    }
+
+    fn abort_error(&self) -> Error {
+        self.shared
+            .routing
+            .lock()
+            .unwrap()
+            .terminal
+            .clone()
+            .unwrap_or_else(|| Error::Closed("abort requested".into()))
     }
 
     fn encode(&self, value: &Value) -> Result<Vec<u8>, Error> {
@@ -403,6 +523,9 @@ impl StdioRpc {
     }
 
     fn enqueue(&self, command: WriteCommand) -> Result<(), Error> {
+        if self.abort.requested() {
+            return Err(self.abort_error());
+        }
         if let Some(error) = &self.shared.routing.lock().unwrap().terminal {
             return Err(error.clone());
         }
@@ -519,6 +642,105 @@ fn route_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_deadline_is_shared_by_initialize_and_initialized_write() {
+        let accepted = Instant::now();
+        let total = accepted + Duration::from_secs(75);
+        assert_eq!(
+            clipped_deadline(accepted, Duration::from_secs(60), total).unwrap(),
+            accepted + Duration::from_secs(60)
+        );
+        // Validation/spawn spent 20 seconds. Neither the response nor the
+        // following notification may renew the owner's original 75 seconds.
+        assert_eq!(
+            clipped_deadline(
+                accepted + Duration::from_secs(20),
+                Duration::from_secs(60),
+                total
+            )
+            .unwrap(),
+            total
+        );
+        assert_eq!(
+            clipped_deadline(
+                accepted + Duration::from_secs(70),
+                Duration::from_secs(60),
+                total
+            )
+            .unwrap(),
+            total
+        );
+        assert_eq!(
+            clipped_deadline(
+                accepted + Duration::from_secs(20),
+                Duration::from_secs(10),
+                total
+            )
+            .unwrap(),
+            accepted + Duration::from_secs(30)
+        );
+        assert_eq!(
+            clipped_deadline(
+                total + Duration::from_secs(1),
+                Duration::from_secs(60),
+                total
+            )
+            .unwrap(),
+            total
+        );
+    }
+
+    #[test]
+    fn signal_returns_before_owner_release_despite_a_full_queue() {
+        let (release, released) = mpsc::sync_channel(1);
+        let owner = thread::spawn(move || released.recv().unwrap());
+        let handle = AbortHandle {
+            stop: Arc::new(AtomicBool::new(false)),
+            wake: Some(owner.thread().clone()),
+        };
+        let (outbound, queued) = mpsc::sync_channel(1);
+        outbound.try_send(()).unwrap();
+        assert!(matches!(
+            outbound.try_send(()),
+            Err(mpsc::TrySendError::Full(()))
+        ));
+        let (sent, signal_returned) = mpsc::sync_channel(1);
+        let signal = handle.clone();
+        let caller = thread::spawn(move || {
+            signal.signal();
+            sent.send(()).unwrap();
+        });
+        let result = signal_returned.recv_timeout(Duration::from_secs(1));
+        // Always release and join, including an assertion failure.
+        release.send(()).unwrap();
+        owner.join().unwrap();
+        caller.join().unwrap();
+        result.expect("cancellation signal waited for owner cleanup");
+        assert!(handle.requested());
+        assert_eq!(queued.try_recv().unwrap(), ());
+        handle.signal(); // safe and idempotent after owner join
+    }
+
+    #[test]
+    fn canceled_or_expired_wait_never_adopts_a_queued_success() {
+        let handle = AbortHandle {
+            stop: Arc::new(AtomicBool::new(false)),
+            wake: None,
+        };
+        let (sent, reply) = mpsc::sync_channel(1);
+        sent.send(42).unwrap();
+        assert!(matches!(
+            handle.receive(&reply, Instant::now()),
+            Err(WaitError::Timeout)
+        ));
+        handle.signal();
+        assert!(matches!(
+            handle.receive(&reply, Instant::now() + Duration::from_secs(60)),
+            Err(WaitError::Aborted)
+        ));
+        assert_eq!(reply.try_recv().unwrap(), 42);
+    }
 
     fn shared(capacity: usize) -> (Shared, mpsc::Receiver<RpcEvent>) {
         let (events, receiver) = mpsc::sync_channel(capacity);

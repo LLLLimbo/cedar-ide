@@ -301,6 +301,69 @@ fn production_refresh_diagnostics(client: &mut Client, uri: &str) -> CheckResult
     }
     Err("explicit refresh synthetic diagnostic witness timed out".into())
 }
+
+fn await_production_java_startup(
+    client: &mut Client,
+    startup_id: u64,
+    deadline: Instant,
+    observed: &mut Option<RootObservation>,
+    java: &Path,
+) -> CheckResult<Value> {
+    while Instant::now() < deadline {
+        let status = client_language(client, Operation::LanguageStartJavaPoll { startup_id })?;
+        require(
+            status["startup_id"] == startup_id,
+            "startup poll identity mismatch",
+        )?;
+        if observed.is_none() {
+            if let Some(pid) = status["process_id"]
+                .as_u64()
+                .and_then(|pid| u32::try_from(pid).ok())
+            {
+                let root = RootObservation::open_current(1, pid)?;
+                verify_java_image(&root, java)?;
+                *observed = Some(root);
+            }
+        }
+        match status["state"].as_str() {
+            Some("ready") => return Ok(status["language"].clone()),
+            Some("starting") => {}
+            Some("failed" | "cancelled" | "cancelling") => {
+                return Err("normal asynchronous Java startup did not become Ready".into())
+            }
+            _ => return Err("normal asynchronous Java startup returned an invalid state".into()),
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Err("normal asynchronous Java startup exceeded its original observation deadline".into())
+}
+
+fn cancel_production_java_startup(client: &mut Client, startup_id: u64) -> CheckResult<()> {
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    let mut status = client_language(client, Operation::LanguageStartJavaCancel { startup_id })?;
+    loop {
+        require(
+            status["startup_id"] == startup_id,
+            "startup cleanup identity mismatch",
+        )?;
+        match status["state"].as_str() {
+            Some("cancelled" | "failed") => {
+                return require(
+                    status["cleanup_verified"] == true,
+                    "startup cleanup was not verified",
+                );
+            }
+            Some("cancelling") => {}
+            _ => return Err("startup cleanup returned a non-cancelling state".into()),
+        }
+        require(
+            Instant::now() < deadline,
+            "startup cleanup evidence timed out",
+        )?;
+        thread::sleep(Duration::from_millis(50));
+        status = client_language(client, Operation::LanguageStartJavaPoll { startup_id })?;
+    }
+}
 fn verify_java_image(process: &RootObservation, expected: &Path) -> CheckResult<()> {
     let mut image = vec![0u16; 32_768];
     let mut length = image.len() as u32;
@@ -371,6 +434,7 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
     let mut client: Option<Client> = None;
     let mut observed: Option<RootObservation> = None;
     let mut server_started = false;
+    let mut startup_id = None;
     let mut all_clients_reaped = false;
     let stage = Cell::new(FailureStage::Setup);
     let mut failure_stage = None;
@@ -424,10 +488,21 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         let source = root.join(SOURCE_PATH);
         source_path = Some(source.clone());
         let start_operation = || -> CheckResult<Operation> {
-            Ok(Operation::LanguageStartJava {
-                java_executable: text(&java)?,
-                distribution: text(&distribution)?,
-                data_directory: text(&data)?,
+            let java_executable = text(&java)?;
+            let distribution = text(&distribution)?;
+            let data_directory = text(&data)?;
+            Ok(if profile == ObservationProfile::Quick {
+                Operation::LanguageStartJavaBegin {
+                    java_executable,
+                    distribution,
+                    data_directory,
+                }
+            } else {
+                Operation::LanguageStartJava {
+                    java_executable,
+                    distribution,
+                    data_directory,
+                }
             })
         };
         // A normal untrusted connection cannot launch Java; metadata is not trust.
@@ -473,7 +548,35 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         record.java_capabilities = true;
         stage.set(FailureStage::Initialize);
         let initialize_started = Instant::now();
-        let initialized = client_language(client, start_operation()?)?;
+        let initialized = if profile == ObservationProfile::Quick {
+            record.async_start_exercised = true;
+            let deadline = Instant::now() + Duration::from_secs(75);
+            let begin = client_language(client, start_operation()?)?;
+            let id = begin["startup_id"]
+                .as_u64()
+                .filter(|id| *id != 0)
+                .ok_or("asynchronous Java Begin omitted its startup identity")?;
+            startup_id = Some(id);
+            require(
+                begin["state"] == "starting",
+                "Begin must acknowledge Starting, not completed initialization",
+            )?;
+            record.async_start_begin_acknowledged = true;
+            let read = client.request(Operation::Read {
+                path: SOURCE_PATH.into(),
+            })?;
+            require(
+                matches!(read, Payload::File { path, text, .. } if path == SOURCE_PATH && text == SOURCE),
+                "ordinary source read failed while Java startup was pending",
+            )?;
+            unchanged(&source)?;
+            record.async_start_read_while_starting = true;
+            let ready = await_production_java_startup(client, id, deadline, &mut observed, &java)?;
+            record.async_start_ready = true;
+            ready
+        } else {
+            client_language(client, start_operation()?)?
+        };
         require(
             initialized["started"] == true,
             "normal Java startup was not acknowledged",
@@ -484,7 +587,14 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             .and_then(|pid| u32::try_from(pid).ok())
             .filter(|pid| *pid != 0)
             .ok_or("normal Java start omitted its owned process id")?;
-        observed = Some(RootObservation::open_current(1, pid)?);
+        if let Some(root) = &observed {
+            require(
+                root.pid == pid && root.live()?,
+                "Ready changed the observed startup process",
+            )?;
+        } else {
+            observed = Some(RootObservation::open_current(1, pid)?);
+        }
         record.root_observed_live = true;
         verify_java_image(observed.as_ref().unwrap(), &java)?;
         record.root_identity_verified = true;
@@ -772,6 +882,15 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         failure_stage = Some(stage.get());
     }
     resource_phase(started, ResourcePhase::Cleanup);
+    if !server_started {
+        if let (Some(id), Some(client)) = (startup_id, client.as_mut()) {
+            let cancel = checked(|| cancel_production_java_startup(client, id));
+            if let Err(error) = cancel {
+                failure_stage.get_or_insert(FailureStage::Stop);
+                cleanup_errors.push(error);
+            }
+        }
+    }
     if server_started {
         stage.set(FailureStage::Stop);
         let stop = checked(|| {
@@ -927,7 +1046,11 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         && record.client_reaped
         && record.synthetic_root_removed
         && (profile != ObservationProfile::Quick
-            || (record.diagnostics_refresh_exercised
+            || (record.async_start_exercised
+                && record.async_start_begin_acknowledged
+                && record.async_start_read_while_starting
+                && record.async_start_ready
+                && record.diagnostics_refresh_exercised
                 && record.diagnostics_refresh_supported
                 && record.diagnostics_refresh_requested
                 && record.diagnostics_refresh_witness))

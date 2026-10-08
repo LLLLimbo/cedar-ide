@@ -145,6 +145,8 @@ AGENT_TRANSCRIPT_FIELDS = {
         | {'java_exit_code': '?u32', 'task_exit_code': '?u32',
            'failure_stage': AGENT_LIFECYCLE_FAILURE_STAGES, 'elapsed_ms': ('integer_range', 0, 300000)},
     'windows_java_production': dict.fromkeys((
+        'async_start_exercised', 'async_start_begin_acknowledged',
+        'async_start_read_while_starting', 'async_start_ready',
         'java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected', 'root_observed_live',
         'root_identity_verified', 'semantic_diagnostics', 'exact_definition', 'real_completion',
         'deferred_import_resolve', 'actual_editor_apply_undo_redo', 'versions_2_3_4_synced',
