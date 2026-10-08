@@ -34,6 +34,10 @@ pub(super) struct RunPanel {
     transition: Option<Transition>,
 }
 impl RunPanel {
+    pub fn transition_pending(&self) -> bool {
+        self.transition.is_some()
+    }
+
     fn active(&self) -> bool {
         self.starting
             || self

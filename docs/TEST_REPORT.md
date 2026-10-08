@@ -1,98 +1,82 @@
-# Verification report · Cancellable Java startup / 0.17.0 · 2026-10-08
+# Verification report · Keyboard navigation / 0.18.0 · 2026-10-08
 
-This checkpoint moves only explicitly requested typed-Java launch/initialization
-into a workspace-owned startup lifecycle. Ordinary agent requests remain serial;
-there is no general concurrent-agent rewrite. The previous [0.16.0 exact CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37795611035)
-passed both platforms, including the separate unversioned Java refresh witness,
-all earlier ownership/Git checks and the verified development ZIP. Its evidence
-is retained in [the phase-16 report](TEST_REPORT_PHASE16.md). The intermittent
-JDT diagnostic-publication cause remains unresolved.
+This checkpoint adds bounded frontend navigation: a keyboard-selectable chooser
+for existing buffers and files in the already-loaded current directory, plus
+Go To Line. It introduces no backend operation, recursive index, background scan
+or project persistence. Both features are available with execution trust off.
 
-## Finite contract
+The previous [0.17.0 exact Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37811229491)
+passed, including real asynchronous Java startup and all previous semantic,
+cleanup, Git and bundle checks. Its completed evidence is preserved in the
+[phase-17 report](TEST_REPORT_PHASE17.md). The earlier intermittent JDT diagnostic
+publication cause remains unresolved; explicit refresh remains a mitigation.
 
-Protocol 4 adds optional Begin/Poll/Cancel capabilities with a positive startup
-ID. Legacy synchronous `LanguageStartJava` retains its original contract.
-Missing/partial capabilities cannot send an asynchronous launch; old compatible
-agents remain usable through the clearly labeled synchronous path.
+## Navigation contract
 
-A single transient owner performs Java launch and initialization. Begin returns
-Starting; ordinary reads, revision-checked saves and task controls can proceed
-while initialization waits. Language queries remain unavailable until Ready. Ready denotes the initialization
-handshake, not proof background indexing has settled; later queries remain synchronous.
-The fixed eligibility deadline is 75 seconds from accepted Begin. Initialize's
-response remains capped at 60 seconds; the initialized notification is clipped
-to the same remaining absolute budget. Polling never extends that deadline.
-Expiry requests cancellation; kernel/process cleanup may take longer and stays
-visibly Cancelling until actually joined. Elapsed time is not cleanup evidence.
+Ctrl/Cmd+P combines open buffers and current-directory files, deduplicates exact
+paths and shows at most 64 substring matches. Open buffers appear first. Up/Down
+selects a result and Enter opens it. An explicit typed-path action remains
+available. Selected paths retain their literal spelling, including Unicode.
+The chooser does not enumerate other directories or traverse the workspace.
 
-## Ownership and cancellation
+Opening reuses existing document ownership and asynchronous navigation checks:
+dirty buffers are retained, pending reads are deduplicated, stale replies cannot
+steal focus from newer navigation, and the 32-buffer limit remains enforced.
 
-The prepared client remains in a guarded slot owned by a live startup worker
-until the same Poll atomically installs the tagged session. A completed worker
-result never carries an unconsumed live client. No-poll timeout, cancellation
-and panic unwind clean an unadopted slot. After adoption, cancellation addresses
-only that startup ID; old IDs cannot stop a later unrelated session.
+Ctrl/Cmd+G accepts a valid 1-based line in the current document. It moves the
+cursor through the existing editor navigation path without changing text,
+saved revision or edit version. Cursor navigation retains native Undo/Redo.
 
-The abort signal bypasses the LSP lifecycle gate and outbound queue and does
-not join. Cleanup runs off the agent request handler. Cleanup-thread allocation
-failure retains ownership in a blocked fallback rather than synchronously
-joining inside Cancel. Failed or unverified cleanup prevents another start on
-the same connection. Exact existing-ID cleanup/status remain reachable after
-trust revocation; Begin still requires trust before allocation/launch.
+## Acceptance scope
 
-Ready/cancel crossings, repeated cancellation, stale IDs, worker panic, normal
-Stop and Workspace Drop keep a single explicit owner. Windows terminal cleanup
-requires joined transport/process/I/O evidence with no cleanup errors. Portable
-fixtures do not manufacture Windows process-tree verification.
+Headless event tests must cover opening and repeated shortcuts, modal keyboard
+focus, typing/arrow/Enter/Escape isolation, exact Unicode paths, dirty-buffer
+reuse, tab limits, stale reads and navigation-only Undo/Redo. Go To Line must
+reject invalid, overflowing and out-of-range input against the current document.
 
-## Frontend and transport
-
-Starting/Cancelling persists between short wire requests. The UI binds results
-to connection generation, language session and startup ID, keeps Cancel reachable,
-and sends at most one lifecycle poll at a time. It does not automatically replay
-starts, edits or saves. Close/reconnect and pending-save safeguards remain active;
-cleanup cannot close a window against a newer draft snapshot. Unverified cleanup
-is visible and blocks restart. Old synchronous agents explicitly lack startup
-cancellation; Stop becomes available after startup returns.
-
-Client Java-session timing becomes active only after a valid matching Ready
-response. Old snapshots cannot activate or clear a newer owner. Quick lifecycle
-requests retain ordinary transport deadlines; authoritative save replies and
-unknown-save semantics are unchanged. Malformed lifecycle replies fail closed
-without automatic cancellation/restart traffic.
-
-## Acceptance boundaries
-
-Deterministic fixtures cover prelaunch and real stalled initialize, ordinary
-reads/saves/conflicts and independent tasks, cancellation, original deadlines,
-no-poll prepared cleanup, atomic handoff, exact old-ID isolation, panic positions,
-allocation failure retention and Drop cleanup. Windows observers retain handles
-while the fixture root/descendant are live and verify identity and signalled exit
-on those same handles. The extra descendant starts before the initialize marker.
-Existing native Job/pipe, EOF and forced-owner suites remain required.
-
-The real-JDT Quick production test uses Begin, reads source while startup remains
-pending, observes the exact owned root, and reaches Ready before executing all
-original semantic/editor and explicit-refresh assertions. Its failure path
-cancels an unadopted startup and still reaps the agent. The long resource profiles
-retain synchronous startup and their existing workload. No new JVM or resource
-benchmark is introduced; no resource-reduction claim follows from this change.
+Native Linux verification, if available through the cloud desktop, uses only a
+new synthetic workspace with execution trust off. Windows correctness remains
+subject to exact native CI; a headless bundle probe does not establish Windows
+GUI acceptance. Authenticated SSH and GUI Trust-on testing remain separate gaps.
 
 ## Verification status
 
-Final local aggregate: 777 Rust tests passed, with 22 opt-in/native cases ignored
-in that aggregate and retained as explicit CI stages. The final suite includes
-the allocation-failure regression and all client/UI consistency corrections.
-Strict full-workspace host and MSVC checks passed with warnings denied. The
-normal default-feature release app/agent build passed, followed by actual-agent
-protocol, capability, language-bridge and task-bridge smoke checks.
+The final local aggregate passed 793 Rust tests across 40 suites, with 22 opt-in
+cases left to their explicit native/process CI stages. All 15 new navigation
+regressions and the populated-completion precedence test passed. Strict host
+and MSVC Clippy and formatting passed. The normal default-feature release
+app/agent build passed, followed by actual-agent protocol, capability, language
+bridge and task bridge smoke tests. Python checks passed: export two, bundle 28 plus one
+platform skip, Git fixtures six, crash collector 70 plus two platform skips,
+process observer 79 and GC collector 36.
 
-Python checks passed: collector 70 with two platform skips, process-tree observer
-79, GC collector 36, bundle 28 with one native-only skip, export two and Git
-fixture six. Formatting and diff checks passed. Independent static review found
-no remaining blocker in ownership, replay behavior, evidence or documentation.
-These checks do not replace native execution.
+The first aggregate attempt ran out of build-cache disk space before tests. A
+reviewed removal of obsolete generated test executables restored space while
+keeping source, logs and current/delivered artifacts. The next run exposed modal
+sizing/focus bugs, which were corrected and covered by the final passing suite.
+The initial disabled sizing pass now retains bounded keyboard input for exactly
+one interactive processing; cancellation or identity changes discard it. This
+is frontend input handling and does not replay backend operations.
 
-Exact native Windows runtime tests, actual JDT, prior Git/ownership/file suites
-and the regenerated default-feature bundle remain required. Cross-compilation is not
-native execution. GUI and authenticated SSH acceptance remain separate gaps.
+## Native Linux trust-off navigation
+
+The final default-feature release was exercised through the cloud Linux desktop
+on five newly generated synthetic files, with execution trust kept off. The
+chooser passed current-directory filtering, keyboard Up/Down/Enter, open-buffer
+ordering and deduplication, explicit nested typed paths and literal Unicode
+selection. Dirty-buffer reuse retained edits without duplicating a tab. Go To
+Line passed valid, invalid and Unicode line targets. Typing immediately after
+Enter or Escape worked without clicking the editor; Undo/Redo remained usable.
+After changing the current directory, an unopened root-only file was absent
+while existing buffers remained available. All five on-disk file hashes matched
+the initial baseline; temporary edits were undone without saving.
+
+Tested Linux frontend SHA-256:
+`ddd46f343c222c1c7ebd05712ce9aa4288e2545b339ba06bb3b182781a642394`.
+Tested adjacent normal agent SHA-256:
+`c2c81bdf6f06a6367c279f4d53c3efb00a1e806cccb9d9faf81d2047364f2ff8`.
+
+Exact native Windows execution and regenerated bundle verification remain
+required for this commit. Linux window testing does not establish Windows GUI
+or authenticated SSH acceptance.
+No resource-reduction or IntelliJ IDEA equivalence claim follows from this slice.

@@ -1667,6 +1667,82 @@ fn safe_relative_path(path: &str) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn file_chooser_keys_take_priority_over_populated_completion_popup() {
+        let (mut app, commands) = capability_app();
+        app.open_form = false;
+        app.language.running = true;
+        app.language.automatic = false;
+        app.language.capabilities = serde_json::json!({"completionProvider": {}});
+        app.documents.push(Document::new(
+            1,
+            "first.rs".into(),
+            "draft".into(),
+            "r0".into(),
+        ));
+        app.documents.push(Document::new(
+            2,
+            "second.rs".into(),
+            "other".into(),
+            "r1".into(),
+        ));
+        app.active_document = Some(1);
+        app.language.completions = Some(CompletionMenu {
+            context: QueryContext {
+                session: app.language.session,
+                document: 1,
+                edit_version: 0,
+                source: "draft".into(),
+                cursor: Position::default(),
+            },
+            candidates: completion::parse_completion_result(&serde_json::json!([
+                {"label": "one", "insertText": "one"},
+                {"label": "two", "insertText": "two"}
+            ]))
+            .unwrap()
+            .candidates,
+            selected: 0,
+            incomplete: false,
+            truncated: false,
+        });
+        app.language.completion_popup = true;
+        let mut events = Vec::new();
+        for (key, modifiers) in [
+            (egui::Key::P, egui::Modifiers::COMMAND),
+            (egui::Key::ArrowDown, egui::Modifiers::NONE),
+            (egui::Key::Enter, egui::Modifiers::NONE),
+        ] {
+            for pressed in [true, false] {
+                events.push(egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                });
+            }
+        }
+        let ctx = app.editor_ctx.clone();
+        let mut frame = eframe::Frame::_new_kittest();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(780.0, 540.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| eframe::App::update(&mut app, ctx, &mut frame),
+        );
+        assert_eq!(app.active_document, Some(2));
+        assert_eq!(app.documents[0].text, "draft");
+        assert_eq!(app.documents[1].text, "other");
+        assert_eq!(app.language.completions.as_ref().unwrap().selected, 0);
+        assert!(app.documents.iter().all(|doc| doc.edit_version == 0));
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
     fn disk_reload_uses_existing_language_debounce_and_preserves_sync_mode() {
         for automatic in [false, true] {
             let mut app = CedarApp::empty();

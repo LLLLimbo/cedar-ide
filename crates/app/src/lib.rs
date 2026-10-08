@@ -15,6 +15,7 @@ mod language_results;
 mod language_sync;
 mod language_ui;
 mod model;
+mod navigation;
 mod profile_ui;
 mod recovery;
 mod recovery_actor;
@@ -242,9 +243,7 @@ pub struct CedarApp {
     profiles: profile_ui::Profiles,
     run_state: run_ui::RunPanel,
     language: language_ui::LanguagePanel,
-    quick_open: bool,
-    quick_path: String,
-    quick_focus: bool,
+    navigation: navigation::Navigation,
     new_file: bool,
     new_path: String,
     find_open: bool,
@@ -339,9 +338,7 @@ impl CedarApp {
             profiles: profile_ui::Profiles::default(),
             run_state: run_ui::RunPanel::default(),
             language: language_ui::LanguagePanel::default(),
-            quick_open: false,
-            quick_path: String::new(),
-            quick_focus: false,
+            navigation: navigation::Navigation::default(),
             new_file: false,
             new_path: String::new(),
             find_open: false,
@@ -511,6 +508,7 @@ impl CedarApp {
     }
 
     fn navigation_changed(&mut self) {
+        self.dismiss_navigation();
         self.dismiss_disk_review();
         self.interrupted_save_check.invalidate();
         self.navigation_epoch = self.navigation_epoch.wrapping_add(1);
@@ -525,7 +523,7 @@ impl CedarApp {
             if let Some(line) = line {
                 doc.jump_to = Some(line_start(&doc.text, line));
             }
-            self.quick_open = false;
+            self.navigation.restore_focus = true;
             return;
         }
         if self.documents.len() >= 32 {
@@ -557,7 +555,6 @@ impl CedarApp {
                 navigation,
             },
         );
-        self.quick_open = false;
     }
 
     fn save(&mut self) {
@@ -878,6 +875,7 @@ impl CedarApp {
                 if let Some(doc) = self.documents.iter_mut().find(|doc| doc.path == path) {
                     if navigation == self.navigation_epoch {
                         self.active_document = Some(doc.id);
+                        self.navigation.restore_focus = true;
                         if let Some(line) = line {
                             doc.jump_to = Some(line_start(&doc.text, line));
                         }
@@ -901,6 +899,7 @@ impl CedarApp {
                 self.documents.push(doc);
                 if navigation == self.navigation_epoch {
                     self.active_document = Some(id);
+                    self.navigation.restore_focus = true;
                     self.open_form = false;
                 }
                 self.complete_language_navigation(&requested);
@@ -1107,13 +1106,12 @@ impl CedarApp {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if self.navigation_shortcuts(ctx) {
+            return;
+        }
         self.language_shortcuts(ctx);
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
             self.save();
-        }
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::P)) {
-            self.quick_open = true;
-            self.quick_focus = true;
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             self.find_open = true;
@@ -1126,7 +1124,6 @@ impl CedarApp {
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.dismiss_disk_review();
-            self.quick_open = false;
             self.find_open = false;
             self.confirm = None;
             self.new_file = false;
@@ -1196,11 +1193,10 @@ impl CedarApp {
                         if self.ready()
                             && ui
                                 .button("Open file")
-                                .on_hover_text("Open by path · Ctrl/Cmd+P")
+                                .on_hover_text("Choose an open buffer or file · Ctrl/Cmd+P")
                                 .clicked()
                         {
-                            self.quick_open = true;
-                            self.quick_focus = true;
+                            self.show_file_chooser();
                         }
                     });
                 });
@@ -1325,7 +1321,7 @@ impl CedarApp {
                 });
                 if let Some(entry) = open { if entry.is_dir { self.list(entry.path); } else { self.open(entry.path, None); } }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.label(RichText::new("Ctrl/Cmd+P  Open a path\nCtrl/Cmd+F  Find in file\nCtrl/Cmd+S  Save changes").size(11.0).color(MUTED));
+                    ui.label(RichText::new("Ctrl/Cmd+P  Choose a file\nCtrl/Cmd+G  Go to line\nCtrl/Cmd+F  Find in file\nCtrl/Cmd+S  Save changes").size(11.0).color(MUTED));
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui.selectable_label(self.tools_open && self.tool == Tool::Search, "Search").clicked() { self.tool = Tool::Search; self.tools_open = true; }
@@ -1488,8 +1484,7 @@ impl CedarApp {
                         ui.add_space(12.0);
                         ui.horizontal(|ui| {
                             if ui.button("Open a file  ·  Ctrl/Cmd+P").clicked() {
-                                self.quick_open = true;
-                                self.quick_focus = true;
+                                self.show_file_chooser();
                             }
                             if ui.button("New file").clicked() {
                                 self.new_file = true;
@@ -1546,7 +1541,7 @@ impl CedarApp {
                     .hint_text("Case-sensitive text")
                     .desired_width(230.0),
             );
-            if self.find_focus {
+            if self.find_focus && !self.navigation.blocks_editor() {
                 response.request_focus();
                 self.find_focus = false;
             }
@@ -1735,7 +1730,8 @@ impl CedarApp {
         if let Some(message) = self.interrupted_save_check.message() {
             ui.label(RichText::new(message).small().color(AMBER));
         }
-        self.find_bar(ui);
+        let navigation_blocked = self.navigation.blocks_editor();
+        ui.add_enabled_ui(!navigation_blocked, |ui| self.find_bar(ui));
         if let Some(doc) = self
             .documents
             .iter_mut()
@@ -1743,9 +1739,15 @@ impl CedarApp {
         {
             let editor_id = egui::Id::new(("editor", doc.id));
             editor_state::load(ui.ctx(), doc);
-            editor_state::history_shortcut(ui.ctx(), doc);
-            let jump_to = doc.jump_to.take();
-            let scroll_to = jump_to.or(doc.scroll_to.take());
+            if !navigation_blocked {
+                editor_state::history_shortcut(ui.ctx(), doc);
+            }
+            let jump_to = (!navigation_blocked).then(|| doc.jump_to.take()).flatten();
+            let scroll_to = jump_to.or_else(|| {
+                (!navigation_blocked)
+                    .then(|| doc.scroll_to.take())
+                    .flatten()
+            });
             if let Some(index) = jump_to {
                 let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
                 state
@@ -1757,8 +1759,11 @@ impl CedarApp {
                 ui.ctx()
                     .memory_mut(|memory| memory.request_focus(editor_id));
             }
-            let cursor_history =
-                editor_state::before_cursor_interaction(ui.ctx(), doc, scroll_to.is_some());
+            let cursor_history = if navigation_blocked {
+                None
+            } else {
+                editor_state::before_cursor_interaction(ui.ctx(), doc, scroll_to.is_some())
+            };
             let enabled = syntax::supports(&doc.path);
             let font_size = self.font_size;
             let mut layouter = |ui: &egui::Ui, text: &str, _width: f32| {
@@ -1785,6 +1790,7 @@ impl CedarApp {
                         );
                         let output = egui::TextEdit::multiline(&mut doc.text)
                             .id(editor_id)
+                            .interactive(!navigation_blocked)
                             .font(FontId::monospace(font_size))
                             .code_editor()
                             .frame(false)
@@ -1833,77 +1839,6 @@ impl CedarApp {
                 });
             if !visible {
                 self.open_form = false;
-            }
-        }
-        if self.quick_open {
-            let mut visible = true;
-            egui::Window::new("Open file by path")
-                .open(&mut visible)
-                .collapsible(false)
-                .resizable(false)
-                .default_width(560.0)
-                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 90.0))
-                .show(ctx, |ui| {
-                    ui.label(
-                        RichText::new("Enter a path relative to the workspace root")
-                            .small()
-                            .color(MUTED),
-                    );
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.quick_path)
-                            .hint_text("src/main.rs")
-                            .desired_width(f32::INFINITY),
-                    );
-                    if self.quick_focus {
-                        response.request_focus();
-                        self.quick_focus = false;
-                    }
-                    let enter =
-                        response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if ui
-                        .add_enabled(
-                            self.ready() && !self.quick_path.trim().is_empty(),
-                            egui::Button::new("Open file"),
-                        )
-                        .clicked()
-                        || enter
-                    {
-                        self.open(self.quick_path.trim().replace('\\', "/"), None);
-                    }
-                    ui.separator();
-                    ui.label(
-                        RichText::new("FILES IN CURRENT DIRECTORY")
-                            .small()
-                            .color(MUTED),
-                    );
-                    let mut selected = None;
-                    egui::ScrollArea::vertical()
-                        .max_height(250.0)
-                        .show(ui, |ui| {
-                            for entry in self
-                                .entries
-                                .iter()
-                                .filter(|entry| {
-                                    !entry.is_dir
-                                        && (self.quick_path.is_empty()
-                                            || entry
-                                                .path
-                                                .to_lowercase()
-                                                .contains(&self.quick_path.to_lowercase()))
-                                })
-                                .take(20)
-                            {
-                                if ui.selectable_label(false, &entry.path).clicked() {
-                                    selected = Some(entry.path.clone());
-                                }
-                            }
-                        });
-                    if let Some(path) = selected {
-                        self.open(path, None);
-                    }
-                });
-            if !visible {
-                self.quick_open = false;
             }
         }
         if self.new_file {
@@ -1966,6 +1901,7 @@ impl CedarApp {
 impl eframe::App for CedarApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        self.begin_navigation_frame(ctx);
         self.recovery_tick(ctx);
         let cjk = self.system_fonts.needs_probe()
             && (self.cjk_seen
@@ -1975,6 +1911,7 @@ impl eframe::App for CedarApp {
                 || system_fonts::contains_cjk(&self.form.remote_root)
                 || system_fonts::contains_cjk(&self.search_query)
                 || system_fonts::contains_cjk(&self.find_query)
+                || self.navigation.has_cjk()
                 || system_fonts::contains_cjk(&self.profiles.draft.name)
                 || system_fonts::contains_cjk(&self.profiles.draft.program)
                 || self
@@ -1996,6 +1933,7 @@ impl eframe::App for CedarApp {
         if self.confirm.is_none() {
             self.shortcuts(ctx);
         }
+        self.navigation_window(ctx);
         self.header(ctx);
         self.footer(ctx);
         self.notifications(ctx);
@@ -2013,7 +1951,9 @@ impl eframe::App for CedarApp {
                 }
             });
         self.dialogs(ctx);
-        self.language_popups(ctx);
+        if !self.navigation.blocks_editor() {
+            self.language_popups(ctx);
+        }
         self.run_tick(ctx);
         self.recovery_window(ctx);
         self.run_dialog(ctx);
@@ -2479,10 +2419,10 @@ mod tests {
                 }
                 if stage == 3 {
                     app.tool = Tool::Run;
-                    app.quick_open = true;
+                    app.show_file_chooser();
                 }
                 if stage == 4 {
-                    app.quick_open = false;
+                    app.dismiss_navigation();
                     app.tool = Tool::Language;
                     app.confirm = Some(Confirm::CloseTab(1));
                 }
@@ -2500,6 +2440,7 @@ mod tests {
                         ..Default::default()
                     },
                     |ctx| {
+                        app.navigation_window(ctx);
                         app.header(ctx);
                         app.footer(ctx);
                         app.notifications(ctx);

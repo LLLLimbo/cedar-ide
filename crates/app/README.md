@@ -27,7 +27,8 @@ Shortcuts:
 
 | Shortcut | Action |
 | --- | --- |
-| Ctrl/Cmd+P | Open a relative file path |
+| Ctrl/Cmd+P | Choose an open buffer or current-directory file; explicitly open a relative path |
+| Ctrl/Cmd+G | Go to a 1-based line in the current buffer |
 | Ctrl/Cmd+F | Find in the current file |
 | Ctrl/Cmd+S | Save |
 | Ctrl/Cmd+W | Close the current tab |
