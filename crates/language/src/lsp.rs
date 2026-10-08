@@ -505,8 +505,7 @@ impl LspClient {
         }
         let result = (|| {
             self.rpc.request("shutdown", Value::Null)?;
-            self.rpc.notify("exit", Value::Null)?;
-            self.rpc.finish_process()
+            self.rpc.exit_and_finish()
         })();
         if let Err(error) = &result {
             self.rpc.abort(error.clone());

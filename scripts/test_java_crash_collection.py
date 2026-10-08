@@ -281,6 +281,7 @@ class CrashCollectionTests(unittest.TestCase):
              'corrected_diagnostics': 1, 'checks': ['initialize', 'didOpen'], 'error': 'SECRET_SEMANTIC_ERROR'},
             {'kind': 'session_cleanup', 'session': 'initial', 'semantics_succeeded': False,
              'gracefully_exited': False, 'root_exit_code': 3221225477, 'source_unchanged': True,
+             'shutdown_elapsed_ms': 10002, 'shutdown_terminal_reason': 'grace_expired',
              'independent_job_zero_observation': False, 'listener_observation': False},
             {'kind': 'source_bytes', 'phase': 'after_all_clients_dropped', 'unchanged': True},
             {'kind': 'fixture_cleanup', 'removed': True, 'sessions_succeeded': False,
@@ -306,6 +307,8 @@ class CrashCollectionTests(unittest.TestCase):
         self.assertFalse(records[0]['windows_full_acceptance'])
         self.assertFalse(records[2]['gracefully_exited'])
         self.assertEqual(records[2]['root_exit_code'], 3221225477)
+        self.assertEqual(records[2]['shutdown_elapsed_ms'], 10002)
+        self.assertEqual(records[2]['shutdown_terminal_reason'], 'grace_expired')
         self.assertFalse(records[4]['sessions_succeeded'])
         self.assertTrue(records[6]['metadata_in_expected_directory'])
         self.assertEqual(source['evidence']['omitted_non_json_lines'], 1)
@@ -316,7 +319,8 @@ class CrashCollectionTests(unittest.TestCase):
     def test_java_transcript_invalid_scalars_enums_and_json_are_errors(self):
         raw = '\n'.join((
             json.dumps({'kind': 'session_cleanup', 'session': 'SECRET_SESSION',
-                        'source_unchanged': 'SECRET_BOOLEAN', 'root_exit_code': -1}),
+                        'source_unchanged': 'SECRET_BOOLEAN', 'root_exit_code': -1,
+                        'shutdown_terminal_reason': 'SECRET_TERMINAL_REASON', 'shutdown_elapsed_ms': -1}),
             json.dumps({'kind': 'pass', 'elapsed_ms': 2 ** 80}),
             '{"kind":"pass","SECRET_BROKEN_JSON":',
         ))
@@ -324,6 +328,8 @@ class CrashCollectionTests(unittest.TestCase):
         report = collector.collect(self.root, java_transcript=path)
         self.assertEqual(report['status'], 'error')
         self.assertIn('malformed_json_line', report['java_transcript']['errors'])
+        self.assertIn('invalid_field_shutdown_terminal_reason', report['java_transcript']['errors'])
+        self.assertIn('invalid_field_shutdown_elapsed_ms', report['java_transcript']['errors'])
         self.assertNotIn('SECRET_', json.dumps(report))
 
     def test_optional_source_limits_remain_visible(self):

@@ -18,6 +18,12 @@ fn send(output: &mut impl Write, value: Value) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str).unwrap_or("normal");
+    if mode == "exit-waits-eof" {
+        thread::spawn(|| {
+            thread::sleep(Duration::from_secs(8));
+            std::process::exit(124);
+        });
+    }
     #[cfg(windows)]
     let _agent_tree = (mode == "win-agent-tree").then(|| windows_fixture::agent_tree(&args));
     #[cfg(windows)]
@@ -261,6 +267,15 @@ fn main() {
             }
             "exit" => {
                 assert!(shutdown);
+                if mode == "exit-waits-eof" {
+                    assert!(message.get("id").is_none());
+                    assert!(read_frame(&mut input, FrameLimits::default())
+                        .expect("stdin must end at a frame boundary after exit")
+                        .is_none());
+                    let audit = audit.as_mut().expect("EOF fixture requires an audit file");
+                    writeln!(audit, "{}", json!({"fixture":"stdin-eof-after-exit"})).unwrap();
+                    audit.flush().unwrap();
+                }
                 if mode == "ignore-exit" {
                     thread::sleep(Duration::from_secs(30));
                 }
@@ -349,6 +364,13 @@ mod windows_fixture {
             "win-grandchild" | "win-grandchild-stderr" => {
                 fs::write(dir.join("grandchild.ready"), b"ready").unwrap();
                 idle();
+            }
+            "win-lsp-exit-needs-stdin-eof"
+            | "win-lsp-graceful-eof-release"
+            | "win-lsp-graceful-eof-stalled"
+            | "win-lsp-graceful-eof-malformed" => {
+                lsp_shutdown(mode, dir);
+                return;
             }
             "win-tree-blocked" | "win-tree-exit" | "win-stdout-eof-tree" => {
                 if mode == "win-stdout-eof-tree" {
@@ -460,6 +482,93 @@ mod windows_fixture {
             &mut io::stdout().lock(),
             json!({"jsonrpc":"2.0","method":"mock/ready","params":{}}),
         );
+    }
+
+    #[allow(clippy::zombie_processes)]
+    fn lsp_shutdown(mode: &str, dir: &Path) {
+        exclude_original_stdout_from_inheritance();
+        let _child = spawn_descendant(dir, "win-descendant-stderr");
+        wait_file(&dir.join("child.ready"));
+        // Open the synchronization files before closing stdout. Later writes and
+        // metadata reads use these held handles without recycling stdout's value.
+        let mut closed = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dir.join("stdout-closed.ready"))
+            .unwrap();
+        let release = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join("release"))
+            .unwrap();
+        ready();
+        let mut input = BufReader::new(io::stdin().lock());
+        let mut initialize_replied = false;
+        let mut initialized = false;
+        let mut shutdown = false;
+        loop {
+            let bytes = read_frame(&mut input, FrameLimits::default())
+                .unwrap()
+                .expect("stdin closed before complete exit notification");
+            let message: Value = serde_json::from_slice(&bytes).unwrap();
+            let result = match message["method"].as_str().unwrap() {
+                "initialize" => {
+                    assert!(!initialize_replied);
+                    initialize_replied = true;
+                    json!({"capabilities":{}})
+                }
+                "initialized" => {
+                    assert!(initialize_replied && !initialized);
+                    initialized = true;
+                    continue;
+                }
+                "shutdown" => {
+                    assert!(initialized && !shutdown);
+                    shutdown = true;
+                    Value::Null
+                }
+                "exit" => {
+                    assert!(shutdown && message.get("id").is_none());
+                    if mode == "win-lsp-exit-needs-stdin-eof" {
+                        // Model an input reader that also needs EOF before the
+                        // server can stop; a complete exit frame is insufficient.
+                        assert!(read_frame(&mut input, FrameLimits::default())
+                            .expect("stdin must end at a frame boundary")
+                            .is_none());
+                        fs::write(dir.join("stdin-eof.ready"), b"verified").unwrap();
+                    }
+                    if mode == "win-lsp-graceful-eof-malformed" {
+                        let mut output = io::stdout().lock();
+                        output.write_all(b"Content-Length: 16\r\n\r\n{").unwrap();
+                        output.flush().unwrap();
+                    }
+                    close_standard_handle(io::stdout().as_raw_handle());
+                    closed.write_all(b"closed").unwrap();
+                    closed.flush().unwrap();
+                    match mode {
+                        "win-lsp-exit-needs-stdin-eof" => return,
+                        "win-lsp-graceful-eof-release" => {
+                            let deadline = Instant::now() + Duration::from_secs(3);
+                            while release.metadata().unwrap().len() == 0 {
+                                assert!(
+                                    Instant::now() < deadline,
+                                    "graceful release gate did not open"
+                                );
+                                thread::sleep(Duration::from_millis(5));
+                            }
+                            return;
+                        }
+                        _ => idle(),
+                    }
+                }
+                method => panic!("unexpected shutdown fixture method {method}"),
+            };
+            send(
+                &mut io::stdout().lock(),
+                json!({"jsonrpc":"2.0","id":message["id"],"result":result}),
+            );
+        }
     }
 
     fn hold_lifetime(dir: &Path, name: &str) -> File {

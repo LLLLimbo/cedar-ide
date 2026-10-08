@@ -116,6 +116,30 @@ fn complete_lifecycle_features_and_full_document_sync() {
 }
 
 #[test]
+fn shutdown_delivers_complete_exit_then_stdin_eof_before_cleanup() {
+    let temp = tempfile::tempdir().unwrap();
+    let audit_path = temp.path().join("exit-eof.jsonl");
+    let client = ready("exit-waits-eof", Some(&audit_path));
+    let started = Instant::now();
+    client.shutdown().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(3));
+    let audit: Vec<Value> = std::fs::read_to_string(audit_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(audit.len(), 5);
+    let methods: Vec<_> = audit[..4]
+        .iter()
+        .map(|entry| entry["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(methods, ["initialize", "initialized", "shutdown", "exit"]);
+    // shutdown() can return Ok after forced cleanup. This server-written marker
+    // exists only if it consumed a complete exit frame and then clean stdin EOF.
+    assert_eq!(audit[4], json!({"fixture":"stdin-eof-after-exit"}));
+}
+
+#[test]
 fn incremental_servers_receive_a_utf16_whole_range_edit() {
     let temp = tempfile::tempdir().unwrap();
     let audit_path = temp.path().join("audit.jsonl");

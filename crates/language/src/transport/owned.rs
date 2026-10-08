@@ -68,6 +68,10 @@ impl ActiveWrite {
         Ok(())
     }
 
+    pub(super) fn closes_stdin(&self) -> bool {
+        self.command.close_stdin
+    }
+
     pub(super) fn finish(self, result: Result<(), Error>) {
         if let Some(ack) = self.command.ack {
             let _ = ack.try_send(result);
@@ -151,6 +155,7 @@ mod tests {
     fn write(now: Instant) -> (ActiveWrite, mpsc::Receiver<Result<(), Error>>) {
         let (ack, recv) = mpsc::sync_channel(1);
         let command = WriteCommand {
+            close_stdin: false,
             bytes: b"abc".to_vec(),
             deadline: now,
             ack: Some(ack),
@@ -159,6 +164,20 @@ mod tests {
             ActiveWrite::new(command, FrameLimits::default()).unwrap(),
             recv,
         )
+    }
+
+    #[test]
+    fn final_exit_write_retains_close_intent_until_all_bytes_complete() {
+        let (mut active, _ack) = write(Instant::now() + Duration::from_secs(1));
+        assert!(!active.closes_stdin());
+        active.command.close_stdin = true;
+        assert!(active.closes_stdin());
+        assert!(!active.complete());
+        while !active.complete() {
+            let count = active.begin_chunk(2).len();
+            active.advance(count).unwrap();
+        }
+        assert!(active.closes_stdin());
     }
 
     #[test]

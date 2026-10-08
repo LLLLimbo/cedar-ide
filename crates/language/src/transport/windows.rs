@@ -17,6 +17,7 @@ const FINAL_DRAIN: Duration = Duration::from_millis(250);
 
 struct Control {
     stop: AtomicBool,
+    graceful_deadline: Mutex<Option<Instant>>,
     done: Mutex<bool>,
     completed: Condvar,
 }
@@ -55,6 +56,7 @@ impl Backend {
         };
         let control = Arc::new(Control {
             stop: AtomicBool::new(false),
+            graceful_deadline: Mutex::new(None),
             done: Mutex::new(false),
             completed: Condvar::new(),
         });
@@ -170,7 +172,25 @@ impl Backend {
         let _ = self.join();
     }
 
+    pub(super) fn begin_shutdown(&self, timeout: Duration) {
+        // First arm wins: repeated calls never extend the grace window.
+        self.control
+            .graceful_deadline
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| Instant::now() + timeout);
+        self.wake();
+    }
+
     pub(super) fn finish(&self, shared: &Shared, timeout: Duration) -> Result<(), Error> {
+        let timeout = self
+            .control
+            .graceful_deadline
+            .lock()
+            .unwrap()
+            .map_or(timeout, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            });
         let done = self.control.done.lock().unwrap();
         let (done, _) = self
             .control
@@ -232,6 +252,10 @@ impl Connection {
             if let Some(error) = shared.routing.lock().unwrap().terminal.clone() {
                 return error;
             }
+            let graceful_deadline = *control.graceful_deadline.lock().unwrap();
+            if graceful_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Error::Closed("shutdown grace period elapsed".into());
+            }
             if let Err(error) = self.incoming.check_deadline(Instant::now()) {
                 return error;
             }
@@ -282,13 +306,30 @@ impl Connection {
                 Ok(capture) => capture,
                 Err(e) => return Error::Io(format!("capture server output: {e}")),
             };
-            // Stderr EOF is harmless. Stdout EOF is terminal even if a process
-            // or descendant is still alive and retains another pipe endpoint.
+            // Unexpected stdout EOF remains immediately terminal. During an
+            // explicit graceful exit, a server may close stdout before shutdown
+            // hooks finish. Preserve only that clean EOF until root exit or the
+            // original fixed grace deadline; malformed EOF is never deferred.
             if capture.stdout_eof {
-                return self.incoming.eof();
+                let error = self.incoming.eof();
+                if graceful_deadline.is_none() || !matches!(error, Error::Closed(_)) {
+                    return error;
+                }
             }
             match self.command.try_exit() {
                 Ok(Some(exit)) if exited.is_none() => {
+                    // A server can exit after reading the final bytes before
+                    // we poll their overlapped completion. Complete only that
+                    // already-submitted exit write; never submit after root exit.
+                    if self
+                        .active
+                        .as_ref()
+                        .is_some_and(|write| write.closes_stdin() && write.pending())
+                    {
+                        if let Err(error) = self.write_round(options) {
+                            return error;
+                        }
+                    }
                     exited = Some((exit.code, Instant::now() + FINAL_DRAIN));
                     // Stop pipe-holding descendants now, then allow pending
                     // overlapped reads to complete before declaring EOF.
@@ -300,7 +341,17 @@ impl Connection {
                     // observing exit before declaring the buffered stream empty.
                     continue;
                 }
-                Ok(Some(_)) => {}
+                Ok(Some(_)) => {
+                    if self
+                        .active
+                        .as_ref()
+                        .is_some_and(|write| write.closes_stdin() && write.pending())
+                    {
+                        if let Err(error) = self.write_round(options) {
+                            return error;
+                        }
+                    }
+                }
                 Ok(None) => {}
                 Err(e) => return Error::Io(format!("observe server: {e}")),
             }
@@ -369,6 +420,12 @@ impl Connection {
                     return Err(Error::Timeout("stdio write".into()));
                 }
                 if active.complete() {
+                    let closes_stdin = active.closes_stdin();
+                    if closes_stdin {
+                        self.command.close_stdin().map_err(|e| {
+                            Error::Io(format!("close server stdin after exit: {e}"))
+                        })?;
+                    }
                     self.active.take().unwrap().finish(Ok(()));
                 }
                 Ok(true)

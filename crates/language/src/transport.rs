@@ -151,6 +151,7 @@ impl Shared {
 
 struct WriteCommand {
     bytes: Vec<u8>,
+    close_stdin: bool,
     deadline: Instant,
     ack: Option<mpsc::SyncSender<Result<(), Error>>>,
 }
@@ -274,6 +275,7 @@ impl StdioRpc {
             routing.pending.insert(id, sender);
         }
         if let Err(error) = self.enqueue(WriteCommand {
+            close_stdin: false,
             bytes,
             deadline,
             ack: None,
@@ -289,6 +291,7 @@ impl StdioRpc {
                     &json!({"jsonrpc":"2.0", "method":"$/cancelRequest", "params":{"id":id}}),
                 ) {
                     let _ = self.enqueue(WriteCommand {
+                        close_stdin: false,
                         bytes,
                         deadline: Instant::now() + self.options.request_timeout,
                         ack: None,
@@ -305,9 +308,14 @@ impl StdioRpc {
     /// Wait until the notification has been written, not until the server has
     /// processed it. A write timeout aborts the connection: its delivery is unknown.
     pub fn notify(&self, method: &str, params: Value) -> Result<(), Error> {
+        self.notify_impl(method, params, false)
+    }
+
+    fn notify_impl(&self, method: &str, params: Value, close_stdin: bool) -> Result<(), Error> {
         let bytes = self.encode(&outgoing_message(method, params, None)?)?;
         let (sender, receiver) = mpsc::sync_channel(1);
         self.enqueue(WriteCommand {
+            close_stdin,
             bytes,
             deadline: Instant::now() + self.options.request_timeout,
             ack: Some(sender),
@@ -354,6 +362,15 @@ impl StdioRpc {
                 Err(Error::Closed("event stream stopped".into()))
             }
         }
+    }
+
+    // LSP calls this only after the shutdown response. Arm the fixed grace
+    // before exit can cause stdout EOF, then close stdin only after the complete
+    // exit frame has been written. The acknowledgement includes stdin closure.
+    pub(crate) fn exit_and_finish(&self) -> Result<(), Error> {
+        self.backend.begin_shutdown(self.options.shutdown_timeout);
+        self.notify_impl("exit", Value::Null, true)?;
+        self.finish_process()
     }
 
     /// Wait briefly after `exit`, then stop the owned process if necessary.
@@ -435,6 +452,7 @@ fn route_message(
                 encode_json(&response, limits).map_err(|e| Error::Protocol(e.to_string()))?;
             outbound
                 .try_send(WriteCommand {
+                    close_stdin: false,
                     bytes,
                     deadline: Instant::now() + timeout,
                     ack: None,

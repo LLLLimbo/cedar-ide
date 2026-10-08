@@ -1,8 +1,11 @@
 //! Actual Windows runtime acceptance; compile-only or ignored results are not passes.
 #![cfg(all(windows, feature = "test-server"))]
-use cedar_language::{ClientOptions, Error, ProcessConfig, RpcEvent, StdioRpc};
+use cedar_language::{
+    ClientOptions, Error, LspClient, LspEvent, ProcessConfig, RpcEvent, StdioRpc,
+};
 use serde_json::json;
 use std::fs::{self, OpenOptions};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
@@ -76,6 +79,272 @@ fn terminal(rpc: &StdioRpc) -> Error {
             _ => {}
         }
     }
+}
+
+// Shutdown regressions can block before a fixture starts its own eight-second
+// cap. Keep the native test process bounded too; exiting closes its owned Jobs.
+struct ShutdownWatchdog {
+    stop: mpsc::Sender<()>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl ShutdownWatchdog {
+    fn start() -> Self {
+        let (stop, stopped) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            if stopped.recv_timeout(Duration::from_secs(12)).is_err() {
+                eprintln!("Windows LSP shutdown test exceeded its watchdog deadline");
+                std::process::exit(126);
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for ShutdownWatchdog {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+// Retain the exact root process object across shutdown. A released lifetime
+// file proves cleanup, but cannot distinguish natural exit from Job termination.
+struct ObservedRoot(OwnedHandle);
+
+impl ObservedRoot {
+    fn open(pid: u32) -> Self {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        };
+        // SAFETY: The PID is from our newly launched, blocked fixture. Request
+        // noninheritable observation-only access, never termination authority.
+        let raw = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        assert!(
+            !raw.is_null(),
+            "OpenProcess: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: Successful OpenProcess returned one uniquely owned handle.
+        let root = Self(unsafe { OwnedHandle::from_raw_handle(raw) });
+        root.assert_alive();
+        root
+    }
+
+    fn assert_alive(&self) {
+        use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        // SAFETY: The owned observation handle stays open throughout this wait.
+        assert_eq!(
+            unsafe { WaitForSingleObject(self.0.as_raw_handle(), 0) },
+            WAIT_TIMEOUT
+        );
+    }
+
+    fn exit_code(&self) -> u32 {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+        // SAFETY: Same held process object, not a fresh lookup of a reusable PID.
+        assert_eq!(
+            unsafe { WaitForSingleObject(self.0.as_raw_handle(), 1500) },
+            WAIT_OBJECT_0
+        );
+        let mut code = 0;
+        // SAFETY: Handle has limited-query access and code is writable. The wait
+        // above proves termination; 259 can itself be a valid process exit code.
+        assert_ne!(
+            unsafe { GetExitCodeProcess(self.0.as_raw_handle(), &mut code) },
+            0
+        );
+        code
+    }
+}
+
+const LSP_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
+
+fn launch_lsp_shutdown(mode: &str, dir: &Path) -> (Arc<LspClient>, ObservedRoot) {
+    let mut config = ProcessConfig::new(env!("CARGO_BIN_EXE_cedar-mock-lsp"));
+    config.args = vec![mode.into(), dir.into()];
+    config.working_directory = Some(dir.to_path_buf());
+    let client = Arc::new(
+        LspClient::spawn(
+            config,
+            ClientOptions {
+                request_timeout: Duration::from_millis(500),
+                shutdown_timeout: LSP_SHUTDOWN_GRACE,
+                ..ClientOptions::default()
+            },
+        )
+        .unwrap(),
+    );
+    let root = ObservedRoot::open(client.process_id());
+    match client.next_event(Duration::from_secs(4)).unwrap().unwrap() {
+        LspEvent::Notification { method, .. } => assert_eq!(method, "mock/ready"),
+        other => panic!("LSP shutdown fixture did not become ready: {other:?}"),
+    }
+    assert_eq!(
+        client.initialize(None, json!({})).unwrap(),
+        json!({"capabilities":{}})
+    );
+    (client, root)
+}
+
+fn start_shutdown(
+    client: &Arc<LspClient>,
+) -> (thread::JoinHandle<()>, mpsc::Receiver<Result<(), Error>>) {
+    let client = Arc::clone(client);
+    let (done, result) = mpsc::channel();
+    let thread = thread::spawn(move || {
+        let _ = done.send(client.shutdown());
+    });
+    (thread, result)
+}
+
+fn wait_marker(path: &Path, expected: &[u8]) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if fs::read(path).is_ok_and(|bytes| bytes == expected) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fixture marker did not arrive: {}",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn lsp_terminal(client: &LspClient) -> Error {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "LSP transport did not become terminal"
+        );
+        match client.next_event(Duration::from_millis(100)) {
+            Ok(Some(LspEvent::Closed(error))) | Err(error) => return error,
+            _ => {}
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires native Windows owned-process runtime"]
+fn lsp_exit_delivers_complete_frame_then_stdin_eof_for_natural_exit() {
+    let _watchdog = ShutdownWatchdog::start();
+    let dir = temp();
+    let (client, root) = launch_lsp_shutdown("win-lsp-exit-needs-stdin-eof", dir.path());
+    let (thread, result) = start_shutdown(&client);
+    result
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap()
+        .unwrap();
+    thread.join().unwrap();
+    assert_eq!(
+        root.exit_code(),
+        0,
+        "stdin EOF must allow a natural root exit"
+    );
+    assert_eq!(
+        fs::read(dir.path().join("stdin-eof.ready")).unwrap(),
+        b"verified"
+    );
+    drop(client);
+    assert_dead(dir.path(), true);
+}
+
+#[test]
+#[ignore = "requires native Windows owned-process runtime"]
+fn lsp_stdout_eof_preserves_live_root_until_graceful_release() {
+    let _watchdog = ShutdownWatchdog::start();
+    let dir = temp();
+    let (client, root) = launch_lsp_shutdown("win-lsp-graceful-eof-release", dir.path());
+    let (thread, result) = start_shutdown(&client);
+    wait_marker(&dir.path().join("stdout-closed.ready"), b"closed");
+    // The marker proves stdout is closed. Require a pending shutdown and a live
+    // root before opening its gate, rather than hoping a short sleep was enough.
+    assert!(matches!(
+        result.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    root.assert_alive();
+    fs::write(dir.path().join("release"), b"release").unwrap();
+    result
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap()
+        .unwrap();
+    thread.join().unwrap();
+    assert_eq!(
+        root.exit_code(),
+        0,
+        "stdout EOF must not terminate a graceful root"
+    );
+    drop(client);
+    assert_dead(dir.path(), true);
+}
+
+#[test]
+#[ignore = "requires native Windows owned-process runtime"]
+fn lsp_stalled_stdout_eof_exhausts_grace_and_terminates_tree() {
+    let _watchdog = ShutdownWatchdog::start();
+    let dir = temp();
+    let (client, root) = launch_lsp_shutdown("win-lsp-graceful-eof-stalled", dir.path());
+    let started = Instant::now();
+    let (thread, result) = start_shutdown(&client);
+    wait_marker(&dir.path().join("stdout-closed.ready"), b"closed");
+    assert!(matches!(
+        result.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    root.assert_alive();
+    result
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap()
+        .unwrap();
+    thread.join().unwrap();
+    assert!(started.elapsed() >= LSP_SHUTDOWN_GRACE);
+    assert!(started.elapsed() < Duration::from_secs(4));
+    assert!(
+        matches!(lsp_terminal(&client), Error::Closed(reason) if reason.contains("shutdown grace period elapsed"))
+    );
+    assert_eq!(
+        root.exit_code(),
+        1067,
+        "stalled root must be terminated by its owned Job"
+    );
+    drop(client);
+    assert_dead(dir.path(), true);
+}
+
+#[test]
+#[ignore = "requires native Windows owned-process runtime"]
+fn lsp_malformed_stdout_eof_aborts_during_grace() {
+    let _watchdog = ShutdownWatchdog::start();
+    let dir = temp();
+    let (client, root) = launch_lsp_shutdown("win-lsp-graceful-eof-malformed", dir.path());
+    let (thread, result) = start_shutdown(&client);
+    // A protocol abort may kill the fixture immediately after it closes stdout,
+    // before it can publish its post-close marker. The terminal event is proof.
+    assert!(matches!(lsp_terminal(&client), Error::Protocol(_)));
+    // Completion can race the exit write acknowledgement; either API result is
+    // allowed here, but the first terminal error must retain protocol severity.
+    let _ = result.recv_timeout(Duration::from_secs(3)).unwrap();
+    thread.join().unwrap();
+    assert_eq!(root.exit_code(), 1067);
+    drop(client);
+    assert_dead(dir.path(), true);
 }
 
 #[test]

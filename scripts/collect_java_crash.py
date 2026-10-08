@@ -75,7 +75,11 @@ TRANSCRIPT_FIELDS = {
                                      'windows_root_handle_signaled', 'source_unchanged',
                                      'independent_job_zero_observation', 'listener_observation'), 'bool')
                        | {'session': SESSIONS, 'pid': 'u32', 'gracefully_exited': '?bool',
-                          'root_exit_code': '?u32'},
+                          'root_exit_code': '?u32', 'shutdown_elapsed_ms': 'count',
+                          'shutdown_terminal_reason': ('grace_expired', 'stdout_eof', 'root_exit',
+                                                       'worker_stopped', 'closed_other', 'protocol_error',
+                                                       'io_error', 'request_timeout', 'other_error',
+                                                       'no_terminal_event', 'event_limit')},
     'source_bytes': {'phase': PHASES, 'unchanged': 'bool'},
     'fixture_cleanup': dict.fromkeys(('removed', 'source_unchanged_before_removal', 'sessions_succeeded'), 'bool'),
     'process_identity': {'session': SESSIONS, 'pid': 'u32', 'creation_time_100ns_since_1601': '?u64',

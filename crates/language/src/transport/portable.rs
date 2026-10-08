@@ -60,6 +60,18 @@ impl Backend {
                     }
                     let result = write_frame(&mut stdin, &write.bytes, limits)
                         .map_err(|e| Error::Io(e.to_string()));
+                    if write.close_stdin {
+                        // Exit is the final LSP message. EOF releases servers
+                        // whose listener remains blocked during orderly exit.
+                        drop(stdin);
+                        if let Some(ack) = write.ack {
+                            let _ = ack.try_send(result.clone());
+                        }
+                        if let Err(error) = result {
+                            writer_shared.fail(error);
+                        }
+                        return;
+                    }
                     if let Some(ack) = write.ack {
                         let _ = ack.try_send(result.clone());
                     }
@@ -110,6 +122,8 @@ impl Backend {
     }
 
     pub(super) fn wake(&self) {}
+
+    pub(super) fn begin_shutdown(&self, _timeout: Duration) {}
 
     pub(super) fn finish(&self, shared: &Shared, timeout: Duration) -> Result<(), Error> {
         let deadline = Instant::now() + timeout;

@@ -147,6 +147,37 @@ fn require_graceful_exit(code: u32) -> SmokeResult<()> {
     Ok(())
 }
 
+fn terminal_category(error: &cedar_language::Error) -> &'static str {
+    use cedar_language::Error as RpcError;
+    match error {
+        RpcError::Closed(reason) if reason.starts_with("shutdown grace period elapsed") => {
+            "grace_expired"
+        }
+        RpcError::Closed(reason) if reason.starts_with("server stdout reached EOF") => "stdout_eof",
+        RpcError::Closed(reason) if reason.starts_with("server exited") => "root_exit",
+        RpcError::Closed(reason) if reason.starts_with("language worker stopped") => {
+            "worker_stopped"
+        }
+        RpcError::Closed(_) => "closed_other",
+        RpcError::Protocol(_) => "protocol_error",
+        RpcError::Io(_) => "io_error",
+        RpcError::Timeout(_) => "request_timeout",
+        _ => "other_error",
+    }
+}
+
+fn shutdown_terminal_category(client: &LspClient) -> &'static str {
+    // Drain only bounded, already-queued events; never expose their payloads.
+    for _ in 0..1024 {
+        match client.next_event(Duration::ZERO) {
+            Ok(Some(LspEvent::Closed(error))) | Err(error) => return terminal_category(&error),
+            Ok(Some(_)) => {}
+            Ok(None) => return "no_terminal_event",
+        }
+    }
+    "event_limit"
+}
+
 fn java_executable(argument: Option<&std::ffi::OsString>) -> SmokeResult<PathBuf> {
     #[cfg(windows)]
     {
@@ -818,7 +849,10 @@ fn run_session(
     })();
     // Always clean up before returning a semantic failure. Drop is the fallback
     // if initialize/close/shutdown failed. Assertions run before temp removal.
+    let shutdown_started = Instant::now();
     let shutdown = client.shutdown();
+    let shutdown_elapsed_ms = shutdown_started.elapsed().as_millis();
+    let shutdown_terminal_reason = shutdown_terminal_category(&client);
     drop(client);
     #[cfg(windows)]
     let root_exit = observed.exit_code();
@@ -833,6 +867,7 @@ fn run_session(
         "{}",
         json!({"kind":"session_cleanup","session":session,"pid":pid,
         "semantics_succeeded":result.is_ok(),"shutdown_api_succeeded":shutdown.is_ok(),
+        "shutdown_elapsed_ms":shutdown_elapsed_ms,"shutdown_terminal_reason":shutdown_terminal_reason,
         "client_dropped":true,"windows_root_handle_signaled":cfg!(windows) && root_exit.is_ok(),
         "gracefully_exited":gracefully_exited,
         "root_exit_code":root_exit.as_ref().ok(),"source_unchanged":disk.is_ok(),
@@ -915,6 +950,24 @@ mod tests {
         ] {
             assert!(ordinary_windows_local_path(Path::new(path)).is_err());
         }
+    }
+
+    #[test]
+    fn shutdown_reason_is_reconstructed_without_raw_error_details() {
+        assert_eq!(
+            terminal_category(&cedar_language::Error::Closed(
+                "shutdown grace period elapsed; stderr tail: private".into()
+            )),
+            "grace_expired"
+        );
+        assert_eq!(
+            terminal_category(&cedar_language::Error::Protocol("private".into())),
+            "protocol_error"
+        );
+        assert_eq!(
+            terminal_category(&cedar_language::Error::Closed("private".into())),
+            "closed_other"
+        );
     }
 
     #[test]

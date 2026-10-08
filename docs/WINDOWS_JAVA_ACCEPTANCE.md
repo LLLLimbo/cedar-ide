@@ -328,3 +328,11 @@ uses an identity-checked ordinary absolute Java executable in this example only.
 The selected JDK installation must be ASCII; Unicode JDT/project/data coverage
 is unchanged. Generic WindowsCommand remains literal, and actual JDT semantics
 still require the next native run. See [launch report](TEST_REPORT_PHASE9C_LAUNCH.md).
+
+The 0.8.9 Windows initial semantic session passed, but cleanup exhausted its
+existing ten-second grace and the retained root handle reported forced exit1067.
+Restarts were not accepted. Version 0.8.10 orders complete exit-frame delivery,
+stdin closure and acknowledgement, and permits clean stdout EOF during a fixed
+explicit graceful phase while preserving malformed/unexpected EOF failure.
+The example still requires natural root exit0 and now retains sanitized terminal
+category and elapsed shutdown time. See [shutdown report](TEST_REPORT_PHASE9C_SHUTDOWN.md).
