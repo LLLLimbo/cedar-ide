@@ -58,6 +58,163 @@ fn connected(mode: &str, dir: &Path) -> ProcessClient {
     ));
     peer
 }
+
+fn cancellable_peer(
+    mode: &str,
+    directory: &Path,
+    cancellation: ConnectionCancellation,
+) -> ProcessClient {
+    let mut command = Command::new(peer_binary());
+    command.arg(mode).arg(directory);
+    ProcessClient::spawn_with_grace_and_cancellation(
+        command,
+        Duration::from_millis(200),
+        Some(cancellation),
+    )
+    .unwrap()
+}
+
+#[test]
+fn cancellation_before_spawn_never_creates_a_child() {
+    let directory = tempfile::tempdir().unwrap();
+    let token = ConnectionCancellation::new();
+    token.cancel();
+    let mut command = Command::new(peer_binary());
+    command.arg("stalled_hello").arg(directory.path());
+    let result = ProcessClient::spawn(command, Some(token));
+    let Err(error) = result else {
+        panic!("cancelled startup spawned a child");
+    };
+    assert!(error.starts_with("transport_cancelled:"), "{error}");
+    assert!(!directory.path().join("started").exists());
+    assert!(!directory.path().join("requests").exists());
+}
+
+#[test]
+fn cancelled_hello_returns_promptly_and_its_exact_owned_child_is_reaped() {
+    let directory = tempfile::tempdir().unwrap();
+    let token = ConnectionCancellation::new();
+    let mut peer = cancellable_peer("stalled_hello", directory.path(), token.clone());
+    // Retain the actual owner's completion even though failed construction
+    // consumes/drops ProcessClient. PID disappearance or peer EOF is not proof.
+    let reaped = std::mem::replace(&mut peer.reaped, mpsc::channel().1);
+    let (finished, result) = mpsc::channel();
+    let caller = thread::spawn(move || {
+        let result = Client::from_process(peer);
+        let _ = finished.send(result.err().expect("stalled Hello must cancel"));
+    });
+    wait_until(|| directory.path().join("ready-1").exists());
+    assert_eq!(recorded_requests(directory.path()).len(), 1);
+    let start = Instant::now();
+    token.cancel();
+    let error = result.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(error.starts_with("transport_cancelled:"), "{error}");
+    assert!(start.elapsed() < Duration::from_secs(2));
+    caller.join().unwrap();
+    reaped
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert!(directory.path().join("eof").is_file());
+    assert_eq!(recorded_requests(directory.path()).len(), 1);
+}
+
+#[test]
+fn cancellable_poll_slices_preserve_the_original_request_deadline() {
+    let directory = tempfile::tempdir().unwrap();
+    let token = ConnectionCancellation::new();
+    let mut peer = cancellable_peer("stalled_read", directory.path(), token);
+    peer.request(Operation::Hello).unwrap();
+    let (finished, result) = mpsc::channel();
+    let caller = thread::spawn(move || {
+        let start = Instant::now();
+        let outcome = peer.request_with_timeout(
+            Operation::Read {
+                path: "fixture.txt".into(),
+            },
+            Duration::from_millis(250),
+        );
+        finished.send((peer, outcome, start.elapsed())).unwrap();
+    });
+    wait_until(|| directory.path().join("ready-2").exists());
+    let (mut peer, outcome, elapsed) = result.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(outcome.unwrap_err().starts_with("transport_timeout:"));
+    assert!(
+        elapsed >= Duration::from_millis(250),
+        "a polling slice became the deadline: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "polling reset the deadline: {elapsed:?}"
+    );
+    caller.join().unwrap();
+    peer.close_and_wait(Duration::from_secs(5)).unwrap();
+    assert_eq!(recorded_requests(directory.path()).len(), 2);
+}
+
+#[test]
+fn cancellation_during_a_mutation_keeps_its_original_timeout() {
+    let directory = tempfile::tempdir().unwrap();
+    let token = ConnectionCancellation::new();
+    let mut peer = cancellable_peer("write_unknown", directory.path(), token.clone());
+    peer.request(Operation::Hello).unwrap();
+    let (finished, result) = mpsc::channel();
+    let caller = thread::spawn(move || {
+        let start = Instant::now();
+        let outcome = peer.request_with_timeout(
+            Operation::Write {
+                path: "fixture.txt".into(),
+                text: "saved".into(),
+                expected_revision: None,
+            },
+            Duration::from_millis(250),
+        );
+        finished.send((peer, outcome, start.elapsed())).unwrap();
+    });
+    wait_until(|| directory.path().join("committed").exists());
+    token.cancel();
+    let (mut peer, outcome, elapsed) = result.recv_timeout(Duration::from_secs(2)).unwrap();
+    let error = outcome.unwrap_err();
+    assert!(error.starts_with("transport_timeout:"), "{error}");
+    assert!(error.contains("outcome may be unknown"));
+    assert!(
+        elapsed >= Duration::from_millis(250),
+        "mutation cancelled early: {elapsed:?}"
+    );
+    caller.join().unwrap();
+    peer.close_and_wait(Duration::from_secs(5)).unwrap();
+    assert_eq!(recorded_requests(directory.path()).len(), 2);
+}
+
+#[cfg(not(windows))]
+#[test]
+fn embedded_workspace_cancellation_prevents_the_next_synchronous_operation() {
+    let directory = tempfile::tempdir().unwrap();
+    let token = ConnectionCancellation::new();
+    let mut client = Client::connect_with_cancellation(
+        ConnectionSpec::Local {
+            root: directory.path().into(),
+            allow_run: false,
+        },
+        token.clone(),
+    )
+    .unwrap();
+    token.cancel();
+    let error = client
+        .request(Operation::Write {
+            path: "never-written.txt".into(),
+            text: "cancelled".into(),
+            expected_revision: None,
+        })
+        .unwrap_err();
+    assert!(error.starts_with("transport_cancelled:"), "{error}");
+    assert!(!directory.path().join("never-written.txt").exists());
+    assert!(client
+        .request(Operation::Hello)
+        .unwrap_err()
+        .starts_with("transport_cancelled:"));
+    client.close_and_wait(Duration::from_secs(1)).unwrap();
+}
 #[test]
 fn handshake_rejects_old_new_malformed_and_wrong_payload_peers() {
     for (mode, expected) in [

@@ -55,6 +55,7 @@ if ($scratch -match '[^\x00-\x7F]') { throw 'Use an ASCII ScratchRoot for native
 if ([string]::IsNullOrWhiteSpace($EvidencePath)) { $EvidencePath = Join-Path $ScratchRoot 'cedar-windows-java-acceptance.txt' }
 $EvidencePath = [IO.Path]::GetFullPath($EvidencePath)
 $CrashEvidencePath = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-java-crash-diagnostics.json'
+$ResourceEvidencePath = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-process-tree-baseline.json'
 Set-Content -LiteralPath $EvidencePath -Value 'Cedar Windows Java acceptance; missing dependencies or any failed stage fail this run.'
 function Record([string] $Text) {
     Write-Output $Text
@@ -177,7 +178,23 @@ try {
     # fails. Both exit codes remain required; neither failure is masked.
     & cargo test -p cedar-app --all-features --locked real_windows_agent_java_forced_owner_cleanup -- --ignored --nocapture --test-threads=1 *>> $agentTranscript
     $forcedExitCode = $LASTEXITCODE
-    & cargo test -p cedar-app --all-features --locked real_windows_normal_agent_java_editor_acceptance -- --ignored --nocapture --test-threads=1 *>> $agentTranscript
+    # Build outside the measured interval and reuse this same production JVM run.
+    # Cargo/compiler, the observer and earlier validation runs are not included.
+    $stage = 'build normal production Java test driver for resource observation'
+    $testArtifacts = Join-Path $scratch 'normal-java-test-artifacts-private.jsonl'
+    & cargo test -p cedar-app --lib --all-features --locked --no-run --message-format=json 1> $testArtifacts 2>> $agentTranscript
+    if ($LASTEXITCODE -ne 0) { throw 'Could not build the normal production Java test driver.' }
+    $testDrivers = @(Get-Content -LiteralPath $testArtifacts | ForEach-Object { $_ | ConvertFrom-Json } |
+        Where-Object { $_.reason -ceq 'compiler-artifact' -and $_.target.name -ceq 'cedar_app' -and
+            $_.profile.test -and $null -ne $_.executable })
+    if ($testDrivers.Count -ne 1) { throw 'Expected one exact prebuilt cedar-app library test driver.' }
+    $stage = 'normal production Java acceptance with observational process-tree baseline'
+    # The sampler publishes fixed typed fields only. Raw child output remains in
+    # the private transcript, and the original test failure code is propagated.
+    & python scripts/measure_process_tree.py --driver $testDrivers[0].executable `
+        --agent $env:CEDAR_AGENT_BIN --java $Java `
+        --phase-file (Join-Path $scratch 'resource-phases-private.jsonl') `
+        --transcript $agentTranscript --output $ResourceEvidencePath --source-commit $sha
     $productionExitCode = $LASTEXITCODE
     if ($editorExitCode -ne 0 -or $forcedExitCode -ne 0 -or $productionExitCode -ne 0) {
         throw 'Real Windows Java editor, forced-owner or production-route acceptance failed.'

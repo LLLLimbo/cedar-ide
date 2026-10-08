@@ -1,6 +1,8 @@
 //! Cedar IDE — a native Rust frontend for a local or SSH workspace agent.
 mod agent_support;
 pub mod completion;
+#[cfg(test)]
+mod connection_cancel_tests;
 mod disk_review;
 mod editor_state;
 mod interrupted_save;

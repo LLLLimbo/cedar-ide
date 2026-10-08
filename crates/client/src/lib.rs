@@ -13,7 +13,10 @@ use std::{
     io::{self, BufReader, Read},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{mpsc, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -23,6 +26,40 @@ use std::{
 // https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// One connection generation's cancellation signal. Cancellation is permanent;
+/// create a fresh token for a replacement connection.
+///
+/// Process Hello/List/Read/Search waits observe this at most every 50 ms,
+/// subject to scheduling. Already enqueued mutation, Git, language, and task
+/// operations retain their normal replies and deadlines. Synchronous embedded
+/// workspace calls, OS process creation, and kernel cleanup are not interrupted.
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionCancellation(Arc<AtomicBool>);
+
+impl ConnectionCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+fn cancellation_requested(cancellation: &Option<ConnectionCancellation>) -> bool {
+    cancellation
+        .as_ref()
+        .is_some_and(ConnectionCancellation::is_cancelled)
+}
+
+fn cancellation_error() -> String {
+    "transport_cancelled: connection cancelled; reconnect with a fresh token".into()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionSpec {
@@ -42,6 +79,7 @@ pub enum ConnectionSpec {
 
 pub struct Client {
     backend: Backend,
+    cancellation: Option<ConnectionCancellation>,
     // A session uses exactly one validated implementation/capability/root snapshot.
     // Capability claims describe compatibility, never execution authorization.
     handshake: Payload,
@@ -53,11 +91,26 @@ enum Backend {
 }
 impl Client {
     pub fn connect(spec: ConnectionSpec) -> Result<Self, String> {
+        Self::connect_inner(spec, None)
+    }
+    pub fn connect_with_cancellation(
+        spec: ConnectionSpec,
+        cancellation: ConnectionCancellation,
+    ) -> Result<Self, String> {
+        Self::connect_inner(spec, Some(cancellation))
+    }
+    fn connect_inner(
+        spec: ConnectionSpec,
+        cancellation: Option<ConnectionCancellation>,
+    ) -> Result<Self, String> {
+        if cancellation_requested(&cancellation) {
+            return Err(cancellation_error());
+        }
         match spec {
             ConnectionSpec::Local { root, allow_run } => {
                 #[cfg(windows)]
                 {
-                    Self::connect_bundled_windows_agent(&root, allow_run)
+                    Self::connect_bundled_windows_agent(&root, allow_run, cancellation)
                 }
                 #[cfg(not(windows))]
                 {
@@ -67,8 +120,12 @@ impl Client {
                         .handle(Operation::Hello)
                         .map_err(|e| e.to_string())?;
                     validate_handshake(&handshake)?;
+                    if cancellation_requested(&cancellation) {
+                        return Err(cancellation_error());
+                    }
                     Ok(Self {
                         backend: Backend::Local(Box::new(workspace)),
+                        cancellation,
                         handshake,
                     })
                 }
@@ -83,12 +140,16 @@ impl Client {
                 let args = ssh_arguments(&host, port, &root, &agent_path, allow_run)?;
                 let mut cmd = Command::new("ssh");
                 cmd.args(args);
-                Self::from_command(cmd)
+                Self::from_command_with_cancellation(cmd, cancellation)
             }
         }
     }
     #[cfg(windows)]
-    fn connect_bundled_windows_agent(root: &Path, allow_run: bool) -> Result<Self, String> {
+    fn connect_bundled_windows_agent(
+        root: &Path,
+        allow_run: bool,
+        cancellation: Option<ConnectionCancellation>,
+    ) -> Result<Self, String> {
         let executable = std::env::current_exe().map_err(|e| {
             format!("bundled_agent_missing: cannot locate this executable's bundled cedar-agent.exe: {e}")
         })?;
@@ -105,8 +166,11 @@ impl Client {
         if allow_run {
             cmd.arg("--allow-run");
         }
-        let process = ProcessClient::spawn_bundled_agent(cmd)?;
+        let process = ProcessClient::spawn_bundled_agent(cmd, cancellation)?;
         Self::from_process(process).map_err(|e| {
+            if e.starts_with("transport_cancelled:") {
+                return e;
+            }
             format!(
                 "bundled_agent_start_failed: bundled cedar-agent.exe at {} could not establish a workspace connection: {e}",
                 agent.display()
@@ -115,20 +179,40 @@ impl Client {
     }
     /// Use a separately deployed local agent, also useful for process-isolated integration tests.
     pub fn spawn_agent(agent: &Path, root: &Path, allow_run: bool) -> Result<Self, String> {
+        Self::spawn_agent_inner(agent, root, allow_run, None)
+    }
+    pub fn spawn_agent_with_cancellation(
+        agent: &Path,
+        root: &Path,
+        allow_run: bool,
+        cancellation: ConnectionCancellation,
+    ) -> Result<Self, String> {
+        Self::spawn_agent_inner(agent, root, allow_run, Some(cancellation))
+    }
+    fn spawn_agent_inner(
+        agent: &Path,
+        root: &Path,
+        allow_run: bool,
+        cancellation: Option<ConnectionCancellation>,
+    ) -> Result<Self, String> {
         let mut cmd = Command::new(agent);
         cmd.arg("--root").arg(root);
         if allow_run {
             cmd.arg("--allow-run");
         }
-        Self::from_command(cmd)
+        Self::from_command_with_cancellation(cmd, cancellation)
     }
-    fn from_command(cmd: Command) -> Result<Self, String> {
-        Self::from_process(ProcessClient::spawn(cmd)?)
+    fn from_command_with_cancellation(
+        cmd: Command,
+        cancellation: Option<ConnectionCancellation>,
+    ) -> Result<Self, String> {
+        Self::from_process(ProcessClient::spawn(cmd, cancellation)?)
     }
     fn from_process(mut process: ProcessClient) -> Result<Self, String> {
         let handshake = process.request(Operation::Hello)?;
         validate_handshake(&handshake)?;
         Ok(Self {
+            cancellation: process.cancellation.clone(),
             backend: Backend::Process(process),
             handshake,
         })
@@ -139,6 +223,13 @@ impl Client {
         &self.handshake
     }
     pub fn request(&mut self, op: Operation) -> Result<Payload, String> {
+        if cancellation_requested(&self.cancellation) {
+            return Err(match &mut self.backend {
+                #[cfg(not(windows))]
+                Backend::Local(_) => cancellation_error(),
+                Backend::Process(process) => process.fail(cancellation_error()),
+            });
+        }
         if !self.is_connected() {
             return Err(
                 "disconnected: reconnect before retrying; unsaved buffers remain local".into(),
@@ -347,6 +438,7 @@ fn posix_quote(value: &str) -> String {
 
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const REAP_INTERVAL: Duration = Duration::from_millis(10);
+const CANCELLATION_INTERVAL: Duration = Duration::from_millis(50);
 const STDERR_TAIL_BYTES: usize = 4096;
 // Java can spend 60 seconds in an agent request and a further 10 seconds in
 // bounded shutdown. Leave transport headroom without extending task/file limits.
@@ -370,6 +462,7 @@ fn is_language_session_operation(op: &Operation) -> bool {
 }
 
 struct ProcessClient {
+    cancellation: Option<ConnectionCancellation>,
     requests: Option<mpsc::SyncSender<Request>>,
     responses: Option<mpsc::Receiver<Result<Response, String>>>,
     shutdown: Option<mpsc::Sender<()>>,
@@ -380,25 +473,45 @@ struct ProcessClient {
     java_language_session: bool,
 }
 impl ProcessClient {
-    fn spawn(cmd: Command) -> Result<Self, String> {
-        Self::spawn_with_grace(cmd, CLOSE_GRACE)
+    fn spawn(cmd: Command, cancellation: Option<ConnectionCancellation>) -> Result<Self, String> {
+        Self::spawn_with_grace_and_cancellation(cmd, CLOSE_GRACE, cancellation)
     }
+    #[cfg(test)]
     fn spawn_with_grace(cmd: Command, grace: Duration) -> Result<Self, String> {
-        Self::spawn_with_grace_and_error(cmd, grace, |e| {
+        Self::spawn_with_grace_and_cancellation(cmd, grace, None)
+    }
+    fn spawn_with_grace_and_cancellation(
+        cmd: Command,
+        grace: Duration,
+        cancellation: Option<ConnectionCancellation>,
+    ) -> Result<Self, String> {
+        Self::spawn_with_grace_and_error(cmd, grace, cancellation, |e| {
             format!("spawn_failed: {e}. Install OpenSSH and deploy cedar-agent first.")
         })
     }
     #[cfg(windows)]
-    fn spawn_bundled_agent(cmd: Command) -> Result<Self, String> {
-        Self::spawn_with_grace_and_error(cmd, CLOSE_GRACE, |e| e.to_string()).map_err(|e| {
-            format!("bundled_agent_start_failed: could not start bundled cedar-agent.exe: {e}")
-        })
+    fn spawn_bundled_agent(
+        cmd: Command,
+        cancellation: Option<ConnectionCancellation>,
+    ) -> Result<Self, String> {
+        Self::spawn_with_grace_and_error(cmd, CLOSE_GRACE, cancellation, |e| e.to_string()).map_err(
+            |e| {
+                if e.starts_with("transport_cancelled:") {
+                    return e;
+                }
+                format!("bundled_agent_start_failed: could not start bundled cedar-agent.exe: {e}")
+            },
+        )
     }
     fn spawn_with_grace_and_error(
         mut cmd: Command,
         grace: Duration,
+        cancellation: Option<ConnectionCancellation>,
         spawn_error: impl FnOnce(io::Error) -> String,
     ) -> Result<Self, String> {
+        if cancellation_requested(&cancellation) {
+            return Err(cancellation_error());
+        }
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -473,6 +586,7 @@ impl ProcessClient {
             }
         });
         Ok(Self {
+            cancellation,
             requests: Some(request_tx),
             responses: Some(response_rx),
             shutdown: Some(shutdown_tx),
@@ -517,6 +631,9 @@ impl ProcessClient {
         op: Operation,
         timeout: Duration,
     ) -> Result<Payload, String> {
+        if cancellation_requested(&self.cancellation) {
+            return Err(self.fail(cancellation_error()));
+        }
         if !self.connected {
             return Err(
                 "disconnected: reconnect before retrying; unsaved buffers remain local".into(),
@@ -525,6 +642,14 @@ impl ProcessClient {
         let starts_java = matches!(op, Operation::LanguageStartJava { .. });
         let starts_generic = matches!(op, Operation::LanguageStart { .. });
         let stops_language = matches!(op, Operation::LanguageStop);
+        let interruptible = self.cancellation.is_some()
+            && matches!(
+                op,
+                Operation::Hello
+                    | Operation::List { .. }
+                    | Operation::Read { .. }
+                    | Operation::Search { .. }
+            );
         self.next_id = self.next_id.checked_add(1).ok_or("request id exhausted")?;
         let id = self.next_id;
         if self
@@ -536,15 +661,37 @@ impl ProcessClient {
         {
             return Err(self.fail("transport_write: writer stopped or request queue full".into()));
         }
-        let response = match self
-            .responses
-            .as_ref()
-            .ok_or("disconnected")?
-            .recv_timeout(timeout)
-        {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => return Err(self.fail(error)),
-            Err(error) => return Err(self.fail(format!("transport_timeout: {error}"))),
+        // The deadline belongs to the request, never to a polling slice. Only
+        // the four read-only operations above observe cancellation in flight;
+        // once queued, every other operation keeps its authoritative reply.
+        let deadline = Instant::now() + timeout;
+        let response = loop {
+            if interruptible && cancellation_requested(&self.cancellation) {
+                return Err(self.fail(cancellation_error()));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let wait = if interruptible {
+                remaining.min(CANCELLATION_INTERVAL)
+            } else {
+                remaining
+            };
+            let received = self
+                .responses
+                .as_ref()
+                .ok_or("disconnected")?
+                .recv_timeout(wait);
+            // Cancellation wins if it was observed before accepting a queued
+            // read-only response, including a response arriving in this slice.
+            if interruptible && cancellation_requested(&self.cancellation) {
+                return Err(self.fail(cancellation_error()));
+            }
+            match received {
+                Ok(Ok(response)) => break response,
+                Ok(Err(error)) => return Err(self.fail(error)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+                    if interruptible && Instant::now() < deadline => {}
+                Err(error) => return Err(self.fail(format!("transport_timeout: {error}"))),
+            }
         };
         if response.id != id {
             return Err(self.fail(format!(

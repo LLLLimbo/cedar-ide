@@ -5,8 +5,41 @@ use std::{
     io::{self, BufRead, Read, Write},
     path::{Path, PathBuf},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+fn marker(directory: &Path, name: &str, contents: &[u8]) {
+    let pending = directory.join(format!("{name}.pending"));
+    fs::write(&pending, contents).unwrap();
+    fs::rename(pending, directory.join(name)).unwrap();
+}
+
+fn drain_until_close(input: &mut impl Read, directory: &Path) {
+    let mut rest = Vec::new();
+    input.read_to_end(&mut rest).unwrap();
+    OpenOptions::new()
+        .append(true)
+        .open(directory.join("requests"))
+        .unwrap()
+        .write_all(&rest)
+        .unwrap();
+    marker(directory, "eof", b"orderly input close");
+}
+
+fn wait_for_release(directory: &Path, id: u64) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !directory.join(format!("release-{id}")).is_file() {
+        if Instant::now() >= deadline {
+            marker(
+                directory,
+                "safety-expired",
+                b"controller did not release reply",
+            );
+            std::process::exit(91);
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
 
 fn emit(bytes: &[u8]) {
     let mut stdout = io::stdout().lock();
@@ -57,8 +90,27 @@ fn capability_reply(id: u64, request: &str, directory: &Path) {
 }
 fn main() {
     let mut args = std::env::args_os().skip(1);
-    let mode = args.next().unwrap().to_string_lossy().into_owned();
+    let mut mode = args.next().unwrap().to_string_lossy().into_owned();
     let dir = PathBuf::from(args.next().unwrap());
+    if mode == "--root" {
+        // Public Client::spawn_agent fixture route. It cannot be used as a
+        // general workspace host and never accepts execution authorization.
+        if args.next().is_some()
+            || !fs::read(dir.join(".cedar-transport-fixture"))
+                .is_ok_and(|contents| contents == b"cedar-transport-fixture-v1\n")
+        {
+            eprintln!("synthetic transport root required; --allow-run is forbidden");
+            std::process::exit(2);
+        }
+        mode = fs::read_to_string(dir.join("fixture-mode")).unwrap_or_default();
+        if !matches!(
+            mode.as_str(),
+            "stalled_hello" | "stalled_read" | "held_reply" | "capability_peer"
+        ) {
+            eprintln!("unsupported synthetic transport mode");
+            std::process::exit(2);
+        }
+    }
     fs::write(dir.join("started"), std::process::id().to_string()).unwrap();
     if mode == "eof_before_hello" {
         return;
@@ -97,6 +149,11 @@ fn main() {
             .unwrap();
         if count == 1 {
             match mode.as_str() {
+                "stalled_hello" => {
+                    marker(&dir, &format!("ready-{id}"), line.as_bytes());
+                    drain_until_close(&mut input, &dir);
+                    return;
+                }
                 "capability_peer" => {
                     let payload = fs::read_to_string(dir.join("hello.json")).unwrap();
                     emit(format!("{{\"id\":{id},\"result\":{{\"Ok\":{payload}}}}}\n").as_bytes());
@@ -154,13 +211,29 @@ fn main() {
                 }
                 _ => {}
             }
-            hello(id, 4);
+            if let Ok(payload) = fs::read_to_string(dir.join("hello.json")) {
+                emit(format!("{{\"id\":{id},\"result\":{{\"Ok\":{payload}}}}}\n").as_bytes());
+            } else {
+                hello(id, 4);
+            }
             if mode == "eof_between_requests" {
                 return;
             }
             continue;
         }
         match mode.as_str() {
+            "stalled_read" if line.contains("\"type\":\"read\"") => {
+                marker(&dir, &format!("ready-{id}"), line.as_bytes());
+                drain_until_close(&mut input, &dir);
+                return;
+            }
+            "held_reply" => {
+                marker(&dir, &format!("ready-{id}"), line.as_bytes());
+                wait_for_release(&dir, id);
+                capability_reply(id, &line, &dir);
+                marker(&dir, &format!("replied-{id}"), b"reply flushed");
+            }
+            "stalled_read" => capability_reply(id, &line, &dir),
             "capability_peer" => capability_reply(id, &line, &dir),
             "eof_after_request" => return,
             "wrong_later_id" => hello(id - 1, 4),
@@ -172,15 +245,7 @@ fn main() {
                     // Model an applied mutation whose acknowledgement is lost.
                     fs::write(dir.join("committed"), b"one write applied").unwrap();
                 }
-                let mut rest = Vec::new();
-                input.read_to_end(&mut rest).unwrap();
-                OpenOptions::new()
-                    .append(true)
-                    .open(dir.join("requests"))
-                    .unwrap()
-                    .write_all(&rest)
-                    .unwrap();
-                fs::write(dir.join("eof"), b"orderly input close").unwrap();
+                drain_until_close(&mut input, &dir);
                 return;
             }
             "stubborn" => {

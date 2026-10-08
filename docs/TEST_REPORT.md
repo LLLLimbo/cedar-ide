@@ -1,69 +1,60 @@
-# Verification report · interrupted-save reconciliation / 0.10.0 · 2026-10-08
+# Verification report · connection cancellation / 0.11.0 · 2026-10-08
 
-This checkpoint adds an explicit, read-only way to check a save whose reply was
-lost. Exact native CI for the new checkpoint is pending.
+This checkpoint adds bounded cancellation of process connection/read waits and
+observational process-tree resource evidence. Local verification passed; exact native CI for this checkpoint is pending.
 
 ## Verified public baseline
 
-Exact public 0.9.0 commit
-[`270119b45eea1d37581a497e1bbe9a2d4ba3764a`](https://github.com/LLLLimbo/cedar-ide/commit/270119b45eea1d37581a497e1bbe9a2d4ba3764a)
-[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37727806345).
-Normal shipping-agent/Client Java acceptance passed capabilities, trust rejection,
-source semantics, actual editor transactions and native process identity checks.
-Production Stop was accurately reported as forced, with grace_expired and root
-exit1067; both protocol witnesses, joined cleanup, verified client reap, unchanged
-source and fixture removal passed. That is not a natural production-exit claim.
-The prior strict direct/fixture three-session tests, real task independence and
-forced-agent ownership cases also passed.
+Exact public 0.10.0 commit
+[`77cb3b8d50c30f6daf2ba4276822e9f7416c4dac`](https://github.com/LLLLimbo/cedar-ide/commit/77cb3b8d50c30f6daf2ba4276822e9f7416c4dac)
+[passed Ubuntu and Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37736569381).
+All nine interrupted-save process cases actually executed on each platform with
+zero ignored cases. The prior direct Java, agent/editor, task independence,
+forced-owner and normal production Java acceptance also passed.
 
-## Interrupted-save behavior
+Production Java Stop remained honestly forced with grace_expired and root exit
+1067, completed shutdown protocol, joined cleanup and verified client reap.
+That is not a natural production-exit claim. The independent strict direct and
+fixture sessions retain their own natural-exit requirements.
 
-A save can commit remotely before its Written reply is lost. Previously the
-frontend retained the old revision but discarded the submitted snapshot; a later
-Save conflicted, while dirty-file comparison could not adopt the current base.
-The new session-local token records a bounded submitted-content fingerprint and
-original workspace/path/tab/request/baseline lineage. It never asserts that an
-accepted but unanswered request was transmitted or committed.
+## Changes and limits
 
-A successful Check interrupted save requires two agreeing Read responses; an
-earlier failure can stop the check after one. Each
-returned revision must equal SHA-256 of its actual text. A match with submitted
-contents can update only the saved baseline/revision; newer typing, native history,
-cursor and edit version remain intact. Original-baseline matches merely resolve
-current uncertainty. Original new-file absence requires two not-found reads and
-still needs a later explicit Save to create anything. Existing-file absence,
-divergence and malformed responses cannot silently adopt a new base or write.
+[Connection cancellation](CONNECTION_CANCELLATION.md) uses a permanent per-session
+token and 50 ms maximum receive slices only while process Hello/List/Read/Search
+is pending. Original absolute deadlines remain unchanged. Already process-enqueued
+mutations retain their normal replies; old app-queue work is discarded. No writes
+or commands are replayed. Existing save, language and task reconnect guards remain.
 
-Generation, navigation, current-content, edit-version, profile and close-action
-guards reject stale results, including same-frame input. Duplicate checks and
-save/check overlap remain bounded. Recovery updates use existing ownership and
-storage-acknowledgement guards; profile edits and reconnect review remain intact.
+Cancellation completion, direct-child reaping and resource-count settling are
+separate assertions. The change does not join detached pipe threads or establish
+arbitrary descendant cleanup. No idle-connection polling or additional transport
+thread is added. Embedded synchronous workspace calls and OS process creation
+remain outside the interruption guarantee.
 
-## Deterministic acceptance
+The resource baseline is observational. It cannot establish an IntelliJ IDEA
+comparison, a complete GUI footprint, authenticated SSH interoperability or fully
+settled project indexing. Native GUI execution-trust and real SSH testing remain
+separate uncompleted validation.
 
-A separate feature-gated fixture requires an exactly marked generated root,
-rejects execution trust and accepts only Hello, root List and draft.txt Read/Write.
-It uses the real Workspace write implementation, then exits after the first
-successful commit without sending Written. A later process reads the same bytes.
-Its bounded operation ledger verifies that reconnect and checking send no Write.
-The fixture is not an ordinary agent flag or a published product binary.
+The sealed 0.10.0 behavior and local verification record is retained in
+[the preceding report](TEST_REPORT_PHASE10.md); later CI outcomes are stated above
+rather than retroactively changing that report.
 
-Nine explicit stdio acceptance cases cover committed lost replies, unchanged and
-newer drafts, native Undo/Redo, diverged/missing/recreated files, stale checks,
-malformed path/revision/content, subsequent explicit Save and recovery ownership.
-Focused tests additionally cover original absence, profile forms and native-frame
-input ordering. The CI workflow runs the process cases on both operating systems;
-leaving ignored tests unexecuted is not a pass.
+## Local verification
 
-## Evidence boundary
+Rust 1.99.0 host aggregate: 637 passed, zero failed. Explicit acceptance added
+three new app process cases, nine interrupted-save cases and seven normal-agent
+process cases: 656 executed Rust cases in total. Five Python agent protocol/tool
+smoke chains passed. Strict whole-workspace host and MSVC cross-target clippy,
+formatting and the optimized workspace build passed. The export regressions
+passed two tests; the existing Java evidence sanitizer passed 62 with two
+native-Windows skips. The resource observer passed 18 synthetic/accounting/privacy
+tests, including a generated native Linux Python process tree. Its actual Windows
+backend and real Java measurements remain pending native CI.
 
-The result means current disk contents match a known snapshot. It does not prove
-historical commit provenance or physical-file identity; identical-byte recreation
-is indistinguishable under the unchanged protocol. Transaction tokens are not
-persisted across application crashes. Normal Written revision handling is not
-redefined by this slice, and revision-based writes remain non-atomic compare-and-swap.
-
-Authenticated SSH and native GUI Trust remain separately unverified. This change
-adds no network service, credentials, automatic write/replay or execution trust.
-See [user-facing behavior and limits](INTERRUPTED_SAVES.md). No private diagnostic
-findings are included in this report.
+The client subset separately passed 44 unit tests, eight public cancellation
+cases and one isolated resource-count regression. After warmup, Linux descriptor
+and thread counts were 4 and 3 at baseline and after each eight-cycle batch.
+This is a debug-test cleanup observation, not Cedar product-memory evidence.
+MSVC cross-checking is not native Windows execution. Exact commit CI must run
+the new cancellation cases and obtain the real agent/JVM observation.

@@ -1,12 +1,8 @@
 //! Every connect and request executes off the UI thread. Old generations are ignored.
-use cedar_client::{Client, ConnectionSpec};
+use cedar_client::{Client, ConnectionCancellation, ConnectionSpec};
 use cedar_protocol::{Operation, Payload};
 use eframe::egui;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
-    Arc,
-};
+use std::sync::mpsc::{self, Receiver, Sender};
 
 pub struct Command {
     pub id: u64,
@@ -20,11 +16,11 @@ pub struct Event {
 }
 pub struct Worker {
     pub tx: Sender<Command>,
-    cancel: Arc<AtomicBool>,
+    cancel: ConnectionCancellation,
 }
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Release);
+        self.cancel.cancel();
     }
 }
 impl Worker {
@@ -34,7 +30,7 @@ impl Worker {
         (
             Self {
                 tx,
-                cancel: Arc::new(AtomicBool::new(false)),
+                cancel: ConnectionCancellation::new(),
             },
             rx,
         )
@@ -45,11 +41,43 @@ impl Worker {
         result_tx: Sender<Event>,
         ctx: egui::Context,
     ) -> Self {
+        Self::spawn_with_connection(
+            move |cancel| Client::connect_with_cancellation(spec, cancel),
+            generation,
+            result_tx,
+            ctx,
+        )
+    }
+
+    // Only tests can choose a peer binary. Exercise the production connection,
+    // cancellation and request loop without changing shipped agent resolution.
+    #[cfg(test)]
+    pub(crate) fn spawn_agent(
+        agent: std::path::PathBuf,
+        root: std::path::PathBuf,
+        generation: u64,
+        result_tx: Sender<Event>,
+        ctx: egui::Context,
+    ) -> Self {
+        Self::spawn_with_connection(
+            move |cancel| Client::spawn_agent_with_cancellation(&agent, &root, false, cancel),
+            generation,
+            result_tx,
+            ctx,
+        )
+    }
+
+    fn spawn_with_connection(
+        connect: impl FnOnce(ConnectionCancellation) -> Result<Client, String> + Send + 'static,
+        generation: u64,
+        result_tx: Sender<Event>,
+        ctx: egui::Context,
+    ) -> Self {
         let (tx, rx): (Sender<Command>, Receiver<Command>) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancelled = Arc::clone(&cancel);
+        let cancel = ConnectionCancellation::new();
+        let cancelled = cancel.clone();
         std::thread::spawn(move || {
-            let mut client = match Client::connect(spec) {
+            let mut client = match connect(cancelled.clone()) {
                 Ok(client) => client,
                 Err(error) => {
                     let _ = result_tx.send(Event {
@@ -62,7 +90,7 @@ impl Worker {
                     return;
                 }
             };
-            if cancelled.load(Ordering::Acquire) {
+            if cancelled.is_cancelled() {
                 return;
             }
             let hello = client.handshake().clone();
@@ -74,7 +102,7 @@ impl Worker {
             });
             ctx.request_repaint();
             while let Ok(command) = rx.recv() {
-                if cancelled.load(Ordering::Acquire) {
+                if cancelled.is_cancelled() {
                     break;
                 }
                 let result = client.request(command.op);

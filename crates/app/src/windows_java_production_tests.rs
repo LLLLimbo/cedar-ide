@@ -5,6 +5,25 @@ use crate::java_language::{JavaStopOutcome, StopReason, StopStatus};
 use cedar_client::Client;
 use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
 
+// Optional, test-only observation. The enclosing acceptance script supplies an
+// exclusively created file in its generated scratch directory. Marker failures
+// make the resource report incomplete; they do not change semantic acceptance.
+fn resource_phase(started: Instant, phase: &'static str) -> bool {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("CEDAR_RESOURCE_PHASE_PATH") else {
+        return false;
+    };
+    let Ok(mut file) = fs::OpenOptions::new().append(true).open(path) else {
+        return false;
+    };
+    writeln!(
+        file,
+        "{}",
+        serde_json::json!({"phase": phase, "elapsed_ms": started.elapsed().as_millis()})
+    )
+    .is_ok()
+}
+
 fn client_language(client: &mut Client, op: Operation) -> CheckResult<Value> {
     match client.request(op)? {
         Payload::Language { value } => Ok(value),
@@ -82,6 +101,7 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
     println!();
     let _watchdog = Watchdog::start_with_timeout(Duration::from_secs(240));
     let started = Instant::now();
+    resource_phase(started, "starting");
     let mut fixture: Option<tempfile::TempDir> = None;
     let mut client: Option<Client> = None;
     let mut observed: Option<RootObservation> = None;
@@ -181,6 +201,7 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         record.root_observed_live = true;
         verify_java_image(observed.as_ref().unwrap(), &java)?;
         record.root_identity_verified = true;
+        resource_phase(started, "java_initialized");
         require(
             data.join(".metadata").is_dir(),
             "normal recipe did not use the selected external data directory",
@@ -211,6 +232,12 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         production_diagnostics(client, &uri, DiagnosticPhase::Initial)?;
         record.semantic_diagnostics = true;
         unchanged(&source)?;
+        if resource_phase(started, "semantic_ready_idle") {
+            // Defined observation interval after exact diagnostics, not a claim
+            // that JDT indexing or other background work has fully settled.
+            thread::sleep(Duration::from_secs(2));
+        }
+        resource_phase(started, "query_workload");
         let cursor = completion::byte_to_position(
             SOURCE,
             SOURCE.rfind("greeting").ok_or("fixture reference")? + 3,
@@ -352,6 +379,7 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
     if primary.is_err() {
         failure_stage = Some(stage.get());
     }
+    resource_phase(started, "cleanup");
     if server_started {
         stage.set(FailureStage::Stop);
         let stop = checked(|| {
@@ -482,6 +510,7 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         "{}",
         serde_json::to_string(&record).expect("typed normal Java evidence")
     );
+    resource_phase(started, "complete");
     match primary {
         Err(error) => Err(format!(
             "normal Java primary failure: {error}; cleanup failures: {cleanup_errors:?}"

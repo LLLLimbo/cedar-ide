@@ -16,10 +16,22 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: python scripts/test_public_export.py
       - run: python scripts/test_java_crash_collection.py
+      - run: python scripts/test_process_tree_baseline.py
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-targets --all-features --locked
         timeout-minutes: 15
       - run: cargo build --release --workspace --all-features --locked
+      - name: Connection cancellation (Unix)
+        timeout-minutes: 3
+        if: runner.os != 'Windows'
+        run: CEDAR_CONNECTION_CANCEL_PEER_BIN="$PWD/target/release/cedar-client-transport-peer" cargo test -p cedar-app --lib connection_cancel_tests --locked -- --ignored --test-threads=1
+      - name: Connection cancellation (Windows)
+        timeout-minutes: 3
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:CEDAR_CONNECTION_CANCEL_PEER_BIN = "$PWD/target/release/cedar-client-transport-peer.exe"
+          cargo test -p cedar-app --lib connection_cancel_tests --locked -- --ignored --test-threads=1
       - name: Interrupted save reconciliation (Unix)
         timeout-minutes: 3
         if: runner.os != 'Windows'
@@ -47,7 +59,7 @@ jobs:
         run: |
           $env:CEDAR_WINPROCESS_FIXTURE_BIN = "$PWD/target/release/cedar-winprocess-fixture.exe"
           cargo test -p cedar-winprocess --features fixtures --test windows_lifecycle --locked -- --ignored --test-threads=1
-      - name: Windows owned language transport (capability gate remains closed)
+      - name: Windows owned language transport (isolated fixtures)
         timeout-minutes: 5
         if: runner.os == 'Windows'
         shell: pwsh
@@ -84,6 +96,7 @@ jobs:
           path: |
             ${{ runner.temp }}/cedar-windows-java-acceptance.txt
             ${{ runner.temp }}/cedar-java-crash-diagnostics.json
+            ${{ runner.temp }}/cedar-process-tree-baseline.json
           if-no-files-found: ignore
       - name: Agent and tool protocol chains (Unix)
         if: runner.os != 'Windows'

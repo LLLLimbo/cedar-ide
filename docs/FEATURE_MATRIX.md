@@ -1,8 +1,8 @@
-# 功能矩阵与后续验收 · checkpoint 10 / 0.10.0
+# 功能矩阵与后续验收 · checkpoint 11 / 0.11.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-“已实现”指有可执行路径，不等于所有平台、真实SSH或生产项目均已验收。协议仍为版本4，能力声明不授予执行信任。0.9.0专用Windows Java正常agent/Client路径已通过同提交双平台CI，并如实报告强制Stop；通用Windows LSP仍不支持。0.10.0新增会话内显式断线保存核对，精确提交CI待验证。
+“已实现”指有可执行路径，不等于所有平台、真实SSH或生产项目均已验收。协议仍为版本4，能力声明不授予执行信任。0.9.0专用Windows Java正常agent/Client路径已通过同提交双平台CI，并如实报告强制Stop；通用Windows LSP仍不支持。0.10.0会话内显式断线保存核对已通过精确提交双平台CI，九项真实进程故障用例在两端均执行通过。
 
 | 领域 | 当前实现 | 尚缺 / 下一阶段验收 |
 |---|---|---|
@@ -39,8 +39,8 @@
 
 ## 建议下一顺序
 
-1. 验证0.10.0显式断线保存核对；后续处理慢连接取消和资源清理。内存/空闲CPU基线应包括完整进程树与JVM，无同项目等价条件不声称优于IDEA。
-2. [Windows Java LSP](WINDOWS_LANGUAGE_PLAN.md)：可取消 stdin 与独占 Job/可加入线程/严格帧解析已实现但仍受门控；通过真实 Windows 语言服务及与任务并发清理测试后才开放能力。初始顺序请求仍有启动阻塞，须明确披露或另做异步生命周期协议
+1. 0.10.0显式断线保存核对已通过双平台验证；0.11.0增加慢连接/只读请求取消与资源观测，精确提交原生CI待验。内存/空闲CPU基线应包括完整进程树与JVM，无同项目等价条件不声称优于IDEA。
+2. [Windows Java LSP](WINDOWS_JAVA_SETUP.md)：专用 Java 正常 agent/Client 路径已开放并通过真实语言服务、编辑事务、任务独立性及强制退出清理验证；仍需显式执行信任。通用 Windows LSP 不支持，原生 GUI 与真实 SSH 验证仍单独待完成。初始顺序请求仍有启动阻塞，Stop 可能如实报告超时后强制清理，须明确披露或另做异步生命周期协议
 3. 远程核心路径：获得狭窄测试批准后验证真实 SSH 认证、严格主机密钥、远程路径引用、断开/重连和不明结果不重放；明确版本/能力边界、实际进程清理和 Windows 前端到 Linux 后端的证据。此门槛与语言服务工作并行推进准备，不以 stdio 测试替代
 4. DAP 调试 UI/agent 与真实程序闭环；先解决监听安全和普通后代进程回收，再扩展 PTY、测试树与 JVM 调试
 5. Java/Kotlin 工程导入：真实大型 Maven/Gradle 项目、JDK 选择与索引进度；解决当前官方 Kotlin 许可/安装阻碍后再验兼容性
