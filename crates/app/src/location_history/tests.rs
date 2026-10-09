@@ -2112,3 +2112,414 @@ fn substantive_ime_and_paste_still_cancel_owned_history_pointer_clicks() {
         }
     }
 }
+
+fn settled_history_banner_app(forward: bool) -> CedarApp {
+    let mut app = app();
+    // Let the real CJK loader finish before injecting a result at a fixed
+    // gesture boundary. It stays enabled, including on hosts without CJK fonts.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        frame(&mut app, vec![]);
+        if app.error.is_some() || app.notice.starts_with("CJK fallback:") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the real system font probe did not complete before the pointer test"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    app.error = None;
+    app.notice = "Settled font result".into();
+    app.activate_history_tab(2);
+    if forward {
+        assert!(step(&mut app, Direction::Back));
+    }
+    frame(&mut app, vec![]);
+    frame(&mut app, vec![]);
+    app
+}
+
+fn history_banner_pointer_case(before_press: bool, ready: bool, stale: bool, stationary: bool) {
+    for error in [false, true] {
+        for forward in [false, true] {
+            let mut app = settled_history_banner_app(forward);
+            let name = if forward { "Forward" } else { "Back" };
+            let direction = if forward {
+                Direction::Forward
+            } else {
+                Direction::Back
+            };
+            let before = crate::workspace_access_tests::recorded_response(&app, name);
+            let before_rect = crate::workspace_access_tests::recorded_rect(&app, name);
+            assert!(before.enabled());
+            let at = before_rect.center();
+            let source = app.active_document;
+            let target = Some(if forward { 2 } else { 1 });
+            if stale {
+                app.documents
+                    .iter_mut()
+                    .find(|doc| Some(doc.id) == target)
+                    .unwrap()
+                    .edit_version += 1;
+            }
+            let read = if ready {
+                let (worker, commands) = Worker::recording();
+                app.worker = Some(worker);
+                app.open("late.txt".into(), None);
+                Some(commands.try_recv().unwrap().id)
+            } else {
+                None
+            };
+            let epoch = app.navigation_epoch;
+            let pointer = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let inject_result = |app: &mut CedarApp| {
+                if error {
+                    app.error = Some("Generated font completion error".into());
+                } else {
+                    app.notice = "Generated font completion notice".into();
+                }
+            };
+            if before_press {
+                inject_result(&mut app);
+            }
+            frame(
+                &mut app,
+                vec![egui::Event::PointerMoved(at), pointer(at, true)],
+            );
+            let pressed = crate::workspace_access_tests::recorded_response(&app, name);
+            let pressed_rect = crate::workspace_access_tests::recorded_rect(&app, name);
+            let egui_owned = pressed.is_pointer_button_down_on();
+            let cedar_owned =
+                app.location_history.press == app.history_press_stamp(direction, pressed.id);
+            eprintln!(
+                "history banner: {name}, error={error}, before_press={before_press}, ready={ready}, stale={stale}, \
+                 before_id={:?}, press_id={:?}, before_render={before_rect:?}, \
+                 press_render={pressed_rect:?}, before_interaction={:?}, \
+                 press_interaction={:?}, at={at:?}, render_contains={}, \
+                 egui_owned={egui_owned}, cedar_owned={cedar_owned}",
+                before.id,
+                pressed.id,
+                before.rect,
+                pressed.rect,
+                pressed_rect.contains(at)
+            );
+            assert_eq!(
+                before.id, pressed.id,
+                "banner changed the history widget ID"
+            );
+            assert!(egui_owned, "the rendered history button must own the press");
+            if !before_press {
+                inject_result(&mut app);
+            }
+            if let Some(read) = read {
+                queue_file(&app, read, "late.txt");
+            }
+            // A press-frame layout change releases over the newly rendered
+            // button. A release-frame change retains egui's already-owned
+            // click, as does the existing captured-tab panel-motion test.
+            let release_at = if before_press && !stationary {
+                pressed_rect.center()
+            } else {
+                at
+            };
+            frame(&mut app, vec![pointer(release_at, false)]);
+            let released = crate::workspace_access_tests::recorded_response(&app, name);
+            let released_rect = crate::workspace_access_tests::recorded_rect(&app, name);
+            let clicked = app
+                .editor_ctx
+                .interaction_snapshot(|snapshot| snapshot.clicked);
+            let release_owned =
+                clicked == Some(pressed.id) && released.clicked_by(egui::PointerButton::Primary);
+            eprintln!(
+                "history banner release: {name}, error={error}, before_press={before_press}, ready={ready}, stale={stale}, \
+                 release_id={:?}, release_render={released_rect:?}, release_interaction={:?}, \
+                 clicked={clicked:?}, at={release_at:?}, render_contains={}, active={:?}",
+                released.id,
+                released.rect,
+                released_rect.contains(release_at),
+                app.active_document
+            );
+            assert_eq!(
+                before.id, released.id,
+                "banner changed the history widget ID"
+            );
+            if before_press && !stationary {
+                assert!(released_rect.contains(release_at));
+            }
+            assert!(
+                release_owned,
+                "egui must retain the actual captured interaction"
+            );
+            assert_eq!(
+                app.active_document,
+                if stale { source } else { target },
+                "{name}, error={error}, before_press={before_press}, ready={ready}, stale={stale}, cedar_owned={cedar_owned}: \
+                 an actual captured history click must navigate"
+            );
+            assert!(cedar_owned);
+            if stale {
+                assert!(app.location_history.back.is_empty());
+                assert!(app.location_history.forward.is_empty());
+                assert_eq!(
+                    app.location_history.message.as_deref(),
+                    Some("Skipped 1 stale editor location")
+                );
+            } else {
+                assert_eq!(app.location_history.back.len(), usize::from(forward));
+                assert_eq!(app.location_history.forward.len(), usize::from(!forward));
+            }
+            assert!(app.location_history.press.is_none());
+            assert_eq!(app.navigation_epoch, epoch.wrapping_add(1));
+            if ready {
+                assert!(app.documents.iter().any(|doc| doc.path == "late.txt"));
+                assert!(app.location_history.pending.is_none());
+            }
+            let back = signature(&app.location_history.back);
+            let forward_stack = signature(&app.location_history.forward);
+            frame(&mut app, vec![]);
+            assert_eq!(app.active_document, if stale { source } else { target });
+            assert_eq!(app.navigation_epoch, epoch.wrapping_add(1));
+            assert_eq!(signature(&app.location_history.back), back);
+            assert_eq!(signature(&app.location_history.forward), forward_stack);
+        }
+    }
+}
+
+#[test]
+fn history_banner_before_press_distinguishes_geometry_from_widget_ownership() {
+    history_banner_pointer_case(true, false, false, false);
+}
+
+#[test]
+fn history_banner_before_release_distinguishes_geometry_from_widget_ownership() {
+    history_banner_pointer_case(false, false, false, false);
+}
+
+#[test]
+fn history_banner_captured_release_supersedes_ready_read_once() {
+    for before_press in [false, true] {
+        history_banner_pointer_case(before_press, true, false, false);
+    }
+}
+
+#[test]
+fn history_banner_captured_all_stale_release_consumes_ready_read_once() {
+    for before_press in [false, true] {
+        history_banner_pointer_case(before_press, true, true, false);
+    }
+}
+
+#[test]
+fn history_banner_stationary_release_retains_capture_after_press_frame_motion() {
+    // Native-shaped stationary pointer: only the UI moves. Both the ordinary
+    // widget path and the ordered ready-reply path must keep the captured ID.
+    for ready in [false, true] {
+        history_banner_pointer_case(true, ready, false, true);
+    }
+}
+
+#[test]
+fn history_banner_same_frame_primary_click_keeps_actual_widget_ownership() {
+    for forward in [false, true] {
+        let mut app = settled_history_banner_app(forward);
+        let name = if forward { "Forward" } else { "Back" };
+        let before = crate::workspace_access_tests::recorded_response(&app, name);
+        let at = crate::workspace_access_tests::recorded_rect(&app, name).center();
+        app.error = Some("Generated error before a same-frame click".into());
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(at), pointer(true), pointer(false)],
+        );
+        assert_eq!(
+            app.editor_ctx
+                .interaction_snapshot(|snapshot| snapshot.clicked),
+            Some(before.id)
+        );
+        assert!(!crate::workspace_access_tests::recorded_rect(&app, name).contains(at));
+        assert_eq!(app.active_document, Some(if forward { 2 } else { 1 }));
+        assert_eq!(app.location_history.back.len(), usize::from(forward));
+        assert_eq!(app.location_history.forward.len(), usize::from(!forward));
+        assert!(app.location_history.press.is_none());
+    }
+}
+
+#[test]
+fn history_banner_orphan_and_disabled_releases_do_not_cancel_ready_read() {
+    for disabled in [false, true] {
+        let mut app = settled_history_banner_app(false);
+        if disabled {
+            app.location_history.back.clear();
+            frame(&mut app, vec![]);
+            // read_response observes the previous interaction snapshot; make
+            // the disabled render its input before starting this gesture.
+            frame(&mut app, vec![]);
+        }
+        let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
+        assert_eq!(
+            crate::workspace_access_tests::recorded_response(&app, "Back").enabled(),
+            !disabled
+        );
+        let mut expected_back = app.location_history.back.clone();
+        expected_back.push(app.history_departure().unwrap());
+        let (worker, commands) = Worker::recording();
+        app.worker = Some(worker);
+        app.open("late.txt".into(), None);
+        let read = commands.try_recv().unwrap().id;
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        app.error = Some("Generated error before an unowned gesture".into());
+        if disabled {
+            frame(&mut app, vec![egui::Event::PointerMoved(at), pointer(true)]);
+        }
+        assert!(app.location_history.press.is_none());
+        queue_file(&app, read, "late.txt");
+        frame(&mut app, vec![pointer(false)]);
+        assert_eq!(app.active().unwrap().path, "late.txt");
+        assert_eq!(
+            signature(&app.location_history.back),
+            signature(&expected_back)
+        );
+        assert!(app.location_history.forward.is_empty());
+        assert!(app.location_history.pending.is_none());
+        assert!(app.location_history.press.is_none());
+    }
+}
+
+#[test]
+fn history_banner_drag_and_changed_target_cancel_captured_press() {
+    for mutation in 0..4 {
+        let mut app = settled_history_banner_app(false);
+        let before = crate::workspace_access_tests::recorded_response(&app, "Back");
+        let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
+        let pointer = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        app.error = Some("Generated error before a cancelled gesture".into());
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(at), pointer(at, true)],
+        );
+        assert!(app.location_history.press.is_some());
+        let mut release_at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
+        let mut release = vec![];
+        match mutation {
+            0 => {
+                release_at = egui::pos2(600.0, 400.0);
+                release.push(egui::Event::PointerMoved(release_at));
+            }
+            1 => app.activate_history_tab(3),
+            2 => app.generation += 1,
+            _ => app.documents[0].edit_version += 1,
+        }
+        let source = app.active_document;
+        let back = signature(&app.location_history.back);
+        let forward = signature(&app.location_history.forward);
+        release.push(pointer(release_at, false));
+        frame(&mut app, release);
+        assert_eq!(
+            app.editor_ctx
+                .interaction_snapshot(|snapshot| snapshot.clicked),
+            if mutation == 0 { None } else { Some(before.id) }
+        );
+        assert_eq!(app.active_document, source, "mutation {mutation}");
+        assert_eq!(signature(&app.location_history.back), back);
+        assert_eq!(signature(&app.location_history.forward), forward);
+        assert!(app.location_history.press.is_none());
+    }
+}
+
+#[test]
+fn history_banner_foreign_button_capture_cannot_become_primary_navigation() {
+    for foreign in [
+        egui::PointerButton::Secondary,
+        egui::PointerButton::Middle,
+        egui::PointerButton::Extra1,
+        egui::PointerButton::Extra2,
+    ] {
+        for same_frame in [false, true] {
+            let mut app = settled_history_banner_app(false);
+            let before = crate::workspace_access_tests::recorded_response(&app, "Back");
+            let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
+            let back = signature(&app.location_history.back);
+            let pointer = |pos, button, pressed| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(
+                &mut app,
+                vec![egui::Event::PointerMoved(at), pointer(at, foreign, true)],
+            );
+            assert!(app.location_history.press.is_none());
+            assert!(
+                crate::workspace_access_tests::recorded_response(&app, "Back")
+                    .is_pointer_button_down_on()
+            );
+            app.error = Some("Generated error while a foreign button owns the widget".into());
+            let elsewhere = egui::pos2(600.0, 400.0);
+            let mut press = vec![
+                egui::Event::PointerMoved(elsewhere),
+                pointer(elsewhere, egui::PointerButton::Primary, true),
+            ];
+            if same_frame {
+                press.push(pointer(elsewhere, egui::PointerButton::Primary, false));
+            }
+            frame(&mut app, press);
+            let stamped = app.location_history.press.is_some();
+            if !same_frame {
+                frame(
+                    &mut app,
+                    vec![pointer(elsewhere, egui::PointerButton::Primary, false)],
+                );
+            }
+            let clicked = app
+                .editor_ctx
+                .interaction_snapshot(|snapshot| snapshot.clicked);
+            eprintln!(
+                "foreign history capture: {foreign:?}, same_frame={same_frame}, \
+                 stamped={stamped}, clicked={clicked:?}, active={:?}",
+                app.active_document
+            );
+            assert_eq!(clicked, Some(before.id));
+            assert_eq!(
+                app.active_document,
+                Some(2),
+                "{foreign:?}, same_frame={same_frame}"
+            );
+            assert_eq!(signature(&app.location_history.back), back);
+            assert!(app.location_history.forward.is_empty());
+            assert!(app.location_history.press.is_none());
+            frame(&mut app, vec![pointer(elsewhere, foreign, false)]);
+            let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    pointer(at, egui::PointerButton::Primary, true),
+                    pointer(at, egui::PointerButton::Primary, false),
+                ],
+            );
+            assert_eq!(app.active_document, Some(1));
+        }
+    }
+}

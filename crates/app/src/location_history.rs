@@ -170,9 +170,9 @@ fn shortcut(event: &egui::Event) -> Option<Direction> {
 #[derive(Clone, Copy)]
 enum ButtonInput {
     Quiet,
-    Press(egui::Pos2),
+    Press,
     Release,
-    Click(egui::Pos2),
+    Click,
     Keyboard,
     Mixed,
 }
@@ -201,13 +201,12 @@ fn button_input(input: &egui::InputState) -> ButtonInput {
         (None, None) => ButtonInput::Quiet,
         (
             Some(egui::Event::PointerButton {
-                pos,
                 button: egui::PointerButton::Primary,
                 pressed: true,
                 ..
             }),
             None,
-        ) => ButtonInput::Press(*pos),
+        ) => ButtonInput::Press,
         (
             Some(egui::Event::PointerButton {
                 button: egui::PointerButton::Primary,
@@ -218,7 +217,6 @@ fn button_input(input: &egui::InputState) -> ButtonInput {
         ) => ButtonInput::Release,
         (
             Some(egui::Event::PointerButton {
-                pos,
                 button: egui::PointerButton::Primary,
                 pressed: true,
                 ..
@@ -228,7 +226,7 @@ fn button_input(input: &egui::InputState) -> ButtonInput {
                 pressed: false,
                 ..
             }),
-        ) => ButtonInput::Click(*pos),
+        ) => ButtonInput::Click,
         (
             Some(egui::Event::Key {
                 key: egui::Key::Enter | egui::Key::Space,
@@ -719,37 +717,73 @@ impl CedarApp {
         let input = ui.input(button_input);
         if !matches!(
             input,
-            ButtonInput::Quiet
-                | ButtonInput::Press(_)
-                | ButtonInput::Release
-                | ButtonInput::Click(_)
+            ButtonInput::Quiet | ButtonInput::Press | ButtonInput::Release | ButtonInput::Click
         ) || self.history_blocked(ui.ctx())
         {
             self.location_history.press = None;
         }
         ui.horizontal_wrapped(|ui| {
             let enabled = !self.history_blocked(ui.ctx()) && ui.is_enabled();
+            // egui shares capture across buttons; a held secondary/middle/extra
+            // button must not lend its widget to a later primary gesture.
+            let primary_only = ui.input(|input| {
+                [
+                    egui::PointerButton::Secondary,
+                    egui::PointerButton::Middle,
+                    egui::PointerButton::Extra1,
+                    egui::PointerButton::Extra2,
+                ]
+                .into_iter()
+                .all(|button| !input.pointer.button_down(button))
+            });
             for (direction, label, available, help) in [
-                (Direction::Back, "Back", !self.location_history.back.is_empty(), "Back to an unchanged open-buffer location · Ctrl/Cmd+["),
-                (Direction::Forward, "Forward", !self.location_history.forward.is_empty(), "Forward to an unchanged open-buffer location · Ctrl/Cmd+]"),
+                (
+                    Direction::Back,
+                    "Back",
+                    !self.location_history.back.is_empty(),
+                    "Back to an unchanged open-buffer location · Ctrl/Cmd+[",
+                ),
+                (
+                    Direction::Forward,
+                    "Forward",
+                    !self.location_history.forward.is_empty(),
+                    "Forward to an unchanged open-buffer location · Ctrl/Cmd+]",
+                ),
             ] {
-                let response = ui.push_id(("location_history", label), |ui| ui.add_enabled(enabled && available, egui::Button::new(label).small())).inner.on_hover_text(help);
+                let response = ui
+                    .push_id(("location_history", label), |ui| {
+                        ui.add_enabled(enabled && available, egui::Button::new(label).small())
+                    })
+                    .inner
+                    .on_hover_text(help);
                 #[cfg(test)]
                 crate::workspace_access_tests::record(ui, label, &response);
-                let clean_press = matches!(input, ButtonInput::Press(pos) | ButtonInput::Click(pos) if response.rect.contains(pos));
-                if enabled && available && clean_press {
+                // egui owns gestures using the previous frame's widget. A
+                // notification can move its rendered rect during this frame.
+                let clean_press = match input {
+                    ButtonInput::Press => response.is_pointer_button_down_on(),
+                    ButtonInput::Click => response.clicked_by(egui::PointerButton::Primary),
+                    _ => false,
+                };
+                if enabled && available && primary_only && clean_press {
                     self.location_history.press = self.history_press_stamp(direction, response.id);
                 }
                 if response.clicked() {
-                    let pointer = matches!(input, ButtonInput::Release | ButtonInput::Click(_));
+                    let pointer = matches!(input, ButtonInput::Release | ButtonInput::Click);
                     let keyboard = matches!(input, ButtonInput::Keyboard) && response.has_focus();
-                    let owned = self.history_press_stamp(direction, response.id).is_some_and(|stamp| self.location_history.press == Some(stamp));
-                    if (pointer && owned) || keyboard { self.history_step(direction, ui.ctx()); }
+                    let owned = self
+                        .history_press_stamp(direction, response.id)
+                        .is_some_and(|stamp| self.location_history.press == Some(stamp));
+                    if (pointer && owned) || keyboard {
+                        self.history_step(direction, ui.ctx());
+                    }
                 }
             }
-            if let Some(message) = &self.location_history.message { ui.label(egui::RichText::new(message).small().color(MUTED)); }
+            if let Some(message) = &self.location_history.message {
+                ui.label(egui::RichText::new(message).small().color(MUTED));
+            }
         });
-        if matches!(input, ButtonInput::Release | ButtonInput::Click(_)) {
+        if matches!(input, ButtonInput::Release | ButtonInput::Click) {
             self.location_history.press = None;
         }
     }

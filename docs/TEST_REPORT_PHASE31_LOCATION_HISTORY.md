@@ -1,4 +1,4 @@
-# Verification report · Open-buffer location history / 0.31.1
+# Verification report · Open-buffer location history / 0.31.0
 
 This checkpoint implements bounded Back/Forward editor navigation using existing
 open buffers. The prior [0.30 package](TEST_REPORT_PHASE30_EXPLORER_TREE.md) remains
@@ -48,35 +48,7 @@ with unchanged generated source hashes and bounded cleanup. Cloud Linux native
 trust-off checks cover controls/chords, visible selection, typing and Undo/Redo;
 they do not establish native Windows GUI or SSH behavior.
 
-## Captured-press follow-up
-
-The [first public 0.31 run](TEST_REPORT_PHASE31_LOCATION_HISTORY.md) failed four
-Ubuntu pointer regressions before the native process ledger. A fixed error banner
-appearing during a press reproduces a source defect: egui retains the captured
-widget, while Cedar re-hit-tests its newly moved rectangle and loses ownership.
-The follow-up uses the actual captured primary-button response, retaining strict
-input, enabled-state and identity/version guards. The exact CI font event was not
-observed; no font loading or timing check is suppressed. The new banner fixtures
-wait for the real font-probe completion under a ten-second failure bound, then
-inject the fixed notification at the gesture boundary. This setup does not add
-delays or settling to the original failing pointer tests. The complete local
-0.31.1 aggregate passed 1,239 tests with zero failures and 31 explicit opt-ins
-ignored across 41 suites. Strict host/MSVC all-target/all-feature checks and both
-release configurations passed. The ordinary-agent history ledger passed again
-with the same 10 cases, 20 actions, two Lists, four explicit Reads and zero
-traversal operations. Exact-commit dual-platform CI and package acceptance remain
-required; the failed 0.31.0 result is not reclassified.
-
-The final 0.31.1 default release also passed a bounded cloud-Linux native check:
-first Back/Forward pointer clicks from editor focus, full reversed Unicode
-selection, Ctrl brackets, visibly focused Tab/Enter, typing and Undo/Redo, default
-and compact history controls. Right/middle clicks did not navigate. No Save or
-trusted execution was used; all three generated source hashes and both binary
-hashes stayed unchanged after owned exit zero. Exact notification timing, held
-pointer ownership and hidden affinity remain deterministic-test coverage, not
-claims from this native run. Native Windows GUI and real SSH remain unverified.
-
-## Earlier local verification
+## Local verification
 
 An initial cloud-native check found that the first history-button click after
 editor focus was swallowed. A production-frame regression reproduced it before
@@ -127,3 +99,13 @@ the third tab label and long editor text extend beyond the center viewport; this
 does not establish a general responsive-tab or forms fix. The middle width at
 minimum size was manually approximated. Real IME composition, native Windows GUI
 and real SSH were not exercised. Screenshots remain outside the public source.
+
+## First public CI outcome
+
+Public source `7e91c48e5aec5c5406ed1331295c3ae50e43365e`, run
+[37979040614](https://github.com/LLLLimbo/cedar-ide/actions/runs/37979040614),
+failed the Ubuntu aggregate in four captured-history pointer regressions before
+the new native process ledger. All seven current-equal pruning regressions passed.
+This run is retained as failed; the locally verified source was not sufficient
+for distribution acceptance. A subsequent fixed-banner reproduction established
+a captured-press ownership defect; the exact CI font-event trigger was not observed.
