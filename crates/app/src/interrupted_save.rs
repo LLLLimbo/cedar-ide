@@ -11,6 +11,10 @@ fn digest(text: &str) -> [u8; 32] {
     Sha256::digest(text.as_bytes()).into()
 }
 
+pub(super) fn acknowledgement_matches(snapshot: &str, revision: &str) -> bool {
+    revision.len() == 64 && revision == format!("{:x}", Sha256::digest(snapshot.as_bytes()))
+}
+
 fn workspace_digest(app: &CedarApp) -> Option<[u8; 32]> {
     let workspace = app.recovery_workspace()?;
     let encoded = serde_json::to_string(&workspace).ok()?;
@@ -127,7 +131,37 @@ impl Check {
 }
 
 impl CedarApp {
+    pub(super) fn save_submission_is_current(&self, request: u64) -> bool {
+        let Some(Job::Save {
+            document,
+            snapshot,
+            submission,
+        }) = self.pending.get(&request)
+        else {
+            return false;
+        };
+        let Some(doc) = self.documents.iter().find(|doc| doc.id == *document) else {
+            return false;
+        };
+        submission.as_ref().is_some_and(|token| {
+            token.generation == self.generation
+                && token.request == request
+                && token.matches_baseline(self, doc)
+                && digest(snapshot) == token.submitted_digest
+                && doc.interrupted_save.as_ref().is_none_or(|old| old == token)
+                && !doc.save_outcome_unverifiable
+        })
+    }
+
     pub(super) fn retain_interrupted_save(&mut self, request: u64) {
+        if !self.save_submission_is_current(request) {
+            if let Some(Job::Save { document, .. }) = self.pending.get(&request) {
+                if let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == *document) {
+                    doc.save_outcome_unverifiable = true;
+                }
+            }
+            return;
+        }
         let Some(Job::Save {
             document,
             submission: Some(submission),
@@ -136,9 +170,6 @@ impl CedarApp {
         else {
             return;
         };
-        if submission.generation != self.generation || submission.request != request {
-            return;
-        }
         if let Some(doc) = self.documents.iter_mut().find(|doc| {
             doc.id == *document && doc.id == submission.document && doc.path == submission.path
         }) {
@@ -171,6 +202,9 @@ impl CedarApp {
         let Some(doc) = self.active().filter(|doc| doc.id == source.document) else {
             return Some("The tab changed. Check the interrupted save again");
         };
+        if doc.save_outcome_unverifiable {
+            return Some("The submission identity is unavailable. Keep or copy your draft and compare disk; automatic verification is unavailable");
+        }
         let Some(token) = &doc.interrupted_save else {
             return Some("This interrupted save is no longer current");
         };

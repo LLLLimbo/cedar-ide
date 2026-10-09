@@ -342,7 +342,10 @@ impl CedarApp {
             return Some("The tab or baseline changed. Refresh the comparison and preview again");
         }
         let doc = self.active().unwrap();
-        if doc.revision.is_none() || doc.interrupted_save.is_some() {
+        if doc.save_outcome_unverifiable {
+            return Some("The save outcome cannot be verified. Keep or copy your draft and compare disk; merging is blocked for this tab");
+        }
+        if doc.revision.is_none() || doc.save_outcome_unknown() {
             return Some("Merge needs a known saved baseline. Resolve any interrupted save first");
         }
         if doc.text == doc.saved_text {

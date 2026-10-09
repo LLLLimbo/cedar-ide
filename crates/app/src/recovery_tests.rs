@@ -1,6 +1,7 @@
 //! Headless native integration with actual private storage and synthetic workspaces.
 use super::*;
 use cedar_recovery::{record_id, Draft, Store, WorkspaceIdentity};
+use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 
 fn workspace() -> WorkspaceIdentity {
@@ -226,6 +227,10 @@ fn save_while_typing_preserves_newer_draft_and_updates_base() {
     connected(&mut app);
     dirty_doc(&mut app);
     persist(&mut app);
+    app.next_request = 17;
+    let submission = interrupted_save::InterruptedSave::capture(&app, &app.documents[0]).unwrap();
+    app.next_request += 1;
+    let revision = format!("{:x}", Sha256::digest(b"current draft"));
     app.documents[0].text = "typed after save request".into();
     app.documents[0].edit_version += 1;
     app.pending.insert(
@@ -233,7 +238,7 @@ fn save_while_typing_preserves_newer_draft_and_updates_base() {
         Job::Save {
             document: 1,
             snapshot: "current draft".into(),
-            submission: None,
+            submission: Some(submission),
         },
     );
     app.apply_event(Event {
@@ -241,7 +246,7 @@ fn save_while_typing_preserves_newer_draft_and_updates_base() {
         id: 17,
         connected: true,
         result: Ok(Payload::Written {
-            revision: "next-revision".into(),
+            revision: revision.clone(),
         }),
     });
     persist(&mut app);
@@ -252,7 +257,7 @@ fn save_while_typing_preserves_newer_draft_and_updates_base() {
         .unwrap();
     assert_eq!(draft.text, "typed after save request");
     assert_eq!(draft.base_text, "current draft");
-    assert_eq!(draft.base_revision.as_deref(), Some("next-revision"));
+    assert_eq!(draft.base_revision.as_deref(), Some(revision.as_str()));
 }
 #[test]
 fn explicit_discard_removes_owned_copy_and_pending_write() {
@@ -282,12 +287,15 @@ fn unopened_recovery_survives_unrelated_tab_save_and_discard() {
         app.recovery.status(Some(&workspace()), app.active()).0,
         "Older recovery waiting"
     );
+    app.next_request = 17;
+    let submission = interrupted_save::InterruptedSave::capture(&app, &app.documents[0]).unwrap();
+    app.next_request += 1;
     app.pending.insert(
         17,
         Job::Save {
             document: 1,
             snapshot: "current draft".into(),
-            submission: None,
+            submission: Some(submission),
         },
     );
     app.apply_event(Event {
@@ -295,7 +303,7 @@ fn unopened_recovery_survives_unrelated_tab_save_and_discard() {
         id: 17,
         connected: true,
         result: Ok(Payload::Written {
-            revision: "changed-disk".into(),
+            revision: format!("{:x}", Sha256::digest(b"current draft")),
         }),
     });
     app.remove_tab(1);

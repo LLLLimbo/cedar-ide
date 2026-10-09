@@ -47,6 +47,10 @@ mod recovery_ui;
 mod replace;
 mod run_ui;
 #[cfg(test)]
+mod save_ack_process_tests;
+#[cfg(test)]
+mod save_ack_tests;
+#[cfg(test)]
 mod sidebar_layout_tests;
 mod syntax;
 mod system_fonts;
@@ -716,7 +720,11 @@ impl CedarApp {
         if !doc.dirty() || doc.saving {
             return;
         }
-        if doc.interrupted_save.is_some() || self.interrupted_save_check.busy() {
+        if doc.save_outcome_unverifiable {
+            self.error = Some("The save outcome is unknown and its submission identity is unavailable. Keep or copy your draft and compare disk; further saves are blocked for this tab".into());
+            return;
+        }
+        if doc.save_outcome_unknown() || self.interrupted_save_check.busy() {
             self.error = Some("Check the interrupted save after reconnecting before saving again. Your draft is retained".into());
             return;
         }
@@ -945,13 +953,14 @@ impl CedarApp {
             return;
         }
         let invalid_save_ack = self.pending.get(&event.id).is_some_and(|job| {
-            matches!(job, Job::Save { .. } if match &event.result {
-                Ok(Payload::Written { .. }) => false,
+            matches!(job, Job::Save { snapshot, .. } if match &event.result {
+                Ok(Payload::Written { revision }) => !event.connected || !self.save_submission_is_current(event.id)
+                    || !interrupted_save::acknowledgement_matches(snapshot, revision),
                 Ok(_) => true,
                 Err(_) => false,
             })
         });
-        if !event.connected || invalid_save_ack {
+        if invalid_save_ack || !event.connected {
             self.retain_interrupted_save(event.id);
         }
         let Some(job) = self.pending.remove(&event.id) else {
@@ -1229,7 +1238,22 @@ impl CedarApp {
             }
         }
         if invalid_save_ack {
-            self.error = Some("The save acknowledgement could not be verified. Use Check interrupted save; your draft is retained".into());
+            if matches!(&job, Job::Save { document, .. } if !self.documents.iter().any(|doc| doc.id == *document))
+            {
+                // There is no current tab on which this response can act.
+                if !event.connected {
+                    self.disconnected(
+                        "The connection closed after an unverifiable save response".into(),
+                    );
+                }
+                return;
+            }
+            let unavailable = matches!(&job, Job::Save { document, .. } if self.documents.iter().any(|doc| doc.id == *document && doc.save_outcome_unverifiable));
+            self.error = Some(if unavailable {
+                "The save outcome is unknown and its submission identity is unavailable. Keep or copy your draft and compare disk; verification and further saves are blocked"
+            } else {
+                "The save acknowledgement could not be verified. Use Check interrupted save; your draft is retained"
+            }.into());
             if !event.connected {
                 self.disconnected(self.error.clone().unwrap());
             }
@@ -1629,7 +1653,7 @@ impl CedarApp {
                         let can_save = self.backend_supports("write")
                             && !self.interrupted_save_check.busy()
                             && self.active().is_some_and(|doc| {
-                                doc.dirty() && !doc.saving && doc.interrupted_save.is_none()
+                                doc.dirty() && !doc.saving && !doc.save_outcome_unknown()
                             });
                         if ui
                             .add_enabled(
@@ -2413,7 +2437,7 @@ impl CedarApp {
         if let Some(doc) = self.active() {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&doc.path).size(12.0).color(MUTED));
-                if doc.interrupted_save.is_some() {
+                if doc.save_outcome_unknown() {
                     ui.label(RichText::new("SAVE OUTCOME UNKNOWN").size(10.0).color(AMBER));
                 } else if doc.dirty() {
                     ui.label(RichText::new("UNSAVED").size(10.0).color(AMBER));
@@ -2433,7 +2457,7 @@ impl CedarApp {
                     {
                         compare = true;
                     }
-                    if doc.interrupted_save.is_some() {
+                    if doc.interrupted_save.is_some() && !doc.save_outcome_unverifiable {
                         check_save = ui.add_enabled(can_check_save, egui::Button::new("Check interrupted save").small())
                             .on_hover_text("Read disk twice and compare with the submitted contents; never retries the write").clicked();
                     }
@@ -2448,6 +2472,12 @@ impl CedarApp {
         }
         if check_save {
             self.check_interrupted_save();
+        }
+        if self
+            .active()
+            .is_some_and(|doc| doc.save_outcome_unverifiable)
+        {
+            ui.label(RichText::new("Save outcome unknown; submission identity unavailable. Keep or copy your draft and compare disk. Verification and further saves are blocked for this tab.").small().color(AMBER));
         }
         if let Some(message) = self.interrupted_save_check.message() {
             ui.label(RichText::new(message).small().color(AMBER));

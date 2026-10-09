@@ -8,6 +8,9 @@ pub struct Document {
     pub revision: Option<String>,
     pub saving: bool,
     pub interrupted_save: Option<crate::interrupted_save::InterruptedSave>,
+    /// An unknown outcome without a trustworthy submission identity. Never
+    /// manufacture a reconciliation token from the current (possibly newer) draft.
+    pub save_outcome_unverifiable: bool,
     pub cursor: (usize, usize),
     pub jump_to: Option<usize>,
     pub scroll_to: Option<usize>,
@@ -28,6 +31,7 @@ impl Document {
             revision: Some(revision),
             saving: false,
             interrupted_save: None,
+            save_outcome_unverifiable: false,
             cursor: (1, 1),
             jump_to: None,
             scroll_to: None,
@@ -37,7 +41,10 @@ impl Document {
         }
     }
     pub fn dirty(&self) -> bool {
-        self.interrupted_save.is_some() || self.revision.is_none() || self.text != self.saved_text
+        self.save_outcome_unknown() || self.revision.is_none() || self.text != self.saved_text
+    }
+    pub fn save_outcome_unknown(&self) -> bool {
+        self.interrupted_save.is_some() || self.save_outcome_unverifiable
     }
     pub fn acknowledge_save(&mut self, snapshot: String, revision: String) {
         self.saved_text = snapshot;

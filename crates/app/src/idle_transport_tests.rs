@@ -1,6 +1,7 @@
 //! Generation-bound passive loss uses the same frontend disconnect transition
 //! as a failed request, without requiring another user operation.
 use super::*;
+use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 
 const ROOT: &str = "/synthetic-idle-workspace";
@@ -186,6 +187,7 @@ fn healthy_idle_frames_send_no_requests_and_stale_loss_cannot_disconnect_replace
 #[test]
 fn acknowledged_write_before_terminal_event_keeps_saved_revision_and_later_edits() {
     let (mut app, commands) = app();
+    let revision = format!("{:x}", Sha256::digest(DRAFT.as_bytes()));
     editor_state::commit(&app.editor_ctx, &mut app.documents[0], DRAFT.into(), 6);
     app.save();
     let write = commands.try_recv().unwrap();
@@ -197,7 +199,7 @@ fn acknowledged_write_before_terminal_event_keeps_saved_revision_and_later_edits
             id: write.id,
             connected: true,
             result: Ok(Payload::Written {
-                revision: "r1".into(),
+                revision: revision.clone(),
             }),
         }))
         .unwrap();
@@ -206,7 +208,10 @@ fn acknowledged_write_before_terminal_event_keeps_saved_revision_and_later_edits
     assert!(app.state == ConnectionState::Disconnected);
     assert_eq!(app.documents[0].text, NEWER);
     assert_eq!(app.documents[0].saved_text, DRAFT);
-    assert_eq!(app.documents[0].revision.as_deref(), Some("r1"));
+    assert_eq!(
+        app.documents[0].revision.as_deref(),
+        Some(revision.as_str())
+    );
     assert!(app.documents[0].dirty());
     assert!(!app.documents[0].saving);
     assert!(app.documents[0].interrupted_save.is_none());

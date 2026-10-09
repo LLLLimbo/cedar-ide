@@ -5,6 +5,7 @@ use crate::{
     worker::{Event, Worker},
     ConnectionState,
 };
+use sha2::{Digest, Sha256};
 
 fn app() -> CedarApp {
     let mut app = CedarApp::empty();
@@ -1837,6 +1838,13 @@ fn ready_read_preserves_only_the_current_owned_back_or_forward_release() {
 #[test]
 fn captured_history_click_after_save_ack_and_before_eof_keeps_worker_order() {
     let mut app = app();
+    app.root = "/project".into();
+    let form = crate::ConnectForm {
+        local_root: app.root.clone(),
+        ..Default::default()
+    };
+    app.workspace_key = Some(form.key());
+    app.active_form = Some(form);
     editor_state::commit(
         &app.editor_ctx,
         &mut app.documents[1],
@@ -1863,12 +1871,17 @@ fn captured_history_click_after_save_ack_and_before_eof_keeps_worker_order() {
         ],
     );
     app.documents[1].saving = true;
+    app.next_request = 500;
+    let submission =
+        crate::interrupted_save::InterruptedSave::capture(&app, &app.documents[1]).unwrap();
+    app.next_request += 1;
+    let revision = format!("{:x}", Sha256::digest(b"saved draft"));
     app.pending.insert(
         500,
         crate::Job::Save {
             document: 2,
             snapshot: "saved draft".into(),
-            submission: None,
+            submission: Some(submission),
         },
     );
     app.result_tx
@@ -1877,7 +1890,7 @@ fn captured_history_click_after_save_ack_and_before_eof_keeps_worker_order() {
             id: 500,
             connected: true,
             result: Ok(cedar_protocol::Payload::Written {
-                revision: "saved-revision".into(),
+                revision: revision.clone(),
             }),
         }))
         .unwrap();
@@ -1899,7 +1912,10 @@ fn captured_history_click_after_save_ack_and_before_eof_keeps_worker_order() {
     );
     assert_eq!(app.active_document, Some(1));
     assert_eq!(app.documents[1].saved_text, "saved draft");
-    assert_eq!(app.documents[1].revision.as_deref(), Some("saved-revision"));
+    assert_eq!(
+        app.documents[1].revision.as_deref(),
+        Some(revision.as_str())
+    );
     assert!(!app.documents[1].saving);
     assert!(app.documents[1].interrupted_save.is_none());
     assert!(app.state == ConnectionState::Disconnected);

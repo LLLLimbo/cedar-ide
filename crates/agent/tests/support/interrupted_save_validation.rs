@@ -1,7 +1,8 @@
 //! Nonshipping, deterministic lost-reply peer for generated acceptance roots.
 //! File operations and revisions use the actual Workspace implementation.
-//! The first successful Write commits before this process exits without its
-//! response. A new process reads those same bytes; no request is replayed.
+//! By default the first successful Write commits before this process exits
+//! without its response. Explicit, bounded synthetic ack modes also exercise
+//! malformed Written frames. No mode enables execution or request replay.
 use cedar_protocol::{read_frame, write_frame, Operation, Payload, RemoteError, Request, Response};
 use cedar_workspace::Workspace;
 use std::{
@@ -15,7 +16,34 @@ const MARKER_TEXT: &[u8] = b"cedar-interrupted-save-validation-v1\nsynthetic-dat
 const OPERATIONS: &str = ".cedar-interrupted-save-operations";
 const COMMITTED: &str = ".cedar-interrupted-save-committed";
 const READ_MODE: &str = ".cedar-interrupted-save-read-mode";
+const SAVE_ACK_MODE: &str = ".cedar-synthetic-save-ack-mode";
 const MAX_OPERATIONS: usize = 256;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SaveAckMode {
+    LostReply,
+    Missing,
+    Empty,
+    Oversized,
+    Noncanonical,
+    WrongDigest,
+    NotCommitted,
+}
+
+fn save_ack_mode(root: &Path) -> io::Result<SaveAckMode> {
+    match bounded_file(&root.join(SAVE_ACK_MODE), 64)?.as_deref() {
+        None => Ok(SaveAckMode::LostReply),
+        Some(b"synthetic-missing\n") => Ok(SaveAckMode::Missing),
+        Some(b"synthetic-empty\n") => Ok(SaveAckMode::Empty),
+        Some(b"synthetic-oversized\n") => Ok(SaveAckMode::Oversized),
+        Some(b"synthetic-noncanonical\n") => Ok(SaveAckMode::Noncanonical),
+        Some(b"synthetic-wrong-digest\n") => Ok(SaveAckMode::WrongDigest),
+        Some(b"synthetic-not-committed\n") => Ok(SaveAckMode::NotCommitted),
+        _ => Err(io::Error::other(
+            "unknown synthetic save acknowledgement mode",
+        )),
+    }
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -72,6 +100,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(b"1\n") => true,
         _ => return Err("invalid fixture commit counter".into()),
     };
+    let save_ack_mode = save_ack_mode(&root)?;
+    let mut handled_write = committed;
     let mut workspace = Workspace::open(&root)?;
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -86,7 +116,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             _ => ("Rejected", false),
         };
         log_operation(&root, name)?;
-        let mut result = if allowed {
+        let synthetic_noncommit = allowed
+            && name == "Write"
+            && !handled_write
+            && save_ack_mode == SaveAckMode::NotCommitted;
+        let mut result = if synthetic_noncommit {
+            // Intentionally claim success without invoking Workspace::write.
+            // This single controlled case leaves the original real bytes intact.
+            Ok(Payload::Written {
+                revision: String::new(),
+            })
+        } else if allowed {
             workspace.handle(request.op)
         } else {
             Err(RemoteError::new(
@@ -103,16 +143,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map(str::to_owned)
                 .collect();
         }
-        if name == "Write" && matches!(result, Ok(Payload::Written { .. })) && !committed {
-            let mut counter = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(root.join(COMMITTED))?;
-            counter.write_all(b"1\n")?;
-            counter.sync_all()?;
-            // Normal Workspace Write has already completed and replaced the
-            // real file. Intentionally omit the successful Written frame.
-            return Ok(());
+        if name == "Write" && matches!(result, Ok(Payload::Written { .. })) && !handled_write {
+            handled_write = true;
+            if !synthetic_noncommit {
+                let mut counter = OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(root.join(COMMITTED))?;
+                counter.write_all(b"1\n")?;
+                counter.sync_all()?;
+            }
+            if let Ok(Payload::Written { revision }) = &mut result {
+                match save_ack_mode {
+                    // Normal Workspace Write has already replaced the real file.
+                    SaveAckMode::LostReply => return Ok(()),
+                    SaveAckMode::Missing => {
+                        // The real Client decoder must reject the missing required
+                        // field. Only a numeric request ID enters this fixed frame.
+                        writeln!(
+                            writer,
+                            "{{\"id\":{},\"result\":{{\"Ok\":{{\"type\":\"written\"}}}}}}",
+                            request.id
+                        )?;
+                        writer.flush()?;
+                        return Ok(());
+                    }
+                    SaveAckMode::Empty | SaveAckMode::NotCommitted => revision.clear(),
+                    SaveAckMode::Oversized => *revision = "0".repeat(65),
+                    SaveAckMode::Noncanonical => {
+                        revision.make_ascii_uppercase();
+                        // Even the all-digit SHA-256 corner case must be an
+                        // unambiguously noncanonical synthetic response.
+                        if revision.bytes().all(|byte| byte.is_ascii_digit()) {
+                            revision.replace_range(..1, "A");
+                        }
+                    }
+                    SaveAckMode::WrongDigest => {
+                        *revision = if revision.bytes().all(|byte| byte == b'0') {
+                            "1".repeat(64)
+                        } else {
+                            "0".repeat(64)
+                        };
+                    }
+                }
+            }
         }
         if name == "Read" {
             let mode = bounded_file(&root.join(READ_MODE), 32)?.unwrap_or_default();

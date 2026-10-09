@@ -687,7 +687,7 @@ fn pom_disk_change_requires_restart_and_late_imported_response_is_ignored() {
                 &mut app,
                 save,
                 Ok(Payload::Written {
-                    revision: "a".repeat(64),
+                    revision: format!("{:x}", Sha256::digest(b"changed POM")),
                 }),
             );
             assert!(matches!(rx.try_recv().unwrap().op, Operation::List { .. }));
@@ -707,6 +707,61 @@ fn pom_disk_change_requires_restart_and_late_imported_response_is_ignored() {
         app.stop_language();
         assert!(matches!(rx.try_recv().unwrap().op, Operation::LanguageStop));
     }
+}
+
+#[test]
+fn wrong_content_save_ack_does_not_become_a_pom_disk_witness() {
+    let (mut app, rx) = app();
+    app.documents
+        .push(Document::new(1, "pom.xml".into(), POM.into(), pom_hash()));
+    start(&mut app, &rx);
+    let model = model_request(&mut app, &rx);
+    app.documents[0].text = "changed POM".into();
+    app.save_document(1);
+    let save = rx.try_recv().unwrap();
+    assert!(matches!(save.op, Operation::Write { .. }));
+    let wrong_revision = "a".repeat(64);
+    assert_ne!(wrong_revision, pom_hash());
+    assert_ne!(
+        wrong_revision,
+        format!("{:x}", Sha256::digest(b"changed POM"))
+    );
+    reply(
+        &mut app,
+        save,
+        Ok(Payload::Written {
+            revision: wrong_revision,
+        }),
+    );
+    assert!(app.ready());
+    assert!(app.language.running);
+    assert!(app.language.maven_model.status == ModelStatus::Checking);
+    assert_eq!(
+        app.language.maven_model.pom_sha256(),
+        Some(pom_hash().as_str())
+    );
+    assert_eq!(app.documents[0].text, "changed POM");
+    assert_eq!(app.documents[0].saved_text, POM);
+    assert_eq!(
+        app.documents[0].revision.as_deref(),
+        Some(pom_hash().as_str())
+    );
+    assert!(app.documents[0].dirty());
+    assert!(!app.documents[0].saving);
+    assert!(app.documents[0].interrupted_save.is_some());
+    assert!(!app.documents[0].save_outcome_unverifiable);
+    assert!(
+        rx.try_recv().is_err(),
+        "unverified saves must not refresh Explorer"
+    );
+
+    reply(&mut app, model, language(model_value()));
+    assert!(app.language.maven_model.status == ModelStatus::Imported);
+    assert!(app.language.maven_model.model.is_some());
+    assert!(!app.language.maven_model.restart_required());
+    app.save_document(1);
+    assert!(app.error.as_deref().unwrap().contains("interrupted save"));
+    assert!(rx.try_recv().is_err());
 }
 
 #[test]
@@ -755,7 +810,7 @@ fn preexisting_pom_baseline_does_not_reject_a_newer_server_snapshot() {
         &mut app,
         save,
         Ok(Payload::Written {
-            revision: "c".repeat(64),
+            revision: format!("{:x}", Sha256::digest(b"unsaved POM draft")),
         }),
     );
     assert!(app.language.maven_model.status == ModelStatus::RestartRequired);

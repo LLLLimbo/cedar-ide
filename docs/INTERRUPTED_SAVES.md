@@ -46,9 +46,32 @@ actual contents, and both read-back snapshots must agree. Files are bounded to
 
 These are two observations, not a filesystem transaction or ongoing watch.
 Later saves still use Cedar's existing revision check, which is not an atomic
-compare-and-swap. Ordinary Written acknowledgements retain their existing
-revision handling; this feature's stronger validation applies to reconciliation
-Reads and does not redefine the wire protocol.
+compare-and-swap.
+
+## Verifying save acknowledgements
+
+From 0.32, an ordinary `Written` acknowledgement must carry the exact lowercase
+SHA-256 of the submitted text, with the original request, workspace, document and
+saved-baseline identity still valid. The normal agent already returns this value.
+The check uses the submitted snapshot, so typing after Save does not invalidate a
+correct acknowledgement or replace the newer draft. This checks response
+consistency; it is not authentication or an independent proof of disk durability.
+
+An empty, malformed or different-content revision leaves the save outcome unknown.
+Cedar retains the original baseline, draft, Undo/Redo and owned recovery copy,
+without automatically reading or writing again. Use the existing explicit
+**Check interrupted save** action when its original submission identity is
+available. A rejected acknowledgement does not certify Maven POM changes or
+refresh saved-file views.
+
+If the submission identity itself is unavailable or inconsistent, the tab remains
+unknown and dirty even after Undo returns to its old baseline. Further saves and
+draft merges are blocked; **Check interrupted save** is unavailable because it
+cannot safely reconstruct what was submitted. Keep or copy the draft and use
+**Compare with disk**. Closing/discarding that tab is an explicit decision; a
+reconnect does not remove the protection. Normal save admission refuses requests
+whose identity cannot be captured. This fallback hardens an invalid internal
+state and is not a reported normal-agent failure.
 
 ## Recovery and scope
 

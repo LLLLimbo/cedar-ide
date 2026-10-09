@@ -188,7 +188,10 @@ impl CedarApp {
         if doc.saving {
             return Some("The configuration is saving; wait for its acknowledgement");
         }
-        if doc.interrupted_save.is_some() || self.interrupted_save_check.busy() {
+        if doc.save_outcome_unverifiable {
+            return Some("The configuration save outcome is unknown and its submission identity is unavailable. Keep or copy the draft and compare disk before explicitly discarding this tab");
+        }
+        if doc.save_outcome_unknown() || self.interrupted_save_check.busy() {
             return Some("Check the interrupted save in the configuration tab before Save or Run");
         }
         None
@@ -717,6 +720,7 @@ mod tests {
     use super::*;
     use crate::{worker, ConnectForm, ConnectionState, Event};
     use cedar_protocol::Payload;
+    use sha2::{Digest, Sha256};
     use std::sync::mpsc::Receiver;
 
     fn sample() -> TaskFile {
@@ -917,6 +921,7 @@ mod tests {
         app.save_profile();
         let command = rx.try_recv().unwrap();
         let submitted = app.documents[0].text.clone();
+        let revision = format!("{:x}", Sha256::digest(submitted.as_bytes()));
         app.profiles.draft.args.push("newer form".into());
         app.profiles.changed();
         app.documents[0].text.push_str(" \n");
@@ -926,12 +931,15 @@ mod tests {
             &mut app,
             &command,
             Payload::Written {
-                revision: "sha1".into(),
+                revision: revision.clone(),
             },
         );
         assert_eq!(app.documents[0].text, raw);
         assert_eq!(app.documents[0].saved_text, submitted);
-        assert_eq!(app.documents[0].revision.as_deref(), Some("sha1"));
+        assert_eq!(
+            app.documents[0].revision.as_deref(),
+            Some(revision.as_str())
+        );
         assert_eq!(app.profiles.draft.args.last().unwrap(), "newer form");
         assert!(app.profiles.dirty());
         assert!(app.documents[0].dirty());
@@ -943,19 +951,84 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
     #[test]
+    fn wrong_content_save_ack_preserves_profile_source_form_and_disk_baseline() {
+        let (mut app, rx) = loaded();
+        let saved_text = app.documents[0].saved_text.clone();
+        app.profiles.draft.args.push("submitted".into());
+        app.profiles.changed();
+        app.save_profile();
+        let command = rx.try_recv().unwrap();
+        assert!(matches!(command.op, Operation::Write { .. }));
+        let submitted = app.documents[0].text.clone();
+        let source = app.profiles.source.as_ref().unwrap().clone();
+        let baseline = app.profiles.baseline.clone();
+        let file = app.profiles.file.clone();
+        let message = app.profiles.message.clone();
+        app.profiles.draft.args.push("newer form".into());
+        app.profiles.changed();
+        let draft = app.profiles.draft.clone();
+        let wrong_revision = "a".repeat(64);
+        assert_ne!(
+            wrong_revision,
+            format!("{:x}", Sha256::digest(submitted.as_bytes()))
+        );
+        respond(
+            &mut app,
+            &command,
+            Payload::Written {
+                revision: wrong_revision,
+            },
+        );
+
+        assert!(app.ready());
+        assert_eq!(app.documents[0].text, submitted);
+        assert_eq!(app.documents[0].saved_text, saved_text);
+        assert_eq!(app.documents[0].revision.as_deref(), Some("sha0"));
+        assert!(app.documents[0].dirty());
+        assert!(!app.documents[0].saving);
+        assert!(app.documents[0].interrupted_save.is_some());
+        assert!(!app.documents[0].save_outcome_unverifiable);
+        let retained_source = app.profiles.source.as_ref().unwrap();
+        assert_eq!(retained_source.workspace, source.workspace);
+        assert_eq!(retained_source.generation, source.generation);
+        assert_eq!(retained_source.document, source.document);
+        assert_eq!(retained_source.edit_version, source.edit_version);
+        assert_eq!(retained_source.revision, source.revision);
+        assert_eq!(app.profiles.draft, draft);
+        assert_eq!(app.profiles.baseline, baseline);
+        assert_eq!(app.profiles.file, file);
+        assert_eq!(app.profiles.message, message);
+        assert!(app.profiles.dirty());
+        assert!(app
+            .profile_run_problem()
+            .unwrap()
+            .contains("interrupted save"));
+        assert!(
+            rx.try_recv().is_err(),
+            "unverified saves must not refresh Explorer"
+        );
+
+        app.save_profile();
+        app.run();
+        assert_eq!(app.profiles.draft, draft);
+        assert_eq!(app.documents[0].text, submitted);
+        assert!(rx.try_recv().is_err());
+    }
+    #[test]
     fn delayed_save_with_form_typing_can_save_again_against_new_revision() {
         let (mut app, rx) = loaded();
         app.profiles.draft.args.push("submitted".into());
         app.profiles.changed();
         app.save_profile();
         let command = rx.try_recv().unwrap();
+        let revision = format!("{:x}", Sha256::digest(app.documents[0].text.as_bytes()));
         app.profiles.draft.args.push("later".into());
         app.profiles.changed();
         respond(
             &mut app,
             &command,
             Payload::Written {
-                revision: "sha1".into(),
+                revision: revision.clone(),
             },
         );
         rx.try_recv().unwrap();
@@ -969,7 +1042,7 @@ mod tests {
         else {
             panic!()
         };
-        assert_eq!(expected_revision.as_deref(), Some("sha1"));
+        assert_eq!(expected_revision.as_deref(), Some(revision.as_str()));
         assert_eq!(
             parse_task_file(&text).unwrap().profiles[0]
                 .args
@@ -1232,14 +1305,9 @@ mod tests {
         app.profiles.draft.args.push("submitted".into());
         app.save_profile();
         let command = rx.try_recv().unwrap();
+        let revision = format!("{:x}", Sha256::digest(app.documents[0].text.as_bytes()));
         app.remove_tab(app.documents[0].id);
-        respond(
-            &mut app,
-            &command,
-            Payload::Written {
-                revision: "ignored".into(),
-            },
-        );
+        respond(&mut app, &command, Payload::Written { revision });
         assert!(app.profiles.source.is_none());
         assert!(app.documents.is_empty());
         let (mut app, rx) = connected();
@@ -1283,16 +1351,11 @@ mod tests {
         app.save_profile();
         let command = rx.try_recv().unwrap();
         let document = app.documents[0].text.clone();
+        let revision = format!("{:x}", Sha256::digest(document.as_bytes()));
         app.profiles.draft.args.push("unsent form edit".into());
         app.profiles.changed();
         app.disconnected("connection lost".into());
-        respond(
-            &mut app,
-            &command,
-            Payload::Written {
-                revision: "unknown-result-sha".into(),
-            },
-        );
+        respond(&mut app, &command, Payload::Written { revision });
         assert_eq!(app.documents[0].text, document);
         assert_eq!(app.documents[0].revision.as_deref(), Some("sha0"));
         assert!(!app.documents[0].saving);
@@ -1661,6 +1724,7 @@ mod tests {
         frame(&mut app, &ctx, 1.1, vec![]);
         let command = rx.try_recv().unwrap();
         let submitted = app.documents[0].text.clone();
+        let revision = format!("{:x}", Sha256::digest(submitted.as_bytes()));
         app.documents[0].jump_to = Some(submitted.chars().count());
         frame(&mut app, &ctx, 1.2, vec![]);
         app.result_tx
@@ -1669,14 +1733,17 @@ mod tests {
                 id: command.id,
                 connected: true,
                 result: Ok(Payload::Written {
-                    revision: "sha1".into(),
+                    revision: revision.clone(),
                 }),
             }))
             .unwrap();
         frame(&mut app, &ctx, 1.3, vec![egui::Event::Text("Y".into())]);
         assert_eq!(app.documents[0].saved_text, submitted);
         assert_eq!(app.documents[0].text, format!("{submitted}Y"));
-        assert_eq!(app.documents[0].revision.as_deref(), Some("sha1"));
+        assert_eq!(
+            app.documents[0].revision.as_deref(),
+            Some(revision.as_str())
+        );
         assert!(app.documents[0].dirty());
         assert!(app
             .profile_source_problem(false)

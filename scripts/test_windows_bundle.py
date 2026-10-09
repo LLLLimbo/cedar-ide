@@ -77,9 +77,10 @@ class WindowsBundleTests(unittest.TestCase):
         self.assertEqual(bundle.SOURCE_FILES["docs/MAVEN_DEPENDENCIES.md"], "MAVEN_DEPENDENCIES.md")
         self.assertEqual(bundle.SOURCE_FILES["docs/EXPLORER_TREE.md"], "EXPLORER_TREE.md")
         self.assertEqual(bundle.SOURCE_FILES["docs/LOCATION_HISTORY.md"], "LOCATION_HISTORY.md")
+        self.assertEqual(bundle.SOURCE_FILES["docs/INTERRUPTED_SAVES.md"], "INTERRUPTED_SAVES.md")
         root = Path(__file__).resolve().parent.parent
         payload = dict(self.payload)
-        for source in ("docs/WINDOWS_QUICKSTART.zh-CN.md", "docs/JAVA_IMPLEMENTATIONS.md", "docs/MAVEN_DEPENDENCIES.md", "docs/EXPLORER_TREE.md", "docs/LOCATION_HISTORY.md"):
+        for source in ("docs/WINDOWS_QUICKSTART.zh-CN.md", "docs/JAVA_IMPLEMENTATIONS.md", "docs/MAVEN_DEPENDENCIES.md", "docs/EXPLORER_TREE.md", "docs/LOCATION_HISTORY.md", "docs/INTERRUPTED_SAVES.md"):
             payload[bundle.SOURCE_FILES[source]] = (root / source).read_bytes()
         bundle.validate_entry_guide_links(payload)
         manifest = bundle.make_manifest("0.28.1", COMMIT, RUN_URL, payload)
@@ -88,6 +89,7 @@ class WindowsBundleTests(unittest.TestCase):
         self.assertEqual(verified["MAVEN_DEPENDENCIES.md"], payload["MAVEN_DEPENDENCIES.md"])
         self.assertEqual(verified["EXPLORER_TREE.md"], payload["EXPLORER_TREE.md"])
         self.assertEqual(verified["LOCATION_HISTORY.md"], payload["LOCATION_HISTORY.md"])
+        self.assertEqual(verified["INTERRUPTED_SAVES.md"], payload["INTERRUPTED_SAVES.md"])
 
     def test_consistent_hashes_cannot_hide_broken_entry_guide_links(self):
         for name in ("WINDOWS_QUICKSTART.zh-CN.md", "JAVA_IMPLEMENTATIONS.md"):

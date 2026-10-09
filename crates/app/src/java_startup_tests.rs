@@ -10,6 +10,7 @@ use cedar_protocol::{
     LanguageQueryKind, JAVA_LANGUAGE_SESSION_CAPABILITIES, JAVA_STARTUP_CAPABILITIES,
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::sync::mpsc::Receiver;
 
 fn app() -> (CedarApp, Receiver<Command>) {
@@ -548,6 +549,7 @@ fn idle_configuration_edits_never_start_java() {
 #[test]
 fn save_ack_during_startup_preserves_newer_draft_and_undo() {
     let (mut app, rx) = app();
+    let revision = format!("{:x}", Sha256::digest(b"class Main { int draft; }"));
     draft(&mut app);
     begin(&mut app, &rx, 42);
     app.save_document(1);
@@ -564,14 +566,14 @@ fn save_ack_during_startup_preserves_newer_draft_and_undo() {
         id: save.id,
         connected: true,
         result: Ok(Payload::Written {
-            revision: "saved-revision".into(),
+            revision: revision.clone(),
         }),
     });
     assert!(app.language.startup_active());
     let doc = &app.documents[0];
     assert_eq!(doc.text, "class Main { int newer; }");
     assert_eq!(doc.saved_text, "class Main { int draft; }");
-    assert_eq!(doc.revision.as_deref(), Some("saved-revision"));
+    assert_eq!(doc.revision.as_deref(), Some(revision.as_str()));
     assert!(doc.dirty());
     let state =
         egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 1u64))).unwrap();

@@ -19,6 +19,11 @@ IntelliJ IDEA 的完整替代品。请从本项目对应提交的 GitHub Actions
 
 ## 第一次打开
 
+保存回执会核对本次提交内容的 SHA-256。若回执异常，草稿和原保存基线会保留，
+不会自动重放写入；有原提交身份时可显式使用 **Check interrupted save** 读回两次核对。
+若提交身份不可核对，该标签会继续显示保存结果未知，阻止再次保存；请保留或复制草稿，
+使用 **Compare with disk** 检查。详见 [INTERRUPTED_SAVES.md](INTERRUPTED_SAVES.md)。
+
 1. 将整个 ZIP 解压到一个你有写入权限的新目录。路径可以包含空格和中文。
 2. 打开 `cedar.exe`，选择 **Local folder**，填写已有项目目录的绝对路径，
    点击 **Connect workspace**。初次试用可先选择一份测试文件的副本。

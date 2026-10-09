@@ -2,6 +2,7 @@
 //! worker event shapes, and render the production sidebar and raw-input hook.
 use super::*;
 use explorer_tree::{row_id, Mode, MAX_DEPTH, MAX_ROWS, MAX_SNAPSHOTS, MAX_TEXT_BYTES};
+use sha2::{Digest, Sha256};
 
 fn fixture() -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
@@ -487,6 +488,13 @@ fn depth_and_path_limits_reject_complete_overdepth_branch() {
 #[test]
 fn save_marks_actual_parent_stale_without_list_and_new_file_uses_selected_scope() {
     let (mut app, commands) = fixture();
+    app.root = "/project".into();
+    let form = ConnectForm {
+        local_root: app.root.clone(),
+        ..Default::default()
+    };
+    app.workspace_key = Some(form.key());
+    app.active_form = Some(form);
     root(
         &mut app,
         &commands,
@@ -507,12 +515,15 @@ fn save_marks_actual_parent_stale_without_list_and_new_file_uses_selected_scope(
     document.text = "acknowledged save".into();
     document.saving = true;
     app.documents.push(document);
+    app.next_request = 99;
+    let submission = interrupted_save::InterruptedSave::capture(&app, &app.documents[0]).unwrap();
+    app.next_request += 1;
     app.pending.insert(
         99,
         Job::Save {
             document: 7,
             snapshot: "acknowledged save".into(),
-            submission: None,
+            submission: Some(submission),
         },
     );
     app.apply_worker_event(WorkerEvent::Response(Event {
@@ -520,7 +531,7 @@ fn save_marks_actual_parent_stale_without_list_and_new_file_uses_selected_scope(
         id: 99,
         connected: true,
         result: Ok(Payload::Written {
-            revision: "r1".into(),
+            revision: format!("{:x}", Sha256::digest(b"acknowledged save")),
         }),
     }));
     assert!(!app.documents[0].dirty());

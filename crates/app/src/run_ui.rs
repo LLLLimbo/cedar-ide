@@ -545,7 +545,7 @@ impl CedarApp {
         let unknown = self
             .documents
             .iter()
-            .filter(|doc| doc.interrupted_save.is_some())
+            .filter(|doc| doc.save_outcome_unknown())
             .count();
         let saving = self.documents.iter().filter(|doc| doc.saving).count();
         if dirty > 0 || unknown > 0 || saving > 0 {
