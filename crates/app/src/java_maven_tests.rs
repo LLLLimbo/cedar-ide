@@ -1,0 +1,705 @@
+use super::*;
+use crate::{
+    agent_support::full_test_agent,
+    model::Document,
+    worker::{Command, Event, Worker},
+    ConnectForm, ConnectionState,
+};
+use cedar_protocol::{JAVA_LANGUAGE_SESSION_CAPABILITIES, JAVA_STARTUP_CAPABILITIES};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::sync::mpsc::Receiver;
+
+const POM: &str = "<project><modelVersion>4.0.0</modelVersion></project>";
+fn pom_hash() -> String {
+    format!("{:x}", Sha256::digest(POM.as_bytes()))
+}
+fn java_configuration() -> JavaConfiguration {
+    JavaConfiguration {
+        executable: r"C:\Program Files\Java\bin\java.exe".into(),
+        distribution: r"D:\JDT 雪".into(),
+        data_directory: r"D:\Java data".into(),
+    }
+}
+fn app() -> (CedarApp, Receiver<Command>) {
+    let mut app = CedarApp::empty();
+    app.state = ConnectionState::Ready;
+    app.generation = 9;
+    app.root = r"D:\工作区 雪".into();
+    let form = ConnectForm {
+        local_root: app.root.clone(),
+        allow_run: true,
+        ..Default::default()
+    };
+    app.workspace_key = Some(form.key());
+    app.active_form = Some(form);
+    let mut info = full_test_agent();
+    info.os = "windows".into();
+    info.capabilities.extend(
+        [
+            "language_start_java",
+            "language_start_java_maven_begin",
+            "language_maven_model",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
+    info.capabilities
+        .extend(JAVA_STARTUP_CAPABILITIES.iter().map(|name| (*name).into()));
+    app.agent_info = Some(info);
+    app.language.mode = ServerMode::Java;
+    app.language.java = java_configuration();
+    app.language.maven.enabled = true;
+    app.language.maven.local_repository = r"D:\Maven cache 雪".into();
+    let (worker, rx) = Worker::recording();
+    app.worker = Some(worker);
+    (app, rx)
+}
+fn reply(app: &mut CedarApp, command: Command, result: Result<Payload, String>) {
+    app.apply_event(Event {
+        generation: app.generation,
+        id: command.id,
+        connected: true,
+        result,
+    });
+}
+fn language(value: Value) -> Result<Payload, String> {
+    Ok(Payload::Language { value })
+}
+fn ready_value() -> Value {
+    json!({"started":true,"initialize":{"capabilities":{"completionProvider":{}},"cedar_java_profile":"maven_leaf","cedar_java_maven_model":true,"cedar_java_maven_pom_sha256":pom_hash()},"root_uri":"file:///D:/workspace"})
+}
+fn tick(app: &mut CedarApp, now: f64) {
+    let ctx = app.editor_ctx.clone();
+    ctx.begin_pass(egui::RawInput {
+        time: Some(now),
+        ..Default::default()
+    });
+    app.language_tick(&ctx);
+    let _ = ctx.end_pass();
+}
+fn start(app: &mut CedarApp, rx: &Receiver<Command>) {
+    start_with_hash(app, rx, &pom_hash());
+}
+fn start_with_hash(app: &mut CedarApp, rx: &Receiver<Command>, hash: &str) {
+    app.start_language();
+    let begin = rx.try_recv().unwrap();
+    assert!(matches!(
+        begin.op,
+        Operation::LanguageStartJavaMavenBegin { .. }
+    ));
+    reply(
+        app,
+        begin,
+        language(json!({"state":"starting","startup_id":42,"process_id":null})),
+    );
+    tick(app, 0.3);
+    let poll = rx.try_recv().unwrap();
+    assert!(matches!(
+        poll.op,
+        Operation::LanguageStartJavaPoll { startup_id: 42 }
+    ));
+    let mut ready = ready_value();
+    ready["initialize"]["cedar_java_maven_pom_sha256"] = json!(hash);
+    reply(
+        app,
+        poll,
+        language(json!({"state":"ready","startup_id":42,"language":ready})),
+    );
+    assert!(app.language.running);
+    assert!(app.language.maven_model.active());
+    assert!(
+        rx.try_recv().is_err(),
+        "startup does not request a Maven model"
+    );
+}
+fn model_value() -> Value {
+    json!({"profile":"maven_leaf","status":"imported","pom_path":"pom.xml","pom_sha256":pom_hash(),"restart_required":false,"maven_nature":true,
+        "compiler":{"source":"21","compliance":"21","target":"21","release_enabled":true},
+        "source_paths":["src/main/java","src/test/java","."],
+        "classpath":[{"kind":"library","path":"D:\\Maven cache 雪\\library.jar","resolved":true,"origin":"model"}],"unresolved_count":0})
+}
+fn model_request(app: &mut CedarApp, rx: &Receiver<Command>) -> Command {
+    app.check_maven_model();
+    let command = rx.try_recv().unwrap();
+    assert!(matches!(command.op, Operation::LanguageMavenModel));
+    command
+}
+
+#[test]
+fn maven_is_opt_in_and_host_paths_are_literal_without_cache_discovery() {
+    assert!(!MavenConfiguration::default().enabled);
+    let mut config = MavenConfiguration {
+        enabled: true,
+        local_repository: r"D:\Maven cache 雪\$(literal)".into(),
+    };
+    let mut java = java_configuration();
+    assert!(
+        matches!(config.operation(&java).unwrap(), Operation::LanguageStartJavaMavenBegin {
+        java_executable, distribution, data_directory, local_repository
+    } if java_executable == java.executable && distribution == java.distribution && data_directory == java.data_directory && local_repository == config.local_repository)
+    );
+    for cache in ["", "  ", "bad\0path", "bad\npath"] {
+        config.local_repository = cache.into();
+        assert!(config
+            .operation(&java)
+            .unwrap_err()
+            .contains("existing local Maven repository"));
+    }
+    config.local_repository = "x".repeat(4097);
+    assert!(config.operation(&java).is_err());
+    config.local_repository = r"D:\cache".into();
+    java.data_directory = r"D:\数据".into();
+    assert!(config
+        .operation(&java)
+        .unwrap_err()
+        .contains("ASCII JDT data/control"));
+    assert!(
+        java.operation().is_ok(),
+        "ordinary Java retains its existing Unicode data path behavior"
+    );
+}
+
+#[test]
+fn maven_never_falls_back_when_trust_or_any_required_capability_is_missing() {
+    for missing in JAVA_LANGUAGE_SESSION_CAPABILITIES
+        .iter()
+        .chain(JAVA_STARTUP_CAPABILITIES)
+        .chain(["language_start_java_maven_begin", "language_maven_model"].iter())
+    {
+        let (mut app, rx) = app();
+        app.agent_info
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .retain(|name| name.as_str() != *missing);
+        app.start_language();
+        assert!(
+            rx.try_recv().is_err(),
+            "missing {missing} must not select another Java recipe"
+        );
+        assert_eq!(app.language.session, 0);
+        assert!(!app.language.running);
+    }
+    let (mut app, rx) = app();
+    app.active_form.as_mut().unwrap().allow_run = false;
+    app.form.allow_run = true;
+    app.start_language();
+    assert!(rx.try_recv().is_err());
+    assert!(app
+        .operation_problem(&app.language.maven.operation(&app.language.java).unwrap())
+        .is_some());
+    assert!(!app.execution_trusted());
+    app.active_form.as_mut().unwrap().allow_run = true;
+    app.agent_info = None;
+    app.start_language();
+    assert!(
+        rx.try_recv().is_err(),
+        "legacy protocol-4 is not Maven support"
+    );
+}
+
+#[test]
+fn ordinary_java_keeps_both_async_and_legacy_recipes() {
+    for asynchronous in [false, true] {
+        let (mut app, rx) = app();
+        app.language.maven.enabled = false;
+        app.language.maven.local_repository.clear();
+        app.language.java.data_directory = r"D:\Java data 雪".into();
+        if !asynchronous {
+            app.agent_info
+                .as_mut()
+                .unwrap()
+                .capabilities
+                .retain(|name| name != "language_start_java_begin");
+        }
+        app.start_language();
+        let command = rx.try_recv().unwrap();
+        assert!(if asynchronous {
+            matches!(command.op, Operation::LanguageStartJavaBegin { .. })
+        } else {
+            matches!(command.op, Operation::LanguageStartJava { .. })
+        });
+    }
+}
+
+#[test]
+fn typed_startup_requires_profile_hash_and_capability_witness_but_never_model_polling() {
+    for missing in [
+        "cedar_java_profile",
+        "cedar_java_maven_pom_sha256",
+        "cedar_java_maven_model",
+    ] {
+        let (mut app, rx) = app();
+        app.start_language();
+        let begin = rx.try_recv().unwrap();
+        reply(
+            &mut app,
+            begin,
+            language(json!({"state":"starting","startup_id":42,"process_id":null})),
+        );
+        tick(&mut app, 0.3);
+        let poll = rx.try_recv().unwrap();
+        let mut value = ready_value();
+        value["initialize"].as_object_mut().unwrap().remove(missing);
+        reply(
+            &mut app,
+            poll,
+            language(json!({"state":"ready","startup_id":42,"language":value})),
+        );
+        assert!(!app.language.running);
+        assert!(app.language.restart_blocked);
+        assert!(rx.try_recv().is_err());
+    }
+    let (mut app, rx) = app();
+    start(&mut app, &rx);
+    app.language.automatic = false;
+    tick(&mut app, 60.0);
+    tick(&mut app, 600.0);
+    assert!(rx.try_recv().is_err());
+    assert!(app.language.maven_model.status == ModelStatus::Unchecked);
+}
+
+#[test]
+fn maven_cancel_before_ready_uses_existing_owner_and_waits_for_cleanup() {
+    let (mut app, rx) = app();
+    app.start_language();
+    let begin = rx.try_recv().unwrap();
+    app.cancel_java_startup();
+    assert!(rx.try_recv().is_err());
+    reply(
+        &mut app,
+        begin,
+        language(json!({"state":"starting","startup_id":42,"process_id":null})),
+    );
+    let cancel = rx.try_recv().unwrap();
+    assert!(matches!(
+        cancel.op,
+        Operation::LanguageStartJavaCancel { startup_id: 42 }
+    ));
+    assert!(app.language.startup_active());
+    assert!(!app.language.running);
+    reply(
+        &mut app,
+        cancel,
+        language(json!({"state":"cancelled","startup_id":42,"cleanup_verified":true})),
+    );
+    assert!(!app.language.startup_active());
+    assert!(!app.language.maven_model.active());
+    assert!(
+        app.language.maven.enabled,
+        "the explicit selection is retained without starting it"
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn model_parser_accepts_only_the_bounded_fixed_schema() {
+    let hash = pom_hash();
+    assert!(Model::parse(model_value(), &hash).is_ok());
+    let mut unresolved = model_value();
+    unresolved["status"] = json!("unresolved");
+    unresolved["unresolved_count"] = json!(1);
+    unresolved["classpath"][0]["resolved"] = json!(false);
+    unresolved["classpath"][0]["origin"] = json!("declared");
+    assert!(Model::parse(unresolved, &hash).is_ok());
+    let mut unavailable = model_value();
+    unavailable["status"] = json!("unavailable");
+    unavailable["maven_nature"] = json!(false);
+    unavailable["compiler"] =
+        json!({"source":null,"compliance":null,"target":null,"release_enabled":null});
+    assert!(Model::parse(unavailable, &hash).is_ok());
+    for (key, value) in [
+        ("profile", json!("generic")),
+        ("status", json!("building")),
+        ("pom_path", json!("child/pom.xml")),
+        ("pom_sha256", json!("a".repeat(64))),
+        ("restart_required", json!(true)),
+        ("maven_nature", json!(false)),
+        ("source_paths", json!(["../secret"])),
+        ("source_paths", json!(["src\nsecret"])),
+        ("source_paths", json!(vec!["src"; 65])),
+        ("source_paths", json!(["x".repeat(4097)])),
+        (
+            "classpath",
+            json!(vec![model_value()["classpath"][0].clone(); 257]),
+        ),
+        ("unresolved_count", json!(1)),
+        ("message", json!("x".repeat(257))),
+        ("command", json!({"command":"must-not-run"})),
+    ] {
+        let mut bad = model_value();
+        bad[key] = value;
+        assert!(Model::parse(bad, &hash).is_err(), "must reject {key}");
+    }
+    for key in ["source", "compliance", "target", "release_enabled"] {
+        let mut bad = model_value();
+        bad["compiler"].as_object_mut().unwrap().remove(key);
+        assert!(Model::parse(bad, &hash).is_err());
+    }
+    for (key, value) in [
+        ("source", json!("x".repeat(33))),
+        ("target", json!("雪")),
+        ("release_enabled", json!(21)),
+        ("release", json!(21)),
+    ] {
+        let mut bad = model_value();
+        bad["compiler"][key] = value;
+        assert!(Model::parse(bad, &hash).is_err());
+    }
+    for (key, value) in [
+        ("path", json!("x".repeat(4097))),
+        ("path", json!("line\nbreak")),
+        ("kind", json!("command")),
+        ("origin", json!("arbitrary")),
+        ("resolved", json!(false)),
+    ] {
+        let mut bad = model_value();
+        bad["classpath"][0][key] = value;
+        assert!(Model::parse(bad, &hash).is_err());
+    }
+    let mut bad = model_value();
+    bad["classpath"] = json!(vec![
+        json!({"kind":"library","path":"x".repeat(4096),"resolved":true,"origin":"model"});
+        65
+    ]);
+    assert!(
+        Model::parse(bad, &hash).is_err(),
+        "combined path bytes are bounded"
+    );
+    assert!(display_path(&"雪".repeat(200)).chars().count() <= 161);
+}
+
+#[test]
+fn absent_source_folders_do_not_count_as_unresolved_dependencies() {
+    let mut value = model_value();
+    value["classpath"].as_array_mut().unwrap().push(json!({
+        "kind":"source", "path":"src/test/java", "resolved":false, "origin":"model"
+    }));
+    let model = Model::parse(value.clone(), &pom_hash()).unwrap();
+    assert!(model.status == ImportedStatus::Imported);
+    assert_eq!(model.unresolved_count, 0);
+
+    value["unresolved_count"] = json!(1);
+    value["status"] = json!("unresolved");
+    assert!(
+        Model::parse(value.clone(), &pom_hash()).is_err(),
+        "a source folder cannot manufacture an unresolved dependency"
+    );
+    value["classpath"][0]["resolved"] = json!(false);
+    assert!(
+        Model::parse(value.clone(), &pom_hash()).is_ok(),
+        "only the missing library is counted"
+    );
+    value["unresolved_count"] = json!(2);
+    assert!(Model::parse(value, &pom_hash()).is_err());
+}
+
+#[test]
+fn one_explicit_check_produces_inert_status_and_never_polls_or_saves() {
+    let (mut app, rx) = app();
+    start(&mut app, &rx);
+    app.language.automatic = false;
+    let command = model_request(&mut app, &rx);
+    app.check_maven_model();
+    assert!(
+        rx.try_recv().is_err(),
+        "duplicate clicks cannot enqueue a second request"
+    );
+    let mut value = model_value();
+    value["message"] = json!("private raw server message <script>command</script>");
+    reply(&mut app, command, language(value));
+    assert!(app.language.maven_model.status == ModelStatus::Imported);
+    assert!(
+        app.language.cjk_seen,
+        "model paths request the existing Unicode font fallback"
+    );
+    assert!(!app.language.output.contains("private"));
+    assert!(!app.language.output.contains("script"));
+    tick(&mut app, 500.0);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn dirty_pom_and_java_buffers_keep_text_baseline_and_single_undo_through_check() {
+    let (mut app, rx) = app();
+    app.documents
+        .push(Document::new(1, "pom.xml".into(), POM.into(), pom_hash()));
+    app.documents.push(Document::new(
+        2,
+        "Main.java".into(),
+        "class Main {}".into(),
+        "java-revision".into(),
+    ));
+    for doc in &mut app.documents {
+        let text = format!("{}\n<!-- draft -->", doc.text);
+        crate::editor_state::commit(&app.editor_ctx, doc, text, 1);
+    }
+    let snapshots: Vec<_> = app
+        .documents
+        .iter()
+        .map(|doc| {
+            (
+                doc.text.clone(),
+                doc.saved_text.clone(),
+                doc.revision.clone(),
+                doc.edit_version,
+            )
+        })
+        .collect();
+    start(&mut app, &rx);
+    assert!(app.maven_dirty_pom());
+    assert!(DIRTY_POM.contains("does not save"));
+    let command = model_request(&mut app, &rx);
+    reply(&mut app, command, language(model_value()));
+    assert!(app.language.maven_model.status == ModelStatus::Imported);
+    for (doc, snapshot) in app.documents.iter().zip(snapshots) {
+        assert_eq!(
+            (
+                doc.text.clone(),
+                doc.saved_text.clone(),
+                doc.revision.clone(),
+                doc.edit_version
+            ),
+            snapshot
+        );
+        let state =
+            egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", doc.id))).unwrap();
+        let after = (state.cursor.char_range().unwrap(), doc.text.clone());
+        assert_eq!(state.undoer().undo(&after).unwrap().1, doc.saved_text);
+    }
+    assert!(
+        rx.try_recv().is_err(),
+        "no Save, Save All, build, sync or reimport was requested"
+    );
+}
+
+#[test]
+fn stale_session_generation_and_cancelled_model_replies_cannot_replace_current_state() {
+    for scenario in [0, 1, 2] {
+        let (mut app, rx) = app();
+        start(&mut app, &rx);
+        let command = model_request(&mut app, &rx);
+        let generation = app.generation;
+        if scenario == 0 {
+            app.language.reset();
+        }
+        if scenario == 1 {
+            app.generation += 1;
+        }
+        if scenario == 2 {
+            app.language.maven_model.cancel_pending();
+        }
+        app.language.output = "newer state".into();
+        app.error = Some("newer error".into());
+        app.apply_event(Event {
+            generation,
+            id: command.id,
+            connected: true,
+            result: Err("language_maven_restart_required: stale".into()),
+        });
+        assert_eq!(app.language.output, "newer state");
+        assert_eq!(app.error.as_deref(), Some("newer error"));
+        assert!(app.language.maven_model.status != ModelStatus::RestartRequired);
+    }
+}
+
+#[test]
+fn pom_disk_change_requires_restart_and_late_imported_response_is_ignored() {
+    for local_witness in [false, true] {
+        let (mut app, rx) = app();
+        app.documents
+            .push(Document::new(1, "pom.xml".into(), POM.into(), pom_hash()));
+        start(&mut app, &rx);
+        let command = model_request(&mut app, &rx);
+        let result = if local_witness {
+            app.documents[0].text = "changed POM".into();
+            app.save_document(1);
+            let save = rx.try_recv().unwrap();
+            assert!(matches!(save.op, Operation::Write { .. }));
+            reply(
+                &mut app,
+                save,
+                Ok(Payload::Written {
+                    revision: "a".repeat(64),
+                }),
+            );
+            assert!(matches!(rx.try_recv().unwrap().op, Operation::List { .. }));
+            language(model_value())
+        } else {
+            Err("language_maven_restart_required: private server detail".into())
+        };
+        reply(&mut app, command, result);
+        assert!(app.language.maven_model.status == ModelStatus::RestartRequired);
+        assert!(app.language.maven_model.model.is_none());
+        app.check_maven_model();
+        assert!(rx.try_recv().is_err());
+        assert!(
+            app.language.running,
+            "restart requirement does not falsely claim the server stopped"
+        );
+        app.stop_language();
+        assert!(matches!(rx.try_recv().unwrap().op, Operation::LanguageStop));
+    }
+}
+
+#[test]
+fn preexisting_pom_baseline_does_not_reject_a_newer_server_snapshot() {
+    let (mut app, rx) = app();
+    app.documents
+        .push(Document::new(1, "pom.xml".into(), POM.into(), pom_hash()));
+    crate::editor_state::commit(
+        &app.editor_ctx,
+        &mut app.documents[0],
+        "unsaved POM draft".into(),
+        1,
+    );
+    let revision_b = "b".repeat(64);
+    start_with_hash(&mut app, &rx, &revision_b);
+    let command = model_request(&mut app, &rx);
+    let mut model = model_value();
+    model["pom_sha256"] = json!(revision_b);
+    reply(&mut app, command, language(model));
+    assert!(app.language.maven_model.status == ModelStatus::Imported);
+    let doc = &app.documents[0];
+    assert_eq!(doc.text, "unsaved POM draft");
+    assert_eq!(doc.saved_text, POM);
+    assert_eq!(doc.revision.as_deref(), Some(pom_hash().as_str()));
+    let state =
+        egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", doc.id))).unwrap();
+    let after = (state.cursor.char_range().unwrap(), doc.text.clone());
+    assert_eq!(state.undoer().undo(&after).unwrap().1, POM);
+    assert!(
+        rx.try_recv().is_err(),
+        "start and check must not repair or save the old tab"
+    );
+
+    // A newly submitted save acknowledgement is evidence after activation.
+    // A newer draft typed during that save remains untouched.
+    app.save_document(1);
+    let save = rx.try_recv().unwrap();
+    assert!(matches!(save.op, Operation::Write { .. }));
+    crate::editor_state::commit(
+        &app.editor_ctx,
+        &mut app.documents[0],
+        "newer POM draft".into(),
+        2,
+    );
+    reply(
+        &mut app,
+        save,
+        Ok(Payload::Written {
+            revision: "c".repeat(64),
+        }),
+    );
+    assert!(app.language.maven_model.status == ModelStatus::RestartRequired);
+    assert_eq!(app.documents[0].text, "newer POM draft");
+    assert_eq!(app.documents[0].saved_text, "unsaved POM draft");
+    assert!(app.documents[0].dirty());
+    assert!(matches!(rx.try_recv().unwrap().op, Operation::List { .. }));
+    app.check_maven_model();
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn preactivation_pending_pom_read_cannot_invalidate_the_ready_hash() {
+    let (mut app, rx) = app();
+    app.start_language();
+    let begin = rx.try_recv().unwrap();
+    reply(
+        &mut app,
+        begin,
+        language(json!({"state":"starting","startup_id":42,"process_id":null})),
+    );
+    app.open("pom.xml".into(), None);
+    let old_read = rx.try_recv().unwrap();
+    assert!(matches!(old_read.op, Operation::Read { .. }));
+    tick(&mut app, 0.3);
+    let poll = rx.try_recv().unwrap();
+    let mut ready = ready_value();
+    ready["initialize"]["cedar_java_maven_pom_sha256"] = json!("b".repeat(64));
+    reply(
+        &mut app,
+        poll,
+        language(json!({"state":"ready","startup_id":42,"language":ready})),
+    );
+    reply(
+        &mut app,
+        old_read,
+        Ok(Payload::File {
+            path: "pom.xml".into(),
+            text: POM.into(),
+            revision: pom_hash(),
+        }),
+    );
+    assert!(app.language.maven_model.status == ModelStatus::Unchecked);
+    let command = model_request(&mut app, &rx);
+    let mut model = model_value();
+    model["pom_sha256"] = json!("b".repeat(64));
+    reply(&mut app, command, language(model));
+    assert!(app.language.maven_model.status == ModelStatus::Imported);
+
+    // Reopening the clean POM submits a genuinely new observation.
+    app.documents.clear();
+    app.active_document = None;
+    app.open("pom.xml".into(), None);
+    let new_read = rx.try_recv().unwrap();
+    reply(
+        &mut app,
+        new_read,
+        Ok(Payload::File {
+            path: "pom.xml".into(),
+            text: "changed POM".into(),
+            revision: "c".repeat(64),
+        }),
+    );
+    assert!(app.language.maven_model.status == ModelStatus::RestartRequired);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn unavailable_and_bad_model_responses_are_bounded_without_generic_activity_or_error_leaks() {
+    for result in [
+        language(Value::Null),
+        Ok(Payload::Entries { entries: vec![] }),
+        Err("private backend details".into()),
+    ] {
+        let (mut app, rx) = app();
+        start(&mut app, &rx);
+        let command = model_request(&mut app, &rx);
+        app.error = None;
+        reply(&mut app, command, result);
+        assert!(app.language.maven_model.status == ModelStatus::Unavailable);
+        assert_eq!(app.language.output, UNAVAILABLE);
+        assert!(app.error.is_none());
+    }
+    let (mut app, rx) = app();
+    assert!(app
+        .operation_problem(&Operation::LanguageMavenModel)
+        .is_some());
+    start(&mut app, &rx);
+    app.language.maven_model.supported = false;
+    app.check_maven_model();
+    assert!(rx.try_recv().is_err());
+    app.language.maven_model.supported = true;
+    app.active_form.as_mut().unwrap().allow_run = false;
+    app.check_maven_model();
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn model_reply_cannot_hide_disconnect_even_when_the_session_is_stale() {
+    let (mut app, rx) = app();
+    start(&mut app, &rx);
+    let command = model_request(&mut app, &rx);
+    app.language.reset();
+    app.apply_event(Event {
+        generation: app.generation,
+        id: command.id,
+        connected: false,
+        result: Err("private transport details".into()),
+    });
+    assert!(!app.ready());
+    assert!(!app.language.running);
+    assert!(!app.error.as_deref().unwrap_or("").contains("private"));
+}

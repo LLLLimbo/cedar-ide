@@ -64,6 +64,7 @@ fn launch(directory: &Path, mode: &str) -> JavaLaunch {
             ..ClientOptions::default()
         },
         initialization_options: Value::Null,
+        maven: None,
     }
 }
 fn value(payload: Payload) -> Value {
@@ -601,6 +602,17 @@ fn ready_is_adopted_once_and_its_id_scoped_cancel_closes_only_that_session() {
         true
     );
     assert!(workspace.language.as_ref().unwrap().java_organize_imports);
+    assert_eq!(
+        ready["language"]["initialize"]["cedar_java_maven_model"],
+        false
+    );
+    assert!(ready["language"]["initialize"]
+        .get("cedar_java_profile")
+        .is_none());
+    assert!(ready["language"]["initialize"]
+        .get("cedar_java_maven_pom_sha256")
+        .is_none());
+    assert!(workspace.language.as_ref().unwrap().java_maven.is_none());
     assert_eq!(workspace.language.as_ref().unwrap().startup_id, Some(id));
     let pid = ready["language"]["process_id"].as_u64().unwrap() as u32;
     let observed = ObservedProcess::open(pid);
@@ -660,6 +672,7 @@ fn unverified_spawn_or_owner_failure_blocks_every_future_start_until_reconnect()
         config: ProcessConfig::new("cedar-fixture-executable-does-not-exist"),
         options: ClientOptions::default(),
         initialization_options: Value::Null,
+        maven: None,
     };
     let id = value(
         workspace
@@ -1306,4 +1319,69 @@ fn async_java_adoption_overwrites_spoofed_import_support_without_command_adverti
     workspace.cancel_java_startup(id).unwrap();
     cancellation_terminal(&terminal(&mut workspace, id));
     observed.assert_dead();
+}
+
+#[test]
+fn typed_maven_metadata_and_model_access_follow_existing_startup_ownership() {
+    use sha2::{Digest, Sha256};
+    let (_root, mut workspace) = workspace();
+    let root = crate::java_launch::ordinary_local_path(workspace.root()).unwrap();
+    fs::write(root.join("pom.xml"), b"<project/>").unwrap();
+    let digest = format!("{:x}", Sha256::digest(b"<project/>"));
+    let mut launch = launch(workspace.root(), "ready");
+    launch.maven = Some(crate::java_maven::MavenSession {
+        root: root.clone(),
+        local_repository: root.clone(),
+        pom_sha256: digest.clone(),
+        pom_uri: url::Url::from_file_path(root.join("pom.xml"))
+            .unwrap()
+            .into(),
+        declared_dependencies: Vec::new(),
+        source_paths: Vec::new(),
+    });
+    let id = value(
+        workspace
+            .begin_java_startup_worker(move || Ok(launch), Duration::from_secs(5))
+            .unwrap(),
+    )["startup_id"]
+        .as_u64()
+        .unwrap();
+    let ready = terminal(&mut workspace, id);
+    assert_eq!(ready["state"], "ready");
+    assert_eq!(
+        ready["language"]["initialize"]["cedar_java_profile"],
+        "maven_leaf"
+    );
+    assert_eq!(
+        ready["language"]["initialize"]["cedar_java_maven_pom_sha256"],
+        digest
+    );
+    assert_eq!(
+        ready["language"]["initialize"]["cedar_java_maven_model"],
+        true
+    );
+    assert_eq!(workspace.language.as_ref().unwrap().startup_id, Some(id));
+    assert!(workspace.language.as_ref().unwrap().java_maven_model);
+    let model = value(workspace.maven_model().unwrap());
+    assert_eq!(model["status"], "unavailable");
+    assert_eq!(model["pom_sha256"], digest);
+    fs::write(root.join("pom.xml"), b"changed").unwrap();
+    assert_eq!(
+        workspace.maven_model().unwrap_err().code,
+        "language_maven_restart_required"
+    );
+    let pid = ready["language"]["process_id"].as_u64().unwrap() as u32;
+    let observed = ObservedProcess::open(pid);
+    workspace.set_allow_run(false);
+    assert_eq!(
+        value(workspace.cancel_java_startup(id).unwrap())["state"],
+        "cancelling"
+    );
+    assert!(workspace.language.is_none());
+    cancellation_terminal(&terminal(&mut workspace, id));
+    observed.assert_dead();
+    assert_eq!(
+        workspace.maven_model().unwrap_err().code,
+        "language_not_running"
+    );
 }

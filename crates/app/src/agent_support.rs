@@ -28,6 +28,11 @@ impl CedarApp {
                 .iter()
                 .all(|name| self.backend_supports(name))
     }
+    pub(super) fn backend_java_maven_supported(&self) -> bool {
+        self.backend_java_startup_supported()
+            && self.backend_supports("language_start_java_maven_begin")
+            && self.backend_supports("language_maven_model")
+    }
     pub(super) fn backend_generic_language_supported(&self) -> bool {
         LANGUAGE_SESSION_CAPABILITIES
             .iter()
@@ -44,6 +49,11 @@ impl CedarApp {
         }
     }
     pub(super) fn operation_problem(&self, operation: &Operation) -> Option<String> {
+        if matches!(operation, Operation::LanguageMavenModel) {
+            if let Some(problem) = self.maven_model_problem() {
+                return Some(problem);
+            }
+        }
         if let Operation::LanguageOrganizeJavaImports { path, version } = operation {
             if let Some(problem) = self.java_imports_operation_problem(path, *version) {
                 return Some(problem);
@@ -76,6 +86,13 @@ impl CedarApp {
         }
         if matches!(
             operation,
+            Operation::LanguageStartJavaMavenBegin { .. } | Operation::LanguageMavenModel
+        ) && !self.backend_java_maven_supported()
+        {
+            return Some(self.unsupported_message("the complete typed Maven Java lifecycle"));
+        }
+        if matches!(
+            operation,
             Operation::LanguageStartJavaBegin { .. }
                 | Operation::LanguageStartJavaPoll { .. }
                 | Operation::LanguageStartJavaCancel { .. }
@@ -99,6 +116,8 @@ impl CedarApp {
                 | Operation::LanguageStart { .. }
                 | Operation::LanguageStartJava { .. }
                 | Operation::LanguageStartJavaBegin { .. }
+                | Operation::LanguageStartJavaMavenBegin { .. }
+                | Operation::LanguageMavenModel
                 | Operation::GitStatus
                 | Operation::GitChanges { .. }
                 | Operation::GitDiff { .. }

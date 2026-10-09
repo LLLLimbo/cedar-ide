@@ -25,6 +25,7 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
     if java_language {
         capabilities.push("language_start_java");
         capabilities.extend_from_slice(cedar_protocol::JAVA_STARTUP_CAPABILITIES);
+        capabilities.extend_from_slice(cedar_protocol::JAVA_MAVEN_CAPABILITIES);
         // A bridge implementation claim, never JDT/server-version support or
         // permission to execute it. Startup reports guarded session support.
         capabilities.push("java_diagnostics_refresh");
@@ -117,6 +118,13 @@ mod tests {
                 distribution: "must-not-be-inspected".into(),
                 data_directory: "must-not-be-inspected".into(),
             },
+            Operation::LanguageStartJavaMavenBegin {
+                java_executable: "must-not-be-inspected".into(),
+                distribution: "must-not-be-inspected".into(),
+                data_directory: "must-not-be-inspected".into(),
+                local_repository: "must-not-be-inspected".into(),
+            },
+            Operation::LanguageMavenModel,
             Operation::LanguageStartJavaPoll { startup_id: 1 },
             Operation::LanguageStartJavaCancel { startup_id: 1 },
             Operation::LanguageOpen {
@@ -204,7 +212,9 @@ mod tests {
                 | "language_organize_java_imports"
                 | "language_start_java_begin"
                 | "language_start_java_poll"
-                | "language_start_java_cancel" => java_language,
+                | "language_start_java_cancel"
+                | "language_start_java_maven_begin"
+                | "language_maven_model" => java_language,
                 _ => generic_language || java_language,
             };
             for capability in LANGUAGE_SESSION_CAPABILITIES.iter().chain(&[
@@ -212,6 +222,8 @@ mod tests {
                 "language_start_java_begin",
                 "language_start_java_poll",
                 "language_start_java_cancel",
+                "language_start_java_maven_begin",
+                "language_maven_model",
                 "java_diagnostics_refresh",
                 "language_organize_java_imports",
                 "language_query",

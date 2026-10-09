@@ -2,8 +2,8 @@
 //! No passwords, host-key acceptance, key generation, port listeners, or telemetry.
 use cedar_protocol::{
     read_frame, supports_capability, write_frame, Operation, Payload, Request, Response,
-    JAVA_LANGUAGE_SESSION_CAPABILITIES, JAVA_STARTUP_CAPABILITIES, LANGUAGE_SESSION_CAPABILITIES,
-    PROTOCOL_VERSION, RUN_TASK_CAPABILITIES,
+    JAVA_LANGUAGE_SESSION_CAPABILITIES, JAVA_MAVEN_CAPABILITIES, JAVA_STARTUP_CAPABILITIES,
+    LANGUAGE_SESSION_CAPABILITIES, PROTOCOL_VERSION, RUN_TASK_CAPABILITIES,
 };
 #[cfg(not(windows))]
 use cedar_workspace::Workspace;
@@ -264,10 +264,22 @@ impl Client {
         if matches!(
             op,
             Operation::LanguageStartJavaBegin { .. }
+                | Operation::LanguageStartJavaMavenBegin { .. }
                 | Operation::LanguageStartJavaPoll { .. }
                 | Operation::LanguageStartJavaCancel { .. }
         ) {
             for capability in JAVA_STARTUP_CAPABILITIES {
+                require(capability)?;
+            }
+        }
+        if matches!(
+            op,
+            Operation::LanguageStartJavaMavenBegin { .. } | Operation::LanguageMavenModel
+        ) {
+            for capability in JAVA_MAVEN_CAPABILITIES
+                .iter()
+                .chain(JAVA_STARTUP_CAPABILITIES)
+            {
                 require(capability)?;
             }
         }
@@ -278,6 +290,8 @@ impl Client {
             Operation::LanguageStart { .. } => LANGUAGE_SESSION_CAPABILITIES,
             Operation::LanguageStartJava { .. }
             | Operation::LanguageStartJavaBegin { .. }
+            | Operation::LanguageStartJavaMavenBegin { .. }
+            | Operation::LanguageMavenModel
             | Operation::LanguageStartJavaPoll { .. }
             | Operation::LanguageStartJavaCancel { .. }
             | Operation::LanguageOrganizeJavaImports { .. }
@@ -464,7 +478,8 @@ const JAVA_LANGUAGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(75);
 fn is_language_session_operation(op: &Operation) -> bool {
     matches!(
         op,
-        Operation::LanguageOpen { .. }
+        Operation::LanguageMavenModel
+            | Operation::LanguageOpen { .. }
             | Operation::LanguageChange { .. }
             | Operation::LanguageClose { .. }
             | Operation::LanguageQuery { .. }
@@ -782,7 +797,8 @@ impl ProcessClient {
         let starts_generic = matches!(op, Operation::LanguageStart { .. });
         let stops_language = matches!(op, Operation::LanguageStop);
         let startup_request = match &op {
-            Operation::LanguageStartJavaBegin { .. } => Some(JavaStartupRequest::Begin),
+            Operation::LanguageStartJavaBegin { .. }
+            | Operation::LanguageStartJavaMavenBegin { .. } => Some(JavaStartupRequest::Begin),
             Operation::LanguageStartJavaPoll { startup_id } => {
                 Some(JavaStartupRequest::Poll(*startup_id))
             }

@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第二十一阶段 Java 编译位置导航工程（**0.21.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第二十二阶段显式 Maven 叶工程支持（**0.22.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -16,6 +16,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - 脏标签/退出确认；断线保留当前进程中的草稿；显式重连
 - **本地草稿恢复**：后台防抖备份、精确版本确认、启动时查看并显式恢复；保留原始保存版本，恢复后仍拒绝覆盖外部修改
 - **异步命令任务**：显式 executable + 字面量参数行、实时有界输出、状态与取消；命令运行时仍能打开、编辑和保存文件
+- **Windows Maven 叶工程**：显式选择本地依赖缓存，通过专用 Java 模式导入根 POM，查看源码/编译器/类路径与未解析依赖；不自动构建或下载依赖，离线解析不等于网络隔离，见[子集与使用边界](docs/MAVEN_PROJECTS.md)
 - **Java 编译位置**：显式提取已完成任务的英文 javac 输出，通过工作区读取边界跳转相对路径；保留脏稿，行号仅为历史提示，见[范围与限制](docs/BUILD_PROBLEMS.md)
 - **保存的命令配置**：显式加载/编辑/保存工作区 `cedar.tasks.json`，保留空参数、中文和 shell 字面量；复用编辑器版本冲突与恢复路径，加载/保存/重连都不自动运行
 - 项目文本搜索与跳转；Git、命令和语言服务均要求显式工作区信任

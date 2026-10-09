@@ -1,8 +1,9 @@
 use cedar_protocol::{
     read_frame, supports_capability, write_frame, AgentInfo, Operation, Payload, RemoteError,
-    Response, AGENT_INFO_SCHEMA, JAVA_LANGUAGE_SESSION_CAPABILITIES, JAVA_STARTUP_CAPABILITIES,
-    LANGUAGE_SESSION_CAPABILITIES, MAX_AGENT_CAPABILITIES, MAX_AGENT_PLATFORM_BYTES,
-    MAX_AGENT_VERSION_BYTES, MAX_CAPABILITY_BYTES, PROTOCOL_VERSION, RUN_TASK_CAPABILITIES,
+    Response, AGENT_INFO_SCHEMA, JAVA_LANGUAGE_SESSION_CAPABILITIES, JAVA_MAVEN_CAPABILITIES,
+    JAVA_STARTUP_CAPABILITIES, LANGUAGE_SESSION_CAPABILITIES, MAX_AGENT_CAPABILITIES,
+    MAX_AGENT_PLATFORM_BYTES, MAX_AGENT_VERSION_BYTES, MAX_CAPABILITY_BYTES, PROTOCOL_VERSION,
+    RUN_TASK_CAPABILITIES,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -257,6 +258,8 @@ fn capability_names_match_each_operation_or_its_explicit_bridge_name() {
         json!({"type":"language_start","program":"server","args":[]}),
         json!({"type":"language_start_java","java_executable":"C:\\jdk\\bin\\java.exe","distribution":"C:\\JDT 雪","data_directory":"C:\\data 雪"}),
         json!({"type":"language_start_java_begin","java_executable":"java.exe","distribution":"jdt","data_directory":"data"}),
+        json!({"type":"language_start_java_maven_begin","java_executable":"java.exe","distribution":"jdt 雪","data_directory":"data","local_repository":"cache 雪"}),
+        json!({"type":"language_maven_model"}),
         json!({"type":"language_start_java_poll","startup_id":1}),
         json!({"type":"language_start_java_cancel","startup_id":1}),
         json!({"type":"language_open","path":"a","language_id":"rust","version":1,"text":""}),
@@ -298,6 +301,7 @@ fn capability_names_match_each_operation_or_its_explicit_bridge_name() {
         .chain(LANGUAGE_SESSION_CAPABILITIES)
         .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
         .chain(JAVA_STARTUP_CAPABILITIES)
+        .chain(JAVA_MAVEN_CAPABILITIES)
     {
         assert!(names.contains(name), "unknown session prerequisite {name}");
     }
@@ -390,4 +394,26 @@ fn asynchronous_java_startup_is_optional_protocol_four_with_exact_unsigned_ids()
         assert!(!supports_capability(None, capability));
     }
     assert_eq!(PROTOCOL_VERSION, 4);
+}
+
+#[test]
+fn maven_profile_is_explicit_and_has_no_caller_command_or_model_uri() {
+    let begin = Operation::LanguageStartJavaMavenBegin {
+        java_executable: r"C:\jdk\bin\java.exe".into(),
+        distribution: "C:/JDT 雪".into(),
+        data_directory: "C:/data".into(),
+        local_repository: "C:/cache 雪".into(),
+    };
+    let encoded = serde_json::to_value(begin).unwrap();
+    assert_eq!(encoded.as_object().unwrap().len(), 5);
+    assert_eq!(encoded["type"], "language_start_java_maven_begin");
+    assert_eq!(
+        serde_json::to_value(Operation::LanguageMavenModel).unwrap(),
+        json!({"type":"language_maven_model"})
+    );
+    for capability in JAVA_MAVEN_CAPABILITIES {
+        assert!(!supports_capability(None, capability));
+        assert!(!JAVA_STARTUP_CAPABILITIES.contains(capability));
+        assert!(!JAVA_LANGUAGE_SESSION_CAPABILITIES.contains(capability));
+    }
 }

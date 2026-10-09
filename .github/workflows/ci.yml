@@ -7,7 +7,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Includes the additional independent, bounded Maven production pair.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,6 +26,8 @@ jobs:
       - run: python scripts/test_windows_bundle.py
       - run: python scripts/test_git_views_smoke.py
       - run: python scripts/test_java_crash_collection.py
+      - run: python scripts/test_prepare_maven_cache.py
+      - run: python scripts/test_maven_acceptance.py
       - run: python scripts/test_process_tree_baseline.py
       - run: python scripts/test_gc_control_collection.py
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -138,6 +141,20 @@ jobs:
             ${{ runner.temp }}/cedar-java-gc-control-resources.json
             ${{ runner.temp }}/cedar-java-gc-control-acceptance.json
             ${{ runner.temp }}/cedar-java-gc-control-numeric.json
+          if-no-files-found: ignore
+      - name: Real Windows Maven leaf production acceptance
+        timeout-minutes: 14
+        if: always() && !cancelled() && runner.os == 'Windows' && steps.release_build.outcome == 'success'
+        shell: pwsh
+        run: ./scripts/windows_java_acceptance.ps1 -MavenOnly
+      - name: Windows Maven acceptance evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-maven-acceptance-evidence
+          path: |
+            ${{ runner.temp }}/cedar-windows-maven-acceptance.txt
+            ${{ runner.temp }}/cedar-maven-crash-diagnostics.json
           if-no-files-found: ignore
       - name: Agent and tool protocol chains (Unix)
         if: runner.os != 'Windows'

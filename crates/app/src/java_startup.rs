@@ -362,6 +362,10 @@ impl CedarApp {
                     self.send_java_startup_cancel();
                     return;
                 }
+                if self.language.maven.enabled && !super::java_maven::valid_startup(&language) {
+                    self.java_startup_unknown();
+                    return;
+                }
                 self.language.startup = None;
                 self.apply_language_action(
                     Action {

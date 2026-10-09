@@ -19,6 +19,7 @@ pub(super) struct JavaLaunch {
     pub config: ProcessConfig,
     pub options: ClientOptions,
     pub initialization_options: Value,
+    pub maven: Option<crate::java_maven::MavenSession>,
 }
 
 pub(super) fn production(
@@ -55,10 +56,11 @@ pub(super) fn production(
         config,
         options: client_options(),
         initialization_options: initialization_options(),
+        maven: None,
     })
 }
 
-fn production_data_directory(root: &Path, data: &Path) -> Result<PathBuf, RemoteError> {
+pub(super) fn production_data_directory(root: &Path, data: &Path) -> Result<PathBuf, RemoteError> {
     if !data.is_absolute() {
         return Err(invalid(
             "Java data directory must be an existing absolute path outside the workspace",
@@ -76,7 +78,7 @@ fn production_data_directory(root: &Path, data: &Path) -> Result<PathBuf, Remote
     Ok(data)
 }
 
-fn jvm_arguments() -> Vec<std::ffi::OsString> {
+pub(super) fn jvm_arguments() -> Vec<std::ffi::OsString> {
     [
         "-Declipse.application=org.eclipse.jdt.ls.core.id1",
         "-Dosgi.bundles.defaultStartLevel=4",
@@ -124,7 +126,7 @@ pub(super) fn check_environment() -> Result<(), RemoteError> {
     Ok(())
 }
 
-fn directory_uri(path: &Path) -> Result<String, RemoteError> {
+pub(super) fn directory_uri(path: &Path) -> Result<String, RemoteError> {
     url::Url::from_directory_path(path)
         .map(String::from)
         .map_err(|_| invalid("Cannot encode Java location as a local directory URL"))

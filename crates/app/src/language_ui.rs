@@ -3,6 +3,8 @@
 mod features;
 #[path = "java_diagnostics.rs"]
 mod java_diagnostics;
+#[path = "java_maven.rs"]
+mod java_maven;
 #[path = "java_startup.rs"]
 mod java_startup;
 
@@ -63,6 +65,9 @@ pub(super) enum ActionKind {
         kind: LanguageQueryKind,
     },
     Events,
+    MavenModel {
+        context: java_maven::ModelContext,
+    },
     RefreshJavaDiagnostics {
         context: java_diagnostics::RefreshContext,
     },
@@ -92,6 +97,9 @@ impl Action {
     pub fn is_stop(&self) -> bool {
         matches!(self.kind, ActionKind::Stop)
     }
+    pub fn is_maven_model(&self) -> bool {
+        matches!(self.kind, ActionKind::MavenModel { .. })
+    }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
@@ -104,6 +112,7 @@ enum View {
     Outline,
     Hover,
     Activity,
+    Maven,
 }
 struct CompletionMenu {
     context: QueryContext,
@@ -129,6 +138,8 @@ pub(super) struct LanguagePanel {
     closed_uris: HashSet<String>,
     mode: ServerMode,
     java: JavaConfiguration,
+    maven: java_maven::MavenConfiguration,
+    maven_model: java_maven::ModelState,
     restart_blocked: bool,
     startup: Option<java_startup::Startup>,
     program: String,
@@ -159,7 +170,7 @@ impl Default for LanguagePanel {
     fn default() -> Self {
         Self {
             running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), next_version: 1, closed_uris: HashSet::new(),
-            mode: ServerMode::Generic, java: JavaConfiguration::default(), restart_blocked: false, startup: None,
+            mode: ServerMode::Generic, java: JavaConfiguration::default(), maven: java_maven::MavenConfiguration::default(), maven_model: java_maven::ModelState::default(), restart_blocked: false, startup: None,
             program: String::new(), args: "[]".into(), language_id: "rust".into(), capabilities: Value::Null,
             diagnostics: Diagnostics::default(), diagnostics_exited: false, java_diagnostics_refresh_supported: false, java_organize_imports_supported: false,
             diagnostic_refresh: None, diagnostic_refresh_sequence: 0, definitions: Vec::new(), hover: String::new(),
@@ -176,6 +187,7 @@ impl LanguagePanel {
         self.running = false;
         self.restart_blocked = false;
         self.startup = None;
+        self.maven_model = java_maven::ModelState::default();
         self.sync.clear();
         self.next_version = 1;
         self.closed_uris.clear();
@@ -303,7 +315,17 @@ impl CedarApp {
                     );
                     return;
                 }
-                match self.language.java.operation() {
+                if self.language.maven.enabled && !self.backend_java_maven_supported() {
+                    self.error =
+                        Some(self.unsupported_message("the complete typed Maven Java lifecycle"));
+                    return;
+                }
+                let configured = if self.language.maven.enabled {
+                    self.language.maven.operation(&self.language.java)
+                } else {
+                    self.language.java.operation()
+                };
+                match configured {
                     Ok(operation) => operation,
                     Err(error) => {
                         self.error = Some(error);
@@ -339,7 +361,9 @@ impl CedarApp {
         if self.language.mode == ServerMode::Java {
             self.language.language_id = "java".into();
         }
-        if self.language.mode == ServerMode::Java && self.backend_java_startup_supported() {
+        if matches!(operation, Operation::LanguageStartJavaMavenBegin { .. }) {
+            self.begin_java_startup(operation);
+        } else if self.language.mode == ServerMode::Java && self.backend_java_startup_supported() {
             let Operation::LanguageStartJava {
                 java_executable,
                 distribution,
@@ -364,6 +388,7 @@ impl CedarApp {
             return;
         }
         self.language.diagnostic_refresh = None;
+        self.language.maven_model.cancel_pending();
         self.language.features.reset();
         self.language.intent = None;
         self.language.automatic = false;
@@ -690,6 +715,10 @@ impl CedarApp {
             self.apply_java_startup_action(action, value);
             return;
         }
+        if action.is_maven_model() {
+            self.apply_maven_model_event(action, Ok(crate::Payload::Language { value }), true);
+            return;
+        }
         if let ActionKind::RefreshJavaDiagnostics { context } = &action.kind {
             self.apply_java_diagnostics_refresh(context, &value);
             return;
@@ -730,6 +759,7 @@ impl CedarApp {
         }
         match action.kind {
             ActionKind::Start => {
+                self.activate_maven_model(&value);
                 self.language.running = true;
                 self.language.capabilities = value
                     .get("initialize")
@@ -807,6 +837,9 @@ impl CedarApp {
             ActionKind::Events => self.apply_language_events(&value),
             ActionKind::RefreshJavaDiagnostics { .. } => {
                 unreachable!("refresh acknowledgements are handled before activity output")
+            }
+            ActionKind::MavenModel { .. } => {
+                unreachable!("Maven model replies are handled before activity output")
             }
             ActionKind::Feature { request } => self.apply_language_feature(request, value),
             ActionKind::Query { context, kind } => {
@@ -1174,10 +1207,11 @@ impl CedarApp {
                         ui.horizontal(|ui| { ui.label("Java executable"); ui.add(egui::TextEdit::singleline(&mut self.language.java.executable).hint_text("Absolute ASCII path to java.exe").desired_width(390.0)); });
                         ui.horizontal(|ui| { ui.label("JDT distribution"); ui.add(egui::TextEdit::singleline(&mut self.language.java.distribution).hint_text("Existing Eclipse JDT LS directory").desired_width(390.0)); });
                         ui.horizontal(|ui| { ui.label("JDT data directory"); ui.add(egui::TextEdit::singleline(&mut self.language.java.data_directory).hint_text("Existing directory outside the workspace").desired_width(390.0)); });
-                        ui.label("Language: Java. Maven and Gradle project imports are disabled; JDK class-file viewing is unavailable.");
+                        self.maven_configuration_controls(ui);
                     }),
                 };
-                if ui.button("Start server").clicked() { self.start_language(); }
+                let can_start = self.language.mode != ServerMode::Java || !self.language.maven.enabled || self.backend_java_maven_supported();
+                if ui.add_enabled(can_start, egui::Button::new("Start server")).clicked() { self.start_language(); }
             });
             ui.label(RichText::new("One explicitly started server per workspace. The server and JDK must be installed on the workspace host.").small().color(MUTED));
         });
@@ -1187,6 +1221,7 @@ impl CedarApp {
         }
         if self.language.mode == ServerMode::Java
             && !self.backend_java_startup_supported()
+            && !self.language.maven.enabled
             && !self.language.running
         {
             ui.label(RichText::new("This agent uses blocking Java startup. Stop becomes available after startup finishes.").small().color(MUTED));
@@ -1197,6 +1232,7 @@ impl CedarApp {
                 "Reconnect before starting another Java session; prior cleanup was not verified.",
             );
         }
+        self.maven_model_controls(ui);
         if self.language.running {
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(
@@ -1283,6 +1319,9 @@ impl CedarApp {
             }
             ui.selectable_value(&mut self.language.view, View::References, "References");
             ui.selectable_value(&mut self.language.view, View::Outline, "Outline");
+            if self.language.maven_model.active() {
+                ui.selectable_value(&mut self.language.view, View::Maven, "Maven model");
+            }
             let activity_label = if self.language.mode == ServerMode::Java {
                 "Session activity"
             } else {
@@ -1299,6 +1338,7 @@ impl CedarApp {
             View::Format | View::Imports => self.edit_preview_view(ui),
             View::References => self.references_view(ui),
             View::Outline => self.outline_view(ui),
+            View::Maven => self.maven_model_view(ui),
             View::Definitions => {
                 let mut selected = None;
                 egui::ScrollArea::vertical()

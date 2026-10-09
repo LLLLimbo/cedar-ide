@@ -36,6 +36,7 @@ SOURCE_FILES = {
     "docs/GIT_VIEWS.md": "GIT_VIEWS.md",
     "docs/JAVA_IMPORTS.md": "JAVA_IMPORTS.md",
     "docs/BUILD_PROBLEMS.md": "BUILD_PROBLEMS.md",
+    "docs/MAVEN_PROJECTS.md": "MAVEN_PROJECTS.md",
 }
 # Exact notice names currently collected by collect_licenses.py. Adding a new
 # upstream notice deliberately requires reviewing this allowlist.

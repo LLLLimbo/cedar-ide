@@ -1608,3 +1608,6 @@ fn real_windows_agent_java_forced_owner_cleanup() -> CheckResult<()> {
 
 #[path = "windows_java_production_tests.rs"]
 mod production;
+
+#[path = "windows_maven_production_tests.rs"]
+mod maven_production;

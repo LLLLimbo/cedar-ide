@@ -14,6 +14,7 @@ mod git_read;
 #[cfg(feature = "windows-java-gc-diagnostic")]
 mod java_gc_diagnostic;
 mod java_launch;
+mod java_maven;
 #[cfg(feature = "windows-language-validation")]
 mod java_validation;
 mod language;
@@ -111,8 +112,8 @@ impl Workspace {
     /// Nonshipping Windows language acceptance host, never a user workspace API.
     ///
     /// Requires an explicitly marked synthetic root and fixes process ownership
-    /// to IsolatedAgent. It does not grant execution trust or change Hello's
-    /// production capability claims. The marker is an opt-in, not a sandbox.
+    /// to IsolatedAgent. It does not grant execution trust; the separate production
+    /// Maven profile is unavailable. The marker is an opt-in, not a sandbox.
     #[cfg(feature = "windows-language-validation")]
     pub fn for_windows_language_validation(root: impl AsRef<Path>) -> Result<Self, RemoteError> {
         let mut workspace = Self::with_backend_mode(root, BackendMode::IsolatedAgent)?;
@@ -141,7 +142,7 @@ impl Workspace {
     }
 
     /// Nonshipping, marked-root Java fixture. Does not grant execution trust,
-    /// change Hello's production support claims, or change ordinary constructors.
+    /// enable the production Maven profile, or change ordinary constructors.
     #[cfg(feature = "windows-language-validation")]
     pub fn for_windows_java_validation(
         root: impl AsRef<Path>,
@@ -185,7 +186,15 @@ impl Workspace {
             Operation::Hello => Ok(Payload::Hello {
                 protocol: PROTOCOL_VERSION,
                 root: self.root.to_string_lossy().into_owned(),
-                agent: Some(capabilities::agent_info(self.backend_mode)),
+                agent: Some({
+                    let mut info = capabilities::agent_info(self.backend_mode);
+                    if !self.maven_platform_supported() {
+                        info.capabilities.retain(|name| {
+                            !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str())
+                        });
+                    }
+                    info
+                }),
             }),
             Operation::List { path } => self.list(&path),
             Operation::Read { path } => self.read(&path),
@@ -209,6 +218,8 @@ impl Workspace {
             op @ (Operation::LanguageStart { .. }
             | Operation::LanguageStartJava { .. }
             | Operation::LanguageStartJavaBegin { .. }
+            | Operation::LanguageStartJavaMavenBegin { .. }
+            | Operation::LanguageMavenModel
             | Operation::LanguageStartJavaPoll { .. }
             | Operation::LanguageStartJavaCancel { .. }
             | Operation::LanguageOpen { .. }

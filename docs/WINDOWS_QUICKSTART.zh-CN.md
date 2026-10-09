@@ -106,7 +106,9 @@ Java 最大堆为 512 MiB，但 JVM 总内存可以明显高于这个数字。�
 
 Stop 会区分自然退出与超过宽限后的强制清理；**forced / grace_expired** 不是
 正常退出。清理未验证时界面会阻止重启，须先检查错误并重新连接。
-Maven/Gradle 导入、JDK class-file 查看、同步 Run、通用 Windows
+可显式选择 Windows Maven 叶工程模式，配置已有缓存并用 **Check Maven model** 查看一次模型快照；
+限定子集、ASCII data/control 路径、保留索引数据及离线语义见同目录 [MAVEN_PROJECTS.md](MAVEN_PROJECTS.md)。
+普通 Java 模式仍关闭导入；完整 Maven/Gradle、JDK class-file 查看、同步 Run、通用 Windows
 LSP 和完整调试界面仍未提供。异步命令使用明确的原生 `.exe` 绝对路径。
 
 ## 验证与来源

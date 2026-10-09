@@ -1687,3 +1687,97 @@ fn async_java_malformed_snapshots_disconnect_without_automatic_cancel_or_restart
         assert_eq!(recorded_requests(directory.path()).len(), 3);
     }
 }
+
+fn begin_maven_language() -> Operation {
+    Operation::LanguageStartJavaMavenBegin {
+        java_executable: "/synthetic/java.exe".into(),
+        distribution: "/synthetic/jdt 雪".into(),
+        data_directory: "/synthetic/data".into(),
+        local_repository: "/synthetic/cache 雪".into(),
+    }
+}
+fn maven_capabilities() -> Vec<&'static str> {
+    async_java_capabilities()
+        .into_iter()
+        .chain(JAVA_MAVEN_CAPABILITIES.iter().copied())
+        .collect()
+}
+
+#[test]
+fn maven_requires_separate_capabilities_and_full_owned_java_lifecycle_without_fallback() {
+    for missing in JAVA_MAVEN_CAPABILITIES
+        .iter()
+        .chain(JAVA_STARTUP_CAPABILITIES)
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
+    {
+        let root = tempfile::tempdir().unwrap();
+        let caps: Vec<_> = maven_capabilities()
+            .into_iter()
+            .filter(|cap| cap != missing)
+            .collect();
+        let mut client = capability_client(root.path(), Some(agent_info(&caps)));
+        for op in [begin_maven_language(), Operation::LanguageMavenModel] {
+            let failure = client.request(op).unwrap_err();
+            assert!(failure.starts_with("unsupported_operation:"), "{failure}");
+            assert!(failure.contains(missing), "{missing}: {failure}");
+        }
+        assert_eq!(recorded_requests(root.path()).len(), 1);
+        read_fixture(&mut client);
+    }
+    for metadata in [
+        None,
+        Some(agent_info(&java_capabilities())),
+        Some(agent_info(&async_java_capabilities())),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut client = capability_client(root.path(), metadata);
+        assert!(client
+            .request(begin_maven_language())
+            .unwrap_err()
+            .contains("language_start_java_maven_begin"));
+        assert_eq!(recorded_requests(root.path()).len(), 1);
+    }
+}
+
+#[test]
+fn typed_maven_startup_uses_the_same_owned_id_and_forwards_one_fixed_model_operation() {
+    let root = tempfile::tempdir().unwrap();
+    let mut client = capability_client(root.path(), Some(agent_info(&maven_capabilities())));
+    startup_result(
+        root.path(),
+        &mut client,
+        serde_json::json!({"startup_id":1,"state":"starting","process_id":null}),
+    );
+    client.request(begin_maven_language()).unwrap();
+    assert_eq!(process(&mut client).java_startup.pending, Some(1));
+    assert!(!process(&mut client).java_language_session);
+    startup_result(root.path(), &mut client, startup_ready(1));
+    client
+        .request(Operation::LanguageStartJavaPoll { startup_id: 1 })
+        .unwrap();
+    assert_eq!(process(&mut client).java_startup.active, Some(1));
+    assert!(process(&mut client).java_language_session);
+    let result =
+        serde_json::json!({"profile":"maven_leaf","status":"unresolved","pom_path":"pom.xml"});
+    startup_result(root.path(), &mut client, result.clone());
+    assert!(
+        matches!(client.request(Operation::LanguageMavenModel).unwrap(), Payload::Language { value } if value == result)
+    );
+    let requests = recorded_requests(root.path());
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[1]["op"]["type"], "language_start_java_maven_begin");
+    assert_eq!(
+        requests[3]["op"],
+        serde_json::json!({"type":"language_maven_model"})
+    );
+    startup_result(
+        root.path(),
+        &mut client,
+        serde_json::json!({"startup_id":1,"state":"cancelled","cleanup_verified":true}),
+    );
+    client
+        .request(Operation::LanguageStartJavaCancel { startup_id: 1 })
+        .unwrap();
+    assert!(!process(&mut client).java_language_session);
+    assert_eq!(process(&mut client).java_startup.active, None);
+}

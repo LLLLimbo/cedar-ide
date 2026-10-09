@@ -39,6 +39,11 @@ pub const JAVA_STARTUP_CAPABILITIES: &[&str] = &[
     "language_start_java_cancel",
 ];
 
+/// Explicit opt-in Maven profile. A peer must implement the entire owned Java
+/// lifecycle as well; this group never permits a generic executeCommand bridge.
+pub const JAVA_MAVEN_CAPABILITIES: &[&str] =
+    &["language_start_java_maven_begin", "language_maven_model"];
+
 /// Unverified implementation information, never execution permission or identity.
 /// Validate received information before retaining it as a connection snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +168,15 @@ pub enum Operation {
         distribution: String,
         data_directory: String,
     },
+    /// Bounded offline leaf-POM import using explicit installed/cache locations.
+    LanguageStartJavaMavenBegin {
+        java_executable: String,
+        distribution: String,
+        data_directory: String,
+        local_repository: String,
+    },
+    /// Read the fixed root POM's imported model in the current typed session.
+    LanguageMavenModel,
     LanguageStartJavaPoll {
         startup_id: u64,
     },
@@ -261,6 +275,8 @@ impl Operation {
             Self::LanguageStart { .. } => "language_start",
             Self::LanguageStartJava { .. } => "language_start_java",
             Self::LanguageStartJavaBegin { .. } => "language_start_java_begin",
+            Self::LanguageStartJavaMavenBegin { .. } => "language_start_java_maven_begin",
+            Self::LanguageMavenModel => "language_maven_model",
             Self::LanguageStartJavaPoll { .. } => "language_start_java_poll",
             Self::LanguageStartJavaCancel { .. } => "language_start_java_cancel",
             Self::LanguageOpen { .. } => "language_open",

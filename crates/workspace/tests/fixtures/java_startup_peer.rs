@@ -93,7 +93,7 @@ fn main() {
             } else if mode == "imports_unsupported" {
                 r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1}},"serverInfo":{"name":"JDT Language Server (Standard)","version":"1.61.0-SNAPSHOT"},"cedar_java_organize_imports":true}"#
             } else {
-                r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1},"hoverProvider":true,"executeCommandProvider":{"commands":["java.edit.organizeImports"]}},"serverInfo":{"name":"JDT Language Server (Standard)","version":"1.61.0-SNAPSHOT"},"cedar_java_organize_imports":false}"#
+                r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1},"hoverProvider":true,"executeCommandProvider":{"commands":["java.edit.organizeImports","java.project.getSettings"]}},"serverInfo":{"name":"JDT Language Server (Standard)","version":"1.61.0-SNAPSHOT"},"cedar_java_organize_imports":false,"cedar_java_maven_model":true,"cedar_java_profile":"maven_leaf","cedar_java_maven_pom_sha256":"forged"}"#
             }
         } else {
             "null"

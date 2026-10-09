@@ -13,6 +13,9 @@ pub(super) use startup::JavaStartup;
 #[path = "language_imports.rs"]
 mod imports;
 
+#[path = "language_maven.rs"]
+mod maven;
+
 pub(super) const fn platform_supported() -> bool {
     // Match this service's existing startup guard, independently of the more
     // restrictive Linux/macOS command-task and Git implementations.
@@ -31,6 +34,8 @@ pub(super) struct LanguageSession {
     production_java: bool,
     java_diagnostics_refresh: bool,
     java_organize_imports: bool,
+    java_maven: Option<crate::java_maven::MavenSession>,
+    java_maven_model: bool,
     opened: HashMap<String, OpenLanguageDocument>,
     #[cfg(feature = "windows-language-validation")]
     java_validation: Option<super::java_validation::JavaValidationSession>,
@@ -175,6 +180,21 @@ fn java_stop_payload(outcome: cedar_language::ShutdownOutcome) -> Result<Payload
 }
 
 impl Workspace {
+    pub(super) fn maven_platform_supported(&self) -> bool {
+        if !java_platform_supported(self.backend_mode) {
+            return false;
+        }
+        #[cfg(feature = "windows-language-validation")]
+        if self.windows_language_validation || self.windows_java_validation.is_some() {
+            return false;
+        }
+        #[cfg(feature = "windows-java-gc-diagnostic")]
+        if self.windows_java_gc_diagnostic.is_some() {
+            return false;
+        }
+        true
+    }
+
     fn language_platform_supported(&self) -> bool {
         #[cfg(feature = "windows-language-validation")]
         if cfg!(windows)
@@ -289,6 +309,34 @@ impl Workspace {
                     ));
                 }
                 self.begin_java_startup(java_executable, distribution, data_directory)
+            }
+            Operation::LanguageStartJavaMavenBegin {
+                java_executable,
+                distribution,
+                data_directory,
+                local_repository,
+            } => {
+                if !self.maven_platform_supported() {
+                    return Err(error(
+                        "unsupported_platform",
+                        "Maven startup requires a normal isolated Windows agent",
+                    ));
+                }
+                self.begin_java_maven_startup(
+                    java_executable,
+                    distribution,
+                    data_directory,
+                    local_repository,
+                )
+            }
+            Operation::LanguageMavenModel => {
+                if !self.maven_platform_supported() {
+                    return Err(error(
+                        "unsupported_platform",
+                        "Maven model requires a normal isolated Windows agent",
+                    ));
+                }
+                self.maven_model()
             }
             Operation::LanguageStartJavaPoll { startup_id } => {
                 if !java_platform_supported(self.backend_mode) {
@@ -670,6 +718,12 @@ impl Workspace {
         // any server-supplied value, including in generic/unsupported sessions.
         result["cedar_java_diagnostics_refresh"] = json!(java_diagnostics_refresh);
         result["cedar_java_organize_imports"] = json!(java_organize_imports);
+        result["cedar_java_maven_model"] = json!(false);
+        // A generic server cannot impersonate the typed Maven session marker.
+        if let Some(object) = result.as_object_mut() {
+            object.remove("cedar_java_profile");
+            object.remove("cedar_java_maven_pom_sha256");
+        }
         let process_id = client.process_id();
         self.language = Some(LanguageSession {
             client,
@@ -677,6 +731,8 @@ impl Workspace {
             production_java,
             java_diagnostics_refresh,
             java_organize_imports,
+            java_maven: None,
+            java_maven_model: false,
             opened: HashMap::new(),
             #[cfg(feature = "windows-language-validation")]
             java_validation,
@@ -1051,6 +1107,53 @@ mod java_production_tests {
             assert_eq!(value["stopped"], true);
             assert_eq!(value["shutdown"].as_object().unwrap().len(), 6);
             assert!(value.to_string().len() < 512);
+        }
+    }
+}
+
+#[cfg(test)]
+mod maven_route_tests {
+    use super::*;
+
+    fn start() -> Operation {
+        Operation::LanguageStartJavaMavenBegin {
+            java_executable: "must-not-be-read\0".into(),
+            distribution: "must-not-be-read\0".into(),
+            data_directory: "must-not-be-read\0".into(),
+            local_repository: "must-not-be-read\0".into(),
+        }
+    }
+
+    #[test]
+    fn typed_maven_requires_trust_and_normal_windows_isolated_host_before_paths() {
+        let root = tempfile::tempdir().unwrap();
+        for backend in [
+            cedar_tasks::BackendMode::InProcess,
+            cedar_tasks::BackendMode::IsolatedAgent,
+        ] {
+            let mut workspace = Workspace::with_backend_mode(root.path(), backend).unwrap();
+            for op in [start(), Operation::LanguageMavenModel] {
+                assert_eq!(workspace.handle(op).unwrap_err().code, "run_disabled");
+            }
+            workspace.set_allow_run(true);
+            if !cfg!(windows) || backend == cedar_tasks::BackendMode::InProcess {
+                for op in [start(), Operation::LanguageMavenModel] {
+                    assert_eq!(
+                        workspace.handle(op).unwrap_err().code,
+                        "unsupported_platform"
+                    );
+                }
+            } else {
+                assert_eq!(
+                    workspace
+                        .handle(Operation::LanguageMavenModel)
+                        .unwrap_err()
+                        .code,
+                    "language_not_running"
+                );
+            }
+            assert!(workspace.language.is_none());
+            assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
         }
     }
 }

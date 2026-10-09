@@ -106,6 +106,7 @@ struct PreparedClient {
     client: LspClient,
     initialize: Value,
     root_uri: String,
+    maven: Option<crate::java_maven::MavenSession>,
 }
 
 struct CleanupOwnership {
@@ -290,6 +291,11 @@ fn startup_worker(
     }
     match initialized {
         Ok(initialize) => {
+            if let Some(profile) = launch.maven.as_ref() {
+                if let Err(failure) = crate::java_maven::current_pom_matches(profile) {
+                    return cleanup_result(client, false, Some(failure));
+                }
+            }
             {
                 let mut transfer = control
                     .transfer
@@ -299,6 +305,7 @@ fn startup_worker(
                     client,
                     initialize,
                     root_uri,
+                    maven: launch.maven,
                 });
                 control.prepared.store(true, Ordering::SeqCst);
             }
@@ -430,6 +437,29 @@ impl Workspace {
         )
     }
 
+    pub(super) fn begin_java_maven_startup(
+        &mut self,
+        java_executable: String,
+        distribution: String,
+        data_directory: String,
+        local_repository: String,
+    ) -> Result<Payload, RemoteError> {
+        self.require_language_start_available()?;
+        let root = self.root.clone();
+        self.begin_java_startup_worker(
+            move || {
+                crate::java_maven::production(
+                    &root,
+                    &java_executable,
+                    &distribution,
+                    &data_directory,
+                    &local_repository,
+                )
+            },
+            STARTUP_ENVELOPE,
+        )
+    }
+
     fn begin_java_startup_worker(
         &mut self,
         prepare: impl FnOnce() -> Result<JavaLaunch, RemoteError> + Send + 'static,
@@ -534,12 +564,22 @@ impl Workspace {
             client,
             mut initialize,
             root_uri,
+            maven,
         }) = prepared
         {
             let refresh = java_diagnostics_refresh_supported(true, &initialize);
             let imports = super::imports::supported(true, &initialize);
             initialize["cedar_java_diagnostics_refresh"] = json!(refresh);
             initialize["cedar_java_organize_imports"] = json!(imports);
+            let maven_model = super::maven::supported(maven.is_some(), &initialize);
+            initialize["cedar_java_maven_model"] = json!(maven_model);
+            if let Some(profile) = maven.as_ref() {
+                initialize["cedar_java_profile"] = json!("maven_leaf");
+                initialize["cedar_java_maven_pom_sha256"] = json!(profile.pom_sha256);
+            } else if let Some(object) = initialize.as_object_mut() {
+                object.remove("cedar_java_profile");
+                object.remove("cedar_java_maven_pom_sha256");
+            }
             let value = json!({"started":true,"initialize":initialize,"root_uri":root_uri,"process_id":client.process_id()});
             self.language = Some(LanguageSession {
                 client,
@@ -547,6 +587,8 @@ impl Workspace {
                 production_java: true,
                 java_diagnostics_refresh: refresh,
                 java_organize_imports: imports,
+                java_maven: maven,
+                java_maven_model: maven_model,
                 opened: HashMap::new(),
                 #[cfg(feature = "windows-language-validation")]
                 java_validation: None,

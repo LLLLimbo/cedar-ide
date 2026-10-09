@@ -184,6 +184,7 @@ mod tests {
             config,
             options: java_launch::client_options(),
             initialization_options: java_launch::initialization_options(),
+            maven: None,
         }
     }
 
@@ -246,9 +247,16 @@ mod tests {
         let Payload::Hello { agent: a, .. } = diagnostic.handle(Operation::Hello).unwrap() else {
             panic!("Hello must remain available without trust")
         };
-        let Payload::Hello { agent: b, .. } = ordinary.handle(Operation::Hello).unwrap() else {
+        let Payload::Hello { agent: mut b, .. } = ordinary.handle(Operation::Hello).unwrap() else {
             panic!("ordinary Hello")
         };
+        for capability in cedar_protocol::JAVA_MAVEN_CAPABILITIES {
+            assert!(!a.as_ref().unwrap().supports(capability));
+        }
+        b.as_mut()
+            .unwrap()
+            .capabilities
+            .retain(|name| !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str()));
         assert_eq!(a, b);
         assert_eq!(
             diagnostic.handle(invalid_start()).unwrap_err().code,
@@ -262,6 +270,13 @@ mod tests {
                 .attempted
         );
         diagnostic.set_allow_run(true);
+        assert_eq!(
+            diagnostic
+                .handle(Operation::LanguageMavenModel)
+                .unwrap_err()
+                .code,
+            "unsupported_platform"
+        );
         assert_eq!(
             diagnostic.handle(invalid_start()).unwrap_err().code,
             if cfg!(windows) {

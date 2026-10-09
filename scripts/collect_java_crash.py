@@ -216,6 +216,54 @@ AGENT_TRANSCRIPT_FIELDS['windows_java_gc_control'] = {
     'route': ('diagnostic_agent_normal_client',),
 }
 
+# One fixed normal-route Maven pair. Nested schemas are declared here; no
+# arbitrary object, path, diagnostic text or environment field is forwarded.
+MAVEN_CASE_FIELDS = dict.fromkeys((
+    'java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected',
+    'model_without_session_rejected', 'async_start_begin_acknowledged',
+    'async_start_read_while_starting', 'async_start_ready', 'root_identity_verified',
+    'root_observed_live', 'maven_nature', 'custom_source', 'compiler_17',
+    'exact_dependency_reference', 'offline_pom_diagnostic', 'hover', 'completion',
+    'deliberate_type_diagnostic', 'dirty_change_acknowledged', 'no_autosave',
+    'stale_startup_rejected', 'changed_pom_restart_required', 'source_unchanged',
+    'pom_expected', 'repository_inputs_unchanged', 'dependency_jar_present_before',
+    'dependency_jar_present_after', 'dependency_pom_present_before',
+    'dependency_pom_present_after', 'cleanup_joined', 'shutdown_response_received',
+    'exit_frame_completed', 'stop_outcome_verified', 'root_handle_signaled',
+    'model_after_stop_rejected', 'client_reaped', 'synthetic_root_removed',
+    'primary_failed', 'cleanup_failed', 'success'), 'bool') | {
+        'case': ('present', 'missing'),
+        'failure_stage': ('setup', 'trust', 'startup', 'model', 'semantics', 'pom_change',
+                          'stop', 'root_exit', 'client_exit', 'fixture_cleanup', 'none'),
+        'model_status': ('unavailable', 'imported', 'unresolved'),
+        'model_queries': ('integer_range', 0, 240),
+        'unexpected_dependency_references': ('integer_range', 0, 65535),
+        'generated_metadata_files': ('integer_range', 0, 65535),
+        'generated_data_files': ('integer_range', 0, 4096),
+        'generated_data_bytes': ('integer_range', 0, 134217728),
+        'generated_project_files': ('integer_range', 0, 256),
+        'generated_project_bytes': ('integer_range', 0, 16777216),
+        'foreign_repository_files': ('integer_range', 0, 65535),
+        'stop_status': ('nullable_enum', ('graceful', 'forced', 'error')),
+        'stop_reason': ('nullable_enum', ('root_exited', 'grace_expired', 'aborted',
+                                        'transport_failure', 'worker_panicked')),
+        'root_exit_code': '?u32',
+    }
+AGENT_TRANSCRIPT_FIELDS['windows_java_maven'] = dict.fromkeys((
+    'cache_input_unchanged', 'fixture_inputs_verified', 'elapsed_saturated',
+    'primary_failed', 'cleanup_failed', 'success'), 'bool') | {
+        'schema_version': ('integer_range', 1, 1),
+        'route': ('normal_agent_normal_client',),
+        'pair_count': ('integer_range', 0, 1),
+        'cache_input_files': ('integer_range', 0, 83),
+        'source_sha256': ('5dda0de22c2184b1420be8e68f8a37e9165b59658d5c5cbf9fe2ee770a1003e5',),
+        'pom_sha256': ('c13116c2a4d7dd73f28f604480b6aad3ce818a11db526b7f61737c1c3864b65b',),
+        'dependency_jar_sha256': ('82579c654968c77f0bd3d04c28a22b24396c35270ce76d015807410438952b5d',),
+        'present': MAVEN_CASE_FIELDS,
+        'missing': MAVEN_CASE_FIELDS,
+        'elapsed_ms': ('integer_range', 0, 360000),
+    }
+
 
 def is_link(info):
     """All Windows reparse points are rejected, including junctions."""
@@ -458,12 +506,18 @@ def parse_evidence(data, limits):
 
 
 def safe_fields(value, schema, errors):
-    """Copy only schema-declared, correctly typed, bounded scalar fields."""
+    """Reconstruct declared scalars and fixed nested schemas; ignore other data."""
     result = {}
     for key, kind in schema.items():
         if key not in value:
             continue
         item = value[key]
+        if isinstance(kind, dict):
+            if isinstance(item, dict):
+                result[key] = safe_fields(item, kind, errors)
+            else:
+                errors.add('invalid_field_' + key)
+            continue
         nullable = isinstance(kind, str) and kind.startswith('?')
         if nullable:
             kind = kind[1:]
@@ -479,6 +533,8 @@ def safe_fields(value, schema, errors):
         elif isinstance(kind, tuple) and kind and kind[0] == 'enum_list':
             valid = (isinstance(item, list) and len(item) <= len(kind[1])
                      and all(isinstance(part, str) and part in kind[1] for part in item))
+        elif isinstance(kind, tuple) and kind and kind[0] == 'nullable_enum':
+            valid = item is None or isinstance(item, str) and item in kind[1]
         else:
             valid = isinstance(item, str) and item in kind
         if valid:

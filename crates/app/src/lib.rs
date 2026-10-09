@@ -825,6 +825,13 @@ impl CedarApp {
             self.apply_java_startup_event(action, event.result, event.connected);
             return;
         }
+        if matches!(&job, Job::Language(action) if action.is_maven_model()) {
+            let Job::Language(action) = job else {
+                unreachable!()
+            };
+            self.apply_maven_model_event(action, event.result, event.connected);
+            return;
+        }
         if let Job::Language(language_ui::Action {
             kind: language_ui::ActionKind::RefreshJavaDiagnostics { context },
             ..
@@ -963,6 +970,7 @@ impl CedarApp {
                     );
                     return;
                 }
+                self.observe_maven_pom_acknowledgement(event.id, &path, &revision);
                 if let Some(doc) = self.documents.iter_mut().find(|doc| doc.path == path) {
                     if navigation == self.navigation_epoch {
                         self.active_document = Some(doc.id);
@@ -1016,6 +1024,13 @@ impl CedarApp {
                 },
                 Payload::Written { revision },
             ) => {
+                if self
+                    .documents
+                    .iter()
+                    .any(|doc| doc.id == document && doc.path == "pom.xml")
+                {
+                    self.observe_maven_pom_acknowledgement(event.id, "pom.xml", &revision);
+                }
                 let workspace = self.recovery_workspace();
                 if let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == document) {
                     doc.acknowledge_save(snapshot, revision);

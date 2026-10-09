@@ -41,8 +41,11 @@ JDK_JAVA_OPTIONS, JAVA_TOOL_OPTIONS and _JAVA_OPTIONS must be absent.
 
 This scoped profile handles Java source diagnostics, hover, completion with
 validated deferred import edits, source navigation and the existing supported
-language operations. Java mode synchronizes Java documents only. Maven/Gradle
-project import and JDK class-file viewing are unavailable in this profile.
+language operations. Java mode synchronizes Java documents only. Ordinary Java
+mode leaves Maven/Gradle imports disabled. The separate explicit Windows
+[Maven leaf profile](MAVEN_PROJECTS.md) adds bounded offline dependency/model
+support; it requires its own capability and cache/control configuration.
+JDK class-file viewing remains unavailable.
 Server commands and automatic workspace edits remain disabled. In particular,
 the completion selection callback does not run; ranking feedback and automatic
 signature-help follow-up are unavailable.

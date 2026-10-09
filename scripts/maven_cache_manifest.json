@@ -1,0 +1,1481 @@
+{
+  "schema_version": 1,
+  "purpose": "CI-only pinned Maven compiler/resources prerequisites; no product redistribution or runtime downloading",
+  "origin": "https://repo.maven.apache.org/maven2/",
+  "expected_files": 83,
+  "expected_bytes": 4065288,
+  "signatures_verified": false,
+  "entries": [
+    {
+      "path": "com/thoughtworks/qdox/qdox/2.2.0/qdox-2.2.0.jar",
+      "gav": "com.thoughtworks.qdox:qdox:2.2.0",
+      "bytes": 353020,
+      "sha256": "c260c3230b2340af97d54bf01f7f67ebc57c901922736c881bb11cb981302be2",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "39651eb3ce73d6e506490ea352e1e13eab6b55e8"
+      },
+      "declared_licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "com/thoughtworks/qdox/qdox/2.2.0/qdox-2.2.0.pom",
+      "gav": "com.thoughtworks.qdox:qdox:2.2.0",
+      "bytes": 17651,
+      "sha256": "c850fbad0b05eada85ca1bce22409a75f758aea0ca1e47a828c6a505ad361fab",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "5ffffaccce4c5176e48c661483f0dd22726e3cf8"
+      },
+      "declared_licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "commons-io/commons-io/2.11.0/commons-io-2.11.0.jar",
+      "gav": "commons-io:commons-io:2.11.0",
+      "bytes": 327135,
+      "sha256": "961b2f6d87dbacc5d54abf45ab7a6e2495f89b75598962d8c723cea9bc210908",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "a2503f302b11ebde7ebc3df41daebe0e4eea3689"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "commons-io/commons-io/2.11.0/commons-io-2.11.0.pom",
+      "gav": "commons-io:commons-io:2.11.0",
+      "bytes": 19729,
+      "sha256": "2e016fd7e3244b5f2c20acad834d93aa4790486ee1e4564641361a3e831eef59",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "3fe5d6ebed1afb72c3e8c166dba0b0e00fdd1f16"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "commons-io/commons-io/2.16.1/commons-io-2.16.1.jar",
+      "gav": "commons-io:commons-io:2.16.1",
+      "bytes": 508826,
+      "sha256": "f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "377d592e740dc77124e0901291dbfaa6810a200e"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "commons-io/commons-io/2.16.1/commons-io-2.16.1.pom",
+      "gav": "commons-io:commons-io:2.16.1",
+      "bytes": 19623,
+      "sha256": "5777d292251c7895c04a4c57015683ec3b353a12486c9b3e7178e9b0b3c38fff",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "553d6f69e338060a231755afe0ebf99d14b45da6"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "javax/inject/javax.inject/1/javax.inject-1.jar",
+      "gav": "javax.inject:javax.inject:1",
+      "bytes": 2497,
+      "sha256": "91c77044a50c481636c32d916fd89c9118a72195390452c81065080f957de7ff",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "6975da39a7040257bd51d21a231b76c915872d38"
+      },
+      "declared_licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "javax/inject/javax.inject/1/javax.inject-1.pom",
+      "gav": "javax.inject:javax.inject:1",
+      "bytes": 612,
+      "sha256": "943e12b100627804638fa285805a0ab788a680266531e650921ebfe4621a8bfa",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "b8e00a8a0deb0ebef447570e37ff8146ccd92cbe"
+      },
+      "declared_licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/apache/13/apache-13.pom",
+      "gav": "org.apache:apache:13",
+      "bytes": 13974,
+      "sha256": "ff513db0361fd41237bef4784968bc15aae478d4ec0a9496f811072ccaf3841d",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "15aff1faaec4963617f07dbe8e603f0adabc3a12"
+      },
+      "declared_licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/apache/23/apache-23.pom",
+      "gav": "org.apache:apache:23",
+      "bytes": 18422,
+      "sha256": "bc10624e0623f36577fac5639ca2936d3240ed152fb6d8d533ab4d270543491c",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "0404949e96725e63a10a6d8f9d9b521948d170d5"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/apache/29/apache-29.pom",
+      "gav": "org.apache:apache:29",
+      "bytes": 20721,
+      "sha256": "3e49037174820bbd0df63420a977255886398954c2a06291fa61f727ac35b377",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "57991491045c9a37a3113f24bf29a41a4ceb1459"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/apache/31/apache-31.pom",
+      "gav": "org.apache:apache:31",
+      "bytes": 23531,
+      "sha256": "555d0c9eaa69c042aff924927b9381e8f8174136d355eead445224452e6291cc",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "9009cbdad2b69835f2df9265794c8ab50cf4dce1"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/apache/33/apache-33.pom",
+      "gav": "org.apache:apache:33",
+      "bytes": 24184,
+      "sha256": "d78bd8524c5f8380a190a6525686629a95dfe512df21111383a6d8c0923a4415",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "f7b7b5a9e84395f17d7e6a136e5bfc4b9973566d"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/apache/35/apache-35.pom",
+      "gav": "org.apache:apache:35",
+      "bytes": 24249,
+      "sha256": "ea297dcd114136e8b8e8b630230d52a76c2fc69f6c5db25d672b1857000728b8",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "0a20c027145b2ee59e77ef7dee4881d4ab0a8e07"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/apache/37/apache-37.pom",
+      "gav": "org.apache:apache:37",
+      "bytes": 25620,
+      "sha256": "524ec4787aff73af6b3a9fafa154c7f1881b648299b663fdbfcadda1286f2353",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "e6d6d76cff11107ad33986203556d8ebe43c7b2c"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/commons/commons-lang3/3.16.0/commons-lang3-3.16.0.pom",
+      "gav": "org.apache.commons:commons-lang3:3.16.0",
+      "bytes": 31259,
+      "sha256": "e280383956c2e72c1deb3a307b3b75f05ee43649b7d43f0215f7b6c7b15eea2c",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "48213bd4b10e67ea9a51e5fd5383f3cb0d473271"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/commons/commons-lang3/3.20.0/commons-lang3-3.20.0.jar",
+      "gav": "org.apache.commons:commons-lang3:3.20.0",
+      "bytes": 713862,
+      "sha256": "69e5c9fa35da7a51a5fd2099dfe56a2d8d32cf233e2f6d770e796146440263f4",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "65897b3e5731220962e659e001904af3c3cbeba9"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/commons/commons-lang3/3.20.0/commons-lang3-3.20.0.pom",
+      "gav": "org.apache.commons:commons-lang3:3.20.0",
+      "bytes": 32571,
+      "sha256": "7ca83b2709c1e7a9e03b576cd41422190379489a80866e542f8c8b955411a2aa",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "54f65c450509a0cc4723b8bfb3553d9c9eb44175"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/commons/commons-parent/52/commons-parent-52.pom",
+      "gav": "org.apache.commons:commons-parent:52",
+      "bytes": 79273,
+      "sha256": "75dbe8f34e98e4c3ff42daae4a2f9eb4cbcd3b5f1047d54460ace906dbb4502e",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "004ee86dedc66d0010ccdc29e5a4ce014c057854"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/commons/commons-parent/69/commons-parent-69.pom",
+      "gav": "org.apache.commons:commons-parent:69",
+      "bytes": 77006,
+      "sha256": "d50da9c39bdca823d618d1b4a03b73f196497fcb8616fd0da727c8623592a9bb",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "6ebeacd37818d945d96c06b44af10e050d2ef7c4"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/commons/commons-parent/72/commons-parent-72.pom",
+      "gav": "org.apache.commons:commons-parent:72",
+      "bytes": 77942,
+      "sha256": "4345debfc767b1aeac68abdd72fc67d18b521d4b390372a11b63ff0c586b2320",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "cdfbaff82e756be4cb74d3f09b8fbf8f6b06c79d"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/commons/commons-parent/92/commons-parent-92.pom",
+      "gav": "org.apache.commons:commons-parent:92",
+      "bytes": 79639,
+      "sha256": "94f6c027b15f6402995dd1b2c7ea35bfe1ebc88b6832b3134368b41998721953",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "90ccda9c2c57ce00faa336fbe6b37484536d9960"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/maven-parent/23/maven-parent-23.pom",
+      "gav": "org.apache.maven:maven-parent:23",
+      "bytes": 32586,
+      "sha256": "5425501edd9e0bd7b01eca53cc92e06836d24851151304f9c6759e1713541685",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "f92ae4baba6616609a29f6287626ee3f50ed7d6e"
+      },
+      "declared_licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/maven-parent/39/maven-parent-39.pom",
+      "gav": "org.apache.maven:maven-parent:39",
+      "bytes": 47971,
+      "sha256": "cfe4820aa1d96ae51d1dc5b0e2a9dc582c42478c24c95ca8238f547e60bef721",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "9b763d93ee3622181d8d39f62e8e995266c12362"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/maven-parent/43/maven-parent-43.pom",
+      "gav": "org.apache.maven:maven-parent:43",
+      "bytes": 50343,
+      "sha256": "468a1262e9aaa5febf9d604e2836267f815351f2b4520f28fb17f53c71e33554",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "b9346196901d4f22b4f92a3c3f0d21d436308b03"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/maven-parent/45/maven-parent-45.pom",
+      "gav": "org.apache.maven:maven-parent:45",
+      "bytes": 52870,
+      "sha256": "94fe869eb9b4ce9fce3995d05ea86b168c85d927f9d17beb814a1960c76d7e6f",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "95be7723498eab78db4ec2940b77ab29a289caee"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/maven-parent/47/maven-parent-47.pom",
+      "gav": "org.apache.maven:maven-parent:47",
+      "bytes": 53612,
+      "sha256": "82d0112ba1907ff5fd13a2485829c97df66c6a81e075359a561a422f7d1582d3",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "f3def9413e619a2c8a3e2e338d4a4f0e4e344b07"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/plugins/maven-compiler-plugin/3.15.0/maven-compiler-plugin-3.15.0.jar",
+      "gav": "org.apache.maven.plugins:maven-compiler-plugin:3.15.0",
+      "bytes": 83823,
+      "sha256": "6ea0ca0558ccf248c514aa94908d1f895a92e9b4e4604c1bb29f7a4ab1b833f0",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "22d13874d815e28e90134a5977eb2f321fa6b35d"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/plugins/maven-compiler-plugin/3.15.0/maven-compiler-plugin-3.15.0.pom",
+      "gav": "org.apache.maven.plugins:maven-compiler-plugin:3.15.0",
+      "bytes": 9549,
+      "sha256": "2d2f7a7073c1def3b1473fbedad7dbfc559ed6fb0dc5a94edc347fd4905e7651",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "ecd83e881b75aaa6afd5812481470fc91bf61d74"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/plugins/maven-plugins/45/maven-plugins-45.pom",
+      "gav": "org.apache.maven.plugins:maven-plugins:45",
+      "bytes": 8358,
+      "sha256": "c0f58b12039f152641e3e53a07acc12887012ef149fac83065a9785aac51de0e",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "e75045d232d03ec858358007fd86a2e0af36edcc"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/plugins/maven-plugins/47/maven-plugins-47.pom",
+      "gav": "org.apache.maven.plugins:maven-plugins:47",
+      "bytes": 7204,
+      "sha256": "58ddbb8e429cb5e9054c2f5f7b7cdfeb7adbcdfda21d92b67f67fa2b94edf982",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "c98e3118c5762b621112b41ce591ddce9da64204"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/plugins/maven-resources-plugin/3.4.0/maven-resources-plugin-3.4.0.jar",
+      "gav": "org.apache.maven.plugins:maven-resources-plugin:3.4.0",
+      "bytes": 30835,
+      "sha256": "72c7d66ea49256ea64a82b28a15df69177d13066d12afeb4a1ee0616da4648f1",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "3f2785076379ead77e412da8d91c85760dd071f4"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/plugins/maven-resources-plugin/3.4.0/maven-resources-plugin-3.4.0.pom",
+      "gav": "org.apache.maven.plugins:maven-resources-plugin:3.4.0",
+      "bytes": 7867,
+      "sha256": "3879fb442ab95cc8a3f07459667873dab832fa99fe5f17be3e474f90ea6f6d2a",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "0e0712e1fe9163dba71c769df50c7053a07cc395"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/shared/maven-filtering/3.4.0/maven-filtering-3.4.0.jar",
+      "gav": "org.apache.maven.shared:maven-filtering:3.4.0",
+      "bytes": 56038,
+      "sha256": "ff04a5297c69d95f6face0af8934d6ee7bf1389dec50648bdd5e8569fb9d8e26",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "3f0659f3e7c2734e8e8eb5e5dedc9b1f3de8b753"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/shared/maven-filtering/3.4.0/maven-filtering-3.4.0.pom",
+      "gav": "org.apache.maven.shared:maven-filtering:3.4.0",
+      "bytes": 6470,
+      "sha256": "bb698e6a90534e82a8842a199b7dff470781a822d4e5868fb76ba953ed08ed6a",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "9f254f13c9955a5dc56ceab07483de59dae335b8"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/shared/maven-shared-components/19/maven-shared-components-19.pom",
+      "gav": "org.apache.maven.shared:maven-shared-components:19",
+      "bytes": 6359,
+      "sha256": "d82408269aada2eb1521ee8ff17f7c67333684f8ed2a09a9e35badd2e7575957",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "650a49682d4c82f060c7cc8005f8734a5fd86af9"
+      },
+      "declared_licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/shared/maven-shared-components/39/maven-shared-components-39.pom",
+      "gav": "org.apache.maven.shared:maven-shared-components:39",
+      "bytes": 3220,
+      "sha256": "17e81388d88ba61c4055450ec90a32ee30acd07f46dc6e31e096b8e53735f4b2",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "c6707d46530a62cdc0e6d9cf70061f80d002f862"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/shared/maven-shared-components/43/maven-shared-components-43.pom",
+      "gav": "org.apache.maven.shared:maven-shared-components:43",
+      "bytes": 3773,
+      "sha256": "6072dd103bdba3199584c5b73ed45b00567cd3ea918e2160b10bc7437c9e8181",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "fc6ef17410db522fc61d43e3d23e7a47a738b0db"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/shared/maven-shared-incremental/1.1/maven-shared-incremental-1.1.jar",
+      "gav": "org.apache.maven.shared:maven-shared-incremental:1.1",
+      "bytes": 13538,
+      "sha256": "61988e54486a5dc38f06c70fdae5b108556c63bd433697b9f4305fcdb30fa40e",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "9d017a7584086755445c0a260dd9a1e9eae161a5"
+      },
+      "declared_licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/shared/maven-shared-incremental/1.1/maven-shared-incremental-1.1.pom",
+      "gav": "org.apache.maven.shared:maven-shared-incremental:1.1",
+      "bytes": 4742,
+      "sha256": "f21d19eb49b4a66cd85354a9ee7335439ea92a368173760a202766008cc19924",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "c607b2c64c027151c440f27b5ec86e062b9e9953"
+      },
+      "declared_licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/shared/maven-shared-utils/3.4.2/maven-shared-utils-3.4.2.jar",
+      "gav": "org.apache.maven.shared:maven-shared-utils:3.4.2",
+      "bytes": 151103,
+      "sha256": "b613357e1bad4dfc1dead801691c9460f9585fe7c6b466bc25186212d7d18487",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "bfa28296272a5915b08de9f11f34a94b0a818fd0"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/apache/maven/shared/maven-shared-utils/3.4.2/maven-shared-utils-3.4.2.pom",
+      "gav": "org.apache.maven.shared:maven-shared-utils:3.4.2",
+      "bytes": 5899,
+      "sha256": "a941745d7faeb8dc9a75edc2c330c994b7440b9a44d21142716b6053967a41c1",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "78e0d256abbc6df63b2bb96493dd99daa29be63f"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-compiler-api/2.16.2/plexus-compiler-api-2.16.2.jar",
+      "gav": "org.codehaus.plexus:plexus-compiler-api:2.16.2",
+      "bytes": 29079,
+      "sha256": "db34d13c8d688063a946922f4de448c909ba43fec355ea15514495f33072b031",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "8c17c947525a3f90d87cb1d732922d6bb31e2b1d71e93a2b89c6cb1d262185571c71d4379b078ece6c166234831f697a4be024069f566a1619e7586ca2beab7f"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-compiler-api/2.16.2/plexus-compiler-api-2.16.2.pom",
+      "gav": "org.codehaus.plexus:plexus-compiler-api:2.16.2",
+      "bytes": 1362,
+      "sha256": "ae7ca19e5a3bafdf92a403edf8af5876c746024424059c719b1544de48384ff8",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "169a712c2bd0071ef82be111f1325dba2b4edc249cee5f0859da024be4ddfbcf6759649d7c212651a23381edc66057be2dbec1c0f59c0ceda6f0ac5df5191824"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-compiler-javac/2.16.2/plexus-compiler-javac-2.16.2.jar",
+      "gav": "org.codehaus.plexus:plexus-compiler-javac:2.16.2",
+      "bytes": 29899,
+      "sha256": "e48141c146d6cb96619aafb07b2e10e1ac08f339e96ae4067ddd9c2d0f626672",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "b9fbf799d82f61ef40f6cca702bc12c221345defc9a4fad1ceb39cb64afe3be9701e863d0de40adee84fe1a77cda221f007a09cba22f5fa7facd7e1cc0e33285"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-compiler-javac/2.16.2/plexus-compiler-javac-2.16.2.pom",
+      "gav": "org.codehaus.plexus:plexus-compiler-javac:2.16.2",
+      "bytes": 1291,
+      "sha256": "b648754e6d99b381f7fc40328849c6f24d454263c03cf89c737d7c29831eb208",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "e0a9a7ecc95cdabf0e3f6569c22502b41575a85d69d431c4a46211bc88a1610277993090909bfaf8b560132f29efb5524e38ef66adc0d2a2cdac43dd85f9cd87"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-compiler-manager/2.16.2/plexus-compiler-manager-2.16.2.jar",
+      "gav": "org.codehaus.plexus:plexus-compiler-manager:2.16.2",
+      "bytes": 5237,
+      "sha256": "99630ac196571a2754baa143a12723795b13020631902a6dff18dfb997e59b0e",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "f9886e2e8ecb15af04b9bcd054a4b5cbc815ddcba263e2125f3c03c6b11ca0d13d9365fb548014c97482e5a8e7b2456fb0099d7349088e4d24aa4dfd7df1a221"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-compiler-manager/2.16.2/plexus-compiler-manager-2.16.2.pom",
+      "gav": "org.codehaus.plexus:plexus-compiler-manager:2.16.2",
+      "bytes": 1348,
+      "sha256": "ba8d233dd73fc97c10f84bf23ef8f632cd19ced0f85dc335be2bdcb8e28e7bd0",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "dd553ad781afb95742f62576d99bb376e4ed56d7afa10173d4d1d8dbbff249cdc696072745156d1846d48d52c005181200f5a793f55353a792684d8225fd215e"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-compiler/2.16.2/plexus-compiler-2.16.2.pom",
+      "gav": "org.codehaus.plexus:plexus-compiler:2.16.2",
+      "bytes": 7547,
+      "sha256": "53124330e5e1b45d1ef6eff5e41c4d4defe04403e5c894795b44269515b6611e",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "35688c3f48d4c9686f59aa3ef491896eafeb5bd99a818cdf87e1f52f7c93da74fd456341ff03085cf16b9f82549650423732d23051bda7cd80c001cd98af38e6"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-compilers/2.16.2/plexus-compilers-2.16.2.pom",
+      "gav": "org.codehaus.plexus:plexus-compilers:2.16.2",
+      "bytes": 1567,
+      "sha256": "835e6a3f53ed9f39d14a0fd2b367a47fde78698115464eddba4b5c5d9fd1250f",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "84f72297fcc54e027d8d7569c4bf5f4aa41ecac45dc037f82b056c1c11a1a5661e2fb701f5cda3fc62dec471322a39a256b5ee14388443c803d5b1cfe3c6187d"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-interpolation/1.27/plexus-interpolation-1.27.jar",
+      "gav": "org.codehaus.plexus:plexus-interpolation:1.27",
+      "bytes": 85874,
+      "sha256": "3fb4fb6143fdf964024c3cb738551524b9ea84e5c211cd660c559ad0703e5230",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "8dc73f4ff5eafcbb7ec035ba54736e828b272533"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-interpolation/1.27/plexus-interpolation-1.27.pom",
+      "gav": "org.codehaus.plexus:plexus-interpolation:1.27",
+      "bytes": 3021,
+      "sha256": "d54fbcbc4399e352322874a4128b9d28fe9fe1583f89ec361de242ea38d33f9b",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "0562449f7a1f2ec670751e294799e8786f8003e3"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-java/1.5.2/plexus-java-1.5.2.jar",
+      "gav": "org.codehaus.plexus:plexus-java:1.5.2",
+      "bytes": 57355,
+      "sha256": "1e6a4298e145c1e23af430b04ac53d76dc11077e0f3d36ef9c027ce790d96505",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "461412437b35626900ee8e27d10660a9c0ce232b4517aa75db59585ea6e7b1ad96b8a3df018db3be5a4777234fe78b3606c623097d47d6f185f29e3888d1a70f"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-java/1.5.2/plexus-java-1.5.2.pom",
+      "gav": "org.codehaus.plexus:plexus-java:1.5.2",
+      "bytes": 4083,
+      "sha256": "9617b619010dbb95c237e35bff7ee1d336cbcfd9ff5c229a935a9e3587ff0c37",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "7a0e7187e3b466b1bf45e2e457c62b75d7bba98b27c63f554c6860f08c7c788acbcfade5f403a67cf3fa9ecdd20d447d409606ce307d143141446572890ac837"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-languages/1.5.2/plexus-languages-1.5.2.pom",
+      "gav": "org.codehaus.plexus:plexus-languages:1.5.2",
+      "bytes": 3858,
+      "sha256": "9e7d29fc65089d69e75b559efaa5db8117dab3c579d0ef19759776d5643a492b",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "d2feb08802db97aed4cce3d9d37e54ec8b7e295308ebffd94f71aebe18d364192826c3edd0de333060f67c8298a9402b7b816cde4d523a30b7442addbcf902f0"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-utils/4.0.2/plexus-utils-4.0.2.jar",
+      "gav": "org.codehaus.plexus:plexus-utils:4.0.2",
+      "bytes": 192537,
+      "sha256": "8957274e75fe2c278b1428dd16a0daeee1dd38152cb6eff816177ac28fccb697",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "9526a9548b302572f23337fcc217fb4cc713b9c3"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-utils/4.0.2/plexus-utils-4.0.2.pom",
+      "gav": "org.codehaus.plexus:plexus-utils:4.0.2",
+      "bytes": 12810,
+      "sha256": "5151c13bdd7cc3a5569583a7f4267392f013ffd3115eab8db5f86de420a366af",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "90bdd43cc00d6fc5509e53bf09268e33708c5e8b"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-xml/3.0.1/plexus-xml-3.0.1.jar",
+      "gav": "org.codehaus.plexus:plexus-xml:3.0.1",
+      "bytes": 94331,
+      "sha256": "c1a510a87a62bd2d74ac1472dd31c3f9e9b0b8b8568f37d77c0f135415bebd05",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "b0e73c21402f03c2765674b8dede21673b3288cf"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus-xml/3.0.1/plexus-xml-3.0.1.pom",
+      "gav": "org.codehaus.plexus:plexus-xml:3.0.1",
+      "bytes": 3694,
+      "sha256": "3242ddc20873f71b381c333b22afb9cf3596d6a63b6683036a16bd51bc8721a4",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "589c7ceee7c159b87aea44a4de757a4cd9c81956"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus/16/plexus-16.pom",
+      "gav": "org.codehaus.plexus:plexus:16",
+      "bytes": 27638,
+      "sha256": "68d4eed65a3dbbc342ed80dd138fbe9c67cb7fb4c2abc4f5201cdb5b9f645868",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "c81926f677c914cff35c0856a79e8713eea36f47"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus/18/plexus-18.pom",
+      "gav": "org.codehaus.plexus:plexus:18",
+      "bytes": 29238,
+      "sha256": "b43ee89c8890b9e5bc48d079fcb4c44f082b5139253356dc455806a33c3dd8fd",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "6dcf47484abcaaa8288f528ccbde76171eb3c155"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus/24/plexus-24.pom",
+      "gav": "org.codehaus.plexus:plexus:24",
+      "bytes": 31377,
+      "sha256": "89a1bc79e46c35ab108b7e215bb2c5c215ff8f3af1ae3cfef82d9a2b33b06c51",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "abce0b991f00bfc582c92095c45d5b915e09a52eda55cb71fb01beb4519a84a59531acf30380a4f923737c5fcc18bee536970b3ce0a47a03e48b862e3ac6fc00"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/codehaus/plexus/plexus/25/plexus-25.pom",
+      "gav": "org.codehaus.plexus:plexus:25",
+      "bytes": 31378,
+      "sha256": "faa7947c2020967ad0c92b259ee9fa361d05e90cd036d17c37098bb1edaea3a3",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "90fba44df7ea1604cca336a08702fd2d12d951472856dcec5e1728e85f124658a99242a623051161745f51cd518e1696d41d0ca4fbdb4a9d9d79fee527e24f38"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/junit/junit-bom/5.10.1/junit-bom-5.10.1.pom",
+      "gav": "org.junit:junit-bom:5.10.1",
+      "bytes": 5649,
+      "sha256": "21c4b0286f4b20069577ff4b20978a85c100ac8a46b6f1c8672fbaab337bc3f2",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "1b9c3bcea64f5d98f5e39c88adab6d7a9bfcf0ee4e6639a8c146b4b7cb29a4a280b567c6e42a537c215590c557e86b9446a2c9dcf76191d0ecac1ad9bf16f7c8"
+      },
+      "declared_licenses": [
+        {
+          "name": "Eclipse Public License v2.0",
+          "url": "https://www.eclipse.org/legal/epl-v20.html"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/junit/junit-bom/5.10.2/junit-bom-5.10.2.pom",
+      "gav": "org.junit:junit-bom:5.10.2",
+      "bytes": 5649,
+      "sha256": "169dd904a4b0f6520cffe658cc62292bfe9f3c14a989fa92120724cde43a9968",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "5b36199c9a331c4d05ed78b8fe1f28c5d21e0d7a05bdca1d45f532a89eb7d67fd425da93e9405203a483354abc63718858f80c828e0c090316f70fd833ef904c"
+      },
+      "declared_licenses": [
+        {
+          "name": "Eclipse Public License v2.0",
+          "url": "https://www.eclipse.org/legal/epl-v20.html"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/junit/junit-bom/5.10.3/junit-bom-5.10.3.pom",
+      "gav": "org.junit:junit-bom:5.10.3",
+      "bytes": 5649,
+      "sha256": "10937d44c425984cb8739225d34712e1a3145641ca93ac3f7ef186fa25f6babc",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "51edc3d5a07b98c4ea60fd411db63e948f831e285d40e52b08387abf61d0b39ce90eb28209ef8825f55a3d2e29e501b168bdd0d322f50816bcf78e80862e219e"
+      },
+      "declared_licenses": [
+        {
+          "name": "Eclipse Public License v2.0",
+          "url": "https://www.eclipse.org/legal/epl-v20.html"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/junit/junit-bom/5.11.0-M2/junit-bom-5.11.0-M2.pom",
+      "gav": "org.junit:junit-bom:5.11.0-M2",
+      "bytes": 5706,
+      "sha256": "4a3ffc4a4edcfec2cb5d619922706a9407161798571939f854dfda73e4e17cc8",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "f6769b85ee9f2bf480b61cf13e0be657f686c54cf3c293675e99126d1cb4866e45a5b344e28ba18554f806f9bae343d4c00b29ab2e58264698d6aed80856131f"
+      },
+      "declared_licenses": [
+        {
+          "name": "Eclipse Public License v2.0",
+          "url": "https://www.eclipse.org/legal/epl-v20.html"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/junit/junit-bom/5.13.1/junit-bom-5.13.1.pom",
+      "gav": "org.junit:junit-bom:5.13.1",
+      "bytes": 5649,
+      "sha256": "fa68451ea830572ed43ffe51d75b6a05f7a5e665a602a51f49d6be02063a65f3",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "e1c4acc68f7114cd501754d07e51a9345bc1106623ea9e38cd6d40b1886cea7f8f6fa227da9d71da608b6691ef1f9d75d11253567350fbb4a949770a1cb7023e"
+      },
+      "declared_licenses": [
+        {
+          "name": "Eclipse Public License v2.0",
+          "url": "https://www.eclipse.org/legal/epl-v20.html"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/junit/junit-bom/5.13.4/junit-bom-5.13.4.pom",
+      "gav": "org.junit:junit-bom:5.13.4",
+      "bytes": 5669,
+      "sha256": "d7a08a99b2502f0bb68cd4e1f984f0bf69324aaa208bd0f73366c03fc3548a42",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "ec795b2f32982c1af8dccef57553aa9d959c13ee829aebd6459ba22b4ef434aeb4184aa89f63ad2f0d8c45d59cd020a15cd976ddb4bf20f1044b492a406e029e"
+      },
+      "declared_licenses": [
+        {
+          "name": "Eclipse Public License v2.0",
+          "url": "https://www.eclipse.org/legal/epl-v20.html"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/junit/junit-bom/5.14.1/junit-bom-5.14.1.pom",
+      "gav": "org.junit:junit-bom:5.14.1",
+      "bytes": 5669,
+      "sha256": "01b01dfa366550b40ac5760548a7d728b6109d17c451e83864d1e5e0ce862c94",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "adeca632b5d26607b30e792431646f7e6b28cb701a54e5dd9c3b2f4523f5e8bc4b2d114981846f2dc9d57e4ff4331da5ed5d1226ebc30b1267f885368295eae0"
+      },
+      "declared_licenses": [
+        {
+          "name": "Eclipse Public License v2.0",
+          "url": "https://www.eclipse.org/legal/epl-v20.html"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/junit/junit-bom/5.14.2/junit-bom-5.14.2.pom",
+      "gav": "org.junit:junit-bom:5.14.2",
+      "bytes": 5669,
+      "sha256": "ed2dcc7855bd460bccc93a1bf0c962e63b566ff7d8f1ded0f1f2593ba8183aaf",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "b4ac40bd983d3928df403dcf64a9253bc922825f9f191c4c8140c34188d631918831290ef2b396cc2ba30968c77a061ec7fbf593008f79650543856a6c314506"
+      },
+      "declared_licenses": [
+        {
+          "name": "Eclipse Public License v2.0",
+          "url": "https://www.eclipse.org/legal/epl-v20.html"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/junit/junit-bom/5.7.2/junit-bom-5.7.2.pom",
+      "gav": "org.junit:junit-bom:5.7.2",
+      "bytes": 5098,
+      "sha256": "cd14aaa869991f82021c585d570d31ff342bcba58bb44233b70193771b96487b",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "36e117a92c8f5cd9f98b0cedda2fa7d191bf4778d80e299d89952c34a25101bdf402685c4436d5f0e580204ad6187a106799c1b17bcbb31617778bf3583a97ec"
+      },
+      "declared_licenses": [
+        {
+          "name": "Eclipse Public License v2.0",
+          "url": "https://www.eclipse.org/legal/epl-v20.html"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/ow2/asm/asm/9.9.1/asm-9.9.1.jar",
+      "gav": "org.ow2.asm:asm:9.9.1",
+      "bytes": 126252,
+      "sha256": "6f3828a215c920059a5efa2fb55c233d6c54ec5cadca99ce1b1bdd10077c7ddd",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "bb43eaca8777c7b2b4bce9fc19f9be5742a736a23415e271643c3e14d3d82f565f6de0e29ebac570ce66b3921ece1ebd4de06abeb633ae28c17891de56973807"
+      },
+      "declared_licenses": [
+        {
+          "name": "BSD-3-Clause",
+          "url": "https://asm.ow2.io/license.html"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/ow2/asm/asm/9.9.1/asm-9.9.1.pom",
+      "gav": "org.ow2.asm:asm:9.9.1",
+      "bytes": 2372,
+      "sha256": "aca68dee9ba2f6cd90ffde728efdc7e3ebfcf59f3f41fbfe248d2d01d5b866af",
+      "published_digest": {
+        "algorithm": "sha512",
+        "value": "105a2fc94f852818cf3a957c3ffa9bedf9822636ea1d1ce3c0404e36517cdba052bde94aad4984a522d0a9bc814527f3c27cd99f581ff4c2bfcd0751fedb6ca7"
+      },
+      "declared_licenses": [
+        {
+          "name": "BSD-3-Clause",
+          "url": "https://asm.ow2.io/license.html"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/ow2/ow2/1.5.1/ow2-1.5.1.pom",
+      "gav": "org.ow2:ow2:1.5.1",
+      "bytes": 11290,
+      "sha256": "321ddbb7ee6fe4f53dea6b4cd6db74154d6bfa42391c1f763b361b9f485acf05",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "bda66fa5f1b68fa7d2de3d569bdc8508b2af82d4"
+      },
+      "declared_licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar",
+      "gav": "org.slf4j:slf4j-api:1.7.36",
+      "bytes": 41125,
+      "sha256": "d3ef575e3e4979678dc01bf1dcce51021493b4d11fb7f1be8ad982877c16a1c0",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "6c62681a2f655b49963a5983b8b0950a6120ae14"
+      },
+      "declared_licenses": [
+        {
+          "name": "MIT License",
+          "url": "http://www.opensource.org/licenses/mit-license.php",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.pom",
+      "gav": "org.slf4j:slf4j-api:1.7.36",
+      "bytes": 2743,
+      "sha256": "fb046a9c229437928bb11c2d27c8b5d773eb8a25e60cbd253d985210dedc2684",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "749f6995b1d6591a417ca4fd19cdbddabae16fd1"
+      },
+      "declared_licenses": [
+        {
+          "name": "MIT License",
+          "url": "http://www.opensource.org/licenses/mit-license.php",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/slf4j/slf4j-parent/1.7.36/slf4j-parent-1.7.36.pom",
+      "gav": "org.slf4j:slf4j-parent:1.7.36",
+      "bytes": 14093,
+      "sha256": "bb388d37fbcdd3cde64c3cede21838693218dc451f04040c5df360a78ed7e812",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "5ee2b2ff107aa21d6e6c8b1d38ab28d02b5bf62e"
+      },
+      "declared_licenses": [
+        {
+          "name": "MIT License",
+          "url": "http://www.opensource.org/licenses/mit-license.php",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/sonatype/forge/forge-parent/5/forge-parent-5.pom",
+      "gav": "org.sonatype.forge:forge-parent:5",
+      "bytes": 8363,
+      "sha256": "e56188aa8ce51278006aa90bc7e0f304a81e2f1219f462e7d21f262535cd2795",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "a557514263bbd4a6daef8f125ab80e78413292d3"
+      },
+      "declared_licenses": [],
+      "license_status": "not_declared_in_reviewed_pom"
+    },
+    {
+      "path": "org/sonatype/oss/oss-parent/9/oss-parent-9.pom",
+      "gav": "org.sonatype.oss:oss-parent:9",
+      "bytes": 6569,
+      "sha256": "fb40265f982548212ff82e362e59732b2187ec6f0d80182885c14ef1f982827a",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "e5cdc4d23b86d79c436f16fed20853284e868f65"
+      },
+      "declared_licenses": [],
+      "license_status": "not_declared_in_reviewed_pom"
+    },
+    {
+      "path": "org/sonatype/plexus/plexus-build-api/0.0.7/plexus-build-api-0.0.7.jar",
+      "gav": "org.sonatype.plexus:plexus-build-api:0.0.7",
+      "bytes": 8482,
+      "sha256": "934171640fbd3d2495c50b79b0d9adb11e2c83e65bad157df8fe34bcac0ff798",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "e6ba5cd4bfd8de00235af936e7f63eb24ed436e6"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache Public License 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/sonatype/plexus/plexus-build-api/0.0.7/plexus-build-api-0.0.7.pom",
+      "gav": "org.sonatype.plexus:plexus-build-api:0.0.7",
+      "bytes": 3204,
+      "sha256": "e067317a47ed9e84b2ba85a76d3cf72980e2b0dc873a90b9cbfe74fe80c37c17",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "1e4a1b9e61ff446213473bbd1f3d970c0d1c4d62"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache Public License 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    },
+    {
+      "path": "org/sonatype/spice/spice-parent/15/spice-parent-15.pom",
+      "gav": "org.sonatype.spice:spice-parent:15",
+      "bytes": 8358,
+      "sha256": "13d15ddfe9946b8427bb7b4b081ab63962285eed0bf6fa5142aea25a46e15814",
+      "published_digest": {
+        "algorithm": "sha1",
+        "value": "3cfa1d1f3113a8137fdc7b7a67f310abbed4a22d"
+      },
+      "declared_licenses": [
+        {
+          "name": "Apache Public License 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0",
+          "distribution": "repo"
+        }
+      ],
+      "license_status": "declared_in_artifact_or_parent_pom"
+    }
+  ]
+}

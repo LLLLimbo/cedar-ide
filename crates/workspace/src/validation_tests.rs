@@ -2,6 +2,32 @@
 use crate::{BackendMode, Workspace};
 use cedar_protocol::{Operation, Payload};
 
+fn assert_fixture_hello(fixture: &mut Workspace, ordinary: &mut Workspace) {
+    let actual = fixture.handle(Operation::Hello).unwrap();
+    let mut expected = ordinary.handle(Operation::Hello).unwrap();
+    let Payload::Hello {
+        agent: Some(info), ..
+    } = &actual
+    else {
+        panic!("fixture metadata");
+    };
+    for capability in cedar_protocol::JAVA_MAVEN_CAPABILITIES {
+        assert!(!info.supports(capability));
+    }
+    let Payload::Hello {
+        agent: Some(info), ..
+    } = &mut expected
+    else {
+        panic!("ordinary metadata");
+    };
+    info.capabilities
+        .retain(|name| !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str()));
+    assert_eq!(
+        serde_json::to_value(actual).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+}
+
 fn start() -> Operation {
     Operation::LanguageStart {
         program: "must-not-be-launched".into(),
@@ -36,9 +62,14 @@ fn validation_requires_synthetic_root_and_separate_execution_trust() {
     // Even the fixture must not manufacture production capability evidence.
     let mut ordinary =
         Workspace::with_backend_mode(root.path(), BackendMode::IsolatedAgent).unwrap();
+    assert_fixture_hello(&mut fixture, &mut ordinary);
+    fixture.set_allow_run(true);
     assert_eq!(
-        serde_json::to_value(fixture.handle(Operation::Hello).unwrap()).unwrap(),
-        serde_json::to_value(ordinary.handle(Operation::Hello).unwrap()).unwrap()
+        fixture
+            .handle(Operation::LanguageMavenModel)
+            .unwrap_err()
+            .code,
+        "unsupported_platform"
     );
     for mut normal in [Workspace::open(root.path()).unwrap(), ordinary] {
         assert!(!normal.windows_language_validation);
@@ -118,10 +149,7 @@ fn java_profile_requires_both_exact_markers_and_has_no_ordinary_constructor_side
         assert_eq!(fixture.handle(start()).unwrap_err().code, "run_disabled");
         let mut normal =
             Workspace::with_backend_mode(root.path(), BackendMode::IsolatedAgent).unwrap();
-        assert_eq!(
-            serde_json::to_value(fixture.handle(Operation::Hello).unwrap()).unwrap(),
-            serde_json::to_value(normal.handle(Operation::Hello).unwrap()).unwrap()
-        );
+        assert_fixture_hello(&mut fixture, &mut normal);
         fixture.set_allow_run(true);
         assert_eq!(
             fixture.handle(start()).unwrap_err().code,

@@ -10,13 +10,16 @@ param(
     [string] $Java = "",
     [string] $ScratchRoot = $env:RUNNER_TEMP,
     [string] $EvidencePath = "",
-    [switch] $GcDiagnosticControl
+    [switch] $GcDiagnosticControl,
+    [switch] $MavenOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 # Handle native exit codes explicitly; exception rendering must not echo raw VM output.
 $PSNativeCommandUseErrorActionPreference = $false
 if (-not $IsWindows) { throw 'This acceptance script requires native Windows.' }
+if ($MavenOnly -and $GcDiagnosticControl) { throw 'Select only one isolated acceptance workload.' }
+. (Join-Path $PSScriptRoot 'maven_acceptance_predicate.ps1')
 if ([string]::IsNullOrWhiteSpace($ScratchRoot)) { throw 'Set an explicit test scratch root.' }
 if ([string]::IsNullOrWhiteSpace($Java)) {
     if ([string]::IsNullOrWhiteSpace($env:JAVA_HOME_21_X64)) {
@@ -48,14 +51,26 @@ foreach ($name in @('CLIENT_PORT', 'CLIENT_HOST', 'socket.stream.debug', 'JDK_JA
 }
 $env:JAVA_HOME = $jdkRoot
 $env:CEDAR_JAVA = $Java
+if ($MavenOnly) {
+    foreach ($name in @('MAVEN_OPTS', 'MAVEN_ARGS', 'MAVEN_CONFIG', 'MAVEN_USER_HOME',
+        'M2_HOME', 'MAVEN_HOME', 'MAVEN_PROJECTBASEDIR', 'MAVEN_CMD_LINE_ARGS')) {
+        $environmentPath = 'Env:' + $name
+        if (Test-Path -LiteralPath $environmentPath) { Remove-Item -LiteralPath $environmentPath }
+        if (Test-Path -LiteralPath $environmentPath) { throw 'Maven test parent environment was not cleared.' }
+    }
+}
 $scratch = [IO.Path]::GetFullPath((Join-Path $ScratchRoot ('cedar-windows-java-' + [Guid]::NewGuid().ToString('N'))))
 # The runner's native tar has an ANSI command-line boundary. Only extraction
 # staging is ASCII; the installed distribution and all runtime fixtures retain
 # their Unicode/spaces paths. Do not change machine locale or weaken the probe.
 if ($scratch -match '[^\x00-\x7F]') { throw 'Use an ASCII ScratchRoot for native tar staging; runtime Unicode acceptance stays enabled.' }
-if ([string]::IsNullOrWhiteSpace($EvidencePath)) { $EvidencePath = Join-Path $ScratchRoot 'cedar-windows-java-acceptance.txt' }
+if ([string]::IsNullOrWhiteSpace($EvidencePath)) {
+    $evidenceName = if ($MavenOnly) { 'cedar-windows-maven-acceptance.txt' } else { 'cedar-windows-java-acceptance.txt' }
+    $EvidencePath = Join-Path $ScratchRoot $evidenceName
+}
 $EvidencePath = [IO.Path]::GetFullPath($EvidencePath)
-$CrashEvidencePath = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-java-crash-diagnostics.json'
+$crashName = if ($MavenOnly) { 'cedar-maven-crash-diagnostics.json' } else { 'cedar-java-crash-diagnostics.json' }
+$CrashEvidencePath = Join-Path (Split-Path $EvidencePath -Parent) $crashName
 $ResourceEvidencePath = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-process-tree-baseline.json'
 Set-Content -LiteralPath $EvidencePath -Value 'Cedar Windows Java acceptance; missing dependencies or any failed stage fail this run.'
 function Record([string] $Text) {
@@ -263,6 +278,29 @@ try {
     Record ("equinox_launcher=" + $launchers[0].Name + '; sha256=' + $launcherHash.ToLowerInvariant())
     # Preserve all upstream notices in the extraction. No JDK/JDT binary is
     # copied into source, release artifacts or the repository's product bundle.
+    if ($MavenOnly) {
+        $stage = 'pinned Maven test cache preparation before offline import'
+        $env:CEDAR_MAVEN_CACHE_INPUT = Join-Path $scratch 'maven-cache-input'
+        $cacheReport = Join-Path $scratch 'maven-cache-private.json'
+        & python scripts/prepare_maven_cache.py --destination $env:CEDAR_MAVEN_CACHE_INPUT *> $cacheReport
+        if ($LASTEXITCODE -ne 0) { throw 'Pinned Maven cache preparation failed; no import was attempted.' }
+        $cache = Get-Content -LiteralPath $cacheReport -Raw | ConvertFrom-Json
+        if ($cache.status -cne 'complete' -or $cache.artifact_files -ne 83 -or
+            $cache.artifact_bytes -ne 4065288 -or $cache.network_requests -ne 83 -or
+            -not $cache.exact_inventory_verified -or $cache.execution_performed -or $cache.import_performed -or
+            $cache.manifest_sha256 -cne '2afceba6a8f6b648a1dbf48cc356b931233cc57bc82b52d02fefdd58e5e876ac') {
+            throw 'Pinned Maven cache identity or scope was not verified.'
+        }
+        Record 'Maven CI cache: 83 exact files / 4065288 bytes; registry preparation separate from offline dependency resolution; signatures unverified.'
+        $env:CEDAR_JDTLS_HOME = $distribution
+        $env:CEDAR_AGENT_BIN = [IO.Path]::GetFullPath('target/release/cedar-agent.exe')
+        if (-not (Test-Path -LiteralPath $env:CEDAR_AGENT_BIN -PathType Leaf)) {
+            throw 'Build the normal shipping agent before Maven acceptance.'
+        }
+        $stage = 'normal production Maven present and missing pair'
+        & cargo test -p cedar-app --lib --all-features --locked real_windows_normal_agent_java_maven_acceptance -- --ignored --nocapture --test-threads=1 *> $agentTranscript
+        if ($LASTEXITCODE -ne 0) { throw 'Normal Windows Maven pair failed; inspect sanitized case witnesses.' }
+    } else {
     $stage = 'owned JVM raw stdio diagnostic matrix'
     $probeRoot = Join-Path $scratch 'owned-java-probes'
     New-Item -ItemType Directory -Path $probeRoot | Out-Null
@@ -435,6 +473,7 @@ try {
         Record ('GC diagnostic numeric status=' + $gcNumbers.status + '; collector=' + $gcNumbers.collector +
             '; heap_observation=' + $gcNumbers.heap_observation + '; no_tuning_conclusion=true')
     }
+    }
 }
 catch {
     $failure = $_
@@ -454,6 +493,9 @@ finally {
             if ($LASTEXITCODE -ne 0) { throw 'JVM crash diagnostic collection was incomplete; inspect the JSON status.' }
             if ($null -eq $failure) {
                 $collected = Get-Content -LiteralPath $CrashEvidencePath -Raw | ConvertFrom-Json
+                if ($MavenOnly) {
+                    $null = Assert-MavenReceipt -Receipts @($collected.agent_transcript.evidence.records)
+                } else {
                 $spontaneousTimeouts = Assert-AgentEditorReceipt -Receipts @($collected.agent_transcript.evidence.records)
                 $concurrency = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_concurrency' })
                 $forced = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_forced_cleanup' })
@@ -484,14 +526,14 @@ finally {
                     if (-not $record.$field) { throw 'Forced-owner cleanup witness is incomplete.' }
                 }
                 Assert-ProductionReceipt -Receipts @($collected.agent_transcript.evidence.records)
-
+                }
             }
         }
         catch {
             if ($null -eq $failure) { $stage = 'sanitized crash evidence collection'; $failure = $_ }
             else { Add-Content -LiteralPath $EvidencePath -Value ('Crash evidence collection also failed: ' + $_.Exception.Message) }
         }
-        foreach ($name in @('CEDAR_JAVA_ERROR_DIR', 'CEDAR_JDTLS_HOME', 'CEDAR_AGENT_LANGUAGE_VALIDATION_BIN', 'CEDAR_WINPROCESS_FIXTURE_BIN', 'CEDAR_AGENT_BIN')) {
+        foreach ($name in @('CEDAR_JAVA_ERROR_DIR', 'CEDAR_JDTLS_HOME', 'CEDAR_AGENT_LANGUAGE_VALIDATION_BIN', 'CEDAR_WINPROCESS_FIXTURE_BIN', 'CEDAR_AGENT_BIN', 'CEDAR_MAVEN_CACHE_INPUT')) {
             $environmentPath = 'Env:' + $name
             if (Test-Path -LiteralPath $environmentPath) { Remove-Item -LiteralPath $environmentPath }
         }
@@ -513,4 +555,8 @@ if ($null -ne $failure) {
     Record ('FAIL during ' + $stage + ': ' + $failure.Exception.Message)
     throw $failure
 }
-Record ("PASS: supported Java workflow and owned cleanup completed; spontaneous correction timeouts: $spontaneousTimeouts; each retained timeout used exactly one explicit refresh with an exact warning witness. Generated dependency scratch was removed.")
+if ($MavenOnly) {
+    Record 'PASS: normal Maven present/missing model, semantic/error and owned-cleanup witnesses verified. Offline Maven resolution is not network isolation; JDT may request public Gradle version metadata. Generated dependency scratch was removed.'
+} else {
+    Record ("PASS: supported Java workflow and owned cleanup completed; spontaneous correction timeouts: $spontaneousTimeouts; each retained timeout used exactly one explicit refresh with an exact warning witness. Generated dependency scratch was removed.")
+}
