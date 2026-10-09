@@ -51,7 +51,7 @@ Legacy protocol-4 agents without metadata retain file listing, opening, editing,
 ## Native language features
 
 1. Connect with trusted tool execution enabled
-2. Select **LSP**, enter the installed server executable, JSON argument array, and language ID (`java`, `kotlin`, or `rust`)
+2. Open **Language** / **LSP**. On a capable POSIX agent, select **Installed stdio server** and enter its executable, JSON arguments and language ID. On the Windows isolated agent, select the dedicated **Java / JDT LS** mode and configure the installed Java/JDT paths and external data directory; generic Windows LSP is unavailable
 3. Select **Start server**
 4. Matching open files synchronize automatically, with a 350 ms editing debounce
 5. Diagnostics appear in **Problems**. Click a location to jump to the file
@@ -59,7 +59,7 @@ Legacy protocol-4 agents without metadata retain file listing, opening, editing,
 
 Only one server runs per connection. A Java profile syncs `.java` files, a Kotlin profile `.kt`/`.kts`, and Rust `.rs`. Servers and any required JDK must be installed separately on the workspace host. Starting a trusted server can index projects or execute repository code under that account.
 
-The editor coalesces changes while a sync is in flight. Feature requests wait for their exact draft snapshot to synchronize. New typing, changed cursor positions, stopped/restarted sessions, and lost connections invalidate stale results. Diagnostics are polled at a bounded one-second cadence while a server is active; the UI does not run a perpetual 60 fps polling loop. Automatic updates can be switched off; **Sync now** and **Refresh events** remain available.
+The editor coalesces changes while a sync is in flight. Document-position queries and editor actions wait for their captured draft snapshot to synchronize. **Find Java type** instead queries the server index without synchronizing drafts; its unversioned results may lag behind edits. **Check Maven model** reports the imported on-disk root POM, not an unsaved POM draft. Document-specific requests are invalidated when their captured draft or cursor no longer matches. Stopped/restarted sessions and lost connections also invalidate their outstanding results. Diagnostics are polled at a bounded one-second cadence while a server is active; the UI does not run a perpetual 60 fps polling loop. Automatic updates can be switched off; **Sync now** and **Refresh events** remain available.
 
 ### Completion and imports
 
@@ -74,6 +74,31 @@ No completion command is executed. The exact JDT LS callback `java.completion.on
 Versioned diagnostics are marked current only when they match the synchronized draft. Older results are dimmed or ignored. Results without a version are explicitly labeled **unversioned**, including when they happen to correspond to the latest file. A missing batch version is never treated as proof of freshness. Empty batches clear the file's problems. Lost/oversized event batches produce an incomplete-results warning.
 
 Definitions support ordinary Location and LocationLink responses. Every target file URI is resolved by the workspace agent and checked against the remote workspace root before opening. Outside-root files, dependency archives, `jdt:` targets, and external URLs are unavailable; they are never opened in a browser. Existing dirty tabs remain intact. Hover text and protocol details are inert, copyable text.
+
+## Recent workflows and their boundaries
+
+With execution trust off, use **Tests** to explicitly **Load report**, **Refresh report**
+or **Clear report** for one relative XML path. Results describe the bytes read at the
+shown revision; they do not run tests or validate unsaved drafts. See the
+[report format and limits](../../docs/TEST_RESULTS.md).
+
+**Compare with disk** offers separate clean reload and conservative draft-merge
+flows. **Preview merge** is inert; **Apply** rereads disk and updates only the draft
+and its separate disk baseline. The draft remains unsaved, with one Undo/Redo.
+Ambiguous, touching or overlapping regions are refused. See
+[draft merge](../../docs/DRAFT_MERGE.md). Connection loss preserves drafts; reconnect
+and uncertain-save reconciliation remain explicit.
+
+Dedicated Windows Java setup, supported JDT identity and stop outcomes are described
+in [Java setup](../../docs/WINDOWS_JAVA_SETUP.md). The optional
+[Maven leaf mode](../../docs/MAVEN_PROJECTS.md) requires a supported root POM, an existing
+local cache and an ASCII data/control path. It does not download missing dependencies
+or run builds. Offline Maven resolution is not network isolation or a code sandbox.
+**Find Java type** requires an already running trusted **Java / JDT LS** session and an advertised
+provider; selection uses confined ordinary file reads and preserves existing dirty
+buffers. See [type search](../../docs/JAVA_TYPE_SEARCH.md). Neither model nor type
+queries start a server automatically. Hover a disabled Java type/model button for
+its reason; unavailable platform controls may be hidden entirely.
 
 ## Chinese and CJK display
 
@@ -100,7 +125,7 @@ This remains an independent prototype, not a complete replacement for a mature I
 - Diagnostic display is bounded to 2,000 entries, 128 files, and 512 KiB of text
 - Protocol detail serialization stops at 128 KiB rather than building an unlimited pretty-printed string
 
-Git, commands, and language servers require explicit workspace trust and the agent’s advertised support. The current Windows agent does not advertise process tools; a Windows frontend can use a capable POSIX agent, while a Linux frontend does not infer process support from a Windows SSH destination. Local file editing does not require command trust.
+Git, commands, and language servers require explicit workspace trust and the agent’s advertised support. The Windows isolated agent supports bounded asynchronous tasks, explicit Git views and dedicated Java/Maven routes. Generic Windows LSP, legacy synchronous Run/GitStatus and DAP remain unavailable. A frontend follows the connected agent’s capabilities rather than inferring support from its own OS or the transport. Local file editing and existing test-report reads do not require command trust.
 
 Normal quitting waits for active tools and explicitly stops the language server. If a draft changes while shutdown is pending, Cedar asks again before discarding it.
 

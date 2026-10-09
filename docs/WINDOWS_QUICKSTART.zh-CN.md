@@ -4,6 +4,7 @@
 IntelliJ IDEA 的完整替代品。请从本项目对应提交的 GitHub Actions 下载，保留
 同目录的 `cedar.exe` 与 `cedar-agent.exe`；不要混用不同版本。
 
+
 ## 运行前提
 
 隔离 agent 的 Job 机制要求 Windows 10 / Server 2016 及以上；不提供旧系统无隔离回退。
@@ -30,6 +31,10 @@ IntelliJ IDEA 的完整替代品。请从本项目对应提交的 GitHub Actions
 4. 文件在外部发生变化时，保存会拒绝覆盖。用 **Compare with disk** 检查差异。
    连接中断后若保存结果不明，先显式核对磁盘状态，保留当前草稿，不要假定已保存。
 
+侧栏工具分为两行：**Search / Git / Run** 和 **LSP / Tests**。放大字体导致一行
+放不下时会纵向排列。较矮的窗口同时打开底部工具面板，可能无法完整容纳侧栏内容；
+例如 780×540 窗口加上约245像素高的工具面板仍有此限制，可增加窗口高度或缩小/关闭工具面板。
+
 程序需要可用的 Windows 图形会话及 OpenGL 驱动。若系统阻止未签名程序，
 不要关闭安全保护；可保留错误信息，或自行审查并从源码构建。
 
@@ -43,6 +48,10 @@ Ctrl+Z 可整体撤销，Ctrl+Shift+Z 重做；磁盘文件仍需 Ctrl+S 才会�
 预览期间继续输入、切换文档或改变选择后，需要重新预览。超过匹配数或文件大小上限时
 操作会拒绝，不会悄悄只替换前一部分。
 
+## 草稿与磁盘分别修改后
+
+在 Compare with disk 中显式 Preview merge，检查候选结果后再 Apply。只支持中间至少有一行未改动内容的分离区间；重复行歧义、相邻或重叠改动会拒绝。Apply 再读一次磁盘，只更新草稿和已知磁盘基线，不写文件；结果仍未保存。一次 Undo 恢复原草稿和选择，Redo 恢复合并稿。另行 Save 才提交写入，期间磁盘再变动仍会冲突。详见 [DRAFT_MERGE.md](DRAFT_MERGE.md)。
+
 ## 文件与恢复
 
 “解压运行”只描述程序分发，不代表所有用户数据都保存在解压目录。
@@ -50,6 +59,17 @@ Ctrl+Z 可整体撤销，Ctrl+Shift+Z 重做；磁盘文件仍需 Ctrl+S 才会�
 源码中的秘密；Windows 继承目录 ACL。Recovery 面板可查看位置、状态及副本。
 最近一次确认备份之后的输入仍可能丢失。关闭会话备份不会删除已有副本。
 程序不会自动把解压目录当成你的项目，也不会自动运行项目命令。
+
+## 已有测试报告
+
+在 **Tests** 面板输入工作区相对 XML 路径并点 **Load report**，可阅读历史测试结果。
+同一路径更新用 **Refresh report**，清除结果用 **Clear report**；筛选并选择用例可查看详情。
+执行信任关闭也可使用；不会运行测试、扫描目录或写入文件。报告不证明当前草稿通过测试。
+支持的 Surefire/JUnit 子集和限制见 [TEST_RESULTS.md](TEST_RESULTS.md)。
+
+## 空闲连接断开
+
+本地 stdio/SSH 子进程管道已报告关闭或协议错误时，界面无需新请求即可显示断开，并保留未保存草稿、选择和撤销。请显式重连；不会自动重发保存或重启任务。没有增加心跳，因此不保证发现仍保持打开但无响应的网络连接。断开也不证明远程任务已清理。详见 [IDLE_DISCONNECT.md](IDLE_DISCONNECT.md)。
 
 ## 可选 Git 变更查看
 
@@ -72,7 +92,8 @@ JDT LS；本包不包含或自动下载它们。已验证的 JDT LS 版本为 1.
 完整配置与限制见同目录 [WINDOWS_JAVA_SETUP.md](WINDOWS_JAVA_SETUP.md)。
 
 Language 面板选择 **Java / JDT LS**，配置现有原生 `java.exe` 的 ASCII 绝对路径、
-JDT 安装目录，以及工作区之外的独立数据目录。项目、JDT 和数据目录可含中文；
+JDT 安装目录，以及工作区之外的独立数据目录。普通 Java 模式中，项目、JDT 和数据目录可含中文；
+Maven 模式的数据目录有 ASCII 限制，见下节。
 UNC、设备路径和任意 JVM 参数不在当前支持范围。启动语言服务或命令需要你明确
 信任该工作区；只编辑配置不会启用信任，也不会运行程序。
 
@@ -106,10 +127,28 @@ Java 最大堆为 512 MiB，但 JVM 总内存可以明显高于这个数字。�
 
 Stop 会区分自然退出与超过宽限后的强制清理；**forced / grace_expired** 不是
 正常退出。清理未验证时界面会阻止重启，须先检查错误并重新连接。
-可显式选择 Windows Maven 叶工程模式，配置已有缓存并用 **Check Maven model** 查看一次模型快照；
-限定子集、ASCII data/control 路径、保留索引数据及离线语义见同目录 [MAVEN_PROJECTS.md](MAVEN_PROJECTS.md)。
 普通 Java 模式仍关闭导入；完整 Maven/Gradle、JDK class-file 查看、同步 Run、通用 Windows
 LSP 和完整调试界面仍未提供。异步命令使用明确的原生 `.exe` 绝对路径。
+
+## 可选 Maven 叶工程
+
+在专用 Java 模式中显式选择根 `pom.xml` 导入，并配置已有的本地依赖缓存。
+Maven 模式的 **JDT data/control 路径必须是 ASCII**；工作区、JDT 和缓存仍可含中文。
+启动后显式 **Check Maven model** 查看磁盘 POM 的模型快照，未保存 POM 草稿不等于已导入模型。
+它不下载缺失依赖、不自动构建或保存；缓存和索引可能写入，受信任的配置器代码及公共
+Gradle 元数据请求仍可能发生，离线解析不是网络隔离。支持子集、重启要求与路径边界见
+[MAVEN_PROJECTS.md](MAVEN_PROJECTS.md)。
+
+## 查找 Java 类型
+
+在已经启动的受信任 Java 会话中，使用 Language 面板的 Find Java type，输入类型名并显式 Search。支持能力由 agent 和实际语言服务共同决定；搜索不会自动启动服务或保存文件。选择结果可读取工作区内的文件，已有脏稿及撤销保持。服务端索引结果没有文档版本，可能滞后于未保存修改；无结果也不代表项目中不存在该类型。详见 [JAVA_TYPE_SEARCH.md](JAVA_TYPE_SEARCH.md)。
+
+## 查看 Java 编译位置
+
+在 Commands 明确选择 javac.exe 和参数并运行，等待任务完成后点击
+**Extract javac locations**。初版只解析英文 javac 格式，只有安全的工作区相对路径
+可跳转。已打开的未保存草稿保留，编译行号仅为历史提示。提取不保存或重跑；
+详见随包的 `BUILD_PROBLEMS.md`。
 
 ## 验证与来源
 
@@ -124,28 +163,3 @@ LSP 和完整调试界面仍未提供。异步命令使用明确的原生 `.exe`
 
 许可证及第三方声明随包提供。问题反馈请附版本、清单中的提交和错误信息，
 不要公开源码秘密、私钥、令牌或原始 JVM 日志。
-
-## 查看 Java 编译位置
-
-在 Commands 明确选择 javac.exe 和参数并运行，等待任务完成后点击
-**Extract javac locations**。初版只解析英文 javac 格式，只有安全的工作区相对路径
-可跳转。已打开的未保存草稿保留，编译行号仅为历史提示。提取不保存或重跑；
-详见随包的 `BUILD_PROBLEMS.md`。
-
-## 已有测试报告
-
-在 Tests 面板输入工作区相对 XML 路径并显式 Load，可阅读历史测试结果。
-执行信任关闭也可使用；不会运行测试、扫描目录或写入文件。报告不证明当前草稿通过测试。
-支持的 Surefire/JUnit 子集和限制见 [TEST_RESULTS.md](TEST_RESULTS.md)。
-
-## 查找 Java 类型
-
-在已经启动的受信任 Java 会话中，使用 Language 面板的 Find Java type，输入类型名并显式 Search。支持能力由 agent 和实际语言服务共同决定；搜索不会自动启动服务或保存文件。选择结果可读取工作区内的文件，已有脏稿及撤销保持。服务端索引结果没有文档版本，可能滞后于未保存修改；无结果也不代表项目中不存在该类型。详见 [JAVA_TYPE_SEARCH.md](JAVA_TYPE_SEARCH.md)。
-
-## 空闲连接断开
-
-本地 stdio/SSH 子进程管道已报告关闭或协议错误时，界面无需新请求即可显示断开，并保留未保存草稿、选择和撤销。请显式重连；不会自动重发保存或重启任务。没有增加心跳，因此不保证发现仍保持打开但无响应的网络连接。断开也不证明远程任务已清理。详见 [IDLE_DISCONNECT.md](IDLE_DISCONNECT.md)。
-
-## 草稿与磁盘分别修改后
-
-在 Compare with disk 中显式 Preview merge，检查候选结果后再 Apply。只支持中间至少有一行未改动内容的分离区间；重复行歧义、相邻或重叠改动会拒绝。Apply 再读一次磁盘，只更新草稿和已知磁盘基线，不写文件；结果仍未保存。一次 Undo 恢复原草稿和选择，Redo 恢复合并稿。另行 Save 才提交写入，期间磁盘再变动仍会冲突。详见 [DRAFT_MERGE.md](DRAFT_MERGE.md)。

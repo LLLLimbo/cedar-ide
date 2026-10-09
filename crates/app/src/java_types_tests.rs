@@ -589,6 +589,90 @@ fn click(app: &mut CedarApp, time: f64, wanted: &str) {
     }
 }
 
+fn hover_type_control(app: &mut CedarApp) -> (egui::FullOutput, egui::FullOutput) {
+    frame(app, 0.0, vec![]);
+    let output = frame(app, 0.01, vec![]);
+    let at = label(&output, "Find Java type").expect("Java type control is visible");
+    let delay = f64::from(app.editor_ctx.style().interaction.tooltip_delay);
+    assert!(delay > 0.0);
+    frame(app, 0.1, vec![egui::Event::PointerMoved(at)]);
+    // First pointer appearance has no velocity history in egui and may show a
+    // tooltip immediately. Compare no pointer with a hover settled past delay.
+    frame(app, 0.1 + delay + 1.0, vec![]);
+    let hovered = frame(app, 0.2 + delay + 1.0, vec![]);
+    (output, hovered)
+}
+
+#[test]
+fn actual_frames_disabled_java_type_hover_draws_reason_without_dispatch() {
+    for gate in ["trust", "agent", "provider"] {
+        let (mut app, commands) = type_app();
+        app.agent_info.as_mut().unwrap().os = "windows".into();
+        app.language.view = View::Problems;
+        let reason = match gate {
+            "trust" => {
+                app.active_form.as_mut().unwrap().allow_run = false;
+                "Find Java type requires trusted tool permission for this connection"
+            }
+            "agent" => {
+                app.agent_info
+                    .as_mut()
+                    .unwrap()
+                    .capabilities
+                    .retain(|name| name != "language_workspace_symbols");
+                "The workspace agent does not advertise language_workspace_symbols. Drafts remain editable; upgrade or use an agent with this capability"
+            }
+            "provider" => {
+                app.language.capabilities = json!({"workspaceSymbolProvider":false});
+                "The running Java server does not advertise workspace symbol search"
+            }
+            _ => unreachable!(),
+        };
+        let (unhovered, hovered) = hover_type_control(&mut app);
+        assert!(label(&unhovered, reason).is_none(), "no hover for {gate}");
+        assert!(
+            label(&hovered, reason).is_some(),
+            "disabled reason for {gate}"
+        );
+        assert!(
+            commands.try_recv().is_err(),
+            "hover must not dispatch for {gate}"
+        );
+        click(&mut app, 3.0, "Find Java type");
+        assert!(
+            app.language.view == View::Problems,
+            "disabled click for {gate}"
+        );
+        assert!(commands.try_recv().is_err());
+        assert!(app.language.types.pending.is_none());
+    }
+}
+
+#[test]
+fn actual_frames_enabled_java_type_hover_has_no_disabled_reason_and_remains_usable() {
+    let (mut app, commands) = type_app();
+    app.agent_info.as_mut().unwrap().os = "windows".into();
+    app.language.view = View::Problems;
+    let (_, hovered) = hover_type_control(&mut app);
+    for reason in [
+        "Find Java type requires trusted tool permission for this connection",
+        "The workspace agent does not advertise language_workspace_symbols. Drafts remain editable; upgrade or use an agent with this capability",
+        "The running Java server does not advertise workspace symbol search",
+    ] {
+        assert!(label(&hovered, reason).is_none());
+    }
+    assert!(commands.try_recv().is_err());
+    click(&mut app, 3.0, "Find Java type");
+    assert!(app.language.view == View::JavaTypes);
+    assert!(commands.try_recv().is_err(), "opening the chooser is inert");
+    click(&mut app, 4.0, "Search");
+    assert!(matches!(
+        commands.try_recv().unwrap().op,
+        Operation::LanguageWorkspaceSymbols { query } if query == "Target"
+    ));
+    assert!(commands.try_recv().is_err());
+}
+
 #[test]
 fn actual_frames_search_and_enter_dispatch_once_without_an_editor() {
     for enter in [false, true] {

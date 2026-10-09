@@ -231,7 +231,7 @@ impl CedarApp {
             egui::Button::new("Find Java type").selected(self.language.view == View::JavaTypes),
         );
         let response = if let Some(problem) = problem {
-            response.on_hover_text(problem)
+            response.on_disabled_hover_text(problem)
         } else {
             response
         };

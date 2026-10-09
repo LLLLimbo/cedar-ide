@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第二十六阶段显式草稿合并（**0.26.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第二十六阶段草稿合并与使用指引完善（**0.26.2**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -58,7 +58,7 @@ Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完�
 
 在当前文件路径旁点击 **Compare with disk**，查看当前草稿和本次读到的磁盘内容。**Refresh** 显式重新读取，**Close** 关闭审阅；这些操作不写项目文件，也不要求工具执行信任。
 
-只有未修改的干净标签可点击 **Reload clean tab**。接受前会再次读取；磁盘又有变化时只更新预览，须重新确认。成功后新的磁盘内容成为保存基线，单次 Undo 可回到旧文字并标记为未保存，Redo 回到新内容。脏稿、过期请求、标签切换或同一帧的新输入都不能被旧结果替换。恢复副本仍受原有所有权保护。此阶段提供手动审阅，没有自动文件监听或合并，详见[磁盘审阅边界](docs/DISK_REVIEW.md)。
+只有未修改的干净标签可点击 **Reload clean tab**。接受前会再次读取；磁盘又有变化时只更新预览，须重新确认。成功后新的磁盘内容成为保存基线，单次 Undo 可回到旧文字并标记为未保存，Redo 回到新内容。脏稿、过期请求、标签切换或同一帧的新输入都不能被旧结果替换。恢复副本仍受原有所有权保护。这里没有自动文件监听或自动合并；需要时可另行显式预览[保守草稿合并](docs/DRAFT_MERGE.md)。干净重载与手动合并是不同操作，详见[磁盘审阅边界](docs/DISK_REVIEW.md)。
 
 ## 格式化、引用与大纲
 

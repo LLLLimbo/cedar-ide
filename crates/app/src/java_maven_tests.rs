@@ -126,6 +126,172 @@ fn model_request(app: &mut CedarApp, rx: &Receiver<Command>) -> Command {
     command
 }
 
+fn model_controls_frame(
+    app: &mut CedarApp,
+    time: f64,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    let ctx = app.editor_ctx.clone();
+    ctx.run(
+        egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.maven_model_controls(ui));
+        },
+    )
+}
+
+fn model_text(output: &egui::FullOutput) -> Vec<&egui::epaint::TextShape> {
+    fn collect<'a>(shape: &'a egui::epaint::Shape, text: &mut Vec<&'a egui::epaint::TextShape>) {
+        match shape {
+            egui::epaint::Shape::Text(value) => text.push(value),
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, text);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut text = Vec::new();
+    for shape in &output.shapes {
+        collect(&shape.shape, &mut text);
+    }
+    text
+}
+
+fn hover_model_control(app: &mut CedarApp) -> (egui::Pos2, egui::FullOutput, egui::FullOutput) {
+    model_controls_frame(app, 0.0, vec![]);
+    let output = model_controls_frame(app, 0.01, vec![]);
+    let at = model_text(&output)
+        .into_iter()
+        .find(|text| text.galley.job.text == "Check Maven model")
+        .expect("Maven model control is visible")
+        .visual_bounding_rect()
+        .center();
+    let delay = f64::from(app.editor_ctx.style().interaction.tooltip_delay);
+    assert!(delay > 0.0);
+    model_controls_frame(app, 0.1, vec![egui::Event::PointerMoved(at)]);
+    // First pointer appearance has no velocity history in egui and may show a
+    // tooltip immediately. Compare no pointer with a hover settled past delay.
+    model_controls_frame(app, 0.1 + delay + 1.0, vec![]);
+    let hovered = model_controls_frame(app, 0.2 + delay + 1.0, vec![]);
+    (at, output, hovered)
+}
+
+fn click_model_control(app: &mut CedarApp, at: egui::Pos2) {
+    for (offset, pressed) in [true, false].into_iter().enumerate() {
+        model_controls_frame(
+            app,
+            3.0 + offset as f64 * 0.01,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+}
+
+#[test]
+fn actual_frames_disabled_maven_model_hover_draws_reason_without_dispatch() {
+    for gate in ["trust", "agent", "model", "restart", "closing"] {
+        let (mut app, rx) = app();
+        // Activate the existing synthetic Windows profile without starting Java.
+        app.language.running = true;
+        app.language.session = 3;
+        app.activate_maven_model(&ready_value());
+        let reason = match gate {
+            "trust" => {
+                app.active_form.as_mut().unwrap().allow_run = false;
+                "Maven model checks require trusted tool permission for this connection"
+            }
+            "agent" => {
+                app.agent_info
+                    .as_mut()
+                    .unwrap()
+                    .capabilities
+                    .retain(|name| name != "language_maven_model");
+                "The workspace agent does not advertise the complete typed Maven Java lifecycle. Drafts remain editable; upgrade or use an agent with this capability"
+            }
+            "model" => {
+                app.language.maven_model.supported = false;
+                UNAVAILABLE
+            }
+            "restart" => {
+                app.language.maven_model.require_restart();
+                RESTART
+            }
+            "closing" => {
+                app.close_after_language_stop = true;
+                "Wait for the current language request or close operation to finish"
+            }
+            _ => unreachable!(),
+        };
+        let (at, unhovered, hovered) = hover_model_control(&mut app);
+        let count_reason = |output: &egui::FullOutput| {
+            model_text(output)
+                .iter()
+                .filter(|text| text.galley.job.text == reason)
+                .count()
+        };
+        // Restart also has an always-visible status label; the tooltip must add
+        // another painted copy, so that label alone cannot satisfy this test.
+        let status_count = usize::from(app.language.maven_model.message() == reason);
+        assert_eq!(
+            count_reason(&unhovered),
+            status_count,
+            "no hover for {gate}"
+        );
+        assert_eq!(
+            count_reason(&hovered),
+            status_count + 1,
+            "disabled reason for {gate}"
+        );
+        assert!(rx.try_recv().is_err(), "hover must not dispatch for {gate}");
+        click_model_control(&mut app, at);
+        assert!(rx.try_recv().is_err(), "disabled click for {gate}");
+        assert!(app.language.maven_model.pending.is_none());
+    }
+}
+
+#[test]
+fn actual_frames_enabled_maven_model_hover_has_no_disabled_reason_and_remains_usable() {
+    let (mut app, rx) = app();
+    app.language.running = true;
+    app.language.session = 3;
+    app.activate_maven_model(&ready_value());
+    let (at, _, hovered) = hover_model_control(&mut app);
+    assert_eq!(
+        model_text(&hovered)
+            .iter()
+            .map(|text| text.galley.job.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Check Maven model", app.language.maven_model.message()],
+        "enabled controls draw only the button and ordinary model status"
+    );
+    assert!(rx.try_recv().is_err());
+    click_model_control(&mut app, at);
+    assert!(matches!(
+        rx.try_recv().unwrap().op,
+        Operation::LanguageMavenModel
+    ));
+    assert!(rx.try_recv().is_err());
+    assert!(app.language.maven_model.pending.is_some());
+    assert!(app.language.view == View::Maven);
+}
+
 #[test]
 fn maven_is_opt_in_and_host_paths_are_literal_without_cache_discovery() {
     assert!(!MavenConfiguration::default().enabled);

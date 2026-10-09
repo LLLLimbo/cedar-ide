@@ -463,7 +463,7 @@ impl CedarApp {
         let check = ui.add_enabled(problem.is_none(), egui::Button::new("Check Maven model"));
         let clicked = check.clicked();
         if let Some(problem) = problem {
-            check.on_hover_text(problem);
+            check.on_disabled_hover_text(problem);
         }
         if clicked {
             self.check_maven_model();

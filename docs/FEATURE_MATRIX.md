@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 26 / 0.26.1
+# 功能矩阵与后续验收 · checkpoint 26 / 0.26.2
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -15,9 +15,9 @@
 | Java/Kotlin | 文本编辑、语法着色、JDT LS 诊断/补全/跳转；0.22显式Windows离线Maven叶POM/缓存/模型快照（同提交原生验收见CI） | 完整 Maven/Gradle 工程模型、父工程/reactor/profiles与自定义构建、SDK 管理、当前官方 Kotlin 许可/兼容性验证、生产项目回归 |
 | LSP / 重构 | 自动同步、诊断、悬浮/定义、补全与延迟 import；显式Java刷新与待到达/过期/无版本提示；当前Java导入整理预览（0.20精确双平台CI已通过）；只读格式化预览、显式 Apply/Cancel、单文档撤销；同步匹配草稿后查引用；显式层级/平面大纲；有界队列/超时 | 0.16刷新已通过原生验收，Java偶发诊断缺失根因仍未确认；0.17后台启动/取消已通过精确提交双平台验收；引用是无版本结果，不保证目标时效；多文件重命名需先解决快照/资源操作/跨文档撤销安全；inline diagnostics、代码操作、snippets、服务多路化 |
 | 调试 | 独立异步 DAP 传输；第二阶段真实 Python 断点/栈/变量/继续/停止验证 | IDE 调试 UI/远程桥接、可靠后代进程回收、监听安全、Java/JVM 调试 |
-| 命令运行 | 明确 executable + 字面量 argv；RunStart/Poll/Cancel、实时有界输出、终态区分、运行中继续编辑保存、关闭/重连保护 | 本阶段原生显式 Run/Cancel/重连复核待批准启用信任；Windows 0.7.1 隔离 agent 实际 CI 已通过，原生 GUI 待验收；交互式 PTY、测试结果树、并行任务；macOS 运行未验收 |
-| Java 编译位置 | 已完成任务的显式英文 javac 位置提取、命令/会话绑定、相对路径导航、脏稿保留 | 0.21.1编译器工作流已通过双平台发布验证；历史行号不保证当前草稿位置，绝对路径禁用；无本地化/构建工具格式、测试树或自动编译 |
-| 测试报告 | 显式单文件 Surefire/JUnit XML 阅读、状态筛选与失败详情；历史 revision/连接绑定，信任关闭可用 | 单 testsuite 子集；无自动运行/扫描/刷新、源码推测跳转、任意报告方言或测试发现；同提交双平台进程验收待完成 |
+| 命令运行 | 明确 executable + 字面量 argv；RunStart/Poll/Cancel、实时有界输出、终态区分、运行中继续编辑保存、关闭/重连保护 | 本阶段原生显式 Run/Cancel/重连复核待批准启用信任；Windows 0.7.1 隔离 agent 实际 CI 已通过，原生 GUI 待验收；交互式 PTY、执行联动的测试树、并行任务；macOS 运行未验收 |
+| Java 编译位置 | 已完成任务的显式英文 javac 位置提取、命令/会话绑定、相对路径导航、脏稿保留 | 0.21.1编译器工作流已通过双平台发布验证；历史行号不保证当前草稿位置，绝对路径禁用；无本地化/构建工具格式、执行联动测试树或自动编译 |
+| 测试报告 | 显式单文件 Surefire/JUnit XML 阅读、状态筛选与失败详情；历史 revision/连接绑定，信任关闭可用 | 单 testsuite 子集；无自动运行/扫描/刷新、源码推测跳转、任意报告方言或测试发现；0.23 及后续精确提交双平台进程验收已通过；原生 GUI 范围仍须单独说明 |
 | 保存的命令配置 | 显式 Load/选择/新建/Save；`cedar.tasks.json` 严格有界格式；字面量参数行与预览；普通编辑器版本检查、单次撤销和恢复；重连显式复核 | 不是完整运行/调试配置系统；无自动发现、预设、环境变量、目录覆盖、变量展开或 autorun；未序列化表单只在当前会话 |
 | Windows进程基础 | 原子Job绑定、私有本机管道、完成后回收的异步I/O、严格argv、固定64KiB owned stdin；0.8.3的48单元+21生命周期+12语言传输全部实际通过 | 0.8.12直接真实Java三会话与3项agent语言夹具已通过；0.8.15真实agent/编辑器三会话已通过；0.8.16真实任务并发/强制所有者清理已通过；不等同GUI或恶意代码沙箱 |
 | Windows本地后端 | 同目录精确cedar-agent.exe；固定IsolatedAgent模式、信任独立、异步任务三项能力；绝对原生.exe路径；完整u32退出码 | 无PATH/PATHEXT或batch解析；缺失bundle无回退；旧GitStatus/同步Run/通用LSP/DAP仍禁用；显式Git变更/单文件diff已通过0.15.4同提交原生验收；新增专用Java/JDT正常路径已通过0.9.0 CI；原生 Windows GUI 待验收；LSP Job底层已验证，直接真实Java和非分发agent并发夹具已通过；0.8.15真实agent/编辑器已通过；0.8.16任务并发已通过；0.9.0正式Java路径已通过 |
@@ -27,7 +27,7 @@
 | 插件 | Rust crate 扩展边界 | 稳定插件 ABI/协议、权限、生命周期、市场；无 IDEA 插件兼容承诺 |
 | 企业功能 | 无 | 数据库、Spring、Web、容器、应用服务器、Profiler、协作等需分别设计 |
 | 性能 | 懒加载、按需重绘、有界读取/输出/传输/恢复存储 | 无本阶段新内存基准；历史短时前端读数与 JVM 分开；同项目可复现基线、远程延迟、长会话泄漏、生产项目回归、完整进程树核算 |
-| 分发 | Cargo工程、锁文件、许可清单、公开分阶段源码；0.8.3 双平台 CI 全绿，Windows21进程+12语言传输+7agent实际执行；0.8.12直接真实Java三会话与3项agent语言夹具已通过；9D准备见当前测试报告 | 本阶段发布/精确提交 CI；Windows/macOS 原生 GUI、已签名安装包、自动升级与安全发布 |
+| 分发 | Cargo 工程、锁文件、许可清单、公开分阶段源码；0.26.1 已通过精确双平台 CI 和带逐文件哈希的 Windows 开发包验收 | 当前 0.26.2 的精确提交 CI/包待完成；未签名，需 VC++ x64 运行库；Windows/macOS 原生 GUI、已签名安装包与自动升级仍未验收 |
 
 ## 验收边界
 

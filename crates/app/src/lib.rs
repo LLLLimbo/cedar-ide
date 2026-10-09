@@ -38,6 +38,8 @@ mod recovery_tests;
 mod recovery_ui;
 mod replace;
 mod run_ui;
+#[cfg(test)]
+mod sidebar_layout_tests;
 mod syntax;
 mod system_fonts;
 #[cfg(test)]
@@ -1528,8 +1530,31 @@ impl CedarApp {
                     ui.add(egui::Label::new(RichText::new(if self.directory.is_empty() { "/" } else { &self.directory }).monospace().size(12.0)).truncate()).on_hover_text(&self.directory);
                 });
                 ui.separator();
+                let shortcut_help = egui::WidgetText::from(RichText::new("Ctrl/Cmd+P  Choose a file\nCtrl/Cmd+G  Go to line\nCtrl/Cmd+F  Find in file\nCtrl/Cmd+S  Save changes").size(11.0).color(MUTED))
+                    .into_galley(ui, Some(egui::TextWrapMode::Wrap), ui.available_width(), egui::TextStyle::Body);
+                let tool_labels = [(Tool::Search, "Search"), (Tool::Git, "Git"), (Tool::Run, "Run"), (Tool::Language, "LSP"), (Tool::Tests, "Tests")];
+                let tool_row_height = (ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y);
+                let tool_widths = tool_labels.map(|(_, label)| {
+                    egui::WidgetText::from(label).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button).size().x + 2.0 * ui.spacing().button_padding.x
+                });
+                let first_row_width: f32 = tool_widths[..3].iter().sum();
+                let second_row_width: f32 = tool_widths[3..].iter().sum();
+                let stacked_tools = first_row_width.max(second_row_width) > ui.available_width();
+                let tool_gap = ui.spacing().item_spacing.x.min(9.0).min(((ui.available_width() - first_row_width) / 2.0).min(ui.available_width() - second_row_width).floor()).max(0.0);
+                let tool_rows_height = if stacked_tools {
+                    // Larger fonts may need one selector per row, with text wrapping.
+                    tool_labels.iter().map(|(_, label)| {
+                        let galley = egui::WidgetText::from(*label).into_galley(ui, Some(egui::TextWrapMode::Wrap), (ui.available_width() - 2.0 * ui.spacing().button_padding.x).max(0.0), egui::TextStyle::Button);
+                        (galley.size().y + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y)
+                    }).sum::<f32>() + 4.0 * ui.spacing().item_spacing.y
+                } else {
+                    2.0 * tool_row_height + ui.spacing().item_spacing.y
+                };
+                let separator_height = 6.0;
+                // Reserve the actual controls, help, separator, and intervening gaps.
+                let footer_height = tool_rows_height + shortcut_help.size().y + separator_height + 3.0 * ui.spacing().item_spacing.y;
                 let mut open = None;
-                egui::ScrollArea::vertical().id_salt("explorer_scroll").max_height((ui.available_height() - 120.0).max(40.0)).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("explorer_scroll").max_height((ui.available_height() - footer_height).max(40.0)).show(ui, |ui| {
                     if self.entries.is_empty() { ui.label(RichText::new(if self.ready() { "This directory is empty" } else { "Connect a workspace to browse files" }).small().color(MUTED)); }
                     for entry in &self.entries {
                         let selected = self.active().is_some_and(|doc| doc.path == entry.path);
@@ -1541,14 +1566,22 @@ impl CedarApp {
                 });
                 if let Some(entry) = open { if entry.is_dir { self.list(entry.path); } else { self.open(entry.path, None); } }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.label(RichText::new("Ctrl/Cmd+P  Choose a file\nCtrl/Cmd+G  Go to line\nCtrl/Cmd+F  Find in file\nCtrl/Cmd+S  Save changes").size(11.0).color(MUTED));
-                    ui.separator();
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.selectable_label(self.tools_open && self.tool == Tool::Search, "Search").clicked() { self.tool = Tool::Search; self.tools_open = true; }
-                        if ui.selectable_label(self.tools_open && self.tool == Tool::Git, "Git").clicked() { self.tool = Tool::Git; self.tools_open = true; }
-                        if ui.selectable_label(self.tools_open && self.tool == Tool::Run, "Run").clicked() { self.tool = Tool::Run; self.tools_open = true; }
-                        if ui.selectable_label(self.tools_open && self.tool == Tool::Language, "LSP").clicked() { self.tool = Tool::Language; self.tools_open = true; }
-                        if ui.selectable_label(self.tools_open && self.tool == Tool::Tests, "Tests").clicked() { self.tool = Tool::Tests; self.tools_open = true; }
+                    ui.label(shortcut_help);
+                    ui.add(egui::Separator::default().spacing(separator_height));
+                    // A wrapped horizontal child grows downward even in bottom-up layout.
+                    // Give the deliberate rows their full height before placing them.
+                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), tool_rows_height), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.spacing_mut().item_spacing.x = tool_gap;
+                        let mut selector = |ui: &mut egui::Ui, tool: Tool, label: &str| {
+                            if ui.selectable_label(self.tools_open && self.tool == tool, label).clicked() { self.tool = tool; self.tools_open = true; }
+                        };
+                        if stacked_tools {
+                            for (tool, label) in tool_labels { selector(ui, tool, label); }
+                        } else {
+                            for row in [&tool_labels[..3], &tool_labels[3..]] {
+                                ui.horizontal(|ui| { for &(tool, label) in row { selector(ui, tool, label); } });
+                            }
+                        }
                     });
                 });
             });
