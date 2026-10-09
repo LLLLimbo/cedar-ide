@@ -24,6 +24,9 @@ mod organize;
 #[path = "java_workspace_type_acceptance_tests.rs"]
 mod workspace_types;
 
+#[path = "java_implementations_acceptance_tests.rs"]
+mod implementations;
+
 pub(super) fn validate_fixture_layout(
     root: &std::path::Path,
     data: &std::path::Path,

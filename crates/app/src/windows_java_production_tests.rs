@@ -547,6 +547,241 @@ fn workspace_type_file_unchanged(created: &Option<(PathBuf, workspace_types::Fix
     })
 }
 
+fn prepare_implementation_files(
+    root: &Path,
+    fixture: &mut Option<implementations::Fixture>,
+    created: &mut Vec<(PathBuf, String)>,
+) -> CheckResult<()> {
+    use std::io::Write;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "synthetic implementation clock predates the epoch")?
+        .as_nanos();
+    *fixture = Some(implementations::Fixture::new(nonce));
+    for source in fixture.as_ref().unwrap().sources() {
+        let path = root.join(&source.path);
+        io(fs::create_dir_all(
+            path.parent()
+                .ok_or("synthetic implementation parent missing")?,
+        ))?;
+        let mut file = io(fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path))?;
+        // Retain expected bytes even when a partial write fails.
+        created.push((path, source.text.clone()));
+        io(file.write_all(source.text.as_bytes()))?;
+    }
+    Ok(())
+}
+
+fn implementation_files_unchanged(created: &[(PathBuf, String)]) -> bool {
+    created.len() == 3
+        && created
+            .iter()
+            .all(|(path, source)| fs::read(path).is_ok_and(|bytes| bytes == source.as_bytes()))
+}
+
+fn implementation_request(
+    client: &mut AcceptanceClient,
+    deadline: Instant,
+    op: Operation,
+) -> CheckResult<Payload> {
+    require(
+        Instant::now()
+            .checked_add(idle::REQUEST_BUDGET)
+            .is_some_and(|end| end < deadline),
+        "implementation witness lacks its existing request budget before the Quick deadline",
+    )?;
+    let result = client.request(op)?;
+    require(
+        Instant::now() < deadline,
+        "implementation request exceeded the Quick deadline",
+    )?;
+    Ok(result)
+}
+
+fn implementation_language(
+    client: &mut AcceptanceClient,
+    deadline: Instant,
+    op: Operation,
+) -> CheckResult<Value> {
+    match implementation_request(client, deadline, op)? {
+        Payload::Language { value } => Ok(value),
+        _ => Err("implementation request returned no language result".into()),
+    }
+}
+
+fn production_implementations(
+    client: &mut AcceptanceClient,
+    initialized: &Value,
+    root: &Path,
+    fixture: &Option<implementations::Fixture>,
+    created: &[(PathBuf, String)],
+    deadline: Instant,
+    receipt: &mut implementations::Evidence,
+) -> CheckResult<()> {
+    receipt.exercised = true;
+    receipt.failure_stage = implementations::Stage::Support;
+    let Payload::Hello {
+        agent: Some(info), ..
+    } = client.handshake()
+    else {
+        return Err("implementation agent metadata missing".into());
+    };
+    require(
+        info.supports("language_java_implementations"),
+        "implementation capability missing",
+    )?;
+    receipt.capability_supported = true;
+    let provider = &initialized["initialize"]["capabilities"]["implementationProvider"];
+    require(
+        provider == true || provider.is_object(),
+        "implementation provider missing",
+    )?;
+    receipt.provider_supported = true;
+    let fixture = fixture
+        .as_ref()
+        .ok_or("synthetic implementation fixture missing")?;
+    receipt.failure_stage = implementations::Stage::Open;
+    let opened = implementation_language(
+        client,
+        deadline,
+        Operation::LanguageOpen {
+            path: fixture.interface.path.clone(),
+            language_id: "java".into(),
+            version: 1,
+            text: fixture.interface.text.clone(),
+        },
+    )?;
+    let expected_uri = |path: &str| -> CheckResult<String> {
+        url::Url::from_file_path(ordinary_path(&root.join(path))?)
+            .map(|uri| uri.to_string())
+            .map_err(|_| "cannot encode synthetic implementation URI".into())
+    };
+    let interface_uri = expected_uri(&fixture.interface.path)?;
+    require(
+        opened["version"] == 1
+            && opened["opened"]
+                .as_str()
+                .is_some_and(|uri| same_local_uri(uri, &interface_uri)),
+        "implementation query source didOpen URI/version mismatch",
+    )?;
+    receipt.query_version_acknowledged = true;
+    let concrete_uri = expected_uri(&fixture.concrete.path)?;
+    let inherited_uri = expected_uri(&fixture.inherited.path)?;
+    let operation = |cursor: completion::Position| Operation::LanguageJavaImplementations {
+        path: fixture.interface.path.clone(),
+        version: 1,
+        line: cursor.line,
+        character: cursor.character,
+    };
+    // All three sources existed before startup. Only the interface was opened;
+    // there is one request per exact declaration after existing readiness,
+    // without indexing retries, substitute searches or additional sleeps.
+    receipt.failure_stage = implementations::Stage::TypeQuery;
+    let types = implementation_language(client, deadline, operation(fixture.type_cursor()))?;
+    receipt.type_result_count = implementations::result_count(&types)?;
+    let target_uri = fixture.exact_types(&types, &concrete_uri, &inherited_uri)?;
+    receipt.targets_unopened = true;
+    receipt.exact_type_uris = true;
+    receipt.exact_type_ranges = true;
+    receipt.failure_stage = implementations::Stage::MethodQuery;
+    let methods = implementation_language(client, deadline, operation(fixture.method_cursor()))?;
+    receipt.method_result_count = implementations::result_count(&methods)?;
+    fixture.exact_method(&methods, &concrete_uri)?;
+    receipt.exact_method_uri = true;
+    receipt.exact_method_range = true;
+    receipt.inherited_method_absent = true;
+    receipt.utf16_ranges_exact = true;
+    receipt.failure_stage = implementations::Stage::NegativeQuery;
+    let negative = implementation_language(client, deadline, operation(fixture.negative_cursor()))?;
+    receipt.negative_result_count = implementations::result_count(&negative)?;
+    require(
+        workspace_types::empty_result(&negative),
+        "unimplemented interface query was not empty",
+    )?;
+    receipt.negative_query_empty = true;
+    receipt.failure_stage = implementations::Stage::Resolve;
+    let resolved = implementation_language(
+        client,
+        deadline,
+        Operation::LanguageResolveUri {
+            uri: target_uri.clone(),
+        },
+    )?;
+    require(
+        resolved["path"] == fixture.concrete.path,
+        "implementation target did not resolve to its owned source",
+    )?;
+    receipt.resolved_path_exact = true;
+    receipt.failure_stage = implementations::Stage::Read;
+    let Payload::File {
+        path,
+        text,
+        revision,
+    } = implementation_request(
+        client,
+        deadline,
+        Operation::Read {
+            path: fixture.concrete.path.clone(),
+        },
+    )?
+    else {
+        return Err("implementation ordinary Read returned no source file".into());
+    };
+    for name in [&fixture.concrete.name, &fixture.method] {
+        let range = marker_range(&fixture.concrete.text, name);
+        let (start, _) = completion::position_to_offsets(&text, range.start)?;
+        let (end, _) = completion::position_to_offsets(&text, range.end)?;
+        require(
+            text.get(start..end) == Some(name.as_str()),
+            "implementation UTF-16 selection missed its exact name",
+        )?;
+    }
+    require(
+        path == fixture.concrete.path
+            && text == fixture.concrete.text
+            && implementation_files_unchanged(created),
+        "implementation ordinary Read/source mismatch",
+    )?;
+    receipt.ordinary_read_exact = true;
+    receipt.failure_stage = implementations::Stage::Frontend;
+    crate::CedarApp::java_implementations_navigation_acceptance(
+        &fixture.interface.path,
+        &fixture.interface.text,
+        fixture.type_cursor(),
+        types,
+        &target_uri,
+        &path,
+        &text,
+        &revision,
+    )?;
+    receipt.actual_frontend_navigation = true;
+    receipt.full_selection_preserved = true;
+    receipt.dirty_buffer_reused = true;
+    receipt.undo_redo_preserved = true;
+    receipt.retained_context_preserved = true;
+    require(
+        implementation_files_unchanged(created),
+        "implementation navigation changed source bytes",
+    )?;
+    receipt.failure_stage = implementations::Stage::Close;
+    implementation_language(
+        client,
+        deadline,
+        Operation::LanguageClose {
+            path: fixture.interface.path.clone(),
+        },
+    )?;
+    require(
+        receipt.semantics_passed(),
+        "implementation semantic witness was incomplete",
+    )?;
+    receipt.failure_stage = implementations::Stage::None;
+    Ok(())
+}
+
 fn workspace_type_request(
     client: &mut AcceptanceClient,
     deadline: Instant,
@@ -1014,6 +1249,9 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
     let mut organize_receipt = organize::Evidence::new();
     let mut workspace_type_file = None;
     let mut workspace_type_receipt = workspace_types::Evidence::new();
+    let mut implementation_fixture = None;
+    let mut implementation_files = Vec::new();
+    let mut implementation_receipt = implementations::Evidence::new();
     let primary = checked(|| {
         require(
             !profile.observes_resources() || instrumentation_ready,
@@ -1037,6 +1275,11 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         if profile == ObservationProfile::Quick {
             prepare_organize_files(&root, &mut organize_files)?;
             prepare_workspace_type_file(&root, &mut workspace_type_file)?;
+            prepare_implementation_files(
+                &root,
+                &mut implementation_fixture,
+                &mut implementation_files,
+            )?;
         }
         let data = base.join("external JDT data 雪");
         io(fs::create_dir(&data))?;
@@ -1265,6 +1508,15 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
                 &workspace_type_file,
                 started + Duration::from_secs(180),
                 &mut workspace_type_receipt,
+            )?;
+            production_implementations(
+                client,
+                &initialized,
+                &root,
+                &implementation_fixture,
+                &implementation_files,
+                started + Duration::from_secs(180),
+                &mut implementation_receipt,
             )?;
             unchanged(&source)?;
         }
@@ -1628,6 +1880,12 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         cleanup_errors.push("normal source bytes changed before cleanup".into());
     }
     if profile == ObservationProfile::Quick {
+        implementation_receipt.source_files_unchanged =
+            implementation_files_unchanged(&implementation_files);
+        if !implementation_files.is_empty() && !implementation_receipt.source_files_unchanged {
+            failure_stage.get_or_insert(FailureStage::FixtureCleanup);
+            cleanup_errors.push("implementation source bytes changed before cleanup".into());
+        }
         workspace_type_receipt.source_unchanged =
             workspace_type_file_unchanged(&workspace_type_file);
         if workspace_type_file.is_some() && !workspace_type_receipt.source_unchanged {
@@ -1685,6 +1943,25 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
     record.primary_failed = primary.is_err();
     record.cleanup_failed = !cleanup_errors.is_empty();
     if profile == ObservationProfile::Quick {
+        implementation_receipt.root_handle_signaled = record.root_handle_signaled;
+        implementation_receipt.client_reaped = record.client_reaped;
+        implementation_receipt.synthetic_root_removed = record.synthetic_root_removed;
+        implementation_receipt.primary_failed = record.primary_failed;
+        implementation_receipt.cleanup_failed = record.cleanup_failed;
+        implementation_receipt.success = primary.is_ok()
+            && cleanup_errors.is_empty()
+            && implementation_receipt.semantics_passed()
+            && implementation_receipt.source_files_unchanged
+            && implementation_receipt.root_handle_signaled
+            && implementation_receipt.client_reaped
+            && implementation_receipt.synthetic_root_removed;
+        let elapsed = started.elapsed().as_millis();
+        implementation_receipt.elapsed_ms = elapsed.min(240_000) as u32;
+        implementation_receipt.elapsed_saturated = elapsed > 240_000;
+        println!(
+            "{}",
+            serde_json::to_string(&implementation_receipt).expect("typed implementation evidence")
+        );
         workspace_type_receipt.root_handle_signaled = record.root_handle_signaled;
         workspace_type_receipt.client_reaped = record.client_reaped;
         workspace_type_receipt.synthetic_root_removed = record.synthetic_root_removed;
@@ -1759,6 +2036,7 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
                 && record.diagnostics_refresh_requested
                 && record.diagnostics_refresh_witness
                 && workspace_type_receipt.success
+                && implementation_receipt.success
                 && organize_receipt.success))
         && (profile != ObservationProfile::GcDiagnostic || natural_shutdown_verified)
         && idle_budget

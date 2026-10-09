@@ -975,6 +975,12 @@ fn advanced_operations() -> Vec<Operation> {
             path: "fixture.txt".into(),
             version: 1,
         },
+        Operation::LanguageJavaImplementations {
+            path: "fixture.java".into(),
+            version: 1,
+            line: 0,
+            character: 0,
+        },
         Operation::LanguageReferences {
             path: "fixture.txt".into(),
             line: 0,
@@ -1211,6 +1217,7 @@ fn java_capabilities() -> Vec<&'static str> {
         .chain([
             "java_diagnostics_refresh",
             "language_organize_java_imports",
+            "language_java_implementations",
             "language_query",
             "language_format",
             "language_references",
@@ -1386,6 +1393,91 @@ fn process(client: &mut Client) -> &mut ProcessClient {
         #[cfg(not(windows))]
         Backend::Local(_) => panic!("expected process transport"),
     }
+}
+
+#[test]
+fn java_implementations_requires_optional_bridge_and_complete_typed_java_lifecycle() {
+    let implementations = Operation::LanguageJavaImplementations {
+        path: "Hello.java".into(),
+        version: 7,
+        line: 2,
+        character: 3,
+    };
+    for missing in std::iter::once(&"language_java_implementations")
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES.iter())
+    {
+        let capabilities: Vec<_> = java_capabilities()
+            .into_iter()
+            .chain(["language_start"])
+            .filter(|capability| capability != missing)
+            .collect();
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+        let error = client.request(implementations.clone()).unwrap_err();
+        assert!(error.starts_with("unsupported_operation:"), "{error}");
+        assert!(error.contains(missing), "{error}");
+        assert_eq!(recorded_requests(directory.path()).len(), 1);
+        read_fixture(&mut client);
+        assert_eq!(recorded_requests(directory.path()).len(), 2);
+    }
+    let capabilities: Vec<_> = java_capabilities()
+        .into_iter()
+        .filter(|capability| *capability != "language_java_implementations")
+        .collect();
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+    client.request(start_java_language()).unwrap();
+    client.request(Operation::LanguageEvents).unwrap();
+    assert!(client
+        .request(implementations)
+        .unwrap_err()
+        .contains("language_java_implementations"));
+    client.request(Operation::LanguageStop).unwrap();
+    assert_eq!(recorded_requests(directory.path()).len(), 4);
+}
+
+#[test]
+fn java_implementations_preserves_wire_reply_errors_and_existing_timeout_without_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&java_capabilities())));
+    client.request(start_java_language()).unwrap();
+    let operation = Operation::LanguageJavaImplementations {
+        path: "Hello #雪.java".into(),
+        version: 7,
+        line: 2,
+        character: 3,
+    };
+    assert_eq!(
+        process(&mut client).request_timeout(&operation),
+        Duration::from_secs(75)
+    );
+    let locations = serde_json::json!([{"uri":"file:///C:/Hello.java","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":5}}}]);
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Ok":{"type":"language","value":locations}}),
+    );
+    assert!(
+        matches!(client.request(operation.clone()).unwrap(), Payload::Language { value } if value == locations)
+    );
+    assert!(process(&mut client).java_language_session);
+    let requests = recorded_requests(directory.path());
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[2]["op"],
+        serde_json::json!({"type":"language_java_implementations","path":"Hello #雪.java","version":7,"line":2,"character":3})
+    );
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Err":{"code":"language_error","message":"implementation provider unavailable"}}),
+    );
+    assert!(client
+        .request(operation)
+        .unwrap_err()
+        .starts_with("language_error:"));
+    read_fixture(&mut client);
+    assert_eq!(recorded_requests(directory.path()).len(), 5);
 }
 
 fn next_result(directory: &Path, client: &mut Client, result: serde_json::Value) {

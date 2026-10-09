@@ -49,6 +49,19 @@ impl CedarApp {
         }
     }
     pub(super) fn operation_problem(&self, operation: &Operation) -> Option<String> {
+        if let Operation::LanguageJavaImplementations {
+            path,
+            version,
+            line,
+            character,
+        } = operation
+        {
+            if let Some(problem) =
+                self.java_implementations_operation_problem(path, *version, *line, *character)
+            {
+                return Some(problem);
+            }
+        }
         if let Operation::LanguageWorkspaceSymbols { query } = operation {
             if let Some(problem) = self.java_types_operation_problem(query) {
                 return Some(problem);
@@ -195,6 +208,7 @@ pub(super) fn full_test_agent() -> cedar_protocol::AgentInfo {
             "language_references",
             "language_document_symbols",
             "language_workspace_symbols",
+            "language_java_implementations",
             "language_resolve_completion",
         ]
         .into_iter()

@@ -237,6 +237,7 @@ impl LspClient {
                         "completion": {"dynamicRegistration":false,"completionItem":{"snippetSupport":false,"documentationFormat":["plaintext","markdown"],"resolveSupport":{"properties":["documentation","detail","additionalTextEdits"]}}},
                         "hover": {"dynamicRegistration":false,"contentFormat":["plaintext","markdown"]},
                         "definition": {"dynamicRegistration":false,"linkSupport":true},
+                        "implementation": {"dynamicRegistration":false,"linkSupport":false},
                         "formatting": {"dynamicRegistration":false},
                         "references": {"dynamicRegistration":false},
                         "documentSymbol": {"dynamicRegistration":false,"hierarchicalDocumentSymbolSupport":true},
@@ -478,6 +479,21 @@ impl LspClient {
             "textDocument/references",
             json!({"textDocument":{"uri":uri},"position":position,"context":{"includeDeclaration":include_declaration}}),
         )
+    }
+
+    /// One standard implementation request on an acknowledged open document.
+    /// Null/single Location/Location[] normalize to a strict bounded array. The
+    /// results carry no target versions and may lag the server's indexing state;
+    /// every navigation still requires independent workspace URI confinement.
+    pub fn implementations(&self, uri: &str, position: Position) -> Result<Value, Error> {
+        let _gate = self.gate.read().unwrap();
+        self.ready_document("implementationProvider", "textDocument/implementation", uri)?;
+        validate_position(position)?;
+        let result = self.rpc.request(
+            "textDocument/implementation",
+            json!({"textDocument":{"uri":uri},"position":position}),
+        )?;
+        crate::implementations::normalize_result(result)
     }
 
     /// Return DocumentSymbol[], SymbolInformation[], or null unchanged.

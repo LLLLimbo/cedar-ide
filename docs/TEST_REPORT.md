@@ -1,74 +1,67 @@
-# Verification report · keyboard workspace access / 0.27.0
+# Verification report · Java implementation locations / 0.28.0
 
-This bounded presentation-only change supplies explicit keyboard routes between
-editing, directory browsing and the selected tools view. Hiding tools reclaims
-workspace space while preserving drafts and tool state. It does not redesign the
-expanded forms or guarantee simultaneous visibility of every control.
+This checkpoint adds an explicit Java implementation-location query for a running
+typed, trusted Java session. It is a navigation feature, not a call graph or a
+guarantee that every concrete runtime implementation has been found.
 
-## Intended actions and invariants
+## Required boundaries
 
-- Ctrl/Cmd+J toggles tools. Hiding returns focus to the current editor, or an
-  available Explorer anchor when no document is open. Showing retains the selected
-  tool and focuses its rendered header selector. The existing close button shares
-  the hide/return behavior.
-- Ctrl/Cmd+Shift+E hides tools and focuses Explorer Refresh without issuing a read.
-  If Refresh is disabled or unavailable, it does not substitute another tool.
-- Documents, selection, Undo/Redo, recovery, unknown-save state, tool fields,
-  results, filters and scroll state are preserved. These actions issue no worker
-  commands and do not stop tasks or language services.
-- One-shot focus yields to modal ownership, newer intent, generation/document
-  changes and conflicting input batches. Native repeat does not repeatedly toggle.
-  Mixed input batches conservatively ignore the access shortcut while preserving
-  the original widget's other input, including text preceding the shortcut.
+- The agent and actual server must support the operation. Dispatch requires the
+  acknowledged source version and a valid UTF-16 cursor position.
+- Only bounded ordinary locations are accepted. Location links, malformed shapes,
+  invalid ranges and oversized results are refused; navigation uses the existing
+  root-confined URI resolver and ordinary file read.
+- Source, participating drafts, cursor, request sequence, connection generation
+  and language session remain bound through query, result selection, resolve and
+  read. Newer intent, edits, cancellation or session changes invalidate stale work.
+- Existing dirty drafts, full selections and Undo/Redo remain intact. Queries do
+  not save files, start servers, change trust or request an index rebuild.
+- Results have no target-document version and may lag indexing or unsaved edits.
+  Type queries can return subtypes; method queries return declarations rather
+  than a separate result for each class inheriting that method.
 
 ## Finite acceptance
 
-Production-frame tests cover all five tools, populated reports, expanded Language,
-empty/no-document cases, Find/Replace, resizing, modal/repeat/mixed input and focus
-precedence. The existing 14 sidebar regressions remain required. A cloud Linux
-trust-off native pass at 780×540 must demonstrate the keyboard route back to visible
-editing, reopening unchanged tools, and Explorer traversal while preserving dirty
-selection and Undo. Source hashes and owned cleanup are checked; no Save or
-execution is part of the native pass.
+A generated interface, concrete implementation and inheriting subclass establish
+exact type and method result URI/range witnesses. Target files begin unopened;
+non-BMP text before identifiers distinguishes UTF-16 positions from code points.
+An unimplemented interface declaration supplies a separate empty-result case.
+The normal shipping agent/Client route must navigate an actual result through
+the frontend, preserve dirty-buffer history, leave source bytes unchanged and
+complete the existing bounded cleanup checks.
+
+Deterministic tests cover unsupported providers/agents, version mismatches,
+malformed or excessive results, forbidden targets and late query/resolve/read
+responses after every relevant state change. All existing native Java, Maven,
+file, task, ownership and package gates remain required.
+
+## Captured close-click integration
+
+The new same-frame cancellation test exposed an existing tools-close edge case:
+egui recognized a captured primary click after the bottom panel moved, while
+Cedar's extra current-rectangle check rejected it. The close guard now uses the
+recognized primary click with a strict single-click input batch. Mixed input,
+keyboard ownership and later focus changes remain guarded. A standalone moving
+panel regression accompanies the implementation-navigation race test; existing
+sidebar and workspace-access tests remain required.
 
 ## Current status
 
-Independent source review is clear. All 16 workspace-access production-frame
-tests and all 14 unchanged sidebar regressions pass locally. The access cases
-include a zero-visible-editor close, batched close clicks, exact native modifier
-forms, window focus loss, stale generation/document state, populated report
-scroll retention and held-key preservation of a newer Find-field focus.
+Independent backend/acceptance and frontend/state reviews have no remaining
+findings. Strict host and Windows MSVC-target Clippy pass. The host aggregate
+completed 40 suites with 1,100 passed, zero failed and 29 opt-ins ignored. Focused
+runs passed all 17 implementation/frontend cases, 12 backend/protocol/client
+cases, 17 workspace-access cases and 14 unchanged sidebar regressions. Collector
+and capability Python tests ran 94 cases with 88 passed and six explicit
+platform/PowerShell skips; bundle Python tests passed 28 of 29 with one skip.
+Native PowerShell and actual Windows JDT witnesses remain required in CI.
 
-An earlier retained-sidebar run failed three cases after adding two visible help
-lines. Restoring the original four-line footer and placing the new guidance in
-existing tooltips resolved those failures without changing the sidebar tests.
-Final-code strict host and Windows MSVC-target Clippy pass. The host aggregate
-completed 40 suites with 1,070 passed, zero failed and 29 opt-in tests ignored;
-required process/native opt-ins remain part of the full CI workflow. All-feature
-and default shipping release builds also pass.
-
-## Cloud Linux native workflow
-
-The final default-release binary ran against a generated Unicode workspace with
-execution trust off. At an observed 780×540 window, the expanded Language pane
-crowded out the editor. Ctrl+J hid it, revealed the selected dirty text and directed
-the next typed character to that selection. Undo restored the prior selected
-text; reopening retained Language and its visible disabled default fields, with
-the header focused. Ctrl+Shift+E hid it and focused Explorer Refresh. Keyboard
-Tab/Enter opened both the first and final Unicode file. Returning preserved the
-dirty draft and selection; Undo reached the original clean text and Redo restored
-the edits. Keyboard activation of the tools close button also returned usable
-editor focus. The normal 1178×814 window size was restored afterward.
-
-These are cloud Linux native observations. Populated editable tool fields and
-report scroll retention are covered by headless production-frame tests; the
-trust-off native Language fields remained disabled. Full expanded-form layout,
-Windows native GUI and real SSH are not covered. All 32 generated workspace
-files retained their exact names and SHA256 hashes after the pass. The owned app
-exited after explicitly discarding its draft, leaving no recovery draft records;
-unrelated desktop windows were preserved. No project Save or execution was used.
-The preceding
-[0.26.3 acceptance](TEST_REPORT_PHASE26_COMPACT.md) remains the latest verified
-checkpoint. Exact new-source checks, dual-platform CI and package verification
-remain required. No Windows GUI, authenticated SSH or full responsive-form claim
-is added.
+All-feature and default shipping release builds pass. The actual default Linux
+agent capability/trust smoke passes on a disposable fixture, reporting the
+unchanged 24-capability Unix inventory and starting no tool. No new real-JDT or
+native GUI result is claimed.
+[0.27 acceptance](TEST_REPORT_PHASE27_WORKSPACE_ACCESS.md) remains the
+latest verified checkpoint. Exact-source local checks, native dual-platform CI
+and complete package verification are required before this checkpoint is ready.
+Windows native GUI, authenticated SSH and full IDEA equivalence remain separate
+unmet validation or feature boundaries.

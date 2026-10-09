@@ -276,6 +276,24 @@ class CrashCollectionTests(unittest.TestCase):
             'failure_stage': 'none', 'elapsed_ms': 1234,
         }
 
+    def agent_implementations_fixture(self):
+        return {
+            'kind': 'windows_java_implementations', 'exercised': True,
+            'capability_supported': True, 'provider_supported': True,
+            'query_version_acknowledged': True, 'targets_unopened': True,
+            'exact_type_uris': True, 'exact_type_ranges': True,
+            'exact_method_uri': True, 'exact_method_range': True,
+            'inherited_method_absent': True, 'negative_query_empty': True,
+            'utf16_ranges_exact': True, 'resolved_path_exact': True, 'ordinary_read_exact': True,
+            'actual_frontend_navigation': True, 'full_selection_preserved': True,
+            'dirty_buffer_reused': True, 'undo_redo_preserved': True,
+            'retained_context_preserved': True, 'source_files_unchanged': True,
+            'root_handle_signaled': True, 'client_reaped': True, 'synthetic_root_removed': True,
+            'primary_failed': False, 'cleanup_failed': False, 'success': True,
+            'type_result_count': 2, 'method_result_count': 1, 'negative_result_count': 0,
+            'failure_stage': 'none', 'elapsed_ms': 1234, 'elapsed_saturated': False,
+        }
+
     def link(self, target, path, directory=False):
         try:
             path.symlink_to(target, target_is_directory=directory)
@@ -1365,6 +1383,137 @@ foreach ($case in (Get-Content -LiteralPath $Cases -Raw | ConvertFrom-Json)) {
 ''', encoding='utf-8')
             result = subprocess.run([shutil.which('pwsh'), '-NoLogo', '-NoProfile', '-File', str(script),
                                      '-Predicate', str(Path(__file__).with_name('java_workspace_type_acceptance_predicate.ps1').resolve()),
+                                     '-Cases', str(data)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_implementation_receipt_keeps_failure_without_private_source_or_protocol_data(self):
+        good = self.agent_implementations_fixture()
+        failed = {**good, 'success': False, 'primary_failed': True, 'failure_stage': 'type_query',
+                  'type_result_count': 0, 'exact_type_uris': False, 'exact_type_ranges': False,
+                  'actual_frontend_navigation': False, 'retained_context_preserved': False}
+        for expected in (good, failed):
+            with self.subTest(success=expected['success']):
+                path = self.agent_source([{**expected, 'query': 'SECRET_QUERY', 'name': 'SECRET_TYPE',
+                    'uri': 'file:///SECRET_ROOT/Source.java', 'path': 'C:\\SECRET_ROOT',
+                    'source': 'SECRET_SOURCE', 'draft': 'SECRET_DIRTY_TEXT', 'revision': 'SECRET_REVISION',
+                    'response': {'result': 'SECRET_PROTOCOL'}, 'environment': {'SECRET_ENV': 'SECRET_VALUE'},
+                    'error': 'SECRET_ERROR', 'raw_output': 'SECRET_PRIVATE_LOG', 'pid': 314}])
+                report = collector.collect(self.root, agent_transcript=path)
+                self.assertEqual(report['status'], 'complete')
+                self.assertEqual(report['acceptance_result'], 'not_evaluated')
+                self.assertEqual(report['agent_transcript']['evidence']['records'], [expected])
+                for private in ('SECRET_', 'file:///', str(self.root), 'raw_output', 'revision', 'pid'):
+                    self.assertNotIn(private, json.dumps(report))
+                other, errors, truncation = collector.sanitize_transcript(path.read_bytes(), collector.LIMITS)
+                self.assertEqual(other['records'], [])
+                self.assertEqual(other['omitted_other_json_records'], 1)
+                self.assertEqual(errors, set())
+                self.assertEqual(truncation, set())
+
+    def test_implementation_receipt_requires_every_exact_typed_scalar(self):
+        fixture = self.agent_implementations_fixture()
+        schema = collector.AGENT_TRANSCRIPT_FIELDS['windows_java_implementations']
+        self.assertEqual(set(fixture), {'kind', *schema})
+        for field in schema:
+            missing = dict(fixture)
+            del missing[field]
+            _, errors, _ = collector.sanitize_agent_transcript(json.dumps(missing).encode(), collector.LIMITS)
+            self.assertEqual(errors, {'missing_field_' + field})
+        for field, original in fixture.items():
+            if type(original) is not bool:
+                continue
+            for value in (True, False, 0, 1, 0.0, None, 'SECRET_BOOLEAN', [], {}):
+                with self.subTest(field=field, value=value):
+                    result, errors, truncated = collector.sanitize_agent_transcript(
+                        json.dumps({**fixture, field: value}).encode(), collector.LIMITS)
+                    self.assertEqual(errors, set() if type(value) is bool else {'invalid_field_' + field})
+                    self.assertEqual(truncated, set())
+                    if type(value) is bool:
+                        self.assertIs(result['records'][0][field], value)
+                    else:
+                        self.assertNotIn(field, result['records'][0])
+                    self.assertNotIn('SECRET_', json.dumps(result))
+        for field, maximum in [('elapsed_ms', 240000), ('type_result_count', 128),
+                               ('method_result_count', 128), ('negative_result_count', 128)]:
+            for value in (0, maximum, -1, maximum + 1, True, 1.0, None, 'SECRET_COUNT', [], {}):
+                with self.subTest(field=field, value=value):
+                    _, errors, _ = collector.sanitize_agent_transcript(
+                        json.dumps({**fixture, field: value}).encode(), collector.LIMITS)
+                    valid = type(value) is int and 0 <= value <= maximum
+                    self.assertEqual(errors, set() if valid else {'invalid_field_' + field})
+        stages = ('none', 'setup', 'support', 'open', 'type_query', 'method_query', 'negative_query',
+                  'resolve', 'read', 'frontend', 'close')
+        for stage in (*stages, 'SECRET_STAGE', 'index_retry', 0, None, [], {}):
+            with self.subTest(stage=stage):
+                result, errors, _ = collector.sanitize_agent_transcript(
+                    json.dumps({**fixture, 'failure_stage': stage}).encode(), collector.LIMITS)
+                valid = isinstance(stage, str) and stage in stages
+                self.assertEqual(errors, set() if valid else {'invalid_field_failure_stage'})
+                self.assertNotIn('SECRET_', json.dumps(result))
+
+    def test_implementation_receipt_duplicate_records_and_fields_fail_closed(self):
+        fixture = self.agent_implementations_fixture()
+        data = json.dumps(fixture)
+        _, errors, _ = collector.sanitize_agent_transcript((data + '\n' + data).encode(), collector.LIMITS)
+        self.assertEqual(errors, {'duplicate_implementations_receipt'})
+        for field in fixture:
+            duplicate = data[:-1] + ',' + json.dumps(field) + ':' + json.dumps(fixture[field]) + '}'
+            with self.subTest(field=field):
+                result, errors, _ = collector.sanitize_agent_transcript(duplicate.encode(), collector.LIMITS)
+                self.assertEqual(errors, {'duplicate_implementations_receipt_field'})
+                self.assertEqual(result['records'], [])
+
+    @unittest.skipUnless(shutil.which('pwsh'), 'PowerShell is required for the actual implementation predicate')
+    def test_actual_implementation_predicate_rejects_missing_forged_and_nested_witnesses(self):
+        good = self.agent_implementations_fixture()
+        cases = [{'name': 'complete', 'records': [good], 'accept': True},
+                 {'name': 'independent_quick', 'records': [self.agent_production_fixture(), good], 'accept': True},
+                 {'name': 'zero_tests', 'records': [], 'accept': False},
+                 {'name': 'scalar_receipt', 'records': good, 'accept': False},
+                 {'name': 'null_receipt', 'records': None, 'accept': False},
+                 {'name': 'string_receipt', 'records': 'SECRET_ROOT', 'accept': False},
+                 {'name': 'number_receipt', 'records': 7, 'accept': False},
+                 {'name': 'duplicate_receipts', 'records': [good, good], 'accept': False},
+                 {'name': 'nested_receipt', 'records': [[good]], 'accept': False},
+                 {'name': 'nested_duplicate_receipt', 'records': [[good, good]], 'accept': False},
+                 {'name': 'nested_before_valid', 'records': [[good], good], 'accept': False},
+                 {'name': 'nested_after_valid', 'records': [good, [good]], 'accept': False},
+                 {'name': 'empty_array_with_valid', 'records': [[], good], 'accept': False},
+                 {'name': 'null_with_valid', 'records': [None, good], 'accept': False},
+                 {'name': 'string_with_valid', 'records': ['SECRET_SCALAR', good], 'accept': False},
+                 {'name': 'wrong_kind', 'records': [{**good, 'kind': 'windows_java_production'}], 'accept': False}]
+        for field, original in good.items():
+            missing = dict(good)
+            del missing[field]
+            cases.append({'name': 'missing_' + field, 'records': [missing], 'accept': False})
+            if type(original) is bool:
+                invalids = (not original, 0, 1, None, 'true', [], [original], {})
+            elif field.endswith('_count'):
+                invalids = (original + 1, -1, 129, True, 1.5, None, str(original), [], [original])
+            elif field == 'elapsed_ms':
+                invalids = (-1, 240001, True, 1.5, None, '1234', [], [1234])
+            else:
+                invalids = (None, 0, [], [original], 'SECRET_ENUM')
+            for invalid in invalids:
+                cases.append({'name': field + '_' + repr(invalid),
+                              'records': [{**good, field: invalid}], 'accept': False})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = root / 'cases.json'
+            data.write_text(json.dumps(cases), encoding='utf-8')
+            script = root / 'predicate-test.ps1'
+            script.write_text(r'''param($Predicate, $Cases)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+. $Predicate
+foreach ($case in (Get-Content -LiteralPath $Cases -Raw | ConvertFrom-Json)) {
+    $accepted = $false
+    try { Assert-JavaImplementationsReceipt -Receipts $case.records; $accepted = $true } catch {}
+    if ($accepted -ne $case.accept) { throw ('Unexpected implementation verdict: ' + $case.name) }
+}
+''', encoding='utf-8')
+            result = subprocess.run([shutil.which('pwsh'), '-NoLogo', '-NoProfile', '-File', str(script),
+                                     '-Predicate', str(Path(__file__).with_name('java_implementations_acceptance_predicate.ps1').resolve()),
                                      '-Cases', str(data)], capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

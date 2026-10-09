@@ -118,6 +118,9 @@ fn java_diagnostics_refresh_supported(authorized_java_session: bool, initialize:
 }
 
 #[cfg(test)]
+#[path = "language_implementations_tests.rs"]
+mod implementations_tests;
+#[cfg(test)]
 #[path = "language_refresh_tests.rs"]
 mod java_refresh_tests;
 #[cfg(test)]
@@ -530,6 +533,44 @@ impl Workspace {
                 let value = session
                     .client
                     .references(&uri, Position { line, character }, include_declaration)
+                    .map_err(lsp_error)?;
+                Ok(Payload::Language { value })
+            }
+            Operation::LanguageJavaImplementations {
+                path,
+                version,
+                line,
+                character,
+            } => {
+                let uri = self.language_uri(&path)?;
+                let session = self.language.as_ref().ok_or_else(|| {
+                    error("language_not_running", "Start a language server first")
+                })?;
+                // An arbitrary server or validation host cannot become a typed
+                // Java session by claiming a provider or JDT server identity.
+                if !session.production_java {
+                    return Err(error(
+                        "language_implementations_unsupported",
+                        "Go to Implementations requires a session started with the Java route",
+                    ));
+                }
+                if version <= 0 {
+                    return Err(error(
+                        "invalid_version",
+                        "Go to Implementations requires a positive synchronized document version",
+                    ));
+                }
+                let document = session.open_document(&uri)?;
+                if !document.is_java {
+                    return Err(error(
+                        "invalid_language",
+                        "Go to Implementations requires a .java source document synchronized as Java",
+                    ));
+                }
+                document.require_version(version)?;
+                let value = session
+                    .client
+                    .implementations(&uri, Position { line, character })
                     .map_err(lsp_error)?;
                 Ok(Payload::Language { value })
             }

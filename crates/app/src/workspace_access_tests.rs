@@ -50,6 +50,14 @@ fn widget(app: &CedarApp, name: &str) -> Widget {
     })
 }
 
+pub(super) fn recorded_response(app: &CedarApp, name: &str) -> egui::Response {
+    app.editor_ctx.read_response(widget(app, name).id).unwrap()
+}
+
+pub(super) fn recorded_rect(app: &CedarApp, name: &str) -> egui::Rect {
+    widget(app, name).rect
+}
+
 fn focused(app: &CedarApp) -> Option<egui::Id> {
     app.editor_ctx.memory(|memory| memory.focused())
 }
@@ -711,6 +719,60 @@ fn same_frame_generation_document_navigation_and_new_focus_cancel_final_handoff(
                 );
             },
         );
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn captured_close_survives_panel_motion_and_still_rejects_newer_mixed_input() {
+    for mixed in [false, true] {
+        let (mut app, commands) = app(Tool::Search);
+        settle(&mut app, SIZE);
+        let at = widget(&app, "close_tools").rect.center();
+        frame(
+            &mut app,
+            SIZE,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let mut events = vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ];
+        if mixed {
+            events.push(egui::Event::Text("newer input".into()));
+        }
+        frame(&mut app, [SIZE[0], SIZE[1] + 100.0], events);
+        let close = recorded_response(&app, "close_tools");
+        assert!(
+            close.clicked_by(egui::PointerButton::Primary),
+            "egui must recognize the captured close click"
+        );
+        let emitted = widget(&app, "close_tools").rect;
+        assert!(
+            !emitted.contains(at),
+            "the rendered panel must move before release: press={at:?}, emitted={emitted:?}, interaction={:?}",
+            close.rect
+        );
+        assert_eq!(
+            app.tools_open, mixed,
+            "only the sole captured click may hide tools"
+        );
+        if !mixed {
+            assert_eq!(focused(&app), Some(egui::Id::new(("editor", 1u64))));
+        }
         assert!(commands.try_recv().is_err());
     }
 }

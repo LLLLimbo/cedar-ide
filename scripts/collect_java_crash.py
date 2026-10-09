@@ -201,6 +201,23 @@ AGENT_TRANSCRIPT_FIELDS = {
         | {'failure_stage': ('none', 'setup', 'support', 'query', 'negative_query',
                              'resolve', 'read', 'frontend'),
            'elapsed_ms': ('integer_range', 0, 240000)},
+    # Quick-only implementation witness: no source, symbol, URI, path, revision,
+    # protocol data, inherited environment or arbitrary error is retained.
+    'windows_java_implementations': dict.fromkeys((
+        'exercised', 'capability_supported', 'provider_supported', 'query_version_acknowledged',
+        'targets_unopened', 'exact_type_uris', 'exact_type_ranges', 'exact_method_uri',
+        'exact_method_range', 'inherited_method_absent', 'negative_query_empty',
+        'utf16_ranges_exact', 'resolved_path_exact', 'ordinary_read_exact',
+        'actual_frontend_navigation', 'full_selection_preserved', 'dirty_buffer_reused',
+        'undo_redo_preserved', 'retained_context_preserved', 'source_files_unchanged',
+        'root_handle_signaled', 'client_reaped', 'synthetic_root_removed',
+        'primary_failed', 'cleanup_failed', 'success', 'elapsed_saturated'), 'bool')
+        | {'type_result_count': ('integer_range', 0, 128),
+           'method_result_count': ('integer_range', 0, 128),
+           'negative_result_count': ('integer_range', 0, 128),
+           'failure_stage': ('none', 'setup', 'support', 'open', 'type_query', 'method_query',
+                             'negative_query', 'resolve', 'read', 'frontend', 'close'),
+           'elapsed_ms': ('integer_range', 0, 240000)},
     # Quick-only organize-imports receipt. In particular, neither source edits,
     # candidate names/URIs nor raw JDT responses are ever copied into evidence.
     'windows_java_organize_imports': dict.fromkeys((
@@ -731,6 +748,7 @@ def sanitize_transcript(data, limits, schema=TRANSCRIPT_FIELDS):
     errors, truncation = set(), set()
     report = {'records': [], 'omitted_non_json_lines': 0, 'omitted_other_json_records': 0}
     idle_seen = False
+    implementations_seen = False
     # Each private source has a separate whitelist; arbitrary payloads never
     # become public evidence even when they appear alongside a known record.
     for line in data.decode('utf-8-sig', errors='replace').splitlines():
@@ -770,6 +788,16 @@ def sanitize_transcript(data, limits, schema=TRANSCRIPT_FIELDS):
             idle_seen = True
             if duplicate_keys:
                 errors.add('duplicate_idle_receipt_field')
+                continue
+            for field in schema[kind]:
+                if field not in value:
+                    errors.add('missing_field_' + field)
+        if kind == 'windows_java_implementations':
+            if implementations_seen:
+                errors.add('duplicate_implementations_receipt')
+            implementations_seen = True
+            if duplicate_keys:
+                errors.add('duplicate_implementations_receipt_field')
                 continue
             for field in schema[kind]:
                 if field not in value:

@@ -40,6 +40,12 @@ fn fixture_requires_marked_synthetic_root_and_explicit_execution_trust() {
             args: vec![],
             timeout_secs: 1,
         },
+        Operation::LanguageJavaImplementations {
+            path: "NeverLaunched.java".into(),
+            version: 1,
+            line: 0,
+            character: 0,
+        },
         Operation::LanguageStop,
         Operation::RunCancel { task_id: 1 },
     ]
@@ -56,7 +62,7 @@ fn fixture_requires_marked_synthetic_root_and_explicit_execution_trust() {
         String::from_utf8_lossy(&output.stderr)
     );
     let mut responses = output.stdout.as_slice();
-    for id in 0..4 {
+    for id in 0..5 {
         let response: Response = read_frame(&mut responses).unwrap().unwrap();
         assert_eq!(response.id, id);
         assert_eq!(response.result.unwrap_err().code, "run_disabled");

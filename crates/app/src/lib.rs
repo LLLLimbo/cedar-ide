@@ -205,6 +205,11 @@ enum Job {
         navigation: u64,
         source: run_ui::BuildSource,
     },
+    JavaImplementationOpen {
+        path: String,
+        navigation: u64,
+        context: language_ui::JavaImplementationContext,
+    },
     JavaTypeOpen {
         path: String,
         navigation: u64,
@@ -610,6 +615,7 @@ impl CedarApp {
             Job::Open { path: pending, .. }
             | Job::BuildProblemOpen { path: pending, .. }
             | Job::JavaTypeOpen { path: pending, .. }
+            | Job::JavaImplementationOpen { path: pending, .. }
                 if pending == &path =>
             {
                 Some(*id)
@@ -713,6 +719,10 @@ impl CedarApp {
     }
 
     fn apply_event(&mut self, event: Event) {
+        self.apply_event_inner(event, true);
+    }
+
+    fn apply_event_inner(&mut self, event: Event, defer_implementation: bool) {
         if event.generation != self.generation {
             return;
         }
@@ -812,6 +822,19 @@ impl CedarApp {
             }
             return;
         }
+        // Poll runs before this frame's editor and Cancel input. Keep completed
+        // implementation replies pending until that input has been processed;
+        // only this new route changes timing, and transport loss remains immediate.
+        if defer_implementation
+            && event.connected
+            && self.pending.get(&event.id).is_some_and(|job| {
+                matches!(job, Job::JavaImplementationOpen { .. })
+                    || matches!(job, Job::Language(action) if action.is_java_implementation())
+            })
+        {
+            self.defer_java_implementation_reply(event);
+            return;
+        }
         let invalid_save_ack = self.pending.get(&event.id).is_some_and(|job| {
             matches!(job, Job::Save { .. } if match &event.result {
                 Ok(Payload::Written { .. }) => false,
@@ -825,6 +848,52 @@ impl CedarApp {
         let Some(job) = self.pending.remove(&event.id) else {
             return;
         };
+        let job = if let Job::JavaImplementationOpen {
+            path,
+            navigation,
+            context,
+        } = job
+        {
+            if !event.connected {
+                self.disconnected("The connection closed while opening an implementation. Your drafts are retained".into());
+                return;
+            }
+            if navigation != self.navigation_epoch
+                || !self.java_implementation_context_current(&context)
+            {
+                return;
+            }
+            if let Ok(Payload::File {
+                path: returned,
+                text,
+                ..
+            }) = &event.result
+            {
+                if returned == &path {
+                    if let Some(error) = self.java_implementation_read_problem(&path, text) {
+                        self.java_implementation_error(&context, &error);
+                        self.error = Some(error);
+                        return;
+                    }
+                }
+            }
+            self.java_implementation_read_finished();
+            Job::Open {
+                path,
+                line: None,
+                navigation,
+            }
+        } else {
+            job
+        };
+        if let Job::Language(action) = &job {
+            if !self.java_implementation_action_current(action) {
+                if !event.connected {
+                    self.disconnected("The connection closed during implementation navigation. Your drafts are retained".into());
+                }
+                return;
+            }
+        }
         let job = if let Job::JavaTypeOpen {
             path,
             navigation,
@@ -1171,6 +1240,11 @@ impl CedarApp {
             (Job::Run(action), _) => self.run_error(&action, true, "Unexpected command response"),
             (Job::Language(action), Payload::Language { value }) => {
                 self.apply_language_action(action, value)
+            }
+            (Job::Language(action), _) if action.is_java_implementation() => {
+                let error = "Unexpected implementation response; no locations were accepted";
+                self.language_error(&action, error);
+                self.error = Some(error.into());
             }
             (Job::Language(action), _)
                 if matches!(
@@ -2406,6 +2480,7 @@ impl eframe::App for CedarApp {
         self.finish_interrupted_save_check();
         self.finish_tab_close();
         self.finish_replace_frame(ctx);
+        self.finish_java_implementation_frame(ctx);
         self.language_tick(ctx);
         self.recovery_tick(ctx);
         self.finish_recovery_close_frame(ctx);

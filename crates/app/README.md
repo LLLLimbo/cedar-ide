@@ -80,6 +80,15 @@ No completion command is executed. The exact JDT LS callback `java.completion.on
 
 ### Problems and navigation
 
+**Go to Implementations** explicitly synchronizes open Java drafts and requests
+the current cursor's implementation locations from a running typed Java session.
+It requires the agent and server provider. Result selection uses ordinary
+root-confined file navigation and retains dirty buffers and Undo/Redo. These are
+unversioned JDT locations, not a call graph; type queries may return subtypes and
+method results identify declarations rather than every inheriting class.
+Hiding tools or leaving the result view dismisses this captured navigation
+snapshot. See [scope and limits](../../docs/JAVA_IMPLEMENTATIONS.md).
+
 Versioned diagnostics are marked current only when they match the synchronized draft. Older results are dimmed or ignored. Results without a version are explicitly labeled **unversioned**, including when they happen to correspond to the latest file. A missing batch version is never treated as proof of freshness. Empty batches clear the file's problems. Lost/oversized event batches produce an incomplete-results warning.
 
 Definitions support ordinary Location and LocationLink responses. Every target file URI is resolved by the workspace agent and checked against the remote workspace root before opening. Outside-root files, dependency archives, `jdt:` targets, and external URLs are unavailable; they are never opened in a browser. Existing dirty tabs remain intact. Hover text and protocol details are inert, copyable text.

@@ -30,6 +30,7 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
         // permission to execute it. Startup reports guarded session support.
         capabilities.push("java_diagnostics_refresh");
         capabilities.push("language_organize_java_imports");
+        capabilities.push("language_java_implementations");
     }
     if generic_language || java_language {
         capabilities.extend([
@@ -162,6 +163,12 @@ mod tests {
                 path: "a.java".into(),
                 version: 1,
             },
+            Operation::LanguageJavaImplementations {
+                path: "a.java".into(),
+                version: 1,
+                line: 0,
+                character: 0,
+            },
             Operation::LanguageReferences {
                 path: "a.rs".into(),
                 line: 0,
@@ -214,6 +221,7 @@ mod tests {
                 "language_start_java"
                 | "java_diagnostics_refresh"
                 | "language_organize_java_imports"
+                | "language_java_implementations"
                 | "language_start_java_begin"
                 | "language_start_java_poll"
                 | "language_start_java_cancel"
@@ -230,6 +238,7 @@ mod tests {
                 "language_maven_model",
                 "java_diagnostics_refresh",
                 "language_organize_java_imports",
+                "language_java_implementations",
                 "language_query",
                 "language_resolve_uri",
                 "language_format",
@@ -270,7 +279,7 @@ mod tests {
                 assert_eq!(
                     agent.capabilities.len(),
                     if backend_mode == BackendMode::IsolatedAgent {
-                        29
+                        30
                     } else {
                         4
                     }

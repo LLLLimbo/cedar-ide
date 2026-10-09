@@ -176,6 +176,7 @@ impl CedarApp {
         // A pointer click or an Enter/Space activation can close the panel.
         // Competing field input remains with the still-rendered tool body.
         let focused = response.has_focus();
+        let primary_clicked = response.clicked_by(egui::PointerButton::Primary);
         let (clean, pointer) = ctx.input(|input| {
             let events: Vec<_> = input
                 .raw
@@ -183,13 +184,29 @@ impl CedarApp {
                 .iter()
                 .filter(|event| actionable(event))
                 .collect();
-            let pointer = !events.is_empty()
-                && events.iter().all(|event| {
-                    matches!(event,
-                        egui::Event::PointerButton { button: egui::PointerButton::Primary, pos, .. }
-                            if response.rect.contains(*pos)
-                    )
-                });
+            // egui owns pointer capture. A panel can move between press and
+            // release, so the current rectangle cannot revalidate its recognized
+            // click. Accept only that one primary click, with no newer input.
+            let pointer = primary_clicked
+                && matches!(
+                    events.as_slice(),
+                    [egui::Event::PointerButton {
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        ..
+                    }] | [
+                        egui::Event::PointerButton {
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            ..
+                        },
+                        egui::Event::PointerButton {
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            ..
+                        }
+                    ]
+                );
             let keyboard = matches!(events.as_slice(), [egui::Event::Key {
                 key: egui::Key::Enter | egui::Key::Space, repeat: false, modifiers, ..
             }] if modifiers.is_none() && focused);

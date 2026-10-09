@@ -23,6 +23,7 @@ if (-not $IsWindows) { throw 'This acceptance script requires native Windows.' }
 if ($MavenOnly -and ($GcDiagnosticControl -or $LongObservationBaselines)) { throw 'Select only one isolated acceptance workload.' }
 . (Join-Path $PSScriptRoot 'maven_acceptance_predicate.ps1')
 . (Join-Path $PSScriptRoot 'java_workspace_type_acceptance_predicate.ps1')
+. (Join-Path $PSScriptRoot 'java_implementations_acceptance_predicate.ps1')
 . (Join-Path $PSScriptRoot 'java_idle_acceptance_predicate.ps1')
 if ([string]::IsNullOrWhiteSpace($ScratchRoot)) { throw 'Set an explicit test scratch root.' }
 if ([string]::IsNullOrWhiteSpace($Java)) {
@@ -549,6 +550,7 @@ finally {
                     if (-not $record.$field) { throw 'Forced-owner cleanup witness is incomplete.' }
                 }
                 Assert-ProductionReceipt -Receipts @($collected.agent_transcript.evidence.records) -RequireWorkspaceTypes
+                Assert-JavaImplementationsReceipt -Receipts $collected.agent_transcript.evidence.records
                 }
             }
         }

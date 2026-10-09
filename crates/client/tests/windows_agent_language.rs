@@ -135,6 +135,18 @@ fn open_document(agent: &mut RawAgent) {
         text: "class Main { /* 雪 */ }".into(),
     });
     hover(agent);
+    assert_eq!(
+        agent
+            .request(Operation::LanguageJavaImplementations {
+                path: "Main.java".into(),
+                version: 1,
+                line: 0,
+                character: 0,
+            })
+            .unwrap_err()
+            .code,
+        "language_implementations_unsupported"
+    );
 }
 
 fn start_both(

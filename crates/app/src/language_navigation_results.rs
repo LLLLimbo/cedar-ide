@@ -250,6 +250,78 @@ pub fn parse_references(value: &Value) -> Result<Vec<Location>, String> {
         .collect()
 }
 
+/// The typed Java operation normalizes null and a single Location at the agent.
+/// Independently reject malformed/extended responses from an older or untrusted
+/// peer; successful rows are inert until explicit selection and root resolution.
+pub fn parse_java_implementations(value: &Value) -> Result<Vec<Location>, String> {
+    fn exact<'a>(value: &'a Value, keys: &[&str]) -> Result<&'a Map<String, Value>, String> {
+        let map = object(value, "Implementation location")?;
+        if map.len() != keys.len() || keys.iter().any(|key| !map.contains_key(*key)) {
+            return Err(
+                "Implementation locations must be plain Location objects without extensions".into(),
+            );
+        }
+        Ok(map)
+    }
+    fn valid_uri(uri: &str) -> bool {
+        let Some((scheme, rest)) = uri.split_once(':') else {
+            return false;
+        };
+        if rest.is_empty()
+            || !scheme
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+            || !scheme
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"+.-".contains(&byte))
+            || uri.chars().any(|c| {
+                c.is_control()
+                    || c.is_whitespace()
+                    || matches!(c, '\\' | '"' | '<' | '>' | '^' | '`' | '{' | '|' | '}')
+            })
+        {
+            return false;
+        }
+        let mut decoded = Vec::with_capacity(uri.len());
+        let mut bytes = uri.bytes();
+        while let Some(byte) = bytes.next() {
+            let byte = if byte == b'%' {
+                let high = bytes.next().and_then(|byte| (byte as char).to_digit(16));
+                let low = bytes.next().and_then(|byte| (byte as char).to_digit(16));
+                match (high, low) {
+                    (Some(high), Some(low)) => ((high << 4) | low) as u8,
+                    _ => return false,
+                }
+            } else {
+                byte
+            };
+            decoded.push(byte);
+        }
+        std::str::from_utf8(&decoded).is_ok_and(|text| !text.chars().any(char::is_control))
+    }
+    let values = value
+        .as_array()
+        .ok_or("Implementation result must be a normalized Location array")?;
+    if values.len() > MAX_REFERENCES {
+        return Err("Implementation result exceeds the 1024-location limit".into());
+    }
+    let mut budget = TextBudget::default();
+    let mut locations = Vec::with_capacity(values.len());
+    for value in values {
+        let map = exact(value, &["uri", "range"])?;
+        let range = exact(&map["range"], &["start", "end"])?;
+        exact(&range["start"], &["line", "character"])?;
+        exact(&range["end"], &["line", "character"])?;
+        let location = location(value, &mut budget)?;
+        if !valid_uri(&location.uri) {
+            return Err("Implementation location must have an absolute URI without controls, spaces or malformed percent escapes".into());
+        }
+        locations.push(location);
+    }
+    Ok(locations)
+}
+
 fn contains(outer: Range, inner: Range) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }

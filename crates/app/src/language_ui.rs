@@ -3,10 +3,13 @@
 mod features;
 #[path = "java_diagnostics.rs"]
 mod java_diagnostics;
+#[path = "java_implementations.rs"]
+mod java_implementations;
 #[path = "java_maven.rs"]
 mod java_maven;
 #[path = "java_startup.rs"]
 mod java_startup;
+pub(crate) use features::FeatureRequest as JavaImplementationContext;
 #[path = "java_types.rs"]
 mod java_types;
 pub(crate) use java_types::TypeContext as JavaTypeContext;
@@ -80,6 +83,12 @@ pub(super) enum ActionKind {
     WorkspaceSymbols {
         context: JavaTypeContext,
     },
+    JavaImplementationResolve {
+        context: JavaImplementationContext,
+        sequence: u64,
+        navigation: u64,
+        location: Location,
+    },
     JavaTypeResolve {
         context: JavaTypeContext,
         sequence: u64,
@@ -98,6 +107,10 @@ pub(super) enum ActionKind {
     },
 }
 impl Action {
+    pub(crate) fn is_java_implementation(&self) -> bool {
+        matches!(&self.kind, ActionKind::JavaImplementationResolve { .. })
+            || matches!(&self.kind, ActionKind::Feature { request } if matches!(request.kind, features::FeatureKind::JavaImplementations))
+    }
     pub fn is_java_startup(&self) -> bool {
         matches!(
             self.kind,
@@ -126,6 +139,7 @@ enum View {
     Activity,
     Maven,
     JavaTypes,
+    JavaImplementations,
 }
 struct CompletionMenu {
     context: QueryContext,
@@ -148,6 +162,8 @@ pub(super) struct LanguagePanel {
     pub sync: SyncTracker,
     features: features::FeatureState,
     types: java_types::TypeSearch,
+    implementations: java_implementations::ImplementationSearch,
+    implementation_replies: Vec<crate::worker::Event>,
     next_version: i32,
     closed_uris: HashSet<String>,
     mode: ServerMode,
@@ -183,7 +199,7 @@ pub(super) struct LanguagePanel {
 impl Default for LanguagePanel {
     fn default() -> Self {
         Self {
-            running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), types: java_types::TypeSearch::default(), next_version: 1, closed_uris: HashSet::new(),
+            running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), types: java_types::TypeSearch::default(), implementations: java_implementations::ImplementationSearch::default(), implementation_replies: Vec::new(), next_version: 1, closed_uris: HashSet::new(),
             mode: ServerMode::Generic, java: JavaConfiguration::default(), maven: java_maven::MavenConfiguration::default(), maven_model: java_maven::ModelState::default(), restart_blocked: false, startup: None,
             program: String::new(), args: "[]".into(), language_id: "rust".into(), capabilities: Value::Null,
             diagnostics: Diagnostics::default(), diagnostics_exited: false, java_diagnostics_refresh_supported: false, java_organize_imports_supported: false,
@@ -203,6 +219,7 @@ impl LanguagePanel {
     pub fn reset(&mut self) {
         self.features.reset();
         self.types.reset();
+        self.implementations.reset();
         self.session = self.session.wrapping_add(1);
         self.running = false;
         self.restart_blocked = false;
@@ -235,6 +252,7 @@ impl LanguagePanel {
     }
     pub(super) fn cancel_navigation(&mut self) {
         self.features.cancel_pending();
+        self.implementations.reset();
         self.cancel_deferred_navigation();
     }
     fn cancel_deferred_navigation(&mut self) {
@@ -411,6 +429,7 @@ impl CedarApp {
         self.language.maven_model.cancel_pending();
         self.language.features.reset();
         self.language.types.reset();
+        self.language.implementations.reset();
         self.language.intent = None;
         self.language.automatic = false;
         self.language_request(Operation::LanguageStop, ActionKind::Stop);
@@ -543,6 +562,14 @@ impl CedarApp {
         }
         match action.kind {
             ActionKind::WorkspaceSymbols { ref context } => self.java_type_error(context, error),
+            ActionKind::Feature { ref request }
+                if matches!(request.kind, features::FeatureKind::JavaImplementations) =>
+            {
+                self.java_implementation_error(request, error)
+            }
+            ActionKind::JavaImplementationResolve { ref context, .. } => {
+                self.java_implementation_error(context, error)
+            }
             ActionKind::Sync {
                 document,
                 edit_version,
@@ -636,6 +663,7 @@ impl CedarApp {
         self.invalidate_diagnostics_refresh();
         self.invalidate_language_features();
         self.invalidate_java_types();
+        self.invalidate_java_implementations();
         if !self.ready() || !self.language.running || self.close_after_language_stop {
             return;
         }
@@ -732,7 +760,10 @@ impl CedarApp {
     }
 
     pub(super) fn apply_language_action(&mut self, action: Action, value: Value) {
-        if action.session != self.language.session || !self.java_type_action_current(&action) {
+        if action.session != self.language.session
+            || !self.java_type_action_current(&action)
+            || !self.java_implementation_action_current(&action)
+        {
             return;
         }
         if action.is_java_startup() {
@@ -867,6 +898,16 @@ impl CedarApp {
             }
             ActionKind::Feature { request } => self.apply_language_feature(request, value),
             ActionKind::WorkspaceSymbols { context } => self.apply_java_types(context, value),
+            ActionKind::JavaImplementationResolve {
+                context,
+                sequence,
+                navigation,
+                location,
+            } => {
+                self.apply_java_implementation_resolve(
+                    context, sequence, navigation, location, value,
+                );
+            }
             ActionKind::JavaTypeResolve {
                 context,
                 sequence,
@@ -1000,6 +1041,7 @@ impl CedarApp {
                     self.language.diagnostic_refresh = None;
                     self.language.features.reset();
                     self.language.types.reset();
+                    self.language.implementations.reset();
                     self.language.automatic = false;
                     self.language.intent = None;
                     self.language.completions = None;
@@ -1398,6 +1440,7 @@ impl CedarApp {
             View::Outline => self.outline_view(ui),
             View::Maven => self.maven_model_view(ui),
             View::JavaTypes => self.java_types_view(ui),
+            View::JavaImplementations => self.java_implementations_view(ui),
             View::Definitions => {
                 let mut selected = None;
                 egui::ScrollArea::vertical()
@@ -1612,6 +1655,16 @@ impl CedarApp {
     pub(super) fn language_shortcuts(&mut self, ctx: &egui::Context) {
         // Consume modal Escape before the app-wide Escape handler.
         if self.format_preview_shortcut(ctx) {
+            return;
+        }
+        if self.tools_open
+            && self.tool == crate::Tool::Language
+            && self.language.view == View::JavaImplementations
+            && !self.foreign_modal_owns_input(ctx)
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.cancel_java_implementations();
+            self.language.view = View::Problems;
             return;
         }
         if self.java_type_shortcuts(ctx) {

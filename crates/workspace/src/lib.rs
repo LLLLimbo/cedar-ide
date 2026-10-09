@@ -230,6 +230,7 @@ impl Workspace {
             | Operation::LanguageOrganizeJavaImports { .. }
             | Operation::LanguageRefreshJavaDiagnostics { .. }
             | Operation::LanguageReferences { .. }
+            | Operation::LanguageJavaImplementations { .. }
             | Operation::LanguageDocumentSymbols { .. }
             | Operation::LanguageWorkspaceSymbols { .. }
             | Operation::LanguageResolveUri { .. }

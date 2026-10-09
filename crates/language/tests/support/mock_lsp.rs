@@ -117,11 +117,12 @@ fn main() {
                 let mut capabilities = if mode == "no-capabilities" {
                     json!({})
                 } else {
-                    json!({"textDocumentSync":{"openClose":true,"change":if mode == "incremental" {2} else {1}}, "completionProvider":{"resolveProvider":true}, "definitionProvider":true,"hoverProvider":true,"documentFormattingProvider":true,"referencesProvider":true,"documentSymbolProvider":true,"workspaceSymbolProvider":true})
+                    json!({"textDocumentSync":{"openClose":true,"change":if mode == "incremental" {2} else {1}}, "completionProvider":{"resolveProvider":true}, "definitionProvider":true,"hoverProvider":true,"documentFormattingProvider":true,"referencesProvider":true,"implementationProvider":true,"documentSymbolProvider":true,"workspaceSymbolProvider":true})
                 };
                 for capability in [
                     "documentFormattingProvider",
                     "referencesProvider",
+                    "implementationProvider",
                     "documentSymbolProvider",
                     "workspaceSymbolProvider",
                 ] {
@@ -221,6 +222,28 @@ fn main() {
                     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
                 } else {
                     json!([{"name":"Hello","kind":5,"containerName":"demo","location":{"uri":"file:///mock/Hello.java","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":5}}}}])
+                }
+            }
+            "textDocument/implementation" => {
+                assert!(initialized && !shutdown);
+                assert_eq!(message["params"].as_object().unwrap().len(), 2);
+                assert_eq!(
+                    message["params"]["textDocument"].as_object().unwrap().len(),
+                    1
+                );
+                if mode == "implementation-error" {
+                    send(
+                        &mut output,
+                        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":"mock implementation error"}}),
+                    );
+                    continue;
+                }
+                if mode == "implementation-custom" {
+                    let path =
+                        std::path::Path::new(args.get(2).unwrap()).with_extension("result.json");
+                    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+                } else {
+                    json!([{"uri":message["params"]["textDocument"]["uri"],"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}])
                 }
             }
             "textDocument/formatting"

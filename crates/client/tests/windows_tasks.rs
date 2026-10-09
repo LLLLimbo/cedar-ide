@@ -47,6 +47,7 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
             "language_document_symbols",
             "language_events",
             "language_format",
+            "language_java_implementations",
             "language_maven_model",
             "language_open",
             "language_organize_java_imports",

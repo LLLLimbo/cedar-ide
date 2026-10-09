@@ -76,7 +76,7 @@ try {
     $receipt = $probeText | ConvertFrom-Json
     $checks = @('metadata_verified', 'trust_off', 'list_verified', 'read_verified', 'write_verified',
         'readback_verified', 'search_verified', 'stale_write_rejected', 'execution_rejected',
-        'java_rejected', 'maven_rejected', 'workspace_symbols_rejected', 'client_reaped')
+        'java_rejected', 'maven_rejected', 'workspace_symbols_rejected', 'java_implementations_rejected', 'client_reaped')
     $keys = @('kind', 'schema_version', 'status') + $checks
     if (@(Compare-Object ($keys | Sort-Object) (@($receipt.PSObject.Properties.Name) | Sort-Object)).Count -ne 0 -or
         $receipt.kind -cne 'cedar_windows_bundle_probe' -or $receipt.schema_version -ne 1 -or

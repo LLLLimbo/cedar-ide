@@ -1260,3 +1260,183 @@ fn workspace_symbols_report_server_errors_without_fallback_requests() {
         ]
     );
 }
+
+#[test]
+fn implementations_require_live_open_document_and_static_provider_before_rpc() {
+    let uri = "file:///mock/Hello%20雪.java";
+    for mode in [
+        "normal",
+        "navigation-object-provider",
+        "navigation-no-provider",
+        "navigation-false-provider",
+        "navigation-invalid-provider",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let audit_path = directory.path().join("implementations.jsonl");
+        let client = LspClient::spawn(config(mode, Some(&audit_path)), options()).unwrap();
+        assert!(matches!(
+            client.implementations(uri, Position::default()),
+            Err(Error::InvalidState(_))
+        ));
+        client.initialize(None, Value::Null).unwrap();
+        let supported = matches!(mode, "normal" | "navigation-object-provider");
+        if supported {
+            assert!(matches!(
+                client.implementations(uri, Position::default()),
+                Err(Error::InvalidState(_))
+            ));
+        }
+        client
+            .did_open(uri, "java", 7, "// 🦀\r\ninterface Hello {}")
+            .unwrap();
+        if supported {
+            for position in [
+                Position {
+                    line: u32::MAX,
+                    character: 0,
+                },
+                Position {
+                    line: 0,
+                    character: u32::MAX,
+                },
+            ] {
+                assert!(matches!(
+                    client.implementations(uri, position),
+                    Err(Error::InvalidState(_))
+                ));
+            }
+            assert_eq!(
+                client
+                    .implementations(
+                        uri,
+                        Position {
+                            line: 1,
+                            character: 10
+                        }
+                    )
+                    .unwrap()[0]["uri"],
+                uri
+            );
+            client.did_close(uri).unwrap();
+            assert!(matches!(
+                client.implementations(uri, Position::default()),
+                Err(Error::InvalidState(_))
+            ));
+        } else {
+            assert!(
+                matches!(client.implementations(uri, Position::default()), Err(Error::Unsupported(method)) if method == "textDocument/implementation")
+            );
+        }
+        client.shutdown().unwrap();
+        assert!(matches!(
+            client.implementations(uri, Position::default()),
+            Err(Error::InvalidState(_))
+        ));
+        let audit: Vec<Value> = std::fs::read_to_string(audit_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            audit[0]["params"]["capabilities"]["textDocument"]["implementation"],
+            json!({"dynamicRegistration":false,"linkSupport":false})
+        );
+        let requests: Vec<_> = audit
+            .iter()
+            .filter(|message| message["method"] == "textDocument/implementation")
+            .collect();
+        assert_eq!(requests.len(), usize::from(supported));
+        if supported {
+            assert_eq!(
+                requests[0]["params"],
+                json!({"textDocument":{"uri":uri},"position":{"line":1,"character":10}})
+            );
+        }
+    }
+}
+
+#[test]
+fn implementations_validate_results_and_report_errors_without_retry_or_commands() {
+    let uri = "file:///mock/Hello.java";
+    let directory = tempfile::tempdir().unwrap();
+    let audit_path = directory.path().join("implementations.jsonl");
+    let result_path = audit_path.with_extension("result.json");
+    let client = ready("implementation-custom", Some(&audit_path));
+    client.did_open(uri, "java", 1, "class Hello {}").unwrap();
+    let location = json!({"uri":uri,"range":{"start":{"line":0,"character":6},"end":{"line":0,"character":11}}});
+    for (result, expected) in [
+        (Value::Null, json!([])),
+        (location.clone(), json!([location.clone()])),
+        (json!([location.clone()]), json!([location.clone()])),
+    ] {
+        std::fs::write(&result_path, result.to_string()).unwrap();
+        assert_eq!(
+            client.implementations(uri, Position::default()).unwrap(),
+            expected
+        );
+    }
+    for result in [
+        json!([location.clone(), {"uri":uri}]),
+        json!({"targetUri":uri,"targetRange":location["range"],"targetSelectionRange":location["range"]}),
+        json!(vec![location; 1025]),
+    ] {
+        std::fs::write(&result_path, result.to_string()).unwrap();
+        assert!(matches!(
+            client.implementations(uri, Position::default()),
+            Err(Error::Protocol(_))
+        ));
+    }
+    client.shutdown().unwrap();
+    let audit: Vec<Value> = std::fs::read_to_string(&audit_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        audit
+            .iter()
+            .filter(|message| message["method"] == "textDocument/implementation")
+            .count(),
+        6
+    );
+    for message in audit {
+        assert!(matches!(
+            message["method"].as_str().unwrap(),
+            "initialize"
+                | "initialized"
+                | "textDocument/didOpen"
+                | "textDocument/implementation"
+                | "shutdown"
+                | "exit"
+        ));
+    }
+    let error_audit_path = directory.path().join("error.jsonl");
+    let client = ready("implementation-error", Some(&error_audit_path));
+    client.did_open(uri, "java", 1, "class Hello {}").unwrap();
+    assert!(matches!(
+        client.implementations(uri, Position::default()),
+        Err(Error::Remote { code: -32602, .. })
+    ));
+    client.shutdown().unwrap();
+    let methods: Vec<String> = std::fs::read_to_string(error_audit_path)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<Value>(line).unwrap()["method"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        methods,
+        [
+            "initialize",
+            "initialized",
+            "textDocument/didOpen",
+            "textDocument/implementation",
+            "shutdown",
+            "exit"
+        ]
+    );
+}

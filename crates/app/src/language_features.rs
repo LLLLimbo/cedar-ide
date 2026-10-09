@@ -36,6 +36,7 @@ impl DocumentStamp {
 pub(super) enum FeatureKind {
     Format { tab_size: u32, insert_spaces: bool },
     OrganizeJavaImports,
+    JavaImplementations,
     References { include_declaration: bool },
     Outline,
 }
@@ -43,12 +44,13 @@ pub(super) enum FeatureKind {
 pub(crate) struct FeatureRequest {
     generation: u64,
     session: u64,
-    sequence: u64,
+    pub(super) sequence: u64,
+    pub(super) navigation: u64,
     source: DocumentStamp,
     participants: Vec<DocumentStamp>,
     cursor: Position,
     cursor_chars: usize,
-    kind: FeatureKind,
+    pub(super) kind: FeatureKind,
 }
 struct EditPreview {
     request: FeatureRequest,
@@ -91,6 +93,9 @@ impl Default for FeatureState {
     }
 }
 impl FeatureState {
+    pub(super) fn sequence(&self) -> u64 {
+        self.sequence
+    }
     pub(super) fn has_request_or_preview(&self) -> bool {
         self.intent.is_some() || self.preview.is_some()
     }
@@ -174,25 +179,36 @@ impl CedarApp {
             && request.source.matches(&self.documents)
             && (!matches!(request.kind, FeatureKind::OrganizeJavaImports)
                 || self.java_imports_problem().is_none())
+            && (!matches!(request.kind, FeatureKind::JavaImplementations)
+                || self.java_implementations_problem().is_none())
     }
-    fn feature_request_current(&self, request: &FeatureRequest) -> bool {
+    pub(super) fn feature_request_current(&self, request: &FeatureRequest) -> bool {
         self.feature_document_current(request)
             && self.language.features.sequence == request.sequence
+            && (!matches!(request.kind, FeatureKind::JavaImplementations)
+                || (request.navigation == self.navigation_epoch
+                    && self.tools_open
+                    && self.tool == crate::Tool::Language
+                    && self.language.view == View::JavaImplementations))
             && request
                 .participants
                 .iter()
                 .all(|stamp| stamp.matches(&self.documents))
-            && (!matches!(request.kind, FeatureKind::References { .. })
-                || self.active().is_some_and(|doc| {
-                    utf16_position(&doc.text, doc.cursor).ok() == Some(request.cursor)
-                }))
-            && (!matches!(request.kind, FeatureKind::References { .. })
-                || self
-                    .documents
-                    .iter()
-                    .filter(|doc| self.language.matches(&doc.path))
-                    .count()
-                    == request.participants.len())
+            && (!matches!(
+                request.kind,
+                FeatureKind::References { .. } | FeatureKind::JavaImplementations
+            ) || self.active().is_some_and(|doc| {
+                utf16_position(&doc.text, doc.cursor).ok() == Some(request.cursor)
+            }))
+            && (!matches!(
+                request.kind,
+                FeatureKind::References { .. } | FeatureKind::JavaImplementations
+            ) || self
+                .documents
+                .iter()
+                .filter(|doc| self.language.matches(&doc.path))
+                .count()
+                == request.participants.len())
             && request.source.lsp_version.is_none_or(|version| {
                 self.language
                     .sync
@@ -218,6 +234,7 @@ impl CedarApp {
         let remote_capability = match kind {
             FeatureKind::Format { .. } => "language_format",
             FeatureKind::OrganizeJavaImports => "language_organize_java_imports",
+            FeatureKind::JavaImplementations => "language_java_implementations",
             FeatureKind::References { .. } => "language_references",
             FeatureKind::Outline => "language_document_symbols",
         };
@@ -233,6 +250,13 @@ impl CedarApp {
                     return;
                 }
                 None
+            }
+            FeatureKind::JavaImplementations => {
+                if let Some(problem) = self.java_implementations_problem() {
+                    self.error = Some(problem);
+                    return;
+                }
+                Some("implementationProvider")
             }
             FeatureKind::References { .. } => Some("referencesProvider"),
             FeatureKind::Outline => Some("documentSymbolProvider"),
@@ -264,7 +288,10 @@ impl CedarApp {
             }
         };
         let source = DocumentStamp::capture(doc);
-        let participants: Vec<_> = if matches!(kind, FeatureKind::References { .. }) {
+        let participants: Vec<_> = if matches!(
+            kind,
+            FeatureKind::References { .. } | FeatureKind::JavaImplementations
+        ) {
             self.documents
                 .iter()
                 .filter(|doc| self.language.matches(&doc.path))
@@ -293,6 +320,7 @@ impl CedarApp {
             generation: self.generation,
             session: self.language.session,
             sequence: self.language.features.sequence,
+            navigation: self.navigation_epoch,
             source,
             participants,
             cursor,
@@ -311,9 +339,19 @@ impl CedarApp {
         self.language.view = match kind {
             FeatureKind::Format { .. } => View::Format,
             FeatureKind::OrganizeJavaImports => View::Imports,
+            FeatureKind::JavaImplementations => View::JavaImplementations,
             FeatureKind::References { .. } => View::References,
             FeatureKind::Outline => View::Outline,
         };
+        if matches!(kind, FeatureKind::JavaImplementations) {
+            self.language.implementations.begin(
+                self.language
+                    .features
+                    .intent
+                    .clone()
+                    .expect("captured request"),
+            );
+        }
         self.notice =
             "Synchronizing the exact draft snapshot before requesting language results".into();
     }
@@ -369,7 +407,10 @@ impl CedarApp {
         // Capture the current cursor only after the exact document sync. Later cursor-only
         // movement is allowed; Apply maps that latest cursor through the same checked edits.
         if let Some(doc) = self.active() {
-            if !matches!(request.kind, FeatureKind::References { .. }) {
+            if !matches!(
+                request.kind,
+                FeatureKind::References { .. } | FeatureKind::JavaImplementations
+            ) {
                 request.cursor = utf16_position(&doc.text, doc.cursor).ok()?;
                 request.cursor_chars = completion::position_to_offsets(&doc.text, request.cursor)
                     .ok()?
@@ -390,6 +431,12 @@ impl CedarApp {
                 path: request.source.path.clone(),
                 version: request.source.lsp_version?,
             },
+            FeatureKind::JavaImplementations => Operation::LanguageJavaImplementations {
+                path: request.source.path.clone(),
+                version: request.source.lsp_version?,
+                line: request.cursor.line,
+                character: request.cursor.character,
+            },
             FeatureKind::References {
                 include_declaration,
             } => Operation::LanguageReferences {
@@ -403,6 +450,9 @@ impl CedarApp {
             },
         };
         self.language.features.intent = None;
+        if matches!(request.kind, FeatureKind::JavaImplementations) {
+            self.language.implementations.begin(request.clone());
+        }
         Some(FeatureStep::Dispatch(Box::new(request), op))
     }
     pub(super) fn language_feature_tick(&mut self) -> bool {
@@ -493,6 +543,7 @@ impl CedarApp {
                 }
                 Err(error) => self.error = Some(error),
             },
+            FeatureKind::JavaImplementations => self.apply_java_implementations(request, value),
             FeatureKind::Outline => {
                 match language_navigation_results::parse_outline(&value, &request.source.text) {
                     Ok(items) => {
@@ -569,6 +620,9 @@ impl CedarApp {
         self.language.features.outline = None;
     }
     pub(super) fn language_feature_controls(&mut self, ui: &mut egui::Ui) {
+        if self.language.mode == ServerMode::Java {
+            ui.horizontal_wrapped(|ui| self.java_implementations_control(ui));
+        }
         if !self.language.running {
             return;
         }
