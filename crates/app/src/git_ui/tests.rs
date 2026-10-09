@@ -793,3 +793,22 @@ fn populated_git_panel_keeps_patch_read_only_across_layouts() {
     assert_eq!(format!("{:?}", app.documents[0]), before);
     assert!(rx.try_recv().is_err());
 }
+
+#[test]
+fn explicit_disconnect_refuses_pending_git_read_without_dispatch() {
+    let (mut app, commands) = connected();
+    app.pending.insert(
+        91,
+        Job::GitRead(Action {
+            generation: app.generation,
+            epoch: 1,
+            program: "/synthetic/git".into(),
+            kind: ReadKind::Changes,
+        }),
+    );
+    app.disconnect_idle();
+    assert!(app.state == ConnectionState::Ready);
+    assert!(app.worker.is_some());
+    assert!(app.pending.contains_key(&91));
+    assert!(commands.try_recv().is_err());
+}

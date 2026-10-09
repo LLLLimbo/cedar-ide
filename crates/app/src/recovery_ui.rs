@@ -173,6 +173,10 @@ impl CedarApp {
         Ok(())
     }
     fn begin_restore(&mut self, ctx: &egui::Context) {
+        if self.state == ConnectionState::Disconnecting {
+            self.recovery.error = Some(crate::disconnect::WAITING.into());
+            return;
+        }
         let Some(draft) = &self.recovery.pending_restore else {
             return;
         };
@@ -257,7 +261,7 @@ impl CedarApp {
                 ui.label(project(&draft.workspace));
                 ui.label("This explicitly connects to the displayed workspace if needed, with trust OFF. The agent root must match. The draft will stay unsaved with its original base revision; external changes produce a normal save conflict.");
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(self.state != ConnectionState::Connecting && !self.mutation_pending(), egui::Button::new("Connect with trust off and restore")).clicked() { self.begin_restore(ctx); }
+                    if ui.add_enabled(!matches!(self.state, ConnectionState::Connecting | ConnectionState::Disconnecting) && !self.mutation_pending(), egui::Button::new("Connect with trust off and restore")).clicked() { self.begin_restore(ctx); }
                     if ui.button("Cancel restore").clicked() {
                         if self.recovery.restoring_generation == Some(self.generation) {
                             self.worker = None; self.generation += 1; self.connecting_form = None;
@@ -294,6 +298,37 @@ impl CedarApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_disconnect_wait_blocks_restore_before_taking_the_copy() {
+        let mut app = CedarApp::empty();
+        app.state = ConnectionState::Disconnecting;
+        app.generation = 7;
+        let draft = Draft {
+            workspace: WorkspaceIdentity::Local {
+                root: "/synthetic/project".into(),
+            },
+            path: "draft.txt".into(),
+            text: "retained draft".into(),
+            base_text: "saved".into(),
+            base_revision: Some("revision".into()),
+            modified_ms: 1,
+        };
+        app.recovery.pending_restore = Some(draft.clone());
+        app.begin_restore(&egui::Context::default());
+        assert!(app.state == ConnectionState::Disconnecting);
+        assert_eq!(app.generation, 7);
+        assert!(app.worker.is_none());
+        assert_eq!(
+            app.recovery.pending_restore.as_ref().unwrap().text,
+            draft.text
+        );
+        assert!(app.recovery.restoring_generation.is_none());
+        assert_eq!(
+            app.recovery.error.as_deref(),
+            Some(crate::disconnect::WAITING)
+        );
+    }
+
     #[test]
     fn metadata_cannot_inherit_execution_trust() {
         for workspace in [

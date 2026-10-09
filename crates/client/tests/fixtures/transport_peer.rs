@@ -128,7 +128,7 @@ enum RelayInput {
     Failed,
 }
 
-fn normal_agent_idle_relay(directory: &Path) -> io::Result<()> {
+fn normal_agent_relay(directory: &Path, disconnect_on_owner_eof: bool) -> io::Result<()> {
     let mut configured = Vec::new();
     fs::File::open(directory.join("relay-agent-path"))?
         .take(4097)
@@ -215,6 +215,7 @@ fn normal_agent_idle_relay(directory: &Path) -> io::Result<()> {
     let mut forwarded = 0usize;
     let mut requests = 0usize;
     let mut controlled_close = false;
+    let mut owner_closed = false;
     let mut exit_success = None;
     let mut output_drained = false;
     let deadline = Instant::now() + RELAY_WATCHDOG;
@@ -222,7 +223,10 @@ fn normal_agent_idle_relay(directory: &Path) -> io::Result<()> {
         if Instant::now() >= deadline {
             return Err(fixture_error("normal-agent relay watchdog expired"));
         }
-        if !controlled_close && directory.join("relay-disconnect").exists() {
+        if !disconnect_on_owner_eof
+            && !controlled_close
+            && directory.join("relay-disconnect").exists()
+        {
             let mut control = Vec::new();
             fs::File::open(directory.join("relay-disconnect"))?
                 .take(32)
@@ -277,6 +281,10 @@ fn normal_agent_idle_relay(directory: &Path) -> io::Result<()> {
             );
             return Ok(());
         }
+        if owner_closed {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+        }
         match input_rx.recv_timeout(Duration::from_millis(5)) {
             Ok(RelayInput::Frame(line)) => {
                 forwarded += line.len();
@@ -296,6 +304,15 @@ fn normal_agent_idle_relay(directory: &Path) -> io::Result<()> {
                 input.flush()?;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(RelayInput::Closed) if disconnect_on_owner_eof => {
+                // This separately allowlisted mode exercises the frontend's
+                // explicit local close. Keep the old idle-loss relay strict:
+                // its owner EOF is still an error, never a passing receipt.
+                agent_input.take();
+                controlled_close = true;
+                owner_closed = true;
+                marker(directory, "relay-owner-eof", b"true\n");
+            }
             Ok(RelayInput::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(fixture_error(
                     "relay owner closed before controlled completion",
@@ -334,15 +351,20 @@ fn main() {
                 | "idle_bad_frame"
                 | "idle_unsolicited"
                 | "normal_agent_idle_relay"
+                | "normal_agent_disconnect_relay"
+                | "disconnect_close_timeout"
         ) {
             eprintln!("unsupported synthetic transport mode");
             std::process::exit(2);
         }
     }
     fs::write(dir.join("started"), std::process::id().to_string()).unwrap();
-    if mode == "normal_agent_idle_relay" {
-        if let Err(error) = normal_agent_idle_relay(&dir) {
-            eprintln!("normal-agent idle relay: {error}");
+    if matches!(
+        mode.as_str(),
+        "normal_agent_idle_relay" | "normal_agent_disconnect_relay"
+    ) {
+        if let Err(error) = normal_agent_relay(&dir, mode == "normal_agent_disconnect_relay") {
+            eprintln!("normal-agent relay: {error}");
             std::process::exit(2);
         }
         return;
@@ -356,14 +378,38 @@ fn main() {
         }
         return;
     }
+    if mode == "disconnect_close_timeout" {
+        let watchdog_directory = dir.clone();
+        thread::spawn(move || {
+            thread::sleep(RELAY_WATCHDOG);
+            marker(
+                &watchdog_directory,
+                "safety-expired",
+                b"close timeout fixture watchdog\n",
+            );
+            std::process::exit(91);
+        });
+    }
     let mut input = io::stdin().lock();
     let mut line = String::new();
     let mut count = 0;
     loop {
         line.clear();
-        if input.read_line(&mut line).unwrap_or(0) == 0 {
+        let read = if mode == "disconnect_close_timeout" {
+            (&mut input)
+                .take((RELAY_MAX_FRAME + 1) as u64)
+                .read_line(&mut line)
+        } else {
+            input.read_line(&mut line)
+        };
+        if read.unwrap_or(0) == 0 {
             fs::write(dir.join("eof"), b"orderly input close").unwrap();
             return;
+        }
+        if mode == "disconnect_close_timeout"
+            && (line.len() > RELAY_MAX_FRAME || !line.ends_with('\n'))
+        {
+            std::process::exit(2);
         }
         OpenOptions::new()
             .append(true)
@@ -373,6 +419,10 @@ fn main() {
             .write_all(line.as_bytes())
             .unwrap();
         count += 1;
+        if mode == "disconnect_close_timeout" && count == 1 && !line.contains("\"type\":\"hello\"")
+        {
+            std::process::exit(2);
+        }
         let id: u64 = line
             .split("\"id\":")
             .nth(1)
@@ -472,6 +522,19 @@ fn main() {
             continue;
         }
         match mode.as_str() {
+            "disconnect_close_timeout" => {
+                // Only Hello and the ordinary initial List are admitted. After
+                // replying, deliberately retain stdin without reading EOF.
+                // This bounded synthetic stall leaves the Client's unchanged
+                // two-second owned-child reaper responsible for termination.
+                if count != 2 || !line.contains("\"type\":\"list\"") {
+                    std::process::exit(2);
+                }
+                capability_reply(id, &line, &dir);
+                marker(&dir, "close-timeout-ready", b"true\n");
+                thread::sleep(Duration::from_secs(10));
+                return;
+            }
             "stalled_read" if line.contains("\"type\":\"read\"") => {
                 marker(&dir, &format!("ready-{id}"), line.as_bytes());
                 drain_until_close(&mut input, &dir);

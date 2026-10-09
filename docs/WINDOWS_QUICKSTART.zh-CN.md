@@ -144,6 +144,15 @@ Stop 会区分自然退出与超过宽限后的强制清理；**forced / grace_e
 普通 Java 模式仍关闭导入；完整 Maven/Gradle、JDK class-file 查看、同步 Run、通用 Windows
 LSP 和完整调试界面仍未提供。异步命令使用明确的原生 `.exe` 绝对路径。
 
+## 主动断开空闲连接
+
+在 **Open workspace** 中选择 **Disconnect (keep drafts)**，可释放空闲连接并继续编辑草稿。
+先显式停止语言服务、取消运行中的命令并等待已验证终态；保存或工具请求未完成、
+命令结果未知或语言清理未验证时不会断开。已提交的只读请求可取消，之后的回复不能更改草稿。
+**Disconnecting** 等待现有后台线程的本地清理回执；**Cleanup unverified** 不表示成功清理。
+此后可显式 Reconnect，旧清理未验证警告仍保留；不会自动重放写入或命令。
+完整边界见 [EXPLICIT_DISCONNECT.md](EXPLICIT_DISCONNECT.md)。
+
 ## 可选 Maven 叶工程
 
 在专用 Java 模式中显式选择根 `pom.xml` 导入，并配置已有的本地依赖缓存。

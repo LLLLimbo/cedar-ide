@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第三十三阶段语言服务退出后的 Maven 模型状态保护（**0.33.1**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第三十四阶段显式空闲连接断开（**0.34.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -23,6 +23,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - **异步命令任务**：显式 executable + 字面量参数行、实时有界输出、状态与取消；命令运行时仍能打开、编辑和保存文件
 - **Windows Maven 叶工程**：显式选择本地依赖缓存，通过专用 Java 模式导入根 POM，查看源码/编译器/类路径与未解析依赖；不自动构建或下载依赖，离线解析不等于网络隔离，见[子集与使用边界](docs/MAVEN_PROJECTS.md)
 - **显式草稿合并**：与磁盘比较后，可预览并合并严格分离的文本改动；二次读取和最终帧检查后只更新脏稿，一次撤销，保存仍需另行操作；歧义、相邻或重叠改动拒绝，见[范围与限制](docs/DRAFT_MERGE.md)
+- **显式空闲断开**：停止活动工具后，从 Open workspace 选择 Disconnect，保留草稿、选区、撤销和恢复身份；等待本地清理回执，未确认结果单独显示，重连不自动重放，见[范围与限制](docs/EXPLICIT_DISCONNECT.md)
 - **空闲断开感知**：已有 stdio 管道报告 EOF/错误后，无需再次操作即可显示断开；保留脏稿与撤销，重连仍需显式操作，不增加心跳，也不检测静默网络停滞，见[范围与限制](docs/IDLE_DISCONNECT.md)
 - **查找 Java 类型**：在已启动且受信任的 Java 会话中显式搜索服务端类型索引，使用工作区边界内的普通读取跳转，保留脏稿和撤销；结果无版本且可能滞后，见[范围与限制](docs/JAVA_TYPE_SEARCH.md)
 - **测试结果**：显式读取一个工作区内的 Surefire/JUnit 风格 XML 报告，按状态筛选、查看历史耗时和失败详情；信任关闭可用，不运行测试或扫描目录，见[支持范围](docs/TEST_RESULTS.md)

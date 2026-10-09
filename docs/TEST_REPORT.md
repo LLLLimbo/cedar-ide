@@ -1,83 +1,66 @@
-# Verification report · Maven model after server exit / 0.33.1
+# Verification report · Explicit idle Disconnect / 0.34.0
 
-The previous [0.32 checkpoint](TEST_REPORT_PHASE32_SAVE_ACK.md) is fully verified.
-This bounded frontend change retires Maven model evidence after an observed
-language-server closure. It does not change protocol capabilities or launch policy.
+The previous [0.33.1 checkpoint](TEST_REPORT_PHASE33_MAVEN_EXIT.md) is fully verified.
+This change adds deliberate idle connection release while retaining open drafts.
+It introduces no protocol capability or remote cleanup claim.
 
 ## Required contract
 
-An active Maven model enters a distinct ServerExited state on confirmed closure,
-clearing retained model rows and pending adoption ownership. The captured on-disk
-POM hash and observation floor remain; dirty POM/Java buffers, cursor selections,
-Undo/Redo and saved baselines stay untouched. Repeated closure is idempotent for
-model ownership and keeps the explicit exit explanation visible.
+Disconnect refuses active or unknown command outcomes, language startup/running
+or unverified cleanup, pending mutations and close/recovery transitions. Already
+completed responses retain their ordinary order; admitted Disconnect cancels
+read-only adoption and hands ownership to the existing worker. Buffers, full
+selections, Undo/Redo, recovery ownership, unknown-save identities and eligible
+offline location history remain. Reconnect is explicit and advances the connection
+generation only when the user starts a new connection.
 
-The language panel intentionally remains running until its existing explicit Stop
-lifecycle is processed. Already-submitted worker requests are not dropped or given
-new deadlines. Connected late model replies cannot change state, output or CJK
-observation; disconnected replies still report transport loss. Later POM witnesses
-cannot replace the exited state with imported or POM-restart status. This prevents
-stale presentation and does not establish that processes have been cleaned up.
+A distinct Disconnecting state ends only on the matching worker's terminal close
+receipt. EOF, cancelled Reads and mailbox removal do not certify cleanup. The
+worker consumes the existing Client close path with its unchanged three-second
+observation budget and two-second child grace. Timeout or unwind reports Cleanup
+unverified; its warning survives explicit reconnect. These budgets are not an
+unconditional bound on synchronous filesystem or operating-system operations.
 
-Check Maven model remains visible and disabled with specific Stop/restart guidance.
-No automatic query, reimport, restart, Save, dependency inspection or other worker
-command is introduced. Existing Stop success/failure and explicit fresh startup
-retain their cleanup and restart-blocking semantics.
+## Verification status
 
-## Local verification and pending native acceptance
+The locked offline local aggregate passed 1,296 tests across 41 suites, with zero
+failures and 39 ignored opt-ins. Eighteen new frontend tests cover strict admission,
+current/stale terminal outcomes, reconnect/close guards, recovery ownership,
+unknown-save identity, full selection/Undo, actual disabled tooltip and click
+behavior, and queued valid/malformed save acknowledgements before the same-frame
+Disconnect handler. Four worker terminal-notice tests cover single completion,
+failed establishment, unwind order and a dropped result receiver. Strict Clippy
+passed on the host and Windows MSVC target.
 
-State and rendered-control regressions cover closure from every model state,
-repeated events, pending transport ownership, reply/event order, late reply variants,
-later POM acknowledgements, Stop/reset/fresh startup, source and selection/history
-preservation, disabled pointer clicks and the actual disabled tooltip. The locked offline local aggregate passed 1,268 tests with zero failures and
-36 ignored opt-ins across 41 suites. All 23 Maven-model tests passed, including
-five new closure tests and expanded render/Undo cases. Strict all-target/all-feature
-Clippy passed on the host and Windows MSVC target; both all-feature and default
-shipping release builds passed. Bundle tests ran 36 cases: 35 passed and one
-platform skip. The Maven lifecycle and diagnostic follow-up source reviews found no blocking issue.
+Three explicit Linux process cases passed using a normal agent and controlled
+stdio peers. Two normal-agent connections were reaped, drafts and recovery were
+retained, and no Write/Run/replay occurred. A stalled Read was cancelled without
+sending its queued List. A real 20-millisecond test-only close observation timed
+out before the unchanged reaper completed; the app retained Cleanup unverified
+through replacement. Its later peer-exit observation is reported separately and
+never upgrades the failed close receipt to verified cleanup. The six retained
+worker process cases, passive-loss case and disk-merge process case also passed,
+including completed-write-acknowledgement-before-EOF order.
 
-The existing synthetic startup helper now advances polling time relative to its
-current egui frame, allowing repeated explicit starts without moving time backward.
-No production deadline or runtime cadence changed. No new JDT process experiment
-was needed for this frontend-only state change.
+The response probe reads actual egui state inside its current production frame;
+reading it after end_pass had selected a prior disabled Window sizing pass. This
+was a test-observation correction, not a production admission change. A test
+module was also given an unambiguous filter name so it cannot accidentally select
+the separate passive-idle suite. Earlier local failed logs remain preserved.
 
-## Preserved native failure and bounded diagnostic follow-up
+Both all-feature and default shipping release builds passed. The three explicit
+process cases also passed using the newly built default shipping agent. Bundle
+inventory/link regressions ran 36 cases: 35 passed and one platform skip. Formatting
+and diff checks passed. Independent lifecycle and recovery/test reviews found no
+blocking issue after narrowing the ownership-error documentation.
 
-The exact 0.33.0 run at public b5905c4686978f82f17e92ff1ed4f96d11fd0a67
-([CI 37994716814](https://github.com/LLLLimbo/cedar-ide/actions/runs/37994716814))
-passed Ubuntu and all 23 Maven model tests on both platforms. Windows failed the
-existing synthetic javac acceptance at its first version task: one start,
-120 polls, a terminal task observation, and 32.97 seconds total. The receipt did
-not capture the terminal state or outcome details. Its unset version string does
-not prove empty output; zero frontend Reads means navigation had not begun.
-Source integrity, agent reaping and fixture removal passed. The independent
-Maven pair passed; ordinary Java and extracted-bundle acceptance were skipped.
-That run remains failed, and no package is accepted from it.
-
-The 0.33.1 follow-up changes only test evidence and version/report metadata.
-Each explicit task start resets a bounded diagnostic record. The last observed
-snapshot records the existing fixed task state, signed and Windows exit codes,
-truncation/error-presence flags, retained UTF-8 output lengths, and a fixed
-empty/JDK21/other output classification. It never exports raw output, errors,
-paths or new version strings. Retained string lengths are not raw pipe-byte counts.
-Start and poll RPC timings, maximum poll time and finish elapsed time distinguish
-slow calls from repeated live observations. The deadline flag means the existing
-nonterminal harness guard rejected a wait; terminal snapshots retain their
-original precedence over that guard.
-
-The 30-second task timeout, 45-second finish guard, polling cadence, required
-success and cleanup assertions are unchanged. This is diagnostic preparation,
-not an identified timeout cause or a runtime fix. Four pure regressions cover
-all states, unsigned exit bits, incomplete outcomes, output categories, reset,
-timing saturation and exclusion of private-text sentinels. Exact-source dual-OS
-CI and every required native/package gate must still pass before acceptance.
+Exact-source dual-OS native acceptance and the regenerated Windows package remain
+pending; all previous required CI and extracted-package gates remain required.
 
 ## Limits
 
-Observed closure is not a cleanup receipt. An outstanding request may still need
-to drain under its existing deadline before the ordinary Stop UI becomes available.
-This does not add a watchdog, cancel request, heartbeat or automatic recovery.
-Existing Maven leaf/offline-cache boundaries remain: offline dependency resolution
-is not network isolation or a code sandbox. Native Windows GUI, authenticated SSH,
-full project compatibility and upstream Java diagnostic reliability remain subject
-to their previously documented limitations.
+A successful local owner close is not proof that SSH-side agents or tasks exited,
+that detached reader threads joined, or that a language server stopped gracefully.
+No heartbeat, automatic reconnect, command cancellation, replay or new watcher is
+introduced. Native Windows GUI, authenticated SSH and remote network-loss behavior
+remain unverified. See [usage and ownership limits](EXPLICIT_DISCONNECT.md).

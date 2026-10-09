@@ -8,11 +8,16 @@ mod build_problems;
 pub mod completion;
 #[cfg(test)]
 mod connection_cancel_tests;
+mod disconnect;
+#[cfg(test)]
+mod disconnect_tests;
 mod disk_merge;
 #[cfg(test)]
 mod disk_merge_process_tests;
 mod disk_review;
 mod editor_state;
+#[cfg(test)]
+mod explicit_disconnect_process_tests;
 mod explorer_tree;
 #[cfg(test)]
 mod explorer_tree_process_tests;
@@ -95,6 +100,8 @@ enum ConnectionState {
     Connecting,
     Ready,
     Disconnected,
+    Disconnecting,
+    CleanupUnverified,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -271,6 +278,7 @@ pub struct CedarApp {
     system_fonts: system_fonts::SystemFonts,
     cjk_seen: bool,
     state: ConnectionState,
+    unverified_local_close: bool,
     form: ConnectForm,
     active_form: Option<ConnectForm>,
     workspace_key: Option<WorkspaceKey>,
@@ -372,6 +380,7 @@ impl CedarApp {
             system_fonts: system_fonts::SystemFonts::default(),
             cjk_seen: false,
             state: ConnectionState::Idle,
+            unverified_local_close: false,
             form: ConnectForm::default(),
             active_form: None,
             workspace_key: None,
@@ -460,6 +469,10 @@ impl CedarApp {
     }
 
     fn connect(&mut self, ctx: &egui::Context, form: ConnectForm) {
+        if self.state == ConnectionState::Disconnecting {
+            self.error = Some(disconnect::WAITING.into());
+            return;
+        }
         if !self.guard_run_transition(run_ui::Transition::Reconnect) {
             return;
         }
@@ -815,6 +828,9 @@ impl CedarApp {
     fn apply_worker_event(&mut self, event: WorkerEvent) {
         match event {
             WorkerEvent::Response(event) => self.apply_event(event),
+            WorkerEvent::Closed { generation, result } => {
+                self.connection_closed(generation, result)
+            }
             WorkerEvent::TransportLost {
                 generation,
                 message,
@@ -835,7 +851,7 @@ impl CedarApp {
     }
 
     fn apply_event_inner(&mut self, event: Event, defer_implementation: bool) {
-        if event.generation != self.generation {
+        if event.generation != self.generation || self.state == ConnectionState::Disconnecting {
             return;
         }
         if event.id == 0 {
@@ -1499,7 +1515,10 @@ impl CedarApp {
     }
 
     fn request_window_close(&mut self, ctx: &egui::Context) {
-        if self.close_after_language_stop {
+        if self.state == ConnectionState::Disconnecting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.notice = disconnect::WAITING.into();
+        } else if self.close_after_language_stop {
             // A repeated window-close event must not create a second discard
             // dialog while the original approval waits for verified cleanup.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1528,6 +1547,11 @@ impl CedarApp {
     }
 
     fn begin_close(&mut self, ctx: &egui::Context) {
+        if self.state == ConnectionState::Disconnecting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.notice = disconnect::WAITING.into();
+            return;
+        }
         if !self.guard_run_transition(run_ui::Transition::Close) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             return;
@@ -1672,7 +1696,10 @@ impl CedarApp {
                             self.open_form = true;
                         }
                         if self.active_form.is_some()
-                            && self.state != ConnectionState::Connecting
+                            && !matches!(
+                                self.state,
+                                ConnectionState::Connecting | ConnectionState::Disconnecting
+                            )
                             && ui
                                 .add_enabled(
                                     !self.mutation_pending(),
@@ -1712,8 +1739,13 @@ impl CedarApp {
                         ConnectionState::Connecting => (AMBER, "Connecting"),
                         ConnectionState::Ready => (GREEN, "Connected"),
                         ConnectionState::Disconnected => (RED, "Disconnected"),
+                        ConnectionState::Disconnecting => (AMBER, "Disconnecting"),
+                        ConnectionState::CleanupUnverified => (AMBER, "Cleanup unverified"),
                     };
                     ui.colored_label(color, label);
+                    if self.unverified_local_close {
+                        ui.colored_label(AMBER, "Prior cleanup unverified").on_hover_text(disconnect::UNVERIFIED);
+                    }
                     let workspace = self.recovery_workspace();
                     let (recovery_status, protected) = self.recovery.status(workspace.as_ref(), self.active());
                     if ui.small_button(RichText::new(recovery_status).color(if protected { GREEN } else { AMBER })).on_hover_text("Private recovery on this computer. Click to review copies and settings").clicked() { self.recovery.visible = true; }
@@ -2161,10 +2193,10 @@ impl CedarApp {
         );
         ui.label(RichText::new("Git, language servers, builds, and commands can run repository code with your account’s permissions. Enable only for a workspace you trust.").small().color(if self.form.allow_run { AMBER } else { MUTED }));
         ui.add_space(15.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
-                    self.state != ConnectionState::Connecting && !self.mutation_pending(),
+                    !matches!(self.state, ConnectionState::Connecting | ConnectionState::Disconnecting) && !self.mutation_pending(),
                     egui::Button::new(
                         RichText::new(if self.state == ConnectionState::Connecting {
                             "Connecting..."
@@ -2180,6 +2212,19 @@ impl CedarApp {
                 .clicked()
             {
                 self.connect(ctx, self.form.clone());
+            }
+            if self.ready() || self.state == ConnectionState::Disconnecting {
+                let problem = self.disconnect_problem();
+                let response = ui.add_enabled(problem.is_none(), egui::Button::new("Disconnect (keep drafts)"))
+                    .on_hover_text("Release an idle connection. Stop active tools first. Read-only requests may be cancelled; drafts remain open.")
+                    .on_disabled_hover_text(problem.unwrap_or(""));
+                #[cfg(test)]
+                crate::workspace_access_tests::record(ui, "Disconnect", &response);
+                if response.clicked() { self.disconnect_idle(); }
+            }
+            if self.state == ConnectionState::Disconnecting {
+                ui.spinner();
+                ui.label("Waiting for local cleanup");
             }
             if self.state == ConnectionState::Connecting {
                 ui.spinner();

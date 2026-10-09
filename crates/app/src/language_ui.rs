@@ -239,6 +239,9 @@ impl Default for LanguagePanel {
     }
 }
 impl LanguagePanel {
+    pub(super) fn idle_for_disconnect(&self) -> bool {
+        !self.running && self.startup.is_none() && !self.restart_blocked
+    }
     pub fn disconnected(&mut self) {
         self.reset();
         self.output = "Connection lost. The local language session is unavailable; remote cleanup could not be confirmed.".into();
@@ -2009,6 +2012,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn explicit_disconnect_refuses_running_or_cleanup_blocked_language() {
+        let mut language = LanguagePanel::default();
+        assert!(language.idle_for_disconnect());
+        language.running = true;
+        assert!(!language.idle_for_disconnect());
+        language.running = false;
+        language.restart_blocked = true;
+        assert!(!language.startup_active());
+        assert!(!language.idle_for_disconnect());
+        language.reset();
+        assert!(language.idle_for_disconnect());
+    }
+
+    #[test]
     fn passive_transport_loss_clears_language_capabilities_without_claiming_cleanup() {
         let mut app = CedarApp::empty();
         app.state = crate::ConnectionState::Ready;
@@ -2586,6 +2603,21 @@ mod tests {
             matches!(rx.try_recv().unwrap().op, Operation::LanguageOpen { path,language_id,.. } if path == "Main.java" && language_id == "java")
         );
     }
+    #[test]
+    fn explicit_disconnect_allows_verified_stop_error_but_not_unjoined_cleanup() {
+        for joined in [true, false] {
+            let (mut app, commands) = java_app();
+            app.language.running = true;
+            app.apply_language_action(Action { session: app.language.session, kind: ActionKind::Stop },
+                serde_json::json!({"stopped":true,"shutdown":{"status":"error","reason":"transport_failure",
+                    "root_exit_code":1067,"cleanup_joined":joined,"shutdown_response_received":false,"exit_frame_completed":false}}));
+            assert_eq!(app.language.idle_for_disconnect(), joined);
+            app.disconnect_idle();
+            assert_eq!(app.state == crate::ConnectionState::Disconnecting, joined);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+
     #[test]
     fn java_stop_shows_bounded_outcome_and_unknown_cleanup_blocks_restart() {
         let (mut app, _) = java_app();

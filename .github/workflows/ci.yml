@@ -58,6 +58,18 @@ jobs:
         run: |
           $env:CEDAR_EXPLORER_TREE_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
           cargo test -p cedar-app --lib explorer_tree_process_tests --locked -- --ignored --test-threads=1 --nocapture
+      - name: Explicit idle Disconnect (Unix, normal agent and controlled peer)
+        timeout-minutes: 3
+        if: runner.os != 'Windows'
+        run: CEDAR_EXPLICIT_DISCONNECT_AGENT_BIN="$PWD/target/release/cedar-agent" CEDAR_EXPLICIT_DISCONNECT_PEER_BIN="$PWD/target/release/cedar-client-transport-peer" cargo test -p cedar-app --lib explicit_disconnect_process_tests --locked -- --ignored --test-threads=1 --nocapture
+      - name: Explicit idle Disconnect (Windows, normal agent and controlled peer)
+        timeout-minutes: 3
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:CEDAR_EXPLICIT_DISCONNECT_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
+          $env:CEDAR_EXPLICIT_DISCONNECT_PEER_BIN = "$PWD/target/release/cedar-client-transport-peer.exe"
+          cargo test -p cedar-app --lib explicit_disconnect_process_tests --locked -- --ignored --test-threads=1 --nocapture
       - name: Open-buffer Back and Forward (Unix, normal agent)
         timeout-minutes: 3
         if: runner.os != 'Windows'
@@ -263,6 +275,14 @@ jobs:
         run: |
           $env:CEDAR_SAVE_ACK_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
           cargo test -p cedar-app --lib save_ack_process_tests::release_agent_valid_ack_adopts_only_submitted_snapshot_and_owned_recovery --locked -- --ignored --exact --test-threads=1 --nocapture
+      - name: Shipping Windows explicit idle Disconnect
+        timeout-minutes: 3
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.windows_shipping.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $env:CEDAR_EXPLICIT_DISCONNECT_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
+          $env:CEDAR_EXPLICIT_DISCONNECT_PEER_BIN = "$PWD/target/release/cedar-client-transport-peer.exe"
+          cargo test -p cedar-app --lib explicit_disconnect_process_tests::normal_agent_explicit_disconnect_reconnect_retains_native_draft_and_recovery --locked -- --ignored --exact --test-threads=1 --nocapture
       - name: Verify extracted Windows development bundle
         timeout-minutes: 3
         if: runner.os == 'Windows'

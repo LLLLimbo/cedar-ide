@@ -66,8 +66,12 @@ or off. Support is not availability of an installed third-party tool.
   agent. Windows InProcess hosts omit all three task capabilities; direct
   requests are independently rejected. BackendMode is immutable host code, not
   a wire field, request option or consequence of execution trust
-- Language startup follows its separate implementation guard, currently disabled
-  on Windows. Non-Windows compilation is not native-platform acceptance
+- Generic language startup is available on Linux/macOS and remains disabled on
+  Windows. The Windows isolated agent separately advertises its typed Java/JDT
+  route, including the supported optional Java and Maven operations. Linux generic
+  LSP does not inherit that typed feature set. Advertisement still requires the
+  caller's execution trust and installed tools; compilation alone is not native
+  platform acceptance
 - No PTY/terminal capability is advertised; Cedar has no such protocol operation
 
 The frontend uses capabilities rather than `frontend_is_windows || uses_ssh`

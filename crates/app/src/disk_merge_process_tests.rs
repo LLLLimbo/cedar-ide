@@ -101,6 +101,14 @@ fn close(app: &mut CedarApp, root: &Path) {
     assert_eq!(receipt["process_id"], pid);
     assert_eq!(receipt["cleanup_verified"], true);
     assert_eq!(receipt["exit_success"], true);
+    let closed = app
+        .result_rx
+        .recv_timeout(WAIT)
+        .expect("local relay cleanup receipt missing");
+    assert!(
+        matches!(&closed, WorkerEvent::Closed { generation, result: Ok(()) } if *generation == app.generation)
+    );
+    app.apply_worker_event(closed);
 }
 
 fn frame(app: &mut CedarApp, time: f64, events: Vec<egui::Event>) {

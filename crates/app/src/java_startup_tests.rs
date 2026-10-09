@@ -792,3 +792,20 @@ fn user_cancel_before_deadline_is_not_relabelled_when_cleanup_finishes_later() {
     assert!(!app.language.restart_blocked);
     assert!(rx.try_recv().is_err());
 }
+
+#[test]
+fn explicit_disconnect_refuses_startup_and_unverified_startup_without_dispatch() {
+    let (mut app, commands) = app();
+    app.start_language();
+    let _begin = commands.try_recv().unwrap();
+    assert!(app.language.startup_active());
+    app.disconnect_idle();
+    assert!(app.state == ConnectionState::Ready);
+    assert!(commands.try_recv().is_err());
+    app.java_startup_unknown();
+    assert!(!app.language.startup_active());
+    assert!(!app.language.idle_for_disconnect());
+    app.disconnect_idle();
+    assert!(app.state == ConnectionState::Ready);
+    assert!(commands.try_recv().is_err());
+}

@@ -74,6 +74,9 @@ impl RunPanel {
                 .as_ref()
                 .is_some_and(|task| !task.state.is_terminal())
     }
+    pub(super) fn idle_for_disconnect(&self) -> bool {
+        !self.active() && self.unknown.is_none()
+    }
     fn blocks_transition(&self) -> bool {
         if self.unknown.is_some() {
             !self.unknown_acknowledged
@@ -728,6 +731,44 @@ impl CedarApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_disconnect_requires_idle_even_for_acknowledged_unknown_task() {
+        let mut run = RunPanel::default();
+        assert!(run.idle_for_disconnect());
+        run.starting = true;
+        assert!(!run.idle_for_disconnect());
+        run.starting = false;
+        for state in [
+            TaskState::Starting,
+            TaskState::Running,
+            TaskState::Cancelling,
+        ] {
+            run.snapshot = Some(task(1, state, ""));
+            assert!(!run.idle_for_disconnect());
+        }
+        for state in [
+            TaskState::Succeeded,
+            TaskState::Failed,
+            TaskState::Cancelled,
+            TaskState::TimedOut,
+            TaskState::OutputLimit,
+            TaskState::SpawnFailed,
+        ] {
+            run.snapshot = Some(task(1, state, ""));
+            assert!(run.idle_for_disconnect());
+        }
+        run.unknown = Some("unknown task outcome".into());
+        for acknowledged in [false, true] {
+            run.unknown_acknowledged = acknowledged;
+            assert!(!run.idle_for_disconnect());
+        }
+        assert!(
+            !run.blocks_transition(),
+            "legacy reconnect policy is unchanged"
+        );
+    }
+
     use crate::Event;
     #[cfg(target_os = "linux")]
     use crate::{model::Document, ConnectForm, ConnectionState};

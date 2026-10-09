@@ -278,6 +278,7 @@ fn response(event: WorkerEvent) -> Event {
     match event {
         WorkerEvent::Response(event) => event,
         WorkerEvent::TransportLost { message, .. } => panic!("unexpected idle loss: {message}"),
+        WorkerEvent::Closed { .. } => panic!("unexpected cleanup receipt before response"),
     }
 }
 
@@ -383,6 +384,8 @@ fn stalled_read_cancels_queued_list_and_replacement_stays_connected() {
         .starts_with("transport_cancelled:"));
     wait_marker(old_root.path(), "eof");
     assert_operations(old_root.path(), &["hello", "list", "read"]);
+    assert!(matches!(app.result_rx.recv_timeout(WAIT).unwrap(),
+        WorkerEvent::Closed { generation, result: Ok(()) } if generation == old_generation));
 
     start_fixture(&mut app, new_root.path());
     accept_fixture(&mut app);
@@ -459,6 +462,13 @@ fn dropped_worker_drains_sent_write_reply_and_suppresses_queued_list() {
     wait_marker(root.path(), "eof");
     assert_operations(root.path(), &["hello", "write"]);
     assert!(matches!(
+        rx.recv_timeout(WAIT).unwrap(),
+        WorkerEvent::Closed {
+            generation: 17,
+            result: Ok(())
+        }
+    ));
+    assert!(matches!(
         rx.recv_timeout(WAIT),
         Err(mpsc::RecvTimeoutError::Disconnected)
     ));
@@ -516,6 +526,13 @@ fn idle_worker_observes_terminal_reader_events_without_sending_requests() {
         assert!(message.starts_with(prefix), "{message}");
         assert_operations(root.path(), &["hello"]);
         assert!(matches!(
+            rx.recv_timeout(WAIT).unwrap(),
+            WorkerEvent::Closed {
+                generation: 23,
+                result: Ok(())
+            }
+        ));
+        assert!(matches!(
             rx.recv_timeout(WAIT),
             Err(mpsc::RecvTimeoutError::Disconnected)
         ));
@@ -566,6 +583,13 @@ fn worker_publishes_completed_write_ack_before_immediate_eof() {
     ));
     assert_operations(root.path(), &["hello", "write"]);
     assert!(matches!(
+        rx.recv_timeout(WAIT).unwrap(),
+        WorkerEvent::Closed {
+            generation: 29,
+            result: Ok(())
+        }
+    ));
+    assert!(matches!(
         rx.recv_timeout(WAIT),
         Err(mpsc::RecvTimeoutError::Disconnected)
     ));
@@ -585,6 +609,13 @@ fn dropping_healthy_idle_worker_closes_mailbox_and_process() {
     );
     assert!(response(rx.recv_timeout(WAIT).unwrap()).connected);
     drop(worker);
+    assert!(matches!(
+        rx.recv_timeout(CANCEL_BOUND).unwrap(),
+        WorkerEvent::Closed {
+            generation: 31,
+            result: Ok(())
+        }
+    ));
     assert!(matches!(
         rx.recv_timeout(CANCEL_BOUND),
         Err(mpsc::RecvTimeoutError::Disconnected)
