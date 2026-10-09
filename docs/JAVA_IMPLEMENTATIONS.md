@@ -38,5 +38,7 @@ The pinned sources used for this contract are:
 
 The tests file was verified at blob `02250bbfcd169b32dc2685df4d3dd165dafeec11`.
 Source inspection establishes the intended contract; Cedar's actual supported
-runtime behavior requires the exact-checkpoint acceptance described in
-[the verification report](TEST_REPORT.md).
+runtime behavior requires exact-checkpoint acceptance. The package manifest
+records its source commit and CI run; the
+[source verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md)
+describes the current development checkpoint.

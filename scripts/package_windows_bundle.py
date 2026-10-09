@@ -39,6 +39,7 @@ SOURCE_FILES = {
     "docs/MAVEN_PROJECTS.md": "MAVEN_PROJECTS.md",
     "docs/TEST_RESULTS.md": "TEST_RESULTS.md",
     "docs/JAVA_TYPE_SEARCH.md": "JAVA_TYPE_SEARCH.md",
+    "docs/JAVA_IMPLEMENTATIONS.md": "JAVA_IMPLEMENTATIONS.md",
     "docs/IDLE_DISCONNECT.md": "IDLE_DISCONNECT.md",
     "docs/DRAFT_MERGE.md": "DRAFT_MERGE.md",
 }
@@ -79,6 +80,28 @@ class BundleError(ValueError):
 def require(condition, message):
     if not condition:
         raise BundleError(message)
+
+
+def validate_entry_guide_links(payload):
+    """Check inline links used by our two entry guides, not arbitrary Markdown.
+
+    Remote links are never fetched. Local targets must name an exact packaged
+    file; a fragment refers only to a section and does not change that target.
+    """
+    for name in ("WINDOWS_QUICKSTART.zh-CN.md", "JAVA_IMPLEMENTATIONS.md"):
+        try:
+            text = payload[name].decode("utf-8")
+        except (KeyError, UnicodeDecodeError) as error:
+            raise BundleError(f"Missing or invalid UTF-8 entry guide: {name}") from error
+        # Disjoint delimiters prevent rescanning a long malformed marker suffix
+        # from every '['. Nested Markdown labels/targets are outside this format.
+        for match in re.finditer(r"\[[^\[\]\r\n]+\]\(([^()\[\]\r\n]+)\)", text):
+            target = match.group(1)
+            if target.startswith(("https://", "http://", "#")):
+                continue
+            filename = target.split("#", 1)[0]
+            require(filename in payload,
+                    f"Entry guide {name} links an unpackaged target: {target}")
 
 
 def safe_name(name):
@@ -434,7 +457,9 @@ def verify_bytes(data, expected_commit=None, expected_ci=None):
                 payload[entry.filename] = content
     except (zipfile.BadZipFile, EOFError, struct.error, NotImplementedError, zlib.error) as error:
         raise BundleError(f"Invalid ZIP: {error}") from error
-    return manifest, {**payload, MANIFEST: manifest_data}
+    verified_payload = {**payload, MANIFEST: manifest_data}
+    validate_entry_guide_links(verified_payload)
+    return manifest, verified_payload
 
 
 def create_file(path, data):

@@ -71,6 +71,77 @@ class WindowsBundleTests(unittest.TestCase):
         values[bundle.MANIFEST] = bundle.canonical_json(self.manifest if manifest is None else manifest)
         return sorted(values.items())
 
+    def test_current_entry_guides_link_only_to_packaged_local_targets(self):
+        self.assertEqual(bundle.SOURCE_FILES["docs/JAVA_IMPLEMENTATIONS.md"],
+                         "JAVA_IMPLEMENTATIONS.md")
+        root = Path(__file__).resolve().parent.parent
+        payload = dict(self.payload)
+        for source in ("docs/WINDOWS_QUICKSTART.zh-CN.md", "docs/JAVA_IMPLEMENTATIONS.md"):
+            payload[bundle.SOURCE_FILES[source]] = (root / source).read_bytes()
+        bundle.validate_entry_guide_links(payload)
+        manifest = bundle.make_manifest("0.28.1", COMMIT, RUN_URL, payload)
+        _, verified = bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+        self.assertEqual(verified["JAVA_IMPLEMENTATIONS.md"], payload["JAVA_IMPLEMENTATIONS.md"])
+
+    def test_consistent_hashes_cannot_hide_broken_entry_guide_links(self):
+        for name in ("WINDOWS_QUICKSTART.zh-CN.md", "JAVA_IMPLEMENTATIONS.md"):
+            for target in ("MISSING.md", "java_implementations.md", "../JAVA_IMPLEMENTATIONS.md",
+                           "JAVA_IMPLEMENTATIONS.md?other=1", "JAVA%5fIMPLEMENTATIONS.md"):
+                with self.subTest(name=name, target=target):
+                    payload = dict(self.payload)
+                    payload[name] = f"[Read guide]({target})\n".encode()
+                    manifest = bundle.make_manifest("0.28.1", COMMIT, RUN_URL, payload)
+                    with self.assertRaisesRegex(bundle.BundleError, "unpackaged target"):
+                        bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+
+    def test_entry_guide_fragments_and_external_links_need_no_fetch(self):
+        payload = dict(self.payload)
+        payload["WINDOWS_QUICKSTART.zh-CN.md"] = (
+            "[Guide](JAVA_IMPLEMENTATIONS.md#what-jdt-means)\n"
+            "[Section](#section) [Official](https://example.invalid/guide?q=1)\n"
+            "[Manifest](BUNDLE_MANIFEST.json)\n"
+        ).encode()
+        manifest = bundle.make_manifest("0.28.1", COMMIT, RUN_URL, payload)
+        bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+
+    def test_bounded_malformed_inline_markers_do_not_rescan_each_suffix(self):
+        for marker in (b"[", b"[a]("):
+            payload = dict(self.payload)
+            payload["WINDOWS_QUICKSTART.zh-CN.md"] = marker * (bundle.MAX_TEXT_BYTES // len(marker))
+            bundle.validate_entry_guide_links(payload)
+
+    def test_implementation_guide_missing_or_invalid_utf8_is_rejected(self):
+        payload = dict(self.payload)
+        del payload["JAVA_IMPLEMENTATIONS.md"]
+        manifest = bundle.make_manifest("0.28.1", COMMIT, RUN_URL, payload)
+        with self.assertRaisesRegex(bundle.BundleError, "required payload"):
+            bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+        payload = dict(self.payload)
+        payload["JAVA_IMPLEMENTATIONS.md"] = b"\xff"
+        manifest = bundle.make_manifest("0.28.1", COMMIT, RUN_URL, payload)
+        with self.assertRaisesRegex(bundle.BundleError, "UTF-8 entry guide"):
+            bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+
+    def test_implementation_guide_corruption_fails_its_manifest_hash(self):
+        payload = dict(self.payload)
+        original = payload["JAVA_IMPLEMENTATIONS.md"]
+        payload["JAVA_IMPLEMENTATIONS.md"] = b"X" + original[1:]
+        with self.assertRaisesRegex(bundle.BundleError, "SHA256 mismatch: JAVA_IMPLEMENTATIONS.md"):
+            bundle.verify_bytes(bundle.archive_bytes(payload, self.manifest))
+
+    def test_build_refuses_committed_broken_entry_link_before_creating_output(self):
+        root, binary_dir, _ = self.source_fixture()
+        guide = root / "docs/WINDOWS_QUICKSTART.zh-CN.md"
+        guide.write_text("[Missing guide](MISSING.md)\n", encoding="utf-8")
+        self.git(root, "add", str(guide.relative_to(root)))
+        self.git(root, "-c", "user.name=Bundle test", "-c", "user.email=test@localhost",
+                 "commit", "-qm", "Synthetic broken guide")
+        commit = self.git(root, "rev-parse", "HEAD").decode("ascii").strip()
+        output = self.base / "must-not-exist.zip"
+        with self.assertRaisesRegex(bundle.BundleError, "unpackaged target"):
+            bundle.build(root, binary_dir, output, commit, RUN_URL)
+        self.assertFalse(output.exists())
+
     def assert_invalid(self, data):
         with self.assertRaises(bundle.BundleError):
             bundle.verify_bytes(data)
