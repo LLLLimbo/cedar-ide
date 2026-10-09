@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第三十阶段按需目录树（**0.30.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第三十一阶段已打开标签位置历史（**0.31.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -11,6 +11,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - **远程能力发现**：缓存一次有效握手，报告后端版本/平台/操作支持；按后端实际能力启用功能，声明不授予执行信任
 - 平面目录浏览与显式展开的[有界目录树](docs/EXPLORER_TREE.md)、多标签编辑、新建文件、行号、简单 Java/Kotlin/Rust 高亮
 - Ctrl/Cmd+P 键盘选择已打开标签/当前目录文件或输入路径、Ctrl/Cmd+G 跳到行、Ctrl/Cmd+F 文件内查找与单文档字面量替换预览、Ctrl/Cmd+S 保存、Ctrl/Cmd+W 关闭标签
+- [Back/Forward 位置历史](docs/LOCATION_HISTORY.md)：在仍打开且未修改的标签位置间返回，保留完整选区与撤销；不重新读取或恢复关闭的文件
 - Ctrl/Cmd+J 隐藏工具并回到编辑器，或重新显示保留状态的工具；Ctrl/Cmd+Shift+E 聚焦可用的目录刷新按钮而不刷新，方便较矮窗口中的键盘切换
 - 已运行的专用 Maven 会话中显式查看[依赖来源快照](docs/MAVEN_DEPENDENCIES.md)，区分磁盘 POM 直接声明、JDT 观察及当前文件存在性；不是依赖树或下载器
 - 受信任 Java 会话中的显式 [Go to Implementations](docs/JAVA_IMPLEMENTATIONS.md)，同步草稿后查询 JDT 实现位置并在工作区内导航；结果无版本、可能滞后，不是调用图

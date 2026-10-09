@@ -816,8 +816,11 @@ impl CedarApp {
                 // A local symbol click is newer navigation. Invalidate both URI resolution
                 // and already-dispatched file opens, without cancelling document-only work
                 // for what is otherwise a cursor movement in the same unchanged draft.
+                let departure = self.history_departure();
                 self.navigation_epoch = self.navigation_epoch.wrapping_add(1);
                 self.language.cancel_deferred_navigation();
+                self.history_begin(departure, false);
+                let ticket = self.history_take_completion();
                 let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == document) else {
                     return;
                 };
@@ -834,6 +837,7 @@ impl CedarApp {
                 doc.scroll_to = Some(start);
                 self.editor_ctx
                     .memory_mut(|memory| memory.request_focus(id));
+                self.history_commit(ticket);
             }
             OutlineLocation::Remote(location) => self.navigate_language(location),
         }

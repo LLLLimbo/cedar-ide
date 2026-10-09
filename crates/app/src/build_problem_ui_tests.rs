@@ -266,6 +266,8 @@ fn build_problem_click_reuses_dirty_unicode_crlf_buffer_and_preserves_undo() {
     assert_eq!(app.active_document, Some(1));
     assert_eq!(app.documents.len(), 1);
     assert_eq!(app.documents[0].cursor, (2, 1));
+    assert_eq!(app.location_history.back.len(), 1);
+    assert!(app.location_history.pending.is_none());
     assert_eq!(app.documents[0].saved_text, baseline);
     assert!(app.documents[0].dirty());
     frame(

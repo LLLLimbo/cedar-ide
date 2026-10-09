@@ -73,6 +73,8 @@ pub(super) enum ActionKind {
     Query {
         context: QueryContext,
         kind: LanguageQueryKind,
+        navigation: u64,
+        sequence: u64,
     },
     Events,
     MavenModel {
@@ -114,6 +116,19 @@ pub(super) enum ActionKind {
     },
 }
 impl Action {
+    pub(super) fn history_navigation(&self) -> Option<u64> {
+        match self.kind {
+            ActionKind::ResolveUri { navigation, .. }
+            | ActionKind::JavaTypeResolve { navigation, .. }
+            | ActionKind::JavaImplementationResolve { navigation, .. }
+            | ActionKind::Query {
+                navigation,
+                kind: LanguageQueryKind::Definition,
+                ..
+            } => Some(navigation),
+            _ => None,
+        }
+    }
     pub(crate) fn is_java_implementation(&self) -> bool {
         matches!(&self.kind, ActionKind::JavaImplementationResolve { .. })
             || matches!(&self.kind, ActionKind::Feature { request } if matches!(request.kind, features::FeatureKind::JavaImplementations))
@@ -271,6 +286,13 @@ impl LanguagePanel {
         self.cancel_deferred_navigation();
     }
     fn cancel_deferred_navigation(&mut self) {
+        if self
+            .intent
+            .as_ref()
+            .is_some_and(|intent| matches!(intent.kind, LanguageQueryKind::Definition))
+        {
+            self.intent = None;
+        }
         self.navigation_sequence = self.navigation_sequence.wrapping_add(1);
         self.deferred_navigation.clear();
     }
@@ -436,6 +458,8 @@ impl CedarApp {
     }
 
     pub(super) fn stop_language(&mut self) {
+        self.language.cancel_deferred_navigation();
+        self.history_cancel_language();
         if self.language.startup_active() {
             self.cancel_java_startup();
             return;
@@ -738,6 +762,8 @@ impl CedarApp {
                         ActionKind::Query {
                             context: intent.context,
                             kind: intent.kind,
+                            navigation: self.navigation_epoch,
+                            sequence: self.language.navigation_sequence,
                         },
                     );
                 }
@@ -937,7 +963,19 @@ impl CedarApp {
             } => {
                 self.apply_java_type_resolve(context, sequence, navigation, location, value);
             }
-            ActionKind::Query { context, kind } => {
+            ActionKind::Query {
+                context,
+                kind,
+                navigation,
+                sequence,
+            } => {
+                if matches!(kind, LanguageQueryKind::Definition)
+                    && (navigation != self.navigation_epoch
+                        || sequence != self.language.navigation_sequence)
+                {
+                    self.notice = "Stale definition result ignored after newer navigation".into();
+                    return;
+                }
                 if self.language.features.has_request_or_preview()
                     || !self.query_is_current(&context)
                 {
@@ -1110,10 +1148,12 @@ impl CedarApp {
             self.error = Some("This target is outside supported workspace files (for example a JDK archive). Cedar does not open external URLs or dependency archives".into());
             return;
         }
+        let departure = self.history_departure();
         self.navigation_changed();
+        self.history_begin(departure, true);
         let sequence = self.language.navigation_sequence;
         let navigation = self.navigation_epoch;
-        self.language_request(
+        let request = self.language_request(
             Operation::LanguageResolveUri {
                 uri: location.uri.clone(),
             },
@@ -1131,6 +1171,9 @@ impl CedarApp {
                 },
             },
         );
+        if request == 0 {
+            self.history_cancel_ticket(navigation);
+        }
     }
     fn apply_resolved_language_location(
         &mut self,
@@ -1143,15 +1186,18 @@ impl CedarApp {
             return None;
         }
         let Some(path) = value.get("path").and_then(Value::as_str) else {
+            self.history_cancel_ticket(navigation);
             self.error = Some("Agent did not return a workspace path".into());
             return None;
         };
         if !safe_relative_path(path) {
+            self.history_cancel_ticket(navigation);
             self.error = Some("Agent returned an unsafe navigation path; ignored".into());
             return None;
         }
         let path = path.to_owned();
-        self.open(path.clone(), None);
+        let ticket = self.history_transfer();
+        self.open_with_history(path.clone(), None, None, ticket, true);
         self.language.deferred_navigation.insert(
             path.clone(),
             DeferredNavigation {
@@ -1163,6 +1209,76 @@ impl CedarApp {
         );
         self.complete_language_navigation(&path);
         Some(path)
+    }
+    pub(super) fn cancel_ready_language_navigation(&mut self) {
+        self.language.cancel_deferred_navigation();
+    }
+    pub(super) fn language_navigation_owner(&self, action: &Action) -> Option<u64> {
+        if action.session != self.language.session {
+            return None;
+        }
+        match &action.kind {
+            ActionKind::ResolveUri {
+                navigation,
+                sequence,
+                ..
+            } if self.language_open_current(action.session, *sequence) => Some(*navigation),
+            ActionKind::JavaTypeResolve {
+                navigation,
+                sequence,
+                context,
+                ..
+            } if self.language_open_current(action.session, *sequence)
+                && self.java_type_context_current(context) =>
+            {
+                Some(*navigation)
+            }
+            ActionKind::JavaImplementationResolve {
+                navigation,
+                sequence,
+                context,
+                ..
+            } if self.language_open_current(action.session, *sequence)
+                && self.java_implementation_context_current(context) =>
+            {
+                Some(*navigation)
+            }
+            ActionKind::Query {
+                navigation,
+                sequence,
+                context,
+                kind: LanguageQueryKind::Definition,
+            } if *sequence == self.language.navigation_sequence
+                && self.query_is_current(context)
+                && !self.language.features.has_request_or_preview() =>
+            {
+                Some(*navigation)
+            }
+            _ => None,
+        }
+    }
+    pub(super) fn language_open_job(&self, path: String, navigation: u64) -> Job {
+        Job::LanguageOpen {
+            path,
+            navigation,
+            session: self.language.session,
+            sequence: self.language.navigation_sequence,
+        }
+    }
+    pub(super) fn language_open_current(&self, session: u64, sequence: u64) -> bool {
+        self.language.running
+            && session == self.language.session
+            && sequence == self.language.navigation_sequence
+    }
+    pub(super) fn language_navigation_pending(&self, path: &str) -> bool {
+        self.language
+            .deferred_navigation
+            .get(path)
+            .is_some_and(|navigation| {
+                navigation.session == self.language.session
+                    && navigation.sequence == self.language.navigation_sequence
+                    && navigation.navigation == self.navigation_epoch
+            })
     }
     pub(super) fn complete_language_navigation(&mut self, path: &str) {
         if !self.documents.iter().any(|doc| doc.path == path) {
@@ -1177,21 +1293,43 @@ impl CedarApp {
         {
             return;
         }
-        let Some(doc) = self.documents.iter_mut().find(|doc| doc.path == path) else {
+        let Some(doc) = self.documents.iter().find(|doc| doc.path == path) else {
             return;
         };
+        let document = doc.id;
         let start = completion::position_to_offsets(&doc.text, navigation.range.start);
         let end = completion::position_to_offsets(&doc.text, navigation.range.end);
         match (start, end) {
             (Ok((_, start)), Ok((_, end))) if start <= end => {
-                self.active_document = Some(doc.id); doc.jump_to = None; doc.scroll_to = Some(start);
+                let ticket = self.history_take_completion();
+                let doc = self
+                    .documents
+                    .iter_mut()
+                    .find(|doc| doc.id == document)
+                    .expect("validated document");
+                self.active_document = Some(doc.id);
+                doc.jump_to = None;
+                doc.scroll_to = Some(start);
+                doc.cursor = crate::model::cursor_location(&doc.text, end);
+                self.open_form = false;
                 let id = egui::Id::new(("editor", doc.id));
-                let mut state = egui::TextEdit::load_state(&self.editor_ctx, id).unwrap_or_default();
-                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(start), egui::text::CCursor::new(end))));
+                let mut state =
+                    egui::TextEdit::load_state(&self.editor_ctx, id).unwrap_or_default();
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(start),
+                        egui::text::CCursor::new(end),
+                    )));
                 state.store(&self.editor_ctx, id);
-                self.editor_ctx.memory_mut(|memory| memory.request_focus(id));
+                self.editor_ctx
+                    .memory_mut(|memory| memory.request_focus(id));
+                self.history_commit(ticket);
             }
-            _ => self.error = Some("The target range does not fit the current file. Its contents may have changed; no draft was modified".into()),
+            _ => {
+                self.history_cancel_ticket(navigation.navigation);
+                self.error = Some("The target range does not fit the current file. Its contents may have changed; no draft was modified".into());
+            }
         }
     }
     fn completion_apply_supported(&self) -> bool {
@@ -2509,3 +2647,538 @@ mod tests {
 #[cfg(test)]
 #[path = "real_java_tests.rs"]
 mod real_java_tests;
+
+#[cfg(test)]
+mod history_admission_tests {
+    use super::*;
+    use crate::{
+        worker::{Command, Event, Worker},
+        Payload,
+    };
+
+    fn setup() -> (CedarApp, std::sync::mpsc::Receiver<Command>) {
+        let mut app = CedarApp::empty();
+        app.state = crate::ConnectionState::Ready;
+        app.open_form = false;
+        app.agent_info = Some(crate::agent_support::full_test_agent());
+        app.active_form = Some(crate::ConnectForm {
+            allow_run: true,
+            ..Default::default()
+        });
+        app.language.running = true;
+        app.language.automatic = false;
+        app.documents.push(Document::new(
+            1,
+            "source.rs".into(),
+            "source".into(),
+            "r".into(),
+        ));
+        app.active_document = Some(1);
+        app.next_document = 2;
+        let mut state = crate::editor_state::load(&app.editor_ctx, &mut app.documents[0]);
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(0),
+            )));
+        state.store(&app.editor_ctx, egui::Id::new(("editor", 1u64)));
+        let (worker, commands) = Worker::recording();
+        app.worker = Some(worker);
+        (app, commands)
+    }
+    fn location(end: u32) -> Location {
+        Location {
+            uri: "file:///workspace/target.rs".into(),
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 1,
+                },
+                end: Position {
+                    line: 0,
+                    character: end,
+                },
+            },
+        }
+    }
+    fn reply(app: &mut CedarApp, command: Command, payload: Payload) {
+        app.apply_event(Event {
+            generation: app.generation,
+            id: command.id,
+            connected: true,
+            result: Ok(payload),
+        });
+    }
+    #[test]
+    fn language_history_transfers_one_departure_through_resolve_and_read_to_selection() {
+        for already_open in [false, true] {
+            let (mut app, commands) = setup();
+            if already_open {
+                app.documents.push(Document::new(
+                    2,
+                    "target.rs".into(),
+                    "target".into(),
+                    "r".into(),
+                ));
+                app.next_document = 3;
+            }
+            app.navigate_language(location(4));
+            let resolve = commands.try_recv().unwrap();
+            assert!(app.location_history.back.is_empty());
+            reply(
+                &mut app,
+                resolve,
+                Payload::Language {
+                    value: serde_json::json!({"path":"target.rs"}),
+                },
+            );
+            if !already_open {
+                assert_eq!(app.active_document, Some(1));
+                assert!(app.location_history.back.is_empty());
+                let read = commands.try_recv().unwrap();
+                reply(
+                    &mut app,
+                    read,
+                    Payload::File {
+                        path: "target.rs".into(),
+                        text: "target".into(),
+                        revision: "r".into(),
+                    },
+                );
+            }
+            assert_eq!(app.active_document, Some(2));
+            assert_eq!(app.location_history.back.len(), 1);
+            assert_eq!(app.location_history.back[0].document, 1);
+            assert!(app.location_history.pending.is_none());
+            let range =
+                egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 2u64)))
+                    .unwrap()
+                    .cursor
+                    .char_range()
+                    .unwrap();
+            assert_eq!(range.primary.index, 4);
+            assert_eq!(range.secondary.index, 1);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+    #[test]
+    fn language_history_invalid_range_and_stale_resolve_admit_nothing() {
+        let (mut app, commands) = setup();
+        app.documents.push(Document::new(
+            2,
+            "target.rs".into(),
+            "target".into(),
+            "r".into(),
+        ));
+        app.next_document = 3;
+        app.navigate_language(location(99));
+        let resolve = commands.try_recv().unwrap();
+        reply(
+            &mut app,
+            resolve,
+            Payload::Language {
+                value: serde_json::json!({"path":"target.rs"}),
+            },
+        );
+        assert_eq!(app.active_document, Some(1));
+        assert!(app.location_history.back.is_empty());
+        assert!(app.location_history.pending.is_none());
+        app.navigate_language(location(4));
+        let resolve = commands.try_recv().unwrap();
+        app.activate_history_tab(1);
+        reply(
+            &mut app,
+            resolve,
+            Payload::Language {
+                value: serde_json::json!({"path":"target.rs"}),
+            },
+        );
+        assert_eq!(app.active_document, Some(1));
+        assert!(app.location_history.back.is_empty());
+        assert!(commands.try_recv().is_err());
+    }
+    #[test]
+    fn all_stale_back_supersedes_older_language_resolution() {
+        let (mut app, commands) = setup();
+        app.documents.push(Document::new(
+            2,
+            "other.rs".into(),
+            "other".into(),
+            "r".into(),
+        ));
+        app.next_document = 3;
+        app.activate_history_tab(2);
+        app.documents[0].edit_version += 1;
+        app.navigate_language(location(4));
+        let resolve = commands.try_recv().unwrap();
+        let ctx = app.editor_ctx.clone();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            assert!(!app.history_step(crate::location_history::Direction::Back, ctx));
+        });
+        reply(
+            &mut app,
+            resolve,
+            Payload::Language {
+                value: serde_json::json!({"path":"target.rs"}),
+            },
+        );
+        assert_eq!(app.active_document, Some(2));
+        assert!(app.location_history.back.is_empty());
+        assert!(app.location_history.forward.is_empty());
+        assert!(commands.try_recv().is_err());
+    }
+    #[test]
+    fn language_stop_retains_admitted_editor_history() {
+        let (mut app, commands) = setup();
+        app.documents.push(Document::new(
+            2,
+            "other.rs".into(),
+            "other".into(),
+            "r".into(),
+        ));
+        app.activate_history_tab(2);
+        app.apply_language_action(
+            Action {
+                session: app.language.session,
+                kind: ActionKind::Stop,
+            },
+            serde_json::Value::Null,
+        );
+        assert_eq!(app.location_history.back.len(), 1);
+        let ctx = app.editor_ctx.clone();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            assert!(app.history_step(crate::location_history::Direction::Back, ctx));
+        });
+        assert_eq!(app.active_document, Some(1));
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn selected_diagnostic_history_admits_only_after_resolved_range() {
+        let (mut app, commands) = setup();
+        app.documents.push(Document::new(
+            2,
+            "target.rs".into(),
+            "target".into(),
+            "r".into(),
+        ));
+        let target = location(4);
+        app.language.diagnostics.files.insert(
+            target.uri.clone(),
+            language_results::DiagnosticBatch {
+                version: None,
+                items: vec![language_results::Diagnostic {
+                    range: target.range,
+                    severity: 1,
+                    message: "problem".into(),
+                    source: "server".into(),
+                }],
+            },
+        );
+        let ctx = app.editor_ctx.clone();
+        let render = |app: &mut CedarApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 640.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.problems_view(ui));
+                },
+            )
+        };
+        let output = render(&mut app, vec![]);
+        fn find(shape: &egui::epaint::Shape) -> Option<egui::Pos2> {
+            match shape {
+                egui::epaint::Shape::Text(text)
+                    if text.galley.job.text == "file:///workspace/target.rs:1" =>
+                {
+                    Some(text.visual_bounding_rect().center())
+                }
+                egui::epaint::Shape::Vec(shapes) => shapes.iter().find_map(find),
+                _ => None,
+            }
+        }
+        let at = output
+            .shapes
+            .iter()
+            .find_map(|shape| find(&shape.shape))
+            .unwrap();
+        render(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert!(app.location_history.back.is_empty());
+        let resolve = commands.try_recv().unwrap();
+        assert!(matches!(resolve.op, Operation::LanguageResolveUri { .. }));
+        reply(
+            &mut app,
+            resolve,
+            Payload::Language {
+                value: serde_json::json!({"path":"target.rs"}),
+            },
+        );
+        assert_eq!(app.location_history.back.len(), 1);
+        assert_eq!(app.active_document, Some(2));
+        assert!(app.location_history.pending.is_none());
+        assert!(commands.try_recv().is_err());
+    }
+    fn full_frame(app: &mut CedarApp, events: Vec<egui::Event>) {
+        let ctx = app.editor_ctx.clone();
+        let mut native = eframe::Frame::_new_kittest();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 640.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| eframe::App::update(app, ctx, &mut native),
+        );
+    }
+    fn pressed(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
+        [true, false]
+            .into_iter()
+            .map(|pressed| egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed,
+                repeat: false,
+                modifiers,
+            })
+            .collect()
+    }
+    #[test]
+    fn stopped_language_read_retains_its_origin_after_admission_ticket_is_removed() {
+        let (mut app, commands) = setup();
+        app.navigate_language(location(4));
+        let resolve = commands.try_recv().unwrap();
+        reply(
+            &mut app,
+            resolve,
+            Payload::Language {
+                value: serde_json::json!({"path":"target.rs"}),
+            },
+        );
+        let read = commands.try_recv().unwrap();
+        assert!(matches!(
+            app.pending.get(&read.id),
+            Some(Job::LanguageOpen { .. })
+        ));
+        app.stop_language();
+        let stop = commands.try_recv().unwrap();
+        assert!(app.location_history.pending.is_none());
+        reply(
+            &mut app,
+            read,
+            Payload::File {
+                path: "target.rs".into(),
+                text: "target".into(),
+                revision: "r".into(),
+            },
+        );
+        assert_eq!(app.active_document, Some(1));
+        assert_eq!(app.documents.len(), 1);
+        assert!(app.location_history.back.is_empty());
+        reply(
+            &mut app,
+            stop,
+            Payload::Language {
+                value: serde_json::Value::Null,
+            },
+        );
+    }
+    #[test]
+    fn ready_resolve_and_language_read_yield_to_current_frame_input() {
+        for phase in 0..2 {
+            let (mut app, commands) = setup();
+            app.navigate_language(location(4));
+            let mut command = commands.try_recv().unwrap();
+            if phase == 1 {
+                reply(
+                    &mut app,
+                    command,
+                    Payload::Language {
+                        value: serde_json::json!({"path":"target.rs"}),
+                    },
+                );
+                command = commands.try_recv().unwrap();
+            }
+            app.result_tx
+                .send(crate::worker::WorkerEvent::Response(Event {
+                    generation: app.generation,
+                    id: command.id,
+                    connected: true,
+                    result: Ok(if phase == 0 {
+                        Payload::Language {
+                            value: serde_json::json!({"path":"target.rs"}),
+                        }
+                    } else {
+                        Payload::File {
+                            path: "target.rs".into(),
+                            text: "target".into(),
+                            revision: "r".into(),
+                        }
+                    }),
+                }))
+                .unwrap();
+            full_frame(&mut app, pressed(egui::Key::P, egui::Modifiers::COMMAND));
+            assert_eq!(app.active_document, Some(1));
+            assert_eq!(app.documents.len(), 1);
+            assert!(app.location_history.back.is_empty());
+            assert!(app.location_history.pending.is_none());
+            assert!(commands.try_recv().is_err());
+        }
+    }
+    #[test]
+    fn definition_dispatch_epoch_survives_boundary_back_and_same_frame_chooser() {
+        for same_frame in [false, true] {
+            let (mut app, commands) = setup();
+            let context = QueryContext {
+                session: app.language.session,
+                document: 1,
+                edit_version: 0,
+                source: "source".into(),
+                cursor: Position::default(),
+            };
+            let navigation = app.navigation_epoch;
+            app.pending.insert(
+                99,
+                Job::Language(Action {
+                    session: app.language.session,
+                    kind: ActionKind::Query {
+                        context,
+                        kind: LanguageQueryKind::Definition,
+                        navigation,
+                        sequence: app.language.navigation_sequence,
+                    },
+                }),
+            );
+            if !same_frame {
+                full_frame(
+                    &mut app,
+                    pressed(egui::Key::OpenBracket, egui::Modifiers::COMMAND),
+                );
+            }
+            app.result_tx.send(crate::worker::WorkerEvent::Response(Event { generation: app.generation, id: 99, connected: true,
+                result: Ok(Payload::Language { value: serde_json::json!({"uri":"file:///workspace/target.rs", "range":{"start":{"line":0,"character":1},"end":{"line":0,"character":4}}}) }) })).unwrap();
+            full_frame(
+                &mut app,
+                if same_frame {
+                    pressed(egui::Key::P, egui::Modifiers::COMMAND)
+                } else {
+                    vec![]
+                },
+            );
+            assert_eq!(app.active_document, Some(1));
+            assert!(app.location_history.back.is_empty());
+            assert!(app.location_history.pending.is_none());
+            assert!(!commands.try_iter().any(|command| matches!(
+                command.op,
+                Operation::LanguageResolveUri { .. } | Operation::Read { .. }
+            )));
+        }
+    }
+
+    #[test]
+    fn definition_waiting_for_sync_cannot_restart_after_boundary_navigation() {
+        let (mut app, commands) = setup();
+        app.language.intent = Some(QueryIntent {
+            context: QueryContext {
+                session: app.language.session,
+                document: 1,
+                edit_version: 0,
+                source: "source".into(),
+                cursor: Position::default(),
+            },
+            kind: LanguageQueryKind::Definition,
+        });
+        app.pending.insert(
+            88,
+            Job::Language(Action {
+                session: app.language.session,
+                kind: ActionKind::Sync {
+                    document: 1,
+                    version: 1,
+                    edit_version: 0,
+                },
+            }),
+        );
+        full_frame(
+            &mut app,
+            pressed(egui::Key::OpenBracket, egui::Modifiers::COMMAND),
+        );
+        assert!(app.language.intent.is_none());
+        app.result_tx
+            .send(crate::worker::WorkerEvent::Response(Event {
+                generation: app.generation,
+                id: 88,
+                connected: true,
+                result: Ok(Payload::Language {
+                    value: serde_json::json!({"opened":"file:///workspace/source.rs"}),
+                }),
+            }))
+            .unwrap();
+        full_frame(&mut app, vec![]);
+        assert!(commands.try_recv().is_err());
+        assert!(app.location_history.back.is_empty());
+    }
+
+    #[test]
+    fn dispatched_definition_cannot_resolve_between_stop_request_and_acknowledgement() {
+        let (mut app, commands) = setup();
+        let context = QueryContext {
+            session: app.language.session,
+            document: 1,
+            edit_version: 0,
+            source: "source".into(),
+            cursor: Position::default(),
+        };
+        app.pending.insert(
+            99,
+            Job::Language(Action {
+                session: app.language.session,
+                kind: ActionKind::Query {
+                    context,
+                    kind: LanguageQueryKind::Definition,
+                    navigation: app.navigation_epoch,
+                    sequence: app.language.navigation_sequence,
+                },
+            }),
+        );
+        app.stop_language();
+        let stop = commands.try_recv().unwrap();
+        app.result_tx.send(crate::worker::WorkerEvent::Response(Event { generation: app.generation, id: 99, connected: true, result: Ok(Payload::Language { value: serde_json::json!({"uri":"file:///workspace/target.rs", "range":{"start":{"line":0,"character":1},"end":{"line":0,"character":4}}}) }) })).unwrap();
+        full_frame(&mut app, vec![]);
+        assert_eq!(app.active_document, Some(1));
+        assert!(app.location_history.back.is_empty());
+        assert!(commands.try_recv().is_err());
+        reply(
+            &mut app,
+            stop,
+            Payload::Language {
+                value: serde_json::Value::Null,
+            },
+        );
+    }
+}

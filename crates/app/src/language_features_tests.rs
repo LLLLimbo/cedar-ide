@@ -516,6 +516,8 @@ fn newer_format_request_cancels_old_completion_and_rejects_late_popup() {
             kind: ActionKind::Query {
                 context,
                 kind: LanguageQueryKind::Completion,
+                navigation: app.navigation_epoch,
+                sequence: app.language.navigation_sequence,
             },
         },
         json!([{"label":"late","insertText":"late"}]),
@@ -989,4 +991,15 @@ fn optional_agent_operations_are_independent_of_server_and_core_lifecycle() {
         .retain(|name| !matches!(name.as_str(), "language_query" | "language_resolve_uri"));
     preview(&mut app);
     assert!(app.language.features.preview.is_some());
+}
+
+#[test]
+fn local_outline_location_history_admits_completed_selection_only_once() {
+    let mut app = app();
+    let local = local_outline(&mut app);
+    app.navigate_outline_location(local.clone());
+    assert_eq!(app.location_history.back.len(), 1);
+    assert!(app.location_history.pending.is_none());
+    app.navigate_outline_location(local);
+    assert_eq!(app.location_history.back.len(), 1);
 }

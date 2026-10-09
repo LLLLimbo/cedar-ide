@@ -268,6 +268,9 @@ fn choosing_dirty_open_buffer_offline_preserves_draft_and_restores_focus() {
         .editor_ctx
         .memory(|memory| memory.has_focus(egui::Id::new(("editor", 2u64)))));
     assert!(commands.try_recv().is_err());
+    assert_eq!(app.location_history.back.len(), 1);
+    assert_eq!(app.location_history.back[0].document, 1);
+    assert!(app.location_history.pending.is_none());
 }
 
 #[test]
@@ -551,4 +554,36 @@ fn repeated_line_jumps_after_partial_undo_preserve_complete_redo_and_saved_basel
     assert_eq!(app.documents[0].saved_text, baseline);
     assert_eq!(app.documents[0].revision.as_deref(), Some("r0"));
     assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn chooser_read_ready_on_closing_modal_idle_frame_completes_and_admits() {
+    let (mut app, commands) = app();
+    app.navigation.query = "next.rs".into();
+    app.show_file_chooser();
+    frame(&mut app, 0.0, vec![]);
+    frame(
+        &mut app,
+        1.0,
+        key(egui::Key::Enter, egui::Modifiers::COMMAND),
+    );
+    let read = commands.try_recv().unwrap();
+    assert!(app.navigation.dialog.is_none());
+    app.result_tx
+        .send(crate::worker::WorkerEvent::Response(Event {
+            generation: app.generation,
+            id: read.id,
+            connected: true,
+            result: Ok(Payload::File {
+                path: "next.rs".into(),
+                text: "next".into(),
+                revision: "r".into(),
+            }),
+        }))
+        .unwrap();
+    frame(&mut app, 2.0, vec![]);
+    frame(&mut app, 3.0, vec![]);
+    assert_eq!(app.active().unwrap().path, "next.rs");
+    assert_eq!(app.location_history.back.len(), 1);
+    assert!(app.location_history.pending.is_none());
 }

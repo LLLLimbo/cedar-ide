@@ -48,6 +48,10 @@ struct Candidates {
 }
 
 impl Navigation {
+    pub fn dialog_open(&self) -> bool {
+        self.dialog.is_some()
+    }
+
     pub fn blocks_editor(&self) -> bool {
         self.blocked_frame || self.dialog.is_some()
     }
@@ -497,14 +501,7 @@ impl CedarApp {
             self.dismiss_navigation();
             self.open(path, None);
         } else if let Some(line) = jump_line {
-            self.navigation_changed();
-            if let Some(doc) = self
-                .documents
-                .iter_mut()
-                .find(|doc| Some(doc.id) == self.active_document)
-            {
-                doc.jump_to = Some(crate::model::line_start(&doc.text, line));
-            }
+            self.history_go_to_line(line);
         }
         if self.navigation.restore_focus
             && self.navigation.dialog.is_none()

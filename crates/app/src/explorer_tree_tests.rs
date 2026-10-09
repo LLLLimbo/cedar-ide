@@ -1374,3 +1374,34 @@ fn branch_retry_and_footer_ids_survive_inserted_preceding_sibling_rows() {
     );
     assert_eq!(footer_ids(&app), footer);
 }
+
+#[test]
+fn explicit_explorer_open_admits_one_location_after_read_completion() {
+    let (mut app, commands) = fixture();
+    root(&mut app, &commands, vec![entry("next.rs", false)]);
+    app.documents.push(Document::new(
+        1,
+        "source.rs".into(),
+        "source".into(),
+        "r".into(),
+    ));
+    app.active_document = Some(1);
+    app.next_document = 2;
+    app.explorer_activate("next.rs");
+    let command = commands.try_recv().unwrap();
+    assert!(app.location_history.back.is_empty());
+    app.apply_event(Event {
+        generation: app.generation,
+        id: command.id,
+        connected: true,
+        result: Ok(Payload::File {
+            path: "next.rs".into(),
+            text: "next".into(),
+            revision: "r".into(),
+        }),
+    });
+    assert_eq!(app.location_history.back.len(), 1);
+    assert_eq!(app.location_history.back[0].document, 1);
+    assert!(app.location_history.pending.is_none());
+    assert!(commands.try_recv().is_err());
+}

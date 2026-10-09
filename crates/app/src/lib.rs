@@ -33,6 +33,9 @@ mod language_navigation_results;
 mod language_results;
 mod language_sync;
 mod language_ui;
+mod location_history;
+#[cfg(test)]
+mod location_history_process_tests;
 mod model;
 mod navigation;
 mod profile_ui;
@@ -207,6 +210,12 @@ enum Job {
         line: Option<usize>,
         navigation: u64,
     },
+    LanguageOpen {
+        path: String,
+        navigation: u64,
+        session: u64,
+        sequence: u64,
+    },
     BuildProblemOpen {
         path: String,
         line: Option<usize>,
@@ -300,6 +309,7 @@ pub struct CedarApp {
     test_report: test_report_ui::TestReportPanel,
     language: language_ui::LanguagePanel,
     navigation: navigation::Navigation,
+    location_history: location_history::LocationHistory,
     workspace_access: workspace_access::Access,
     new_file: bool,
     new_path: String,
@@ -399,6 +409,7 @@ impl CedarApp {
             test_report: test_report_ui::TestReportPanel::default(),
             language: language_ui::LanguagePanel::default(),
             navigation: navigation::Navigation::default(),
+            location_history: location_history::LocationHistory::default(),
             workspace_access: workspace_access::Access::default(),
             new_file: false,
             new_path: String::new(),
@@ -473,6 +484,7 @@ impl CedarApp {
         self.worker = None;
         self.language.reset();
         self.generation += 1;
+        self.location_history.clear();
         self.pending.clear();
         self.explorer.reset_connection();
         self.disk_review.outstanding = None;
@@ -504,6 +516,7 @@ impl CedarApp {
         self.disk_review.outstanding = None;
         self.agent_info = None;
         self.generation += 1;
+        self.location_history.clear();
         self.explorer.reset_connection();
         self.connecting_form = None;
         self.recovery.restoring_generation = None;
@@ -543,6 +556,7 @@ impl CedarApp {
     }
 
     fn disconnected(&mut self, message: String) {
+        self.location_history.cancel_pending();
         // Transport loss is never proof that language cleanup finished, even
         // when an ordinary file/task request reports the loss first.
         self.close_after_language_stop = false;
@@ -575,6 +589,7 @@ impl CedarApp {
     }
 
     fn navigation_changed(&mut self) {
+        self.location_history.cancel_pending();
         self.replace.invalidate();
         self.dismiss_navigation();
         self.dismiss_disk_review();
@@ -593,6 +608,17 @@ impl CedarApp {
         line: Option<usize>,
         source: Option<run_ui::BuildSource>,
     ) {
+        self.open_with_history(path, line, source, None, false);
+    }
+
+    fn open_with_history(
+        &mut self,
+        path: String,
+        line: Option<usize>,
+        source: Option<run_ui::BuildSource>,
+        transfer: Option<location_history::Admission>,
+        language_target: bool,
+    ) {
         if source.is_some_and(|source| !self.build_source_is_current(source)) {
             return;
         }
@@ -606,17 +632,34 @@ impl CedarApp {
                 }
             }
         }
+        let departure = (!language_target)
+            .then(|| self.history_departure())
+            .flatten();
         self.navigation_changed();
+        if let Some(ticket) = transfer {
+            self.history_resume(ticket);
+        } else if !language_target {
+            self.history_begin(departure, false);
+        }
         let navigation = self.navigation_epoch;
         if let Some(doc) = self.documents.iter_mut().find(|doc| doc.path == path) {
-            self.active_document = Some(doc.id);
-            if let Some(line) = line {
-                doc.jump_to = Some(line_start(&doc.text, line));
+            let document = doc.id;
+            if !language_target {
+                self.active_document = Some(document);
+                if let Some(line) = line {
+                    doc.jump_to = Some(line_start(&doc.text, line));
+                }
+                self.navigation.restore_focus = true;
+                if doc.jump_to.is_some() {
+                    self.history_wait_for_selection(document);
+                } else {
+                    self.history_complete_open();
+                }
             }
-            self.navigation.restore_focus = true;
             return;
         }
         if self.documents.len() >= 32 {
+            self.history_cancel_ticket(navigation);
             self.error = Some(
                 "Close a tab before opening another. Cedar limits the workspace to 32 buffers"
                     .into(),
@@ -625,6 +668,7 @@ impl CedarApp {
         }
         let pending = self.pending.iter().find_map(|(id, job)| match job {
             Job::Open { path: pending, .. }
+            | Job::LanguageOpen { path: pending, .. }
             | Job::BuildProblemOpen { path: pending, .. }
             | Job::JavaTypeOpen { path: pending, .. }
             | Job::JavaImplementationOpen { path: pending, .. }
@@ -635,23 +679,27 @@ impl CedarApp {
             _ => None,
         });
         let op = Operation::Read { path: path.clone() };
-        let job = match source {
-            Some(source) => Job::BuildProblemOpen {
-                path,
-                line,
-                navigation,
-                source,
-            },
-            None => Job::Open {
-                path,
-                line,
-                navigation,
-            },
+        let job = if language_target {
+            self.language_open_job(path, navigation)
+        } else {
+            match source {
+                Some(source) => Job::BuildProblemOpen {
+                    path,
+                    line,
+                    navigation,
+                    source,
+                },
+                None => Job::Open {
+                    path,
+                    line,
+                    navigation,
+                },
+            }
         };
         if let Some(id) = pending {
             self.pending.insert(id, job);
-        } else {
-            self.request(op, job);
+        } else if self.request(op, job) == 0 {
+            self.location_history.cancel_pending();
         }
     }
 
@@ -706,8 +754,52 @@ impl CedarApp {
         }
     }
 
+    #[cfg(test)]
     fn poll(&mut self) {
+        self.poll_ready_navigation(None);
+    }
+
+    fn poll_ready_navigation(&mut self, ctx: Option<&egui::Context>) {
+        let newer_input = ctx.is_some_and(|ctx| self.history_newer_completion_input(ctx));
         while let Ok(event) = self.result_rx.try_recv() {
+            // Keep worker response/transport-loss ordering intact. Only a ready,
+            // connected reply that could still navigate is superseded by input
+            // already queued for this frame; earlier caret/typing frames do not
+            // cancel requests that have not replied yet.
+            if newer_input {
+                if let WorkerEvent::Response(reply) = &event {
+                    let navigation = self.pending.get(&reply.id).and_then(|job| match job {
+                        Job::Open { navigation, .. } => Some(*navigation),
+                        Job::LanguageOpen {
+                            navigation,
+                            session,
+                            sequence,
+                            ..
+                        } if self.language_open_current(*session, *sequence) => Some(*navigation),
+                        Job::BuildProblemOpen {
+                            navigation, source, ..
+                        } if self.build_source_is_current(*source) => Some(*navigation),
+                        Job::JavaTypeOpen {
+                            navigation,
+                            context,
+                            ..
+                        } if self.java_type_context_current(context) => Some(*navigation),
+                        Job::JavaImplementationOpen {
+                            navigation,
+                            context,
+                            ..
+                        } if self.java_implementation_context_current(context) => Some(*navigation),
+                        Job::Language(action) => self.language_navigation_owner(action),
+                        _ => None,
+                    });
+                    if reply.connected
+                        && reply.generation == self.generation
+                        && navigation == Some(self.navigation_epoch)
+                    {
+                        self.history_supersede_ready_navigation(ctx);
+                    }
+                }
+            }
             self.apply_worker_event(event);
         }
     }
@@ -802,6 +894,7 @@ impl CedarApp {
                         for doc in &self.documents {
                             editor_state::forget(&self.editor_ctx, doc.id);
                         }
+                        self.location_history.clear();
                         self.documents.clear();
                         self.active_document = None;
                         self.search_results.clear();
@@ -809,6 +902,7 @@ impl CedarApp {
                         self.run_state.output = "Command output will appear here".into();
                     }
                     self.profiles.connected(recovery_ui::identity(&form, &root));
+                    self.location_history.clear();
                     self.workspace_key = Some(key);
                     self.active_form = Some(form);
                     self.root = root;
@@ -873,6 +967,30 @@ impl CedarApp {
                 return;
             }
             other => other,
+        };
+        let job = if let Job::LanguageOpen {
+            path,
+            navigation,
+            session,
+            sequence,
+        } = job
+        {
+            if !event.connected {
+                self.disconnected("The connection closed while opening a language target. Your drafts are retained".into());
+                return;
+            }
+            if navigation != self.navigation_epoch || !self.language_open_current(session, sequence)
+            {
+                self.history_cancel_ticket(navigation);
+                return;
+            }
+            Job::Open {
+                path,
+                line: None,
+                navigation,
+            }
+        } else {
+            job
         };
         let job = if let Job::JavaImplementationOpen {
             path,
@@ -1120,6 +1238,14 @@ impl CedarApp {
         let payload = match event.result {
             Ok(payload) => payload,
             Err(error) => {
+                let navigation = match &job {
+                    Job::Open { navigation, .. } => Some(*navigation),
+                    Job::Language(action) => action.history_navigation(),
+                    _ => None,
+                };
+                if let Some(navigation) = navigation {
+                    self.history_cancel_ticket(navigation);
+                }
                 let error = if let Job::Language(action) = &job {
                     self.language_public_error(action, &error)
                 } else {
@@ -1162,24 +1288,33 @@ impl CedarApp {
                 },
             ) => {
                 if path != requested {
+                    self.history_cancel_ticket(navigation);
                     self.error = Some(
                         "Agent returned a different file path; the response was ignored".into(),
                     );
                     return;
                 }
                 self.observe_maven_pom_acknowledgement(event.id, &path, &revision);
+                let language_target = self.language_navigation_pending(&requested);
                 if let Some(doc) = self.documents.iter_mut().find(|doc| doc.path == path) {
-                    if navigation == self.navigation_epoch {
-                        self.active_document = Some(doc.id);
+                    let document = doc.id;
+                    if navigation == self.navigation_epoch && !language_target {
+                        self.active_document = Some(document);
                         self.navigation.restore_focus = true;
                         if let Some(line) = line {
                             doc.jump_to = Some(line_start(&doc.text, line));
+                        }
+                        if doc.jump_to.is_some() {
+                            self.history_wait_for_selection(document);
+                        } else {
+                            self.history_complete_open();
                         }
                     }
                     self.complete_language_navigation(&requested);
                     return;
                 }
                 if self.documents.len() >= 32 {
+                    self.history_cancel_ticket(navigation);
                     self.error = Some(
                         "The 32-buffer limit was reached; close a tab and open the file again"
                             .into(),
@@ -1193,10 +1328,15 @@ impl CedarApp {
                     doc.jump_to = Some(line_start(&doc.text, line));
                 }
                 self.documents.push(doc);
-                if navigation == self.navigation_epoch {
+                if navigation == self.navigation_epoch && !language_target {
                     self.active_document = Some(id);
                     self.navigation.restore_focus = true;
                     self.open_form = false;
+                    if line.is_some() {
+                        self.history_wait_for_selection(id);
+                    } else {
+                        self.history_complete_open();
+                    }
                 }
                 self.complete_language_navigation(&requested);
             }
@@ -1404,6 +1544,7 @@ impl CedarApp {
         }
     }
     fn remove_tab(&mut self, id: u64) {
+        self.location_history.close(id);
         self.profiles.document_closed(id);
         if let Some(workspace) = self.recovery_workspace() {
             if let Some(doc) = self.documents.iter().find(|doc| doc.id == id) {
@@ -1433,6 +1574,7 @@ impl CedarApp {
         if self.navigation_shortcuts(ctx) {
             return;
         }
+        self.history_shortcuts(ctx);
         self.language_shortcuts(ctx);
         self.workspace_access_shortcuts(ctx);
         self.explorer_tree_shortcuts(ctx);
@@ -2190,6 +2332,7 @@ impl CedarApp {
     }
 
     fn editor(&mut self, ui: &mut egui::Ui) {
+        self.history_controls(ui);
         let mut activate = None;
         let mut close = None;
         egui::ScrollArea::horizontal()
@@ -2250,9 +2393,7 @@ impl CedarApp {
                 && !self.foreign_modal_owns_input(ui.ctx())
         });
         if let Some(id) = activate {
-            self.navigation_changed();
-            self.active_document = Some(id);
-            self.find_index = None;
+            self.activate_history_tab(id);
         }
         if let Some(id) = close {
             self.close_tab_requested = Some(id);
@@ -2314,6 +2455,12 @@ impl CedarApp {
         let navigation_blocked = self.navigation.blocks_editor();
         ui.add_enabled_ui(!navigation_blocked, |ui| self.find_bar(ui));
         let find_open = self.find_open;
+        let mut history_completion =
+            if !navigation_blocked && self.active().is_some_and(|doc| doc.jump_to.is_some()) {
+                self.history_take_jump_completion()
+            } else {
+                None
+            };
         if let Some(doc) = self
             .documents
             .iter_mut()
@@ -2341,6 +2488,18 @@ impl CedarApp {
                 ui.ctx()
                     .memory_mut(|memory| memory.request_focus(editor_id));
             }
+            let history_destination = if history_completion.is_some() {
+                egui::TextEdit::load_state(ui.ctx(), editor_id)
+                    .and_then(|state| state.cursor.char_range())
+                    .map(|selection| location_history::Location {
+                        generation: self.generation,
+                        document: doc.id,
+                        edit_version: doc.edit_version,
+                        selection,
+                    })
+            } else {
+                None
+            };
             let cursor_history = if navigation_blocked {
                 None
             } else {
@@ -2410,6 +2569,9 @@ impl CedarApp {
                         }
                     });
                 });
+            if let Some(destination) = history_destination {
+                self.history_commit_destination(history_completion.take(), destination);
+            }
         }
         if let Some(id) = activate.filter(|id| {
             Some(*id) == self.active_document
@@ -2509,7 +2671,7 @@ impl eframe::App for CedarApp {
         self.workspace_access = workspace_access::Access::default();
         #[cfg(test)]
         workspace_access_tests::begin(ctx);
-        self.poll();
+        self.poll_ready_navigation(Some(ctx));
         self.begin_navigation_frame(ctx);
         self.recovery_tick(ctx);
         let cjk = self.system_fonts.needs_probe()
@@ -2578,6 +2740,7 @@ impl eframe::App for CedarApp {
         self.recovery_tick(ctx);
         self.finish_recovery_close_frame(ctx);
         self.finish_workspace_access_frame(ctx);
+        self.finish_history_frame(ctx);
     }
 }
 

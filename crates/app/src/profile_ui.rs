@@ -141,8 +141,10 @@ impl CedarApp {
             Some(Action::Review) => self.review_profile_connection(),
             Some(Action::Run) => self.run(),
             Some(Action::OpenRaw) => {
-                self.navigation_changed();
-                self.active_document = self.profiles.source.as_ref().map(|source| source.document);
+                if let Some(document) = self.profiles.source.as_ref().map(|source| source.document)
+                {
+                    self.activate_history_tab(document);
+                }
             }
             None => {}
         }
@@ -1824,5 +1826,26 @@ mod tests {
         assert!(app.documents[0].interrupted_save.is_some());
         assert_eq!(app.documents[0].revision.as_deref(), Some("sha0"));
         assert!(rx.try_recv().is_err());
+    }
+    #[test]
+    fn explicit_profile_raw_editor_location_history_admits_once() {
+        let (mut app, commands) = loaded();
+        let target = app.profiles.source.as_ref().unwrap().document;
+        app.documents.push(Document::new(
+            99,
+            "other.txt".into(),
+            "other".into(),
+            "r".into(),
+        ));
+        app.active_document = Some(99);
+        app.queue_profile_action(Action::OpenRaw);
+        app.finish_profile_actions();
+        assert_eq!(app.active_document, Some(target));
+        assert_eq!(app.location_history.back.len(), 1);
+        assert_eq!(app.location_history.back[0].document, 99);
+        app.queue_profile_action(Action::OpenRaw);
+        app.finish_profile_actions();
+        assert_eq!(app.location_history.back.len(), 1);
+        assert!(commands.try_recv().is_err());
     }
 }

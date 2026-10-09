@@ -899,3 +899,34 @@ impl CedarApp {
 fn chooser_acceptance_witness_preserves_dirty_buffer_selection_and_undo_redo() {
     CedarApp::java_type_navigation_acceptance(symbols(), URI, "Target.java", SOURCE, "r0").unwrap();
 }
+
+#[test]
+fn java_type_location_history_admits_once_after_final_selection() {
+    let (mut app, commands) = type_app();
+    app.documents.push(Document::new(
+        1,
+        "Source.java".into(),
+        "class Source {}".into(),
+        "r".into(),
+    ));
+    app.active_document = Some(1);
+    app.next_document = 2;
+    search(&mut app, &commands, symbols());
+    assert!(app.location_history.back.is_empty());
+    resolve(&mut app, &commands, "Target.java");
+    assert!(app.location_history.back.is_empty());
+    let read = commands.try_recv().unwrap();
+    reply(
+        &mut app,
+        &read,
+        Ok(Payload::File {
+            path: "Target.java".into(),
+            text: SOURCE.into(),
+            revision: "r".into(),
+        }),
+    );
+    assert_eq!(app.location_history.back.len(), 1);
+    assert_eq!(app.location_history.back[0].document, 1);
+    assert!(app.location_history.pending.is_none());
+    assert_eq!(app.active_document, Some(2));
+}

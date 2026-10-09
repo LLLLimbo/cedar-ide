@@ -240,7 +240,9 @@ impl CedarApp {
         // exact source/participant snapshot under the new sequence. It never
         // recaptures changed text, a cursor, or an acknowledged LSP version.
         let mut state = std::mem::take(&mut self.language.implementations);
+        let departure = self.history_departure();
         self.navigation_changed();
+        self.history_begin(departure, true);
         let context = state.context.as_mut().expect("checked context");
         context.sequence = self.language.features.sequence();
         context.navigation = self.navigation_epoch;
@@ -262,6 +264,7 @@ impl CedarApp {
             },
         );
         if id == 0 {
+            self.history_cancel_ticket(navigation);
             self.java_implementation_error(&context, "Implementation target could not be resolved");
         }
     }
@@ -301,7 +304,7 @@ impl CedarApp {
         let navigation = self.navigation_epoch;
         let mut reading = false;
         for job in self.pending.values_mut() {
-            if matches!(job, Job::Open { path: pending, navigation: epoch, .. } if pending == &path && *epoch == navigation)
+            if matches!(job, Job::Open { path: pending, navigation: epoch, .. } | Job::LanguageOpen { path: pending, navigation: epoch, .. } if pending == &path && *epoch == navigation)
             {
                 *job = Job::JavaImplementationOpen {
                     path: path.clone(),

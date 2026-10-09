@@ -190,3 +190,9 @@ Explorer 保留平面模式；选择 Tree 后显式展开需要的目录，可�
 展开和 Refresh 使用已有的 List，不扫描整棵项目、不后台轮询；执行信任关闭时可用。
 缓存、行数和路径字节数有界，超限或失败会明确显示。键盘操作、选中目录范围和快照
 限制见 [EXPLORER_TREE.md](EXPLORER_TREE.md)。
+
+## 返回编辑位置
+
+Back / Forward 在仍打开且编辑版本匹配的标签位置间导航，保留完整选区和撤销历史；
+不会重新读取文件或恢复关闭的草稿。快捷键是 Ctrl+[ / Ctrl+]，按钮也可用 Tab/Enter。
+修改过的旧位置会明确跳过，重连清空历史，详见 [LOCATION_HISTORY.md](LOCATION_HISTORY.md)。

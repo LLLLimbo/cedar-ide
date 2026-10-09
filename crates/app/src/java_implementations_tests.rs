@@ -1392,3 +1392,34 @@ fn actual_row_activation_survives_its_own_click_but_not_mixed_newer_input() {
         }
     }
 }
+
+#[test]
+fn implementation_location_history_admits_once_after_guarded_final_selection() {
+    let (mut app, commands) = app();
+    query(&mut app, &commands, rows());
+    assert!(app.location_history.back.is_empty());
+    let resolve = select(&mut app, &commands);
+    assert!(app.location_history.back.is_empty());
+    reply(
+        &mut app,
+        &resolve,
+        Ok(Payload::Language {
+            value: json!({"path":"Target.java"}),
+        }),
+    );
+    assert!(app.location_history.back.is_empty());
+    let read = commands.try_recv().unwrap();
+    reply(
+        &mut app,
+        &read,
+        Ok(Payload::File {
+            path: "Target.java".into(),
+            text: TARGET.into(),
+            revision: "r".into(),
+        }),
+    );
+    assert_eq!(app.location_history.back.len(), 1);
+    assert_eq!(app.location_history.back[0].document, 1);
+    assert!(app.location_history.pending.is_none());
+    selection(&app, marker(TARGET, "Target")).unwrap();
+}

@@ -210,7 +210,7 @@ impl CedarApp {
         // guard. Existing dirty buffers are focused without issuing a Read.
         let navigation = self.navigation_epoch;
         for job in self.pending.values_mut() {
-            if matches!(job, Job::Open { path: pending, navigation: epoch, .. } if pending == &path && *epoch == navigation)
+            if matches!(job, Job::Open { path: pending, navigation: epoch, .. } | Job::LanguageOpen { path: pending, navigation: epoch, .. } if pending == &path && *epoch == navigation)
             {
                 *job = Job::JavaTypeOpen {
                     path: path.clone(),
