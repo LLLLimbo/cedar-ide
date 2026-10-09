@@ -1095,6 +1095,10 @@ impl CedarApp {
                 }
                 Some("closed") => {
                     self.language.diagnostics_exited = true;
+                    if self.language.maven_model.active() {
+                        self.language.maven_model.server_exited();
+                        self.language.output = self.language.maven_model.message().into();
+                    }
                     self.language.maven_dependencies.reset();
                     self.language.running_startup_id = None;
                     self.language.java_diagnostics_refresh_supported = false;

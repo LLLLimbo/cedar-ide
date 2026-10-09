@@ -1,75 +1,54 @@
-# Verification report · Save acknowledgement protection / 0.32.0
+# Verification report · Maven model after server exit / 0.33.0
 
-The previous [0.31.1 checkpoint](TEST_REPORT_PHASE311_HISTORY_CAPTURE.md) is fully
-verified. This checkpoint hardens save acknowledgements from an inconsistent
-peer; no failure of the normal agent is claimed.
+The previous [0.32 checkpoint](TEST_REPORT_PHASE32_SAVE_ACK.md) is fully verified.
+This bounded frontend change retires Maven model evidence after an observed
+language-server closure. It does not change protocol capabilities or launch policy.
 
 ## Required contract
 
-A successful save reply must match the exact lowercase SHA-256 of its captured
-submitted String and the original request, generation, workspace, document/path,
-saved baseline and submitted-content token. Current typing, selection, active tab
-and profile edits are not substituted for submitted contents.
+An active Maven model enters a distinct ServerExited state on confirmed closure,
+clearing retained model rows and pending adoption ownership. The captured on-disk
+POM hash and observation floor remain; dirty POM/Java buffers, cursor selections,
+Undo/Redo and saved baselines stay untouched. Repeated closure is idempotent for
+model ownership and keeps the explicit exit explanation visible.
 
-The check runs before baseline adoption, recovery removal, Maven POM observation,
-profile success and Explorer refresh. Malformed or inconsistent replies retain
-eligible original submission identity for the existing explicit two-Read check.
-No automatic Read, Write, retry or replay is introduced. Stale and duplicate
-responses remain harmless; completed authoritative acknowledgements remain ordered
-before a later transport-loss event.
+The language panel intentionally remains running until its existing explicit Stop
+lifecycle is processed. Already-submitted worker requests are not dropped or given
+new deadlines. Connected late model replies cannot change state, output or CJK
+observation; disconnected replies still report transport loss. Later POM witnesses
+cannot replace the exited state with imported or POM-restart status. This prevents
+stale presentation and does not establish that processes have been cleaned up.
 
-A missing or ineligible submission identity cannot be reconstructed from the
-current draft. A session-only unverifiable-unknown guard preserves dirtiness,
-recovery and close protection, blocks Save/profile/merge and survives reconnect.
-Check is unavailable, while Copy/Compare and explicit discard remain available.
-Undo back to old baseline text does not erase that uncertainty. No persisted
-recovery schema, protocol capability or execution permission is added.
+Check Maven model remains visible and disabled with specific Stop/restart guidance.
+No automatic query, reimport, restart, Save, dependency inspection or other worker
+command is introduced. Existing Stop success/failure and explicit fresh startup
+retain their cleanup and restart-blocking semantics.
 
-## Local verification and required native acceptance
+## Local verification and pending native acceptance
 
-Completed deterministic coverage includes canonical and wrong-content hashes,
-UTF-8/CRLF/empty/1 MiB bytes, newer typing, complete selection and Undo/Redo,
-request/workspace/baseline ownership, profile/Maven success-hook rejection,
-response-before-EOF ordering, fallback state and durable recovery ownership.
+State and rendered-control regressions cover closure from every model state,
+repeated events, pending transport ownership, reply/event order, late reply variants,
+later POM acknowledgements, Stop/reset/fresh startup, source and selection/history
+preservation, disabled pointer clicks and the actual disabled tooltip. The locked offline local aggregate passed 1,264 tests with zero failures and
+36 ignored opt-ins across 41 suites. All 23 Maven-model tests passed, including
+five new closure tests and expanded render/Undo cases. Strict all-target/all-feature
+Clippy passed on the host and Windows MSVC target; both all-feature and default
+shipping release builds passed. Bundle tests ran 36 cases: 35 passed and one
+platform skip. Two independent source reviews found no blocking issue.
 
-Completed cloud Linux process acceptance uses a marked, bounded, nonshipping fault peer and
-the normal release agent. Controlled cases include actual commit plus absent,
-empty, oversized, noncanonical and wrong-content acknowledgement, as well as a
-noncommitted response. Explicit double Reads establish current contents without
-proving original-write provenance or physical file identity. Original interrupted
-save cases remain required. Native Windows runtime and final package acceptance
-are pending a new exact-source CI run; no prior result substitutes for this run.
-
-## Local results
-
-- Full locked offline all-feature aggregate: 1,259 passed, zero failed, 36 ignored
-  across 41 suites. Required process opt-ins below were executed separately.
-- Eighteen focused acknowledgement tests plus POM/profile success-effect negatives
-  passed. Strict host and Windows MSVC all-target/all-feature Clippy passed.
-- All-feature and default shipping release builds passed. The process suite used
-  the final default-feature agent and a separately built marked fixture.
-- Five new process tests passed: 13 controlled transactions, two normal-agent
-  saves, and four marker/control rejection cases. Actual ledgers total 15 Writes,
-  42 Reads and 17 successfully opened/reaped connections. Invalid acknowledgements
-  cause no automatic operation; each valid normal save retains its one existing
-  flat-Explorer List refresh. Rejected Client creation does not claim independently
-  observed process reaping.
-- All nine existing interrupted-save process tests passed. Packaging tests ran
-  36 cases: 35 passed, one platform skip. The existing interrupted-save guide is
-  now included and its entry-guide link is checked.
-
-The first new process run passed four tests and failed its normal-agent fixture:
-it incorrectly expected no command after a valid save, while the existing flat
-Explorer intentionally enqueues one root List. The corrected fixture explicitly
-requires that exact List/Job/connected Entries response and no further operation;
-invalid-ack ledgers remain unchanged. The original failed run is retained. No
-production behavior was changed to satisfy that fixture assertion.
+The existing synthetic startup helper now advances polling time relative to its
+current egui frame, allowing repeated explicit starts without moving time backward.
+No production deadline or runtime cadence changed. No new JDT process experiment
+was needed for this frontend-only state change. Exact-source dual-platform CI,
+retained native gates and regenerated package verification remain pending; earlier
+Maven pairs do not substitute for this checkpoint's required run.
 
 ## Limits
 
-A consistent hash does not authenticate the peer or independently establish disk
-durability. The real agent already emits the expected content hash. Fault injection
-is synthetic and cloud-owned; authenticated SSH and native Windows GUI remain
-unverified. Existing intermittent Java diagnostic behavior and explicit-refresh
-workflow distinctions remain unchanged. Historical resource trials and failures
-are preserved; this checkpoint makes no resource-comparison claim.
+Observed closure is not a cleanup receipt. An outstanding request may still need
+to drain under its existing deadline before the ordinary Stop UI becomes available.
+This does not add a watchdog, cancel request, heartbeat or automatic recovery.
+Existing Maven leaf/offline-cache boundaries remain: offline dependency resolution
+is not network isolation or a code sandbox. Native Windows GUI, authenticated SSH,
+full project compatibility and upstream Java diagnostic reliability remain subject
+to their previously documented limitations.

@@ -93,7 +93,8 @@ fn start_with_hash(app: &mut CedarApp, rx: &Receiver<Command>, hash: &str) {
         begin,
         language(json!({"state":"starting","startup_id":42,"process_id":null})),
     );
-    tick(app, 0.3);
+    let now = app.editor_ctx.input(|input| input.time);
+    tick(app, now + 0.3);
     let poll = rx.try_recv().unwrap();
     assert!(matches!(
         poll.op,
@@ -124,6 +125,34 @@ fn model_request(app: &mut CedarApp, rx: &Receiver<Command>) -> Command {
     let command = rx.try_recv().unwrap();
     assert!(matches!(command.op, Operation::LanguageMavenModel));
     command
+}
+
+fn server_closed(app: &mut CedarApp) {
+    app.apply_language_action(
+        Action {
+            session: app.language.session,
+            kind: ActionKind::Events,
+        },
+        json!({"events":[{"type":"closed","private":"private server details"}]}),
+    );
+}
+
+fn editor_frame(app: &mut CedarApp, time: f64, events: Vec<egui::Event>) {
+    let ctx = app.editor_ctx.clone();
+    let _ = ctx.run(
+        egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.editor(ui));
+        },
+    );
 }
 
 fn model_controls_frame(
@@ -206,7 +235,7 @@ fn click_model_control(app: &mut CedarApp, at: egui::Pos2) {
 
 #[test]
 fn actual_frames_disabled_maven_model_hover_draws_reason_without_dispatch() {
-    for gate in ["trust", "agent", "model", "restart", "closing"] {
+    for gate in ["trust", "agent", "model", "restart", "closing", "exited"] {
         let (mut app, rx) = app();
         // Activate the existing synthetic Windows profile without starting Java.
         app.language.running = true;
@@ -237,6 +266,10 @@ fn actual_frames_disabled_maven_model_hover_draws_reason_without_dispatch() {
                 app.close_after_language_stop = true;
                 "Wait for the current language request or close operation to finish"
             }
+            "exited" => {
+                server_closed(&mut app);
+                SERVER_EXITED
+            }
             _ => unreachable!(),
         };
         let (at, unhovered, hovered) = hover_model_control(&mut app);
@@ -246,7 +279,7 @@ fn actual_frames_disabled_maven_model_hover_draws_reason_without_dispatch() {
                 .filter(|text| text.galley.job.text == reason)
                 .count()
         };
-        // Restart also has an always-visible status label; the tooltip must add
+        // Terminal states also have a visible status label; the tooltip must add
         // another painted copy, so that label alone cannot satisfy this test.
         let status_count = usize::from(app.language.maven_model.message() == reason);
         assert_eq!(
@@ -587,7 +620,7 @@ fn one_explicit_check_produces_inert_status_and_never_polls_or_saves() {
 }
 
 #[test]
-fn dirty_pom_and_java_buffers_keep_text_baseline_and_single_undo_through_check() {
+fn dirty_pom_and_java_buffers_keep_selection_and_native_undo_through_check_and_exit() {
     let (mut app, rx) = app();
     app.documents
         .push(Document::new(1, "pom.xml".into(), POM.into(), pom_hash()));
@@ -601,6 +634,27 @@ fn dirty_pom_and_java_buffers_keep_text_baseline_and_single_undo_through_check()
         let text = format!("{}\n<!-- draft -->", doc.text);
         crate::editor_state::commit(&app.editor_ctx, doc, text, 1);
     }
+    for id in [1, 2] {
+        app.active_document = Some(id);
+        editor_frame(&mut app, id as f64, vec![]);
+        editor_frame(&mut app, id as f64 + 0.1, vec![]);
+        let editor = egui::Id::new(("editor", id));
+        let mut state = egui::TextEdit::load_state(&app.editor_ctx, editor).unwrap();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange {
+            primary: egui::text::CCursor {
+                index: 2,
+                prefer_next_row: false,
+            },
+            secondary: egui::text::CCursor {
+                index: 10,
+                prefer_next_row: true,
+            },
+        }));
+        state.store(&app.editor_ctx, editor);
+        app.editor_ctx
+            .memory_mut(|memory| memory.request_focus(editor));
+        editor_frame(&mut app, id as f64 + 0.2, vec![]);
+    }
     let snapshots: Vec<_> = app
         .documents
         .iter()
@@ -610,6 +664,14 @@ fn dirty_pom_and_java_buffers_keep_text_baseline_and_single_undo_through_check()
                 doc.saved_text.clone(),
                 doc.revision.clone(),
                 doc.edit_version,
+                doc.cursor,
+                format!(
+                    "{:?}",
+                    egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", doc.id)))
+                        .unwrap()
+                        .cursor
+                        .char_range()
+                ),
             )
         })
         .collect();
@@ -619,20 +681,64 @@ fn dirty_pom_and_java_buffers_keep_text_baseline_and_single_undo_through_check()
     let command = model_request(&mut app, &rx);
     reply(&mut app, command, language(model_value()));
     assert!(app.language.maven_model.status == ModelStatus::Imported);
-    for (doc, snapshot) in app.documents.iter().zip(snapshots) {
+    let late = model_request(&mut app, &rx);
+    server_closed(&mut app);
+    reply(&mut app, late, language(model_value()));
+    server_closed(&mut app);
+    assert!(app.language.maven_model.status == ModelStatus::ServerExited);
+    for (doc, snapshot) in app.documents.iter().zip(&snapshots) {
         assert_eq!(
-            (
+            &(
                 doc.text.clone(),
                 doc.saved_text.clone(),
                 doc.revision.clone(),
-                doc.edit_version
+                doc.edit_version,
+                doc.cursor,
+                // CCursor equality omits wrapped-row affinity; Debug includes it.
+                format!(
+                    "{:?}",
+                    egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", doc.id)))
+                        .unwrap()
+                        .cursor
+                        .char_range()
+                ),
             ),
             snapshot
         );
-        let state =
-            egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", doc.id))).unwrap();
-        let after = (state.cursor.char_range().unwrap(), doc.text.clone());
-        assert_eq!(state.undoer().undo(&after).unwrap().1, doc.saved_text);
+        assert!(doc.dirty());
+    }
+    for id in [1, 2] {
+        app.active_document = Some(id);
+        let editor = egui::Id::new(("editor", id));
+        editor_frame(&mut app, 5.0 + id as f64, vec![]);
+        assert_eq!(
+            format!(
+                "{:?}",
+                egui::TextEdit::load_state(&app.editor_ctx, editor)
+                    .unwrap()
+                    .cursor
+                    .char_range()
+            ),
+            snapshots[(id - 1) as usize].5,
+            "the next editor frame retains both selection endpoints and affinity"
+        );
+        app.editor_ctx
+            .memory_mut(|memory| memory.request_focus(editor));
+        editor_frame(
+            &mut app,
+            5.1 + id as f64,
+            vec![egui::Event::Key {
+                key: egui::Key::Z,
+                physical_key: Some(egui::Key::Z),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+        );
+        let doc = &app.documents[(id - 1) as usize];
+        assert_eq!(doc.text, doc.saved_text, "one native Undo for {}", doc.path);
+        assert_eq!(doc.revision, snapshots[(id - 1) as usize].2);
+        assert_eq!(doc.edit_version, snapshots[(id - 1) as usize].3 + 1);
     }
     assert!(
         rx.try_recv().is_err(),
@@ -923,4 +1029,324 @@ fn model_reply_cannot_hide_disconnect_even_when_the_session_is_stale() {
     assert!(!app.ready());
     assert!(!app.language.running);
     assert!(!app.error.as_deref().unwrap_or("").contains("private"));
+}
+
+#[test]
+fn closed_retires_each_model_status_once_without_releasing_the_session() {
+    let mut inactive = ModelState::default();
+    assert!(!inactive.server_exited());
+    assert_eq!(inactive.sequence, 0);
+    for status in [
+        ModelStatus::Unchecked,
+        ModelStatus::Checking,
+        ModelStatus::Imported,
+        ModelStatus::Unresolved,
+        ModelStatus::Unavailable,
+        ModelStatus::RestartRequired,
+    ] {
+        let (mut app, rx) = app();
+        start(&mut app, &rx);
+        if status != ModelStatus::Unchecked {
+            let command = model_request(&mut app, &rx);
+            if status != ModelStatus::Checking {
+                let mut value = model_value();
+                if status == ModelStatus::Unresolved {
+                    value["status"] = json!("unresolved");
+                    value["classpath"][0]["resolved"] = json!(false);
+                    value["unresolved_count"] = json!(1);
+                }
+                let result = if status == ModelStatus::Unavailable {
+                    language(Value::Null)
+                } else if status == ModelStatus::RestartRequired {
+                    Err("language_maven_restart_required: private details".into())
+                } else {
+                    language(value)
+                };
+                reply(&mut app, command, result);
+            }
+        }
+        assert!(app.language.maven_model.status == status);
+        let session = app.language.session;
+        let floor = app.language.maven_model.observation_request_floor;
+        let sequence = app.language.maven_model.sequence;
+        let jobs = app.pending.len();
+        for _ in 0..2 {
+            app.language.output = "intervening activity".into();
+            server_closed(&mut app);
+            assert!(app.language.maven_model.status == ModelStatus::ServerExited);
+            assert_eq!(app.language.maven_model.message(), SERVER_EXITED);
+            assert_eq!(app.language.output, SERVER_EXITED);
+            assert_eq!(app.language.maven_model.sequence, sequence.wrapping_add(1));
+            assert!(app.language.maven_model.pending.is_none());
+            assert!(app.language.maven_model.model.is_none());
+            assert_eq!(
+                app.language.maven_model.pom_sha256(),
+                Some(pom_hash().as_str())
+            );
+            assert_eq!(app.language.maven_model.observation_request_floor, floor);
+            assert_eq!(app.pending.len(), jobs);
+            assert!(app.language.running && app.language.diagnostics_exited);
+            assert_eq!(app.language.session, session);
+            assert_eq!(app.maven_model_problem().as_deref(), Some(SERVER_EXITED));
+            assert!(!app.language.maven_model.server_exited());
+            app.language.maven_model.require_restart();
+            assert!(app.language.maven_model.status == ModelStatus::ServerExited);
+            assert_eq!(app.language.maven_model.sequence, sequence.wrapping_add(1));
+        }
+        app.check_maven_model();
+        tick(&mut app, 100.0);
+        assert!(
+            rx.try_recv().is_err(),
+            "exit must not dispatch a check or restart"
+        );
+    }
+}
+
+#[test]
+fn closed_keeps_model_transport_jobs_and_rejects_late_results_before_adoption() {
+    for outcome in [
+        "imported",
+        "unresolved",
+        "unavailable",
+        "malformed",
+        "payload",
+        "error",
+        "restart",
+    ] {
+        for (closed_first, connected) in [(true, true), (false, true), (true, false)] {
+            let (mut app, rx) = app();
+            start(&mut app, &rx);
+            let command = model_request(&mut app, &rx);
+            let request = command.id;
+            if closed_first {
+                server_closed(&mut app);
+                assert!(
+                    matches!(app.pending.get(&request), Some(crate::Job::Language(action)) if action.is_maven_model())
+                );
+                assert!(app.language.maven_model.pending.is_none());
+            }
+            let mut value = model_value();
+            let result = match outcome {
+                "imported" => language(value),
+                "unresolved" => {
+                    value["status"] = json!("unresolved");
+                    value["classpath"][0]["resolved"] = json!(false);
+                    value["unresolved_count"] = json!(1);
+                    language(value)
+                }
+                "unavailable" => {
+                    value["status"] = json!("unavailable");
+                    language(value)
+                }
+                "malformed" => language(json!({"private":"雪 raw payload"})),
+                "payload" => Ok(Payload::Entries { entries: vec![] }),
+                "error" => Err("private 雪 backend error".into()),
+                "restart" => Err("language_maven_restart_required: private 雪 detail".into()),
+                _ => unreachable!(),
+            };
+            app.language.cjk_seen = false;
+            app.error = Some("existing error".into());
+            let output = app.language.output.clone();
+            app.apply_event(Event {
+                generation: app.generation,
+                id: command.id,
+                connected,
+                result,
+            });
+            assert!(
+                !app.pending.contains_key(&request),
+                "reply drains the transport job"
+            );
+            if !connected {
+                assert!(!app.ready());
+                assert!(!app.language.running);
+                assert!(!app.language.maven_model.active());
+                assert!(!app.error.as_deref().unwrap_or("").contains("private"));
+            } else {
+                if closed_first {
+                    assert!(
+                        !app.language.cjk_seen,
+                        "late {outcome} must not request CJK fonts"
+                    );
+                    assert_eq!(app.language.output, output, "late {outcome}");
+                    assert_eq!(app.error.as_deref(), Some("existing error"));
+                } else {
+                    server_closed(&mut app);
+                }
+                assert!(app.ready() && app.language.running);
+                assert!(app.language.maven_model.status == ModelStatus::ServerExited);
+                assert!(app.language.maven_model.model.is_none());
+                assert_eq!(app.language.output, SERVER_EXITED);
+            }
+            assert!(rx.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn pom_read_and_save_acknowledgements_after_exit_cannot_replace_exit_status() {
+    for save in [false, true] {
+        let (mut app, rx) = app();
+        start(&mut app, &rx);
+        let changed = "changed on-disk POM";
+        let revision = format!("{:x}", Sha256::digest(changed.as_bytes()));
+        let result = if save {
+            app.documents
+                .push(Document::new(1, "pom.xml".into(), POM.into(), pom_hash()));
+            crate::editor_state::commit(&app.editor_ctx, &mut app.documents[0], changed.into(), 2);
+            app.save_document(1);
+            Ok(Payload::Written {
+                revision: revision.clone(),
+            })
+        } else {
+            app.open("pom.xml".into(), None);
+            Ok(Payload::File {
+                path: "pom.xml".into(),
+                text: changed.into(),
+                revision: revision.clone(),
+            })
+        };
+        let command = rx.try_recv().unwrap();
+        assert!(if save {
+            matches!(command.op, Operation::Write { .. })
+        } else {
+            matches!(command.op, Operation::Read { .. })
+        });
+        assert!(command.id >= app.language.maven_model.observation_request_floor);
+        server_closed(&mut app);
+        let sequence = app.language.maven_model.sequence;
+        reply(&mut app, command, result);
+        assert_eq!(app.documents[0].saved_text, changed);
+        assert_eq!(
+            app.documents[0].revision.as_deref(),
+            Some(revision.as_str())
+        );
+        assert!(app.language.maven_model.status == ModelStatus::ServerExited);
+        assert_eq!(app.language.maven_model.sequence, sequence);
+        assert_eq!(
+            app.language.maven_model.pom_sha256(),
+            Some(pom_hash().as_str())
+        );
+        assert_eq!(app.language.output, SERVER_EXITED);
+        if save {
+            assert!(matches!(rx.try_recv().unwrap().op, Operation::List { .. }));
+        }
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[test]
+fn explicit_stop_and_reset_clear_exit_while_unverified_cleanup_still_blocks_restart() {
+    for outcome in ["graceful", "malformed", "error", "reset"] {
+        let (mut app, rx) = app();
+        start(&mut app, &rx);
+        let old_session = app.language.session;
+        let command = model_request(&mut app, &rx);
+        let old_context = app.language.maven_model.pending.clone().unwrap();
+        server_closed(&mut app);
+        reply(&mut app, command, language(model_value()));
+        if outcome == "reset" {
+            app.language.reset();
+        } else {
+            app.stop_language();
+            let stop = rx.try_recv().unwrap();
+            assert!(matches!(stop.op, Operation::LanguageStop));
+            let result = match outcome {
+                "graceful" => language(
+                    json!({"stopped":true,"shutdown":{"status":"graceful","reason":"root_exited","root_exit_code":0,"cleanup_joined":true,"shutdown_response_received":true,"exit_frame_completed":true}}),
+                ),
+                "malformed" => language(json!({"stopped":true})),
+                "error" => Err("private cleanup error".into()),
+                _ => unreachable!(),
+            };
+            reply(&mut app, stop, result);
+        }
+        assert!(!app.language.running);
+        assert!(!app.language.diagnostics_exited);
+        assert!(!app.language.maven_model.active());
+        assert!(app.language.maven_model.status == ModelStatus::Unchecked);
+        assert_ne!(app.language.session, old_session);
+        if matches!(outcome, "malformed" | "error") {
+            assert!(app.language.restart_blocked);
+            assert!(!app.language.output.contains("private"));
+            app.start_language();
+            assert!(rx.try_recv().is_err());
+            continue;
+        }
+        let fresh_hash = "b".repeat(64);
+        start_with_hash(&mut app, &rx, &fresh_hash);
+        assert!(app.language.maven_model.status == ModelStatus::Unchecked);
+        let fresh = model_request(&mut app, &rx);
+        let mut value = model_value();
+        value["pom_sha256"] = json!(fresh_hash);
+        reply(&mut app, fresh, language(value));
+        let output = app.language.output.clone();
+        app.apply_language_action(
+            Action {
+                session: old_session,
+                kind: ActionKind::Events,
+            },
+            json!({"events":[{"type":"closed"}]}),
+        );
+        app.apply_maven_model_event(
+            Action {
+                session: old_session,
+                kind: ActionKind::MavenModel {
+                    context: old_context,
+                },
+            },
+            Err("language_maven_restart_required: stale".into()),
+            true,
+        );
+        assert!(app.language.running && !app.language.diagnostics_exited);
+        assert!(app.language.maven_model.status == ModelStatus::Imported);
+        assert!(app.language.maven_model.model.is_some());
+        assert_eq!(
+            app.language.maven_model.pom_sha256(),
+            Some(fresh_hash.as_str())
+        );
+        assert_eq!(app.language.output, output);
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[test]
+fn actual_model_view_removes_snapshot_rows_after_closed() {
+    let (mut app, rx) = app();
+    start(&mut app, &rx);
+    let command = model_request(&mut app, &rx);
+    reply(&mut app, command, language(model_value()));
+    for exited in [false, true] {
+        if exited {
+            server_closed(&mut app);
+        }
+        let ctx = app.editor_ctx.clone();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.maven_model_view(ui));
+            },
+        );
+        let text: Vec<_> = model_text(&output)
+            .into_iter()
+            .map(|shape| shape.galley.job.text.as_str())
+            .collect();
+        if exited {
+            assert_eq!(text, vec![SERVER_EXITED]);
+        } else {
+            for row in ["Root POM:", "Compiler source:", "Source:", "Library ("] {
+                assert!(
+                    text.iter().any(|text| text.starts_with(row)),
+                    "missing live {row} row"
+                );
+            }
+        }
+    }
+    assert!(rx.try_recv().is_err());
 }

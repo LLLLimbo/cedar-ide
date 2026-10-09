@@ -8,6 +8,7 @@ use serde_json::Value;
 
 const RESTART: &str = "Root pom.xml changed on disk. Stop and restart this Maven session to use it. Unsaved drafts are retained.";
 const UNAVAILABLE: &str = "Maven model unavailable. This snapshot does not establish that the project imported successfully.";
+const SERVER_EXITED: &str = "The Maven language server exited. Its model snapshot is unavailable. Stop this session and restart it explicitly; unsaved drafts are retained.";
 const DIRTY_POM: &str = "pom.xml has unsaved edits. Maven uses the on-disk POM; this action does not save it. Save explicitly, then stop and restart to use POM changes.";
 
 #[derive(Default)]
@@ -56,6 +57,7 @@ enum ModelStatus {
     Unresolved,
     Unavailable,
     RestartRequired,
+    ServerExited,
 }
 #[derive(Default)]
 pub(super) struct ModelState {
@@ -85,11 +87,25 @@ impl ModelState {
         self.status == ModelStatus::RestartRequired
     }
     pub(super) fn require_restart(&mut self) {
+        if self.status == ModelStatus::ServerExited {
+            return;
+        }
         self.cancel_pending();
         self.model = None;
         self.status = ModelStatus::RestartRequired;
     }
-    fn message(&self) -> &'static str {
+    pub(super) fn server_exited(&mut self) -> bool {
+        if !self.active() || self.status == ModelStatus::ServerExited {
+            return false;
+        }
+        // Retire adoption ownership, not the already-sent worker request. Its
+        // response still drains in order and can report transport loss.
+        self.cancel_pending();
+        self.model = None;
+        self.status = ModelStatus::ServerExited;
+        true
+    }
+    pub(super) fn message(&self) -> &'static str {
         match self.status {
             ModelStatus::Unchecked => "Maven model not checked. Use Check Maven model for one read-only snapshot.",
             ModelStatus::Checking => "Checking the Maven model once; no build or reimport is requested.",
@@ -97,6 +113,7 @@ impl ModelState {
             ModelStatus::Unresolved => "Maven model has unresolved entries. The local cache may be incomplete; no dependencies are downloaded.",
             ModelStatus::Unavailable => UNAVAILABLE,
             ModelStatus::RestartRequired => RESTART,
+            ModelStatus::ServerExited => SERVER_EXITED,
         }
     }
 }
@@ -298,6 +315,7 @@ impl CedarApp {
     ) {
         let state = &mut self.language.maven_model;
         if self.language.running
+            && !self.language.diagnostics_exited
             && path == "pom.xml"
             && request >= state.observation_request_floor
             && valid_hash(revision)
@@ -312,6 +330,9 @@ impl CedarApp {
         }
     }
     pub(crate) fn maven_model_problem(&self) -> Option<String> {
+        if self.language.maven_model.status == ModelStatus::ServerExited {
+            return Some(SERVER_EXITED.into());
+        }
         if !self.ready()
             || !self.language.running
             || self.language.diagnostics_exited
@@ -388,6 +409,8 @@ impl CedarApp {
         }
         let state = &mut self.language.maven_model;
         if !self.language.running
+            || self.language.diagnostics_exited
+            || state.status == ModelStatus::ServerExited
             || state.pending.as_ref() != Some(&context)
             || state.pom_sha256.as_deref() != Some(context.pom_sha256.as_str())
         {
@@ -488,6 +511,9 @@ impl CedarApp {
     pub(super) fn maven_model_view(&mut self, ui: &mut egui::Ui) {
         let state = &self.language.maven_model;
         ui.label(state.message());
+        if state.status == ModelStatus::ServerExited {
+            return;
+        }
         let Some(model) = &state.model else {
             return;
         };
