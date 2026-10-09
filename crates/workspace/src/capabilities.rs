@@ -26,6 +26,7 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
         capabilities.push("language_start_java");
         capabilities.extend_from_slice(cedar_protocol::JAVA_STARTUP_CAPABILITIES);
         capabilities.extend_from_slice(cedar_protocol::JAVA_MAVEN_CAPABILITIES);
+        capabilities.push(cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY);
         // A bridge implementation claim, never JDT/server-version support or
         // permission to execute it. Startup reports guarded session support.
         capabilities.push("java_diagnostics_refresh");
@@ -127,6 +128,10 @@ mod tests {
                 local_repository: "must-not-be-inspected".into(),
             },
             Operation::LanguageMavenModel,
+            Operation::LanguageMavenDependencies {
+                startup_id: 1,
+                pom_sha256: "must-not-be-read".into(),
+            },
             Operation::LanguageStartJavaPoll { startup_id: 1 },
             Operation::LanguageStartJavaCancel { startup_id: 1 },
             Operation::LanguageOpen {
@@ -226,7 +231,8 @@ mod tests {
                 | "language_start_java_poll"
                 | "language_start_java_cancel"
                 | "language_start_java_maven_begin"
-                | "language_maven_model" => java_language,
+                | "language_maven_model"
+                | "language_maven_dependencies" => java_language,
                 _ => generic_language || java_language,
             };
             for capability in LANGUAGE_SESSION_CAPABILITIES.iter().chain(&[
@@ -236,6 +242,7 @@ mod tests {
                 "language_start_java_cancel",
                 "language_start_java_maven_begin",
                 "language_maven_model",
+                "language_maven_dependencies",
                 "java_diagnostics_refresh",
                 "language_organize_java_imports",
                 "language_java_implementations",

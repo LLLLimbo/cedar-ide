@@ -35,6 +35,7 @@ function Assert-MavenReceipt([object[]] $Receipts) {
         }
         $probeExpected = @{
             model_probe_outcome = 'ready'; event_probe_outcome = 'events_accepted';
+            dependency_probe_outcome = 'accepted'; dependency_error_code = 'none';
             model_error_code = 'none'; model_rejection = 'none'; event_error_code = 'none';
             event_rejection = 'none'; rejected_diagnostic_origin = 'none';
             rejected_diagnostic_code_shape = 'none'; rejected_diagnostic_message_class = 'none';
@@ -45,7 +46,14 @@ function Assert-MavenReceipt([object[]] $Receipts) {
                 throw 'Maven probe branch contradicts a completed case.'
             }
         }
-        foreach ($field in @('java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected',
+        foreach ($field in @('dependency_capability_advertised', 'dependency_optional_capability_rejected',
+            'dependencies_untrusted_rejected', 'dependencies_without_session_rejected',
+            'dependency_snapshot_identity_verified', 'dependency_declaration_exact',
+            'dependency_default_provenance_verified', 'dependency_expected_jar_verified',
+            'dependency_frontend_identity_verified', 'dependency_frontend_invalidated',
+            'dependency_dirty_undo_preserved', 'dependencies_changed_pom_restart_required',
+            'dependencies_after_stop_rejected',
+            'java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected',
             'model_without_session_rejected', 'async_start_begin_acknowledged', 'async_start_read_while_starting',
             'async_start_ready', 'root_identity_verified', 'root_observed_live', 'maven_nature',
             'custom_source', 'compiler_17', 'exact_dependency_reference', 'stale_startup_rejected', 'changed_pom_restart_required',
@@ -60,14 +68,17 @@ function Assert-MavenReceipt([object[]] $Receipts) {
         foreach ($field in @('shutdown_response_received', 'exit_frame_completed')) {
             if ($case.$field -isnot [bool]) { throw 'Maven shutdown witness type is invalid.' }
         }
-        foreach ($field in @('model_queries', 'unexpected_dependency_references', 'foreign_repository_files',
+        foreach ($field in @('dependency_queries', 'dependency_declaration_count', 'dependency_observed_library_count',
+            'model_queries', 'unexpected_dependency_references', 'foreign_repository_files',
             'generated_metadata_files', 'lifecycle_metadata_files', 'lifecycle_metadata_mask',
             'generated_data_files', 'generated_data_bytes',
             'generated_project_files', 'generated_project_bytes', 'root_exit_code')) {
             if ($case.$field -isnot [int] -and $case.$field -isnot [long]) { throw 'Maven case counter type is invalid.' }
             if ($case.$field -lt 0) { throw 'Maven case counter is negative.' }
         }
-        if ($case.model_queries -lt 1 -or $case.model_queries -gt 240 -or
+        if ($case.dependency_queries -ne 1 -or $case.dependency_declaration_count -ne 1 -or
+            $case.dependency_observed_library_count -gt 1 -or
+            $case.model_queries -lt 1 -or $case.model_queries -gt 240 -or
             $case.unexpected_dependency_references -ne 0 -or $case.foreign_repository_files -ne 0 -or
             $case.generated_metadata_files -gt 128 -or $case.generated_data_files -lt 1 -or
             $case.generated_data_files -gt 4096 -or $case.generated_data_bytes -lt 1 -or
@@ -97,6 +108,25 @@ function Assert-MavenReceipt([object[]] $Receipts) {
             }
         } else { throw 'Maven stop outcome was not verified.' }
         $present = $name -ceq 'present'
+        if ($case.dependency_declaration_file_present -isnot [bool] -or
+            $case.dependency_declaration_file_present -ne $present -or
+            $case.dependency_observation -isnot [string]) {
+            throw 'Maven declaration presence or observation type is invalid.'
+        }
+        if ($present) {
+            if ($case.dependency_observation -cne 'observed_present_file' -or
+                $case.dependency_observed_library_count -ne 1) {
+                throw 'Maven present dependency insight did not observe its exact library.'
+            }
+        } elseif ($case.dependency_observation -ceq 'observed_absent_file') {
+            if ($case.dependency_observed_library_count -ne 1) {
+                throw 'Maven absent-file observation must contain exactly one library.'
+            }
+        } elseif ($case.dependency_observation -ceq 'not_observed') {
+            if ($case.dependency_observed_library_count -ne 0) {
+                throw 'Maven omitted observation cannot contain a library.'
+            }
+        } else { throw 'Maven missing insight did not record its actual observation.' }
         # This checkpoint must actually exercise the exact missing-project marker candidate.
         if ($case.owned_project_missing_library_diagnostic -isnot [bool] -or
             $case.owned_project_missing_library_diagnostic -ne (-not $present)) {

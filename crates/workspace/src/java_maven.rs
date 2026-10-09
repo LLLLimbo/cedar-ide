@@ -3,7 +3,7 @@
 //! These checks constrain accepted configuration; they are not a filesystem or
 //! network sandbox. The ordinary JDT process still has the account's permissions.
 use crate::{error, io_error, java_launch};
-use cedar_protocol::RemoteError;
+use cedar_protocol::{MavenDependencyDeclaration, MavenDependencyScope, RemoteError};
 use quick_xml::{events::Event, Reader};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -27,6 +27,7 @@ pub(super) struct MavenSession {
     pub pom_sha256: String,
     pub pom_uri: String,
     pub declared_dependencies: Vec<PathBuf>,
+    pub declarations: Vec<MavenDependencyDeclaration>,
     pub source_paths: Vec<String>,
 }
 
@@ -122,6 +123,11 @@ pub(super) fn production(
         pom_sha256: format!("{:x}", Sha256::digest(&bytes)),
         pom_uri,
         declared_dependencies,
+        declarations: model
+            .dependencies
+            .iter()
+            .map(Dependency::declaration)
+            .collect(),
         source_paths: model.source_paths,
     });
     // JDT owns these files for the lifetime of its process. Persist only this new
@@ -546,9 +552,25 @@ struct Dependency {
     artifact: String,
     version: String,
     classifier: Option<String>,
+    scope: Option<MavenDependencyScope>,
+    optional: Option<bool>,
 }
 
 impl Dependency {
+    fn declaration(&self) -> MavenDependencyDeclaration {
+        MavenDependencyDeclaration {
+            group_id: self.group.clone(),
+            artifact_id: self.artifact.clone(),
+            version: self.version.clone(),
+            classifier: self.classifier.clone(),
+            scope: self.scope.unwrap_or(MavenDependencyScope::Compile),
+            scope_explicit: self.scope.is_some(),
+            optional: self.optional.unwrap_or(false),
+            optional_explicit: self.optional.is_some(),
+            expected_jar_path: self.repository_path(),
+            regular_file_present: false,
+        }
+    }
     fn repository_path(&self) -> String {
         let classifier = self
             .classifier
@@ -676,6 +698,14 @@ fn parse_pom(bytes: &[u8]) -> Result<Pom, RemoteError> {
                 classifier: value(dependency, "classifier")?
                     .map(|value| coordinate(value, false))
                     .transpose()?,
+                scope: match value(dependency, "scope")? {
+                    Some("compile") => Some(MavenDependencyScope::Compile),
+                    Some("provided") => Some(MavenDependencyScope::Provided),
+                    Some("runtime") => Some(MavenDependencyScope::Runtime),
+                    Some("test") => Some(MavenDependencyScope::Test),
+                    _ => None,
+                },
+                optional: value(dependency, "optional")?.map(|value| value == "true"),
             };
             if !seen.insert((
                 parsed.group.clone(),
@@ -936,10 +966,43 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let relative = parsed.dependencies[0].repository_path();
         assert_eq!(relative, "org/example/api/1.2.3/api-1.2.3-tests.jar");
+        let declaration = parsed.dependencies[0].declaration();
+        assert_eq!(declaration.group_id, "org.example");
+        assert_eq!(declaration.artifact_id, "api");
+        assert_eq!(declaration.version, "1.2.3");
+        assert_eq!(declaration.classifier.as_deref(), Some("tests"));
+        assert_eq!(declaration.scope, MavenDependencyScope::Test);
+        assert!(
+            declaration.scope_explicit && declaration.optional && declaration.optional_explicit
+        );
         let missing = confined_path(root.path(), &relative, false).unwrap();
         assert!(!missing.exists());
         assert!(missing.starts_with(root.path()));
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn parser_retains_default_explicit_flags_and_case_distinct_coordinates() {
+        let dependency = |artifact: &str, extras: &str| {
+            format!("<dependency><groupId>org.example</groupId><artifactId>{artifact}</artifactId><version>1</version>{extras}</dependency>")
+        };
+        let parsed = parse_pom(&pom(&format!(
+            "<dependencies>{}{}</dependencies>",
+            dependency("Api", ""),
+            dependency("api", "<scope>compile</scope><optional>false</optional>")
+        )))
+        .unwrap();
+        let implicit = parsed.dependencies[0].declaration();
+        let explicit = parsed.dependencies[1].declaration();
+        assert_eq!(implicit.scope, explicit.scope);
+        assert_eq!(implicit.optional, explicit.optional);
+        assert!(!implicit.scope_explicit && !implicit.optional_explicit);
+        assert!(explicit.scope_explicit && explicit.optional_explicit);
+        assert_ne!(implicit.expected_jar_path, explicit.expected_jar_path);
+        assert_eq!(
+            implicit.expected_jar_path.to_ascii_lowercase(),
+            explicit.expected_jar_path.to_ascii_lowercase()
+        );
     }
 
     #[test]
@@ -1249,6 +1312,7 @@ mod tests {
             pom_sha256: format!("{:x}", Sha256::digest(&bytes)),
             pom_uri: "file:///project/pom.xml".into(),
             declared_dependencies: Vec::new(),
+            declarations: Vec::new(),
             source_paths: Vec::new(),
         };
         current_pom_matches(&session).unwrap();

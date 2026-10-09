@@ -946,7 +946,7 @@ impl CedarApp {
                         .into(),
                 );
             } else {
-                self.apply_test_report_read(load, event.result);
+                self.apply_test_report_read(event.id, load, event.result);
             }
             return;
         }
@@ -1004,6 +1004,13 @@ impl CedarApp {
             self.apply_java_startup_event(action, event.result, event.connected);
             return;
         }
+        if matches!(&job, Job::Language(action) if action.is_maven_dependencies()) {
+            let Job::Language(action) = job else {
+                unreachable!()
+            };
+            self.apply_maven_dependencies_event(event.id, action, event.result, event.connected);
+            return;
+        }
         if matches!(&job, Job::Language(action) if action.is_maven_model()) {
             let Job::Language(action) = job else {
                 unreachable!()
@@ -1049,7 +1056,7 @@ impl CedarApp {
                     "The connection closed while checking the interrupted save".into()
                 }));
             } else {
-                self.apply_interrupted_save_read(ticket, event.result);
+                self.apply_interrupted_save_read(event.id, ticket, event.result);
             }
             return;
         }
@@ -1069,7 +1076,7 @@ impl CedarApp {
                 );
                 return;
             }
-            self.apply_disk_read(ticket, purpose, event.result, event.connected);
+            self.apply_disk_read(event.id, ticket, purpose, event.result, event.connected);
             return;
         }
         if let Job::Save { document, .. } = &job {

@@ -10,10 +10,19 @@ use crate::{
     model::Document,
 };
 use cedar_client::Client;
+use cedar_protocol::{
+    MavenDependenciesSnapshot, MavenDependencyObservation, MavenDependencyScope, MavenLibraryRoot,
+    JAVA_MAVEN_DEPENDENCIES_CAPABILITY,
+};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, os::windows::fs::MetadataExt};
 use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
 
+// The backend bounds its single JDT insight query to five seconds. The normal
+// Client still permits a 75-second active Java RPC (30 seconds without a
+// session); admission reserves that full wire envelope, never a new timeout.
+const DEPENDENCY_RPC_BUDGET: Duration = Duration::from_secs(75);
+const NO_SESSION_RPC_BUDGET: Duration = Duration::from_secs(30);
 const MODEL_BUDGET: Duration = Duration::from_secs(60);
 const MODEL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_MODEL_QUERIES: u16 = 240;
@@ -110,6 +119,7 @@ enum Stage {
     Trust,
     Startup,
     Model,
+    Dependencies,
     Semantics,
     PomChange,
     Stop,
@@ -142,6 +152,29 @@ enum ModelProbeOutcome {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
+enum DependencyProbeOutcome {
+    #[default]
+    NotAttempted,
+    RequestFailed,
+    NonDependencyPayload,
+    ResponseReceived,
+    SnapshotRejected,
+    Accepted,
+    BudgetExhausted,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DependencyObservation {
+    #[default]
+    NotAttempted,
+    Unavailable,
+    ObservedPresentFile,
+    ObservedAbsentFile,
+    NotObserved,
+    Rejected,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 enum ClientErrorCode {
     #[default]
     None,
@@ -152,6 +185,8 @@ enum ClientErrorCode {
     LanguageMavenUnsupported,
     LanguageMavenRestartRequired,
     LanguageMavenInvalidModel,
+    LanguageMavenInvalidDependencies,
+    LanguageMavenStaleSnapshot,
     TransportFailure,
     Other,
 }
@@ -274,6 +309,26 @@ struct CaseEvidence {
     rejected_diagnostic_severity: DiagnosticSeverity,
     rejected_diagnostic_message_class: DiagnosticMessageClass,
     java_capabilities: bool,
+    dependency_capability_advertised: bool,
+    dependency_optional_capability_rejected: bool,
+    dependencies_untrusted_rejected: bool,
+    dependencies_without_session_rejected: bool,
+    dependency_queries: u8,
+    dependency_probe_outcome: DependencyProbeOutcome,
+    dependency_error_code: ClientErrorCode,
+    dependency_snapshot_identity_verified: bool,
+    dependency_declaration_count: u16,
+    dependency_declaration_exact: bool,
+    dependency_default_provenance_verified: bool,
+    dependency_expected_jar_verified: bool,
+    dependency_declaration_file_present: bool,
+    dependency_observed_library_count: u16,
+    dependency_observation: DependencyObservation,
+    dependency_frontend_identity_verified: bool,
+    dependency_frontend_invalidated: bool,
+    dependency_dirty_undo_preserved: bool,
+    dependencies_changed_pom_restart_required: bool,
+    dependencies_after_stop_rejected: bool,
     generic_start_rejected: bool,
     untrusted_start_rejected: bool,
     model_without_session_rejected: bool,
@@ -454,6 +509,8 @@ fn client_error_code(error: &str) -> ClientErrorCode {
         "language_maven_unsupported" => ClientErrorCode::LanguageMavenUnsupported,
         "language_maven_restart_required" => ClientErrorCode::LanguageMavenRestartRequired,
         "language_maven_invalid_model" => ClientErrorCode::LanguageMavenInvalidModel,
+        "language_maven_invalid_dependencies" => ClientErrorCode::LanguageMavenInvalidDependencies,
+        "language_maven_stale_snapshot" => ClientErrorCode::LanguageMavenStaleSnapshot,
         "transport_cancelled"
         | "transport_write"
         | "transport_eof"
@@ -516,7 +573,12 @@ fn event_payload(response: CheckResult<Payload>, record: &mut CaseEvidence) -> C
 }
 fn rejected(client: &mut Client, op: Operation, code: &str) -> CheckResult<()> {
     require(
-        client.request(op).is_err_and(|error| error.contains(code)),
+        client.request(op).is_err_and(|error| {
+            error
+                .split_once(':')
+                .map_or(error.as_str(), |(actual, _)| actual)
+                == code
+        }),
         "Maven acceptance did not receive the expected typed rejection",
     )
 }
@@ -560,7 +622,8 @@ fn capabilities(client: &Client) -> CheckResult<()> {
                 .iter()
                 .all(|name| info.supports(name))
             && info.supports("language_start_java_maven_begin")
-            && info.supports("language_maven_model"),
+            && info.supports("language_maven_model")
+            && info.supports(JAVA_MAVEN_DEPENDENCIES_CAPABILITY),
         "normal Windows agent Maven capabilities incomplete",
     )
 }
@@ -1329,6 +1392,165 @@ fn await_model(
     Err("Maven model did not establish its bounded present/missing witness".into())
 }
 
+fn dependencies_operation(startup_id: u64) -> Operation {
+    Operation::LanguageMavenDependencies {
+        startup_id,
+        pom_sha256: POM_SHA256.into(),
+    }
+}
+
+fn dependency_payload(
+    response: CheckResult<Payload>,
+    record: &mut CaseEvidence,
+) -> CheckResult<MavenDependenciesSnapshot> {
+    record.dependency_error_code = ClientErrorCode::None;
+    match response {
+        Ok(Payload::MavenDependencies { snapshot }) => {
+            record.dependency_probe_outcome = DependencyProbeOutcome::ResponseReceived;
+            Ok(snapshot)
+        }
+        Ok(_) => {
+            record.dependency_probe_outcome = DependencyProbeOutcome::NonDependencyPayload;
+            Err("Maven dependency insight received a non-dependency response".into())
+        }
+        Err(error) => {
+            record.dependency_probe_outcome = DependencyProbeOutcome::RequestFailed;
+            record.dependency_error_code = client_error_code(&error);
+            Err(error)
+        }
+    }
+}
+
+fn inspect_dependencies(
+    snapshot: &MavenDependenciesSnapshot,
+    startup_id: u64,
+    record: &mut CaseEvidence,
+) -> CheckResult<()> {
+    record.dependency_probe_outcome = DependencyProbeOutcome::SnapshotRejected;
+    record.dependency_observation = DependencyObservation::Rejected;
+    snapshot
+        .validate_for(startup_id, POM_SHA256, true)
+        .map_err(|_| "Maven dependency snapshot identity or shape rejected".to_string())?;
+    record.dependency_snapshot_identity_verified = true;
+    record.dependency_declaration_count = snapshot.declarations.len() as u16;
+    require(
+        snapshot.declarations.len() == 1,
+        "Maven dependency insight did not contain the exact declaration count",
+    )?;
+    let declaration = &snapshot.declarations[0];
+    require(
+        declaration.group_id == "dev.cedar.fixture"
+            && declaration.artifact_id == "arithmetic"
+            && declaration.version == "1.0.0"
+            && declaration.classifier.is_none(),
+        "Maven dependency insight changed the captured declaration",
+    )?;
+    record.dependency_declaration_exact = true;
+    require(
+        declaration.scope == MavenDependencyScope::Compile
+            && !declaration.scope_explicit
+            && !declaration.optional
+            && !declaration.optional_explicit,
+        "Maven dependency insight lost default compile or optional provenance",
+    )?;
+    record.dependency_default_provenance_verified = true;
+    require(
+        declaration.expected_jar_path == DEPENDENCY_JAR,
+        "Maven dependency insight changed the exact relative artifact path",
+    )?;
+    record.dependency_expected_jar_verified = true;
+    record.dependency_declaration_file_present = declaration.regular_file_present;
+    require(
+        declaration.regular_file_present == record.case.present(),
+        "Maven declaration file observation contradicts the frozen fixture",
+    )?;
+    let MavenDependencyObservation::Available { libraries } = &snapshot.observation else {
+        record.dependency_observation = DependencyObservation::Unavailable;
+        return Err("Maven dependency insight did not observe the JDT model".into());
+    };
+    record.dependency_observed_library_count = libraries.len() as u16;
+    require(
+        libraries.len() <= 1,
+        "Maven dependency insight included extra observed libraries",
+    )?;
+    if let Some(library) = libraries.first() {
+        require(
+            library.root == MavenLibraryRoot::LocalRepository
+                && library.relative_path == DEPENDENCY_JAR
+                && library.declaration_indices == [0],
+            "Maven dependency insight included a foreign or unassociated observation",
+        )?;
+        record.dependency_observation = if library.regular_file_present {
+            DependencyObservation::ObservedPresentFile
+        } else {
+            DependencyObservation::ObservedAbsentFile
+        };
+        require(
+            library.regular_file_present == record.case.present(),
+            "Maven observed library file presence contradicts the frozen fixture",
+        )?;
+    } else {
+        // JDT can omit its absent classpath entry. Record that actual observation
+        // separately from the independently observed declaration-file absence.
+        record.dependency_observation = DependencyObservation::NotObserved;
+        require(
+            !record.case.present(),
+            "Maven dependency insight omitted the present exact JDT library",
+        )?;
+    }
+    record.dependency_probe_outcome = DependencyProbeOutcome::Accepted;
+    Ok(())
+}
+
+fn dependency_query(
+    client: &mut Client,
+    paths: &CasePaths,
+    record: &mut CaseEvidence,
+    startup_id: u64,
+    pair_deadline: Instant,
+) -> CheckResult<()> {
+    let reserve = semantic_budget(record.case) + CLEANUP_BUDGET;
+    admit_work(pair_deadline, DEPENDENCY_RPC_BUDGET, reserve)?;
+    record.dependency_queries += 1;
+    let queried = Instant::now();
+    let snapshot = dependency_payload(client.request(dependencies_operation(startup_id)), record)?;
+    if queried.elapsed() >= DEPENDENCY_RPC_BUDGET
+        || !budget_admits(Instant::now(), pair_deadline, Duration::ZERO, reserve)
+    {
+        record.dependency_probe_outcome = DependencyProbeOutcome::BudgetExhausted;
+        return Err("Maven dependency insight exhausted its admitted observation budget".into());
+    }
+    inspect_dependencies(&snapshot, startup_id, record)?;
+    let editor_ctx = eframe::egui::Context::default();
+    let mut document = Document::new(1, SOURCE_FILE.into(), FIXTURE_SOURCE.into(), "r0".into());
+    editor_state::commit(
+        &editor_ctx,
+        &mut document,
+        format!("{FIXTURE_SOURCE}// unsaved dependency view witness\n"),
+        0,
+    );
+    require(
+        document.dirty() && source_unchanged(paths),
+        "Maven dependency view fixture did not retain its dirty baseline",
+    )?;
+    crate::language_ui::verify_native_maven_dependencies(
+        &snapshot,
+        startup_id,
+        POM_SHA256,
+        &mut document,
+        &editor_ctx,
+    )?;
+    require(
+        document.dirty() && source_unchanged(paths),
+        "Maven dependency view saved or discarded the dirty fixture",
+    )?;
+    record.dependency_optional_capability_rejected = true;
+    record.dependency_frontend_identity_verified = true;
+    record.dependency_frontend_invalidated = true;
+    record.dependency_dirty_undo_preserved = true;
+    admit_work(pair_deadline, Duration::ZERO, reserve)
+}
+
 fn semantic_queries(
     client: &mut Client,
     paths: &CasePaths,
@@ -1629,8 +1851,42 @@ fn generated_metadata(root: &Path, project: bool) -> CheckResult<(u32, u64)> {
     Ok((files, bytes))
 }
 
+fn dependency_case_passed(record: &CaseEvidence) -> bool {
+    record.dependency_capability_advertised
+        && record.dependency_optional_capability_rejected
+        && record.dependencies_untrusted_rejected
+        && record.dependencies_without_session_rejected
+        && record.dependency_queries == 1
+        && record.dependency_probe_outcome == DependencyProbeOutcome::Accepted
+        && record.dependency_error_code == ClientErrorCode::None
+        && record.dependency_snapshot_identity_verified
+        && record.dependency_declaration_count == 1
+        && record.dependency_declaration_exact
+        && record.dependency_default_provenance_verified
+        && record.dependency_expected_jar_verified
+        && record.dependency_declaration_file_present == record.case.present()
+        && record.dependency_frontend_identity_verified
+        && record.dependency_frontend_invalidated
+        && record.dependency_dirty_undo_preserved
+        && record.dependencies_changed_pom_restart_required
+        && record.dependencies_after_stop_rejected
+        && match record.dependency_observation {
+            DependencyObservation::ObservedPresentFile => {
+                record.case.present() && record.dependency_observed_library_count == 1
+            }
+            DependencyObservation::ObservedAbsentFile => {
+                !record.case.present() && record.dependency_observed_library_count == 1
+            }
+            DependencyObservation::NotObserved => {
+                !record.case.present() && record.dependency_observed_library_count == 0
+            }
+            _ => false,
+        }
+}
+
 fn case_passed(record: &CaseEvidence) -> bool {
-    record.java_capabilities
+    dependency_case_passed(record)
+        && record.java_capabilities
         && record.generic_start_rejected
         && record.untrusted_start_rejected
         && record.model_without_session_rejected
@@ -1749,6 +2005,14 @@ fn run_case(
             "untrusted Maven startup created controls",
         )?;
         record.untrusted_start_rejected = true;
+        admit_work(pair_deadline, NO_SESSION_RPC_BUDGET, CLEANUP_BUDGET)?;
+        rejected(
+            client.as_mut().ok_or("Maven untrusted Client missing")?,
+            dependencies_operation(1),
+            "run_disabled",
+        )?;
+        record.dependencies_untrusted_rejected = true;
+        admit_work(pair_deadline, Duration::ZERO, CLEANUP_BUDGET)?;
         rejected(
             client.as_mut().ok_or("Maven untrusted Client missing")?,
             Operation::LanguageStart {
@@ -1774,12 +2038,17 @@ fn run_case(
         let client = client.as_mut().ok_or("Maven trusted Client missing")?;
         capabilities(client)?;
         record.java_capabilities = true;
+        record.dependency_capability_advertised = true;
         rejected(
             client,
             Operation::LanguageMavenModel,
             "language_not_running",
         )?;
         record.model_without_session_rejected = true;
+        admit_work(pair_deadline, NO_SESSION_RPC_BUDGET, CLEANUP_BUDGET)?;
+        rejected(client, dependencies_operation(1), "language_not_running")?;
+        record.dependencies_without_session_rejected = true;
+        admit_work(pair_deadline, Duration::ZERO, CLEANUP_BUDGET)?;
         record.failure_stage = Stage::Startup;
         admit_work(
             pair_deadline,
@@ -1854,6 +2123,8 @@ fn run_case(
             semantic_budget(kind) + CLEANUP_BUDGET,
         )?;
         await_model(client, paths, &mut record, &mut diagnostics)?;
+        record.failure_stage = Stage::Dependencies;
+        dependency_query(client, paths, &mut record, id, pair_deadline)?;
         if kind.present() {
             record.failure_stage = Stage::Semantics;
             admit_work(pair_deadline, SEMANTIC_BUDGET, CLEANUP_BUDGET)?;
@@ -1878,6 +2149,13 @@ fn run_case(
             "language_maven_restart_required",
         )?;
         record.changed_pom_restart_required = true;
+        admit_work(pair_deadline, DEPENDENCY_RPC_BUDGET, CLEANUP_BUDGET)?;
+        rejected(
+            client,
+            dependencies_operation(id),
+            "language_maven_restart_required",
+        )?;
+        record.dependencies_changed_pom_restart_required = true;
         admit_work(pair_deadline, Duration::ZERO, CLEANUP_BUDGET)?;
         Ok(())
     });
@@ -1944,6 +2222,17 @@ fn run_case(
                 "post-Stop model verification exceeded the remaining cleanup budget",
             )?;
             record.model_after_stop_rejected = true;
+            admit_work(cleanup_deadline, NO_SESSION_RPC_BUDGET, Duration::ZERO)?;
+            rejected(
+                client,
+                dependencies_operation(startup_id.ok_or("Maven startup identity missing")?),
+                "language_not_running",
+            )?;
+            require(
+                Instant::now() < cleanup_deadline,
+                "post-Stop dependency verification exceeded the cleanup budget",
+            )?;
+            record.dependencies_after_stop_rejected = true;
         } else if let (Some(id), Some(client)) = (startup_id, client.as_mut()) {
             cancel_start(client, id, cleanup_deadline)?;
         }
@@ -2167,6 +2456,33 @@ fn maven_pair_budget_reserves_cleanup_and_rejects_late_or_unverified_work() {
     let pair_deadline = now + PAIR_BUDGET;
     assert_eq!(CLEANUP_BUDGET, Duration::from_secs(90));
     assert_eq!(PAIR_BUDGET, Duration::from_secs(360));
+    assert_eq!(MODEL_BUDGET, Duration::from_secs(60));
+    assert_eq!(DEPENDENCY_RPC_BUDGET, Duration::from_secs(75));
+    assert_eq!(NO_SESSION_RPC_BUDGET, Duration::from_secs(30));
+    assert!(budget_admits(
+        now + Duration::from_secs(175),
+        pair_deadline,
+        DEPENDENCY_RPC_BUDGET,
+        SEMANTIC_BUDGET + CLEANUP_BUDGET,
+    ));
+    assert!(!budget_admits(
+        now + Duration::from_secs(176),
+        pair_deadline,
+        DEPENDENCY_RPC_BUDGET,
+        SEMANTIC_BUDGET + CLEANUP_BUDGET,
+    ));
+    assert!(budget_admits(
+        now + Duration::from_secs(195),
+        pair_deadline,
+        DEPENDENCY_RPC_BUDGET,
+        CLEANUP_BUDGET,
+    ));
+    assert!(!budget_admits(
+        now + Duration::from_secs(196),
+        pair_deadline,
+        DEPENDENCY_RPC_BUDGET,
+        CLEANUP_BUDGET,
+    ));
     assert_eq!(case_budget(CaseKind::Present), Duration::from_secs(245));
     assert_eq!(case_budget(CaseKind::Missing), Duration::from_secs(225));
     assert!(budget_admits(
@@ -2214,6 +2530,217 @@ fn maven_pair_budget_reserves_cleanup_and_rejects_late_or_unverified_work() {
     prior.cleanup_failed = false;
     prior.client_reaped = false;
     assert!(!prior_cleanup_verified(&prior));
+}
+
+fn dependency_snapshot_fixture(present: bool, observed: bool) -> MavenDependenciesSnapshot {
+    serde_json::from_value(serde_json::json!({
+        "schema": 1,
+        "profile": "maven_leaf",
+        "startup_id": 7,
+        "pom_path": "pom.xml",
+        "pom_sha256": POM_SHA256,
+        "declarations": [{
+            "group_id": "dev.cedar.fixture", "artifact_id": "arithmetic", "version": "1.0.0",
+            "classifier": null, "scope": "compile", "scope_explicit": false,
+            "optional": false, "optional_explicit": false,
+            "expected_jar_path": DEPENDENCY_JAR, "regular_file_present": present
+        }],
+        "observation": {"status": "available", "libraries": if observed {
+            serde_json::json!([{"root": "local_repository", "relative_path": DEPENDENCY_JAR,
+                "regular_file_present": present, "declaration_indices": [0]}])
+        } else { serde_json::json!([]) }}
+    }))
+    .expect("fixed dependency snapshot fixture")
+}
+
+#[test]
+fn maven_dependency_insight_keeps_actual_missing_observation_separate_from_absence(
+) -> CheckResult<()> {
+    for (present, observed, expected) in [
+        (true, true, DependencyObservation::ObservedPresentFile),
+        (false, true, DependencyObservation::ObservedAbsentFile),
+        (false, false, DependencyObservation::NotObserved),
+    ] {
+        let snapshot = dependency_snapshot_fixture(present, observed);
+        let mut record = CaseEvidence {
+            case: if present {
+                CaseKind::Present
+            } else {
+                CaseKind::Missing
+            },
+            ..CaseEvidence::default()
+        };
+        inspect_dependencies(&snapshot, 7, &mut record)?;
+        assert_eq!(
+            record.dependency_probe_outcome,
+            DependencyProbeOutcome::Accepted
+        );
+        assert_eq!(record.dependency_observation, expected);
+        assert_eq!(record.dependency_declaration_count, 1);
+        assert_eq!(
+            record.dependency_observed_library_count,
+            if observed { 1 } else { 0 }
+        );
+        assert_eq!(record.dependency_declaration_file_present, present);
+        assert!(record.dependency_snapshot_identity_verified);
+        assert!(record.dependency_declaration_exact);
+        assert!(record.dependency_default_provenance_verified);
+        assert!(record.dependency_expected_jar_verified);
+    }
+    let mut record = CaseEvidence::default();
+    assert!(
+        inspect_dependencies(&dependency_snapshot_fixture(true, false), 7, &mut record).is_err()
+    );
+    assert_eq!(
+        record.dependency_observation,
+        DependencyObservation::NotObserved
+    );
+    assert_eq!(
+        record.dependency_probe_outcome,
+        DependencyProbeOutcome::SnapshotRejected
+    );
+    Ok(())
+}
+
+#[test]
+fn maven_dependency_insight_rejects_identity_provenance_foreign_and_forged_observations() {
+    let baseline = dependency_snapshot_fixture(true, true);
+    let raw = serde_json::to_value(&baseline).unwrap();
+    for (path, value) in [
+        (vec!["schema"], serde_json::json!(2)),
+        (vec!["startup_id"], serde_json::json!(8)),
+        (vec!["profile"], serde_json::json!("other")),
+        (vec!["pom_path"], serde_json::json!("other.xml")),
+        (vec!["pom_sha256"], serde_json::json!("a".repeat(64))),
+    ] {
+        let mut invalid = raw.clone();
+        invalid[path[0]] = value;
+        let snapshot: MavenDependenciesSnapshot = serde_json::from_value(invalid).unwrap();
+        let mut record = CaseEvidence::default();
+        assert!(inspect_dependencies(&snapshot, 7, &mut record).is_err());
+        assert!(!record.dependency_snapshot_identity_verified);
+    }
+    for (field, value) in [
+        ("group_id", serde_json::json!("dev.foreign")),
+        ("artifact_id", serde_json::json!("other")),
+        ("version", serde_json::json!("2.0.0")),
+        ("classifier", serde_json::json!("tests")),
+        ("scope", serde_json::json!("test")),
+        ("scope_explicit", serde_json::json!(true)),
+        ("optional", serde_json::json!(true)),
+        ("optional_explicit", serde_json::json!(true)),
+        (
+            "expected_jar_path",
+            serde_json::json!("C:/private/SECRET_SENTINEL.jar"),
+        ),
+        ("regular_file_present", serde_json::json!(false)),
+    ] {
+        let mut invalid = raw.clone();
+        invalid["declarations"][0][field] = value;
+        let snapshot: MavenDependenciesSnapshot = serde_json::from_value(invalid).unwrap();
+        let mut record = CaseEvidence::default();
+        assert!(inspect_dependencies(&snapshot, 7, &mut record).is_err());
+        assert_eq!(
+            record.dependency_probe_outcome,
+            DependencyProbeOutcome::SnapshotRejected
+        );
+        assert!(!serde_json::to_string(&record)
+            .unwrap()
+            .contains("SECRET_SENTINEL"));
+    }
+    for (field, value) in [
+        ("root", serde_json::json!("workspace")),
+        ("relative_path", serde_json::json!("foreign/library.jar")),
+        ("regular_file_present", serde_json::json!(false)),
+        ("declaration_indices", serde_json::json!([])),
+        ("declaration_indices", serde_json::json!([1])),
+        ("declaration_indices", serde_json::json!([0, 0])),
+    ] {
+        let mut invalid = raw.clone();
+        invalid["observation"]["libraries"][0][field] = value;
+        let snapshot: MavenDependenciesSnapshot = serde_json::from_value(invalid).unwrap();
+        assert!(inspect_dependencies(&snapshot, 7, &mut CaseEvidence::default()).is_err());
+    }
+    for field in ["declarations", "observation"] {
+        let mut invalid = raw.clone();
+        if field == "declarations" {
+            invalid[field] = serde_json::json!([]);
+        } else {
+            invalid[field] =
+                serde_json::json!({"status": "unavailable", "reason": "model_unavailable"});
+        }
+        let snapshot: MavenDependenciesSnapshot = serde_json::from_value(invalid).unwrap();
+        assert!(inspect_dependencies(&snapshot, 7, &mut CaseEvidence::default()).is_err());
+    }
+    let mut duplicate = baseline;
+    if let MavenDependencyObservation::Available { libraries } = &mut duplicate.observation {
+        libraries.push(libraries[0].clone());
+    }
+    assert!(inspect_dependencies(&duplicate, 7, &mut CaseEvidence::default()).is_err());
+    let mut forged_missing = dependency_snapshot_fixture(false, true);
+    if let MavenDependencyObservation::Available { libraries } = &mut forged_missing.observation {
+        libraries[0].regular_file_present = true;
+    }
+    let mut record = CaseEvidence {
+        case: CaseKind::Missing,
+        ..CaseEvidence::default()
+    };
+    assert!(inspect_dependencies(&forged_missing, 7, &mut record).is_err());
+    assert_eq!(
+        record.dependency_observation,
+        DependencyObservation::ObservedPresentFile
+    );
+    assert!(!record.dependency_declaration_file_present);
+}
+
+#[test]
+fn maven_dependency_payload_rejects_legacy_language_values_and_sanitizes_errors() -> CheckResult<()>
+{
+    let mut record = CaseEvidence::default();
+    assert!(dependency_payload(
+        Ok(Payload::Language {
+            value: serde_json::to_value(dependency_snapshot_fixture(true, true)).unwrap(),
+        }),
+        &mut record
+    )
+    .is_err());
+    assert_eq!(
+        record.dependency_probe_outcome,
+        DependencyProbeOutcome::NonDependencyPayload
+    );
+    for (code, expected) in [
+        (
+            "language_maven_invalid_dependencies",
+            ClientErrorCode::LanguageMavenInvalidDependencies,
+        ),
+        (
+            "language_maven_stale_snapshot",
+            ClientErrorCode::LanguageMavenStaleSnapshot,
+        ),
+        ("transport_timeout", ClientErrorCode::TransportFailure),
+    ] {
+        assert!(dependency_payload(Err(format!("{code}: SECRET_SENTINEL")), &mut record).is_err());
+        assert_eq!(
+            record.dependency_probe_outcome,
+            DependencyProbeOutcome::RequestFailed
+        );
+        assert_eq!(record.dependency_error_code, expected);
+        assert!(!serde_json::to_string(&record)
+            .unwrap()
+            .contains("SECRET_SENTINEL"));
+    }
+    dependency_payload(
+        Ok(Payload::MavenDependencies {
+            snapshot: dependency_snapshot_fixture(true, true),
+        }),
+        &mut record,
+    )?;
+    assert_eq!(
+        record.dependency_probe_outcome,
+        DependencyProbeOutcome::ResponseReceived
+    );
+    assert_eq!(record.dependency_error_code, ClientErrorCode::None);
+    Ok(())
 }
 
 #[test]

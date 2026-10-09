@@ -305,6 +305,7 @@ impl CedarApp {
 
     pub(super) fn apply_interrupted_save_read(
         &mut self,
+        request: u64,
         ticket: u64,
         result: Result<Payload, String>,
     ) {
@@ -329,6 +330,10 @@ impl CedarApp {
                 return;
             }
         };
+        if let Snapshot::File { revision, .. } = &snapshot {
+            let path = self.active().unwrap().path.clone();
+            self.observe_maven_pom_acknowledgement(request, &path, revision);
+        }
         let slot = self.interrupted_save_check.slot.as_mut().unwrap();
         if let Some(first) = &slot.snapshot {
             if first == &snapshot {

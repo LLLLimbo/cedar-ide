@@ -48,6 +48,7 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
             "language_events",
             "language_format",
             "language_java_implementations",
+            "language_maven_dependencies",
             "language_maven_model",
             "language_open",
             "language_organize_java_imports",
@@ -99,6 +100,10 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
             local_repository: String::new(),
         },
         Operation::LanguageMavenModel,
+        Operation::LanguageMavenDependencies {
+            startup_id: 1,
+            pom_sha256: "a".repeat(64),
+        },
         Operation::LanguageOrganizeJavaImports {
             path: "must-not-be-opened.java".into(),
             version: 1,

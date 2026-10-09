@@ -2,7 +2,10 @@
 //! Server paths are metadata, never authority to read files or run commands.
 use super::{error, java_diagnostics_refresh_supported, Workspace};
 use crate::java_maven::{current_pom_matches, MavenSession};
-use cedar_protocol::{Payload, RemoteError};
+use cedar_protocol::{
+    MavenDependenciesSnapshot, MavenDependencyObservation, MavenDependencyUnavailableReason,
+    MavenLibraryRoot, MavenObservedLibrary, Payload, RemoteError, MAVEN_DEPENDENCIES_SCHEMA,
+};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -40,6 +43,41 @@ pub(super) fn supported(typed_maven: bool, initialize: &Value) -> bool {
 }
 
 impl Workspace {
+    pub(super) fn maven_dependencies(
+        &self,
+        startup_id: u64,
+        pom_sha256: &str,
+    ) -> Result<Payload, RemoteError> {
+        let session = self
+            .language
+            .as_ref()
+            .ok_or_else(|| error("language_not_running", "Start a language server first"))?;
+        let maven = session
+            .java_maven
+            .as_ref()
+            .filter(|_| session.production_java)
+            .ok_or_else(|| {
+                error(
+                    "language_maven_session_required",
+                    "Maven dependencies require a typed Maven Java session",
+                )
+            })?;
+        let snapshot = query_dependencies(
+            maven,
+            session.startup_id,
+            startup_id,
+            pom_sha256,
+            session.java_maven_model,
+            |params, timeout| {
+                session
+                    .client
+                    .request_with_timeout("workspace/executeCommand", params, timeout)
+                    .map_err(|_| ())
+            },
+        )?;
+        Ok(Payload::MavenDependencies { snapshot })
+    }
+
     pub(super) fn maven_model(&self) -> Result<Payload, RemoteError> {
         let session = self
             .language
@@ -70,6 +108,17 @@ fn query_model(
     command_supported: bool,
     request: impl FnOnce(Value, Duration) -> Result<Value, ()>,
 ) -> Result<Value, RemoteError> {
+    match query_settings(maven, command_supported, request)? {
+        Some(value) => normalize_model(maven, value),
+        None => Ok(unavailable(maven)),
+    }
+}
+
+fn query_settings(
+    maven: &MavenSession,
+    command_supported: bool,
+    request: impl FnOnce(Value, Duration) -> Result<Value, ()>,
+) -> Result<Option<Value>, RemoteError> {
     current_pom_matches(maven)?;
     if !command_supported {
         return Err(error(
@@ -85,10 +134,112 @@ fn query_model(
     );
     // A failed or timed-out request must not hide a POM change either.
     current_pom_matches(maven)?;
-    match result {
-        Ok(value) => normalize_model(maven, value),
-        Err(()) => Ok(unavailable(maven)),
+    Ok(result.ok())
+}
+
+fn query_dependencies(
+    maven: &MavenSession,
+    owned_startup_id: Option<u64>,
+    startup_id: u64,
+    pom_sha256: &str,
+    command_supported: bool,
+    request: impl FnOnce(Value, Duration) -> Result<Value, ()>,
+) -> Result<MavenDependenciesSnapshot, RemoteError> {
+    // Owner/hash equality is established before any filesystem or server work.
+    if startup_id == 0 || owned_startup_id != Some(startup_id) || pom_sha256 != maven.pom_sha256 {
+        return Err(error(
+            "language_maven_stale_snapshot",
+            "The Maven session or captured POM changed; refresh the current session",
+        ));
     }
+    let raw = query_settings(maven, command_supported, request)?;
+    let model = match raw {
+        Some(value) => normalize_model_inner(maven, value, false)?,
+        None => unavailable(maven),
+    };
+    let root = checked_path(path_text(&maven.root)?, true)?;
+    let repository = checked_path(path_text(&maven.local_repository)?, true)?;
+    if !root.exists || !repository.exists || maven.declarations.len() > MAX_CLASSPATH {
+        return Err(invalid());
+    }
+    let mut declarations = maven.declarations.clone();
+    for declaration in &mut declarations {
+        let path = confined_path(
+            path_text(&maven.local_repository.join(&declaration.expected_jar_path))?,
+            false,
+            &repository,
+            None,
+        )?;
+        declaration.regular_file_present = path.exists;
+    }
+    let observation = if model["status"] == "unavailable" {
+        MavenDependencyObservation::Unavailable {
+            reason: MavenDependencyUnavailableReason::ModelUnavailable,
+        }
+    } else {
+        let entries = model["classpath"].as_array().ok_or_else(invalid)?;
+        let mut libraries = Vec::new();
+        for entry in entries.iter().filter(|entry| entry["kind"] == "library") {
+            let path = confined_path(
+                entry["path"].as_str().ok_or_else(invalid)?,
+                false,
+                &root,
+                Some(&repository),
+            )?;
+            let (library_root, relative_path) =
+                if let Some(relative) = relative_to(&path, &repository) {
+                    (MavenLibraryRoot::LocalRepository, relative)
+                } else {
+                    (
+                        MavenLibraryRoot::Workspace,
+                        relative_to(&path, &root).ok_or_else(invalid)?,
+                    )
+                };
+            let declaration_indices =
+                declaration_matches(&declarations, library_root, &relative_path, cfg!(windows));
+            libraries.push(MavenObservedLibrary {
+                root: library_root,
+                relative_path,
+                regular_file_present: path.exists && entry["resolved"] == true,
+                declaration_indices,
+            });
+        }
+        MavenDependencyObservation::Available { libraries }
+    };
+    let snapshot = MavenDependenciesSnapshot {
+        schema: MAVEN_DEPENDENCIES_SCHEMA,
+        profile: "maven_leaf".into(),
+        startup_id,
+        pom_path: "pom.xml".into(),
+        pom_sha256: maven.pom_sha256.clone(),
+        declarations,
+        observation,
+    };
+    snapshot.validate_for(startup_id, pom_sha256, cfg!(windows))?;
+    Ok(snapshot)
+}
+
+fn declaration_matches(
+    declarations: &[cedar_protocol::MavenDependencyDeclaration],
+    root: MavenLibraryRoot,
+    relative_path: &str,
+    windows: bool,
+) -> Vec<u16> {
+    declarations
+        .iter()
+        .enumerate()
+        .filter(|(_, declaration)| {
+            root == MavenLibraryRoot::LocalRepository
+                && if windows {
+                    declaration
+                        .expected_jar_path
+                        .eq_ignore_ascii_case(relative_path)
+                } else {
+                    declaration.expected_jar_path == relative_path
+                }
+        })
+        .map(|(index, _)| index as u16)
+        .collect()
 }
 
 fn invalid() -> RemoteError {
@@ -166,6 +317,14 @@ fn compiler_text<'a>(
 }
 
 fn normalize_model(maven: &MavenSession, value: Value) -> Result<Value, RemoteError> {
+    normalize_model_inner(maven, value, true)
+}
+
+fn normalize_model_inner(
+    maven: &MavenSession,
+    value: Value,
+    merge_declarations: bool,
+) -> Result<Value, RemoteError> {
     // Unknown keys and attributes are ignored only inside this whole-response cap.
     bounded_json(&value)?;
     let Some(object) = value.as_object() else {
@@ -273,7 +432,11 @@ fn normalize_model(maven: &MavenSession, value: Value) -> Result<Value, RemoteEr
     // Some JDT states omit unresolved artifacts. A declared coordinate still
     // claims its captured cache path, and its absence must remain visible.
     let mut incomplete_dependencies = false;
-    for declared in &maven.declared_dependencies {
+    for declared in maven
+        .declared_dependencies
+        .iter()
+        .filter(|_| merge_declarations)
+    {
         let path = confined_path(path_text(declared)?, false, &root, Some(&repository))?;
         if path.exists && !entry_keys.contains_key(&path.key) {
             incomplete_dependencies = true;
@@ -520,6 +683,7 @@ mod tests {
             local_repository: repository,
             pom_sha256: format!("{:x}", Sha256::digest(pom)),
             declared_dependencies: Vec::new(),
+            declarations: Vec::new(),
             source_paths: vec!["src/main/java".into()],
         };
         (temp, session)
@@ -538,6 +702,248 @@ mod tests {
         value[TARGET] = json!("17");
         value[RELEASE] = json!("enabled");
         value
+    }
+
+    fn declaration(artifact: &str) -> cedar_protocol::MavenDependencyDeclaration {
+        let mut declaration = cedar_protocol::MavenDependencyDeclaration {
+            group_id: "org.example".into(),
+            artifact_id: artifact.into(),
+            version: "1.0".into(),
+            classifier: None,
+            scope: cedar_protocol::MavenDependencyScope::Compile,
+            scope_explicit: false,
+            optional: false,
+            optional_explicit: false,
+            expected_jar_path: String::new(),
+            regular_file_present: false,
+        };
+        declaration.expected_jar_path = declaration.repository_jar_path();
+        declaration
+    }
+
+    fn observe(maven: &MavenSession, raw: Value) -> Result<MavenDependenciesSnapshot, RemoteError> {
+        query_dependencies(maven, Some(7), 7, &maven.pom_sha256, true, |_, _| Ok(raw))
+    }
+
+    #[test]
+    fn dependencies_separate_captured_presence_from_observed_libraries() {
+        let (_temp, mut maven) = fixture();
+        let declared = declaration("api");
+        let jar = maven.local_repository.join(&declared.expected_jar_path);
+        fs::create_dir_all(jar.parent().unwrap()).unwrap();
+        fs::write(&jar, b"mere presence, not integrity").unwrap();
+        maven.declared_dependencies.push(jar.clone());
+        maven.declarations.push(declared);
+        // Preserve the legacy strict merged view's readiness behavior.
+        assert_eq!(
+            normalize_model(&maven, model(&maven)).unwrap()["status"],
+            "unavailable"
+        );
+        let empty = observe(&maven, model(&maven)).unwrap();
+        assert!(empty.declarations[0].regular_file_present);
+        assert_eq!(
+            empty.observation,
+            MavenDependencyObservation::Available { libraries: vec![] }
+        );
+        let unavailable = observe(&maven, Value::Null).unwrap();
+        assert!(unavailable.declarations[0].regular_file_present);
+        assert_eq!(
+            unavailable.observation,
+            MavenDependencyObservation::Unavailable {
+                reason: MavenDependencyUnavailableReason::ModelUnavailable
+            }
+        );
+        let mut raw = model(&maven);
+        let entries = raw[CLASSPATH].as_array_mut().unwrap();
+        entries.push(json!({"kind":1,"path":jar,"sourceAttachmentPath":"C:/secret/source.zip","foreign":{"token":"do-not-return"}}));
+        entries.push(json!({"kind":1,"path":jar}));
+        entries.push(json!({"kind":1,"path":maven.root.join("lib/extra 雪.jar")}));
+        let observed = observe(&maven, raw).unwrap();
+        let MavenDependencyObservation::Available { libraries } = &observed.observation else {
+            panic!("available");
+        };
+        assert_eq!(libraries.len(), 2);
+        assert_eq!(libraries[0].root, MavenLibraryRoot::LocalRepository);
+        assert_eq!(
+            libraries[0].relative_path,
+            observed.declarations[0].expected_jar_path
+        );
+        assert_eq!(libraries[0].declaration_indices, [0]);
+        assert!(libraries[0].regular_file_present);
+        assert_eq!(libraries[1].root, MavenLibraryRoot::Workspace);
+        assert_eq!(libraries[1].relative_path, "lib/extra 雪.jar");
+        assert!(libraries[1].declaration_indices.is_empty());
+        assert!(!libraries[1].regular_file_present);
+        let wire = serde_json::to_string(&observed).unwrap();
+        for secret in [
+            path_text(&maven.root).unwrap(),
+            path_text(&maven.local_repository).unwrap(),
+            "sourceAttachmentPath",
+            "do-not-return",
+        ] {
+            assert!(!wire.contains(secret));
+        }
+        fs::remove_file(jar).unwrap();
+        assert!(!observe(&maven, Value::Null).unwrap().declarations[0].regular_file_present);
+    }
+
+    #[test]
+    fn dependency_matching_reports_all_windows_case_collisions_in_declaration_order() {
+        let declarations = vec![declaration("Api"), declaration("api")];
+        assert_eq!(
+            declaration_matches(
+                &declarations,
+                MavenLibraryRoot::LocalRepository,
+                &declarations[0].expected_jar_path,
+                true
+            ),
+            [0, 1]
+        );
+        assert_eq!(
+            declaration_matches(
+                &declarations,
+                MavenLibraryRoot::LocalRepository,
+                &declarations[0].expected_jar_path,
+                false
+            ),
+            [0]
+        );
+        assert!(declaration_matches(
+            &declarations,
+            MavenLibraryRoot::Workspace,
+            &declarations[0].expected_jar_path,
+            true
+        )
+        .is_empty());
+        let lower = normalized_spelling("C:\\CACHE\\org\\example\\Api\\1.0\\Api-1.0.jar", true)
+            .unwrap()
+            .to_ascii_lowercase();
+        let upper = normalized_spelling("c:/cache/org/example/api/1.0/api-1.0.jar", true)
+            .unwrap()
+            .to_ascii_lowercase();
+        assert_eq!(lower, upper);
+    }
+
+    #[test]
+    fn dependency_query_binds_owner_hash_fixed_request_and_both_pom_checks() {
+        let (_temp, maven) = fixture();
+        let result = query_dependencies(&maven, Some(7), 7, &maven.pom_sha256, true, |params, timeout| {
+            assert_eq!(timeout, Duration::from_secs(5));
+            assert_eq!(params, json!({"command":COMMAND,"arguments":[maven.pom_uri,[NATURES,SOURCES,CLASSPATH,SOURCE,COMPLIANCE,TARGET,RELEASE]]}));
+            Ok(model(&maven))
+        }).unwrap();
+        assert_eq!(result.startup_id, 7);
+        assert_eq!(result.pom_sha256, maven.pom_sha256);
+        assert_eq!(
+            query_dependencies(&maven, Some(7), 7, &maven.pom_sha256, false, |_, _| panic!(
+                "unsupported must not query"
+            ))
+            .unwrap_err()
+            .code,
+            "language_maven_unsupported"
+        );
+        let timed_out =
+            query_dependencies(&maven, Some(7), 7, &maven.pom_sha256, true, |_, _| Err(()))
+                .unwrap();
+        assert!(matches!(
+            timed_out.observation,
+            MavenDependencyObservation::Unavailable { .. }
+        ));
+        for (owner, requested, hash) in [
+            (None, 7, maven.pom_sha256.as_str()),
+            (Some(7), 8, maven.pom_sha256.as_str()),
+            (Some(0), 0, maven.pom_sha256.as_str()),
+            (Some(7), 7, "wrong"),
+        ] {
+            assert_eq!(
+                query_dependencies(&maven, owner, requested, hash, true, |_, _| panic!(
+                    "stale must not query"
+                ))
+                .unwrap_err()
+                .code,
+                "language_maven_stale_snapshot"
+            );
+        }
+        assert_eq!(
+            query_dependencies(&maven, Some(7), 7, &maven.pom_sha256, true, |_, _| {
+                fs::write(maven.root.join("pom.xml"), b"changed during query").unwrap();
+                Err(())
+            })
+            .unwrap_err()
+            .code,
+            "language_maven_restart_required"
+        );
+        assert_eq!(
+            query_dependencies(&maven, Some(7), 8, &maven.pom_sha256, true, |_, _| panic!(
+                "identity precedes disk check"
+            ))
+            .unwrap_err()
+            .code,
+            "language_maven_stale_snapshot"
+        );
+        assert_eq!(
+            query_dependencies(&maven, Some(7), 7, &maven.pom_sha256, true, |_, _| panic!(
+                "changed POM must not query"
+            ))
+            .unwrap_err()
+            .code,
+            "language_maven_restart_required"
+        );
+    }
+
+    #[test]
+    fn dependency_observations_reject_foreign_malformed_and_oversized_metadata() {
+        let (temp, mut maven) = fixture();
+        for entry in [
+            json!({"kind":1,"path":temp.path().join("foreign.jar")}),
+            json!({"kind":1,"path":maven.root.join("src")}),
+            json!({"kind":2,"path":maven.root}),
+            json!({"kind":1,"path":true}),
+            json!({"kind":1,"path":"../outside.jar"}),
+        ] {
+            let mut raw = model(&maven);
+            raw[CLASSPATH].as_array_mut().unwrap().push(entry);
+            assert_eq!(
+                observe(&maven, raw).unwrap_err().code,
+                "language_maven_invalid_model"
+            );
+        }
+        let mut raw = model(&maven);
+        raw["foreign"] = json!("x".repeat(MAX_JSON));
+        assert!(observe(&maven, raw).is_err());
+        let mut raw = model(&maven);
+        raw[CLASSPATH] = json!(vec![
+            json!({"kind":1,"path":maven.root.join("a.jar")});
+            MAX_CLASSPATH + 1
+        ]);
+        assert!(observe(&maven, raw).is_err());
+        for raw in [json!([]), json!(true), json!("bad")] {
+            assert!(observe(&maven, raw).is_err());
+        }
+        maven.declarations = (0..MAX_CLASSPATH)
+            .map(|index| declaration(&format!("{index}{}", "a".repeat(250))))
+            .collect();
+        assert!(observe(&maven, Value::Null).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_presence_rejects_symlinks_even_when_observations_are_unavailable() {
+        let (temp, mut maven) = fixture();
+        let declaration = declaration("api");
+        let path = maven.local_repository.join(&declaration.expected_jar_path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let real = temp.path().join("real.jar");
+        fs::write(&real, b"jar").unwrap();
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        let mut raw = model(&maven);
+        raw[CLASSPATH]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"kind":1,"path":path}));
+        assert!(observe(&maven, raw).is_err());
+        maven.declarations.push(declaration);
+        assert!(observe(&maven, Value::Null).is_err());
     }
 
     #[test]

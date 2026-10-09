@@ -260,6 +260,7 @@ fn capability_names_match_each_operation_or_its_explicit_bridge_name() {
         json!({"type":"language_start_java_begin","java_executable":"java.exe","distribution":"jdt","data_directory":"data"}),
         json!({"type":"language_start_java_maven_begin","java_executable":"java.exe","distribution":"jdt 雪","data_directory":"data","local_repository":"cache 雪"}),
         json!({"type":"language_maven_model"}),
+        json!({"type":"language_maven_dependencies","startup_id":1,"pom_sha256":"a".repeat(64)}),
         json!({"type":"language_start_java_poll","startup_id":1}),
         json!({"type":"language_start_java_cancel","startup_id":1}),
         json!({"type":"language_open","path":"a","language_id":"rust","version":1,"text":""}),
@@ -446,6 +447,26 @@ fn maven_profile_is_explicit_and_has_no_caller_command_or_model_uri() {
         serde_json::to_value(Operation::LanguageMavenModel).unwrap(),
         json!({"type":"language_maven_model"})
     );
+    assert_eq!(
+        JAVA_MAVEN_CAPABILITIES,
+        &["language_start_java_maven_begin", "language_maven_model"]
+    );
+    let dependencies = Operation::LanguageMavenDependencies {
+        startup_id: 7,
+        pom_sha256: "a".repeat(64),
+    };
+    assert_eq!(
+        dependencies.capability_name(),
+        Some(cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY)
+    );
+    assert_eq!(
+        serde_json::to_value(dependencies).unwrap(),
+        json!({"type":"language_maven_dependencies", "startup_id":7, "pom_sha256":"a".repeat(64)})
+    );
+    assert!(!supports_capability(
+        None,
+        cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY
+    ));
     for capability in JAVA_MAVEN_CAPABILITIES {
         assert!(!supports_capability(None, capability));
         assert!(!JAVA_STARTUP_CAPABILITIES.contains(capability));

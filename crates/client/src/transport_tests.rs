@@ -2171,3 +2171,88 @@ fn typed_maven_startup_uses_the_same_owned_id_and_forwards_one_fixed_model_opera
     assert!(!process(&mut client).java_language_session);
     assert_eq!(process(&mut client).java_startup.active, None);
 }
+
+fn maven_dependencies_operation() -> Operation {
+    Operation::LanguageMavenDependencies {
+        startup_id: 7,
+        pom_sha256: "a".repeat(64),
+    }
+}
+
+#[test]
+fn maven_dependencies_require_optional_and_complete_lifecycle_without_wire_fallback() {
+    let capability = "language_maven_dependencies";
+    let complete: Vec<_> = maven_capabilities()
+        .into_iter()
+        .chain([capability])
+        .collect();
+    for missing in std::iter::once(&capability)
+        .chain(JAVA_MAVEN_CAPABILITIES)
+        .chain(JAVA_STARTUP_CAPABILITIES)
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
+    {
+        let root = tempfile::tempdir().unwrap();
+        let capabilities: Vec<_> = complete
+            .iter()
+            .copied()
+            .filter(|name| name != missing)
+            .collect();
+        let mut client = capability_client(root.path(), Some(agent_info(&capabilities)));
+        let error = client.request(maven_dependencies_operation()).unwrap_err();
+        assert!(error.starts_with("unsupported_operation:"), "{error}");
+        assert!(error.contains(missing), "{missing}: {error}");
+        assert_eq!(recorded_requests(root.path()).len(), 1);
+        read_fixture(&mut client);
+    }
+    let root = tempfile::tempdir().unwrap();
+    let mut legacy = capability_client(root.path(), None);
+    assert!(legacy
+        .request(maven_dependencies_operation())
+        .unwrap_err()
+        .contains(capability));
+    assert_eq!(recorded_requests(root.path()).len(), 1);
+}
+
+#[test]
+fn maven_dependencies_forward_exact_identity_and_typed_snapshot_once() {
+    let root = tempfile::tempdir().unwrap();
+    let capabilities: Vec<_> = maven_capabilities()
+        .into_iter()
+        .chain(["language_maven_dependencies"])
+        .collect();
+    let mut client = capability_client(root.path(), Some(agent_info(&capabilities)));
+    let snapshot = serde_json::json!({
+        "schema":1,"profile":"maven_leaf","startup_id":7,"pom_path":"pom.xml",
+        "pom_sha256":"a".repeat(64),"declarations":[],
+        "observation":{"status":"unavailable","reason":"model_unavailable"}
+    });
+    next_result(
+        root.path(),
+        &mut client,
+        serde_json::json!({"Ok": {
+            "type":"maven_dependencies", "snapshot":snapshot
+        }}),
+    );
+    let Payload::MavenDependencies { snapshot: actual } =
+        client.request(maven_dependencies_operation()).unwrap()
+    else {
+        panic!("typed dependency snapshot expected");
+    };
+    assert_eq!(serde_json::to_value(actual).unwrap(), snapshot);
+    let requests = recorded_requests(root.path());
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1]["op"],
+        serde_json::json!({
+            "type":"language_maven_dependencies","startup_id":7,"pom_sha256":"a".repeat(64)
+        })
+    );
+    assert!(is_language_session_operation(
+        &maven_dependencies_operation()
+    ));
+    process(&mut client).java_language_session = true;
+    assert_eq!(
+        process(&mut client).request_timeout(&maven_dependencies_operation()),
+        JAVA_LANGUAGE_REQUEST_TIMEOUT
+    );
+}

@@ -1,6 +1,8 @@
 //! Bounded newline-delimited JSON protocol between native UI and workspace agent.
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
+mod maven_dependencies;
+pub use maven_dependencies::*;
 pub const PROTOCOL_VERSION: u32 = 4;
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_FILE_BYTES: usize = 1024 * 1024;
@@ -43,6 +45,8 @@ pub const JAVA_STARTUP_CAPABILITIES: &[&str] = &[
 /// lifecycle as well; this group never permits a generic executeCommand bridge.
 pub const JAVA_MAVEN_CAPABILITIES: &[&str] =
     &["language_start_java_maven_begin", "language_maven_model"];
+/// Optional read view; never changes the original Maven capability pair.
+pub const JAVA_MAVEN_DEPENDENCIES_CAPABILITY: &str = "language_maven_dependencies";
 
 /// Unverified implementation information, never execution permission or identity.
 /// Validate received information before retaining it as a connection snapshot.
@@ -177,6 +181,11 @@ pub enum Operation {
     },
     /// Read the fixed root POM's imported model in the current typed session.
     LanguageMavenModel,
+    /// Read captured declarations and current library observations for this owner.
+    LanguageMavenDependencies {
+        startup_id: u64,
+        pom_sha256: String,
+    },
     LanguageStartJavaPoll {
         startup_id: u64,
     },
@@ -290,6 +299,7 @@ impl Operation {
             Self::LanguageStartJavaBegin { .. } => "language_start_java_begin",
             Self::LanguageStartJavaMavenBegin { .. } => "language_start_java_maven_begin",
             Self::LanguageMavenModel => "language_maven_model",
+            Self::LanguageMavenDependencies { .. } => JAVA_MAVEN_DEPENDENCIES_CAPABILITY,
             Self::LanguageStartJavaPoll { .. } => "language_start_java_poll",
             Self::LanguageStartJavaCancel { .. } => "language_start_java_cancel",
             Self::LanguageOpen { .. } => "language_open",
@@ -363,6 +373,9 @@ pub enum Payload {
     },
     Language {
         value: serde_json::Value,
+    },
+    MavenDependencies {
+        snapshot: MavenDependenciesSnapshot,
     },
     RunTask {
         snapshot: serde_json::Value,

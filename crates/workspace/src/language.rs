@@ -344,6 +344,18 @@ impl Workspace {
                 }
                 self.maven_model()
             }
+            Operation::LanguageMavenDependencies {
+                startup_id,
+                pom_sha256,
+            } => {
+                if !self.maven_platform_supported() {
+                    return Err(error(
+                        "unsupported_platform",
+                        "Maven dependencies require a normal isolated Windows agent",
+                    ));
+                }
+                self.maven_dependencies(startup_id, &pom_sha256)
+            }
             Operation::LanguageStartJavaPoll { startup_id } => {
                 if !java_platform_supported(self.backend_mode) {
                     return Err(error(
@@ -1178,6 +1190,13 @@ mod maven_route_tests {
         }
     }
 
+    fn dependencies() -> Operation {
+        Operation::LanguageMavenDependencies {
+            startup_id: 1,
+            pom_sha256: "must-not-be-read\0".into(),
+        }
+    }
+
     #[test]
     fn typed_maven_requires_trust_and_normal_windows_isolated_host_before_paths() {
         let root = tempfile::tempdir().unwrap();
@@ -1186,18 +1205,22 @@ mod maven_route_tests {
             cedar_tasks::BackendMode::IsolatedAgent,
         ] {
             let mut workspace = Workspace::with_backend_mode(root.path(), backend).unwrap();
-            for op in [start(), Operation::LanguageMavenModel] {
+            for op in [start(), Operation::LanguageMavenModel, dependencies()] {
                 assert_eq!(workspace.handle(op).unwrap_err().code, "run_disabled");
             }
             workspace.set_allow_run(true);
             if !cfg!(windows) || backend == cedar_tasks::BackendMode::InProcess {
-                for op in [start(), Operation::LanguageMavenModel] {
+                for op in [start(), Operation::LanguageMavenModel, dependencies()] {
                     assert_eq!(
                         workspace.handle(op).unwrap_err().code,
                         "unsupported_platform"
                     );
                 }
             } else {
+                assert_eq!(
+                    workspace.handle(dependencies()).unwrap_err().code,
+                    "language_not_running"
+                );
                 assert_eq!(
                     workspace
                         .handle(Operation::LanguageMavenModel)

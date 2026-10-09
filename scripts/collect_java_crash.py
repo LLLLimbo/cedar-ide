@@ -277,6 +277,13 @@ AGENT_TRANSCRIPT_FIELDS['windows_java_idle_correction'] = {
 # One fixed normal-route Maven pair. Nested schemas are declared here; no
 # arbitrary object, path, diagnostic text or environment field is forwarded.
 MAVEN_CASE_FIELDS = dict.fromkeys((
+    'dependency_capability_advertised', 'dependency_optional_capability_rejected',
+    'dependencies_untrusted_rejected', 'dependencies_without_session_rejected',
+    'dependency_snapshot_identity_verified', 'dependency_declaration_exact',
+    'dependency_default_provenance_verified', 'dependency_expected_jar_verified',
+    'dependency_declaration_file_present', 'dependency_frontend_identity_verified',
+    'dependency_frontend_invalidated', 'dependency_dirty_undo_preserved',
+    'dependencies_changed_pom_restart_required', 'dependencies_after_stop_rejected',
     'java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected',
     'model_without_session_rejected', 'async_start_begin_acknowledged',
     'async_start_read_while_starting', 'async_start_ready', 'root_identity_verified',
@@ -292,10 +299,15 @@ MAVEN_CASE_FIELDS = dict.fromkeys((
     'model_after_stop_rejected', 'client_reaped', 'synthetic_root_removed',
     'primary_failed', 'cleanup_failed', 'success'), 'bool') | {
         'case': ('present', 'missing'),
-        'failure_stage': ('setup', 'trust', 'startup', 'model', 'semantics', 'pom_change',
+        'failure_stage': ('setup', 'trust', 'startup', 'model', 'dependencies', 'semantics', 'pom_change',
                           'stop', 'root_exit', 'client_exit', 'fixture_cleanup', 'none'),
         'model_status': ('unavailable', 'imported', 'unresolved'),
         'model_queries': ('integer_range', 0, 240),
+        'dependency_queries': ('integer_range', 0, 1),
+        'dependency_declaration_count': ('integer_range', 0, 256),
+        'dependency_observed_library_count': ('integer_range', 0, 256),
+        'dependency_observation': ('not_attempted', 'unavailable', 'observed_present_file',
+                                   'observed_absent_file', 'not_observed', 'rejected'),
         'unexpected_dependency_references': ('integer_range', 0, 65535),
         'generated_metadata_files': ('integer_range', 0, 65535),
         'lifecycle_metadata_files': ('integer_range', 0, 6),
@@ -313,8 +325,13 @@ MAVEN_CASE_FIELDS = dict.fromkeys((
 MAVEN_PROBE_ERROR_CODES = ('none', 'unsupported_operation', 'run_disabled',
                          'language_not_running', 'language_maven_session_required',
                          'language_maven_unsupported', 'language_maven_restart_required',
-                         'language_maven_invalid_model', 'transport_failure', 'other')
+                         'language_maven_invalid_model', 'language_maven_invalid_dependencies',
+                         'language_maven_stale_snapshot', 'transport_failure', 'other')
 MAVEN_CASE_FIELDS.update({
+    'dependency_probe_outcome': ('not_attempted', 'request_failed', 'non_dependency_payload',
+                                 'response_received', 'snapshot_rejected', 'accepted',
+                                 'budget_exhausted'),
+    'dependency_error_code': MAVEN_PROBE_ERROR_CODES,
     'model_probe_outcome': ('not_attempted', 'request_failed', 'non_language_payload',
                             'response_received', 'model_rejected', 'not_ready', 'ready',
                             'budget_exhausted'),

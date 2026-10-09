@@ -14,14 +14,17 @@ fn assert_fixture_hello(fixture: &mut Workspace, ordinary: &mut Workspace) {
     for capability in cedar_protocol::JAVA_MAVEN_CAPABILITIES {
         assert!(!info.supports(capability));
     }
+    assert!(!info.supports(cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY));
     let Payload::Hello {
         agent: Some(info), ..
     } = &mut expected
     else {
         panic!("ordinary metadata");
     };
-    info.capabilities
-        .retain(|name| !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str()));
+    info.capabilities.retain(|name| {
+        !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str())
+            && name != cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY
+    });
     assert_eq!(
         serde_json::to_value(actual).unwrap(),
         serde_json::to_value(expected).unwrap()
@@ -64,6 +67,16 @@ fn validation_requires_synthetic_root_and_separate_execution_trust() {
         Workspace::with_backend_mode(root.path(), BackendMode::IsolatedAgent).unwrap();
     assert_fixture_hello(&mut fixture, &mut ordinary);
     fixture.set_allow_run(true);
+    assert_eq!(
+        fixture
+            .handle(Operation::LanguageMavenDependencies {
+                startup_id: 1,
+                pom_sha256: "unused".into()
+            })
+            .unwrap_err()
+            .code,
+        "unsupported_platform"
+    );
     assert_eq!(
         fixture
             .handle(Operation::LanguageMavenModel)

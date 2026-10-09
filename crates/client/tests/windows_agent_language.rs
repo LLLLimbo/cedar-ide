@@ -244,9 +244,9 @@ fn fixture_trust_is_explicit_and_normal_all_feature_hosts_remain_gated() {
     // Maven is a normal typed production route. This nonshipping generic
     // language fixture deliberately excludes it even in an all-features build.
     let mut fixture_info = info.clone();
-    fixture_info
-        .capabilities
-        .retain(|name| !JAVA_MAVEN_CAPABILITIES.contains(&name.as_str()));
+    fixture_info.capabilities.retain(|name| {
+        !JAVA_MAVEN_CAPABILITIES.contains(&name.as_str()) && name != "language_maven_dependencies"
+    });
     assert_eq!(metadata(untrusted.ok(Operation::Hello)), fixture_info);
     assert_eq!(
         untrusted
@@ -279,6 +279,10 @@ fn fixture_trust_is_explicit_and_normal_all_feature_hosts_remain_gated() {
             local_repository: String::new(),
         },
         Operation::LanguageMavenModel,
+        Operation::LanguageMavenDependencies {
+            startup_id: 1,
+            pom_sha256: "a".repeat(64),
+        },
     ] {
         assert_eq!(
             trusted_fixture.request(operation).unwrap_err().code,

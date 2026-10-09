@@ -232,7 +232,12 @@ impl CedarApp {
         }
     }
 
-    pub(super) fn apply_test_report_read(&mut self, load: Load, result: Result<Payload, String>) {
+    pub(super) fn apply_test_report_read(
+        &mut self,
+        request: u64,
+        load: Load,
+        result: Result<Payload, String>,
+    ) {
         if !self.test_report.accepts(&load, self.generation) {
             return;
         }
@@ -277,6 +282,7 @@ impl CedarApp {
                         .to_owned(),
                 );
             }
+            self.observe_maven_pom_acknowledgement(request, &path, &revision);
             let report = parse_report(&text).map_err(|error| error.to_string())?;
             Ok(Snapshot {
                 source: load,

@@ -248,7 +248,7 @@ fn test_report_newer_load_wins_and_stale_errors_cannot_replace_it() {
         "Newest"
     );
     assert!(app.test_report.message.is_none());
-    app.apply_test_report_read(old_load, Ok(payload(PATH, REPORT)));
+    app.apply_test_report_read(0, old_load, Ok(payload(PATH, REPORT)));
     assert_eq!(
         app.test_report.snapshot.as_ref().unwrap().source,
         newer_load

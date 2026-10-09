@@ -315,7 +315,9 @@ impl Client {
         }
         if matches!(
             op,
-            Operation::LanguageStartJavaMavenBegin { .. } | Operation::LanguageMavenModel
+            Operation::LanguageStartJavaMavenBegin { .. }
+                | Operation::LanguageMavenModel
+                | Operation::LanguageMavenDependencies { .. }
         ) {
             for capability in JAVA_MAVEN_CAPABILITIES
                 .iter()
@@ -333,6 +335,7 @@ impl Client {
             | Operation::LanguageStartJavaBegin { .. }
             | Operation::LanguageStartJavaMavenBegin { .. }
             | Operation::LanguageMavenModel
+            | Operation::LanguageMavenDependencies { .. }
             | Operation::LanguageStartJavaPoll { .. }
             | Operation::LanguageStartJavaCancel { .. }
             | Operation::LanguageOrganizeJavaImports { .. }
@@ -521,6 +524,7 @@ fn is_language_session_operation(op: &Operation) -> bool {
     matches!(
         op,
         Operation::LanguageMavenModel
+            | Operation::LanguageMavenDependencies { .. }
             | Operation::LanguageOpen { .. }
             | Operation::LanguageChange { .. }
             | Operation::LanguageClose { .. }

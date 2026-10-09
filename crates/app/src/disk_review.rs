@@ -524,6 +524,7 @@ impl CedarApp {
 
     pub(super) fn apply_disk_read(
         &mut self,
+        request: u64,
         ticket: u64,
         purpose: Purpose,
         result: Result<Payload, String>,
@@ -590,6 +591,14 @@ impl CedarApp {
                 return;
             }
         };
+        // Only accepted, current reads are evidence about the startup POM. A
+        // merge verification additionally requires its content/hash contract.
+        let path = review.source.path.clone();
+        if purpose != Purpose::VerifyMerge || snapshot.revision == content_revision(&snapshot.text)
+        {
+            self.observe_maven_pom_acknowledgement(request, &path, &snapshot.revision);
+        }
+        let review = self.disk_review.slot.as_mut().unwrap();
         self.cjk_seen |= crate::system_fonts::contains_cjk(&snapshot.text);
         if purpose == Purpose::VerifyMerge {
             if snapshot.revision != content_revision(&snapshot.text) {

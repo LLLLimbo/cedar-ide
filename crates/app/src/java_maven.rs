@@ -78,7 +78,13 @@ impl ModelState {
             self.status = ModelStatus::Unchecked;
         }
     }
-    fn require_restart(&mut self) {
+    pub(super) fn pom_sha256(&self) -> Option<&str> {
+        self.pom_sha256.as_deref()
+    }
+    pub(super) fn restart_required(&self) -> bool {
+        self.status == ModelStatus::RestartRequired
+    }
+    pub(super) fn require_restart(&mut self) {
         self.cancel_pending();
         self.model = None;
         self.status = ModelStatus::RestartRequired;
@@ -302,6 +308,7 @@ impl CedarApp {
             && state.status != ModelStatus::RestartRequired
         {
             state.require_restart();
+            self.language.maven_dependencies.reset();
         }
     }
     pub(crate) fn maven_model_problem(&self) -> Option<String> {
@@ -408,7 +415,8 @@ impl CedarApp {
                 }
             },
             Err(error) if error.starts_with("language_maven_restart_required:") => {
-                state.require_restart()
+                state.require_restart();
+                self.language.maven_dependencies.reset();
             }
             _ => {
                 state.model = None;
@@ -511,16 +519,10 @@ impl CedarApp {
             .id_salt("maven_model")
             .max_height(240.0)
             .show(ui, |ui| {
-                for path in model.source_paths.iter().take(12) {
+                for path in &model.source_paths {
                     ui.label(format!("Source: {}", display_path(path)));
                 }
-                if model.source_paths.len() > 12 {
-                    ui.label(format!(
-                        "{} more source paths",
-                        model.source_paths.len() - 12
-                    ));
-                }
-                for entry in model.classpath.iter().take(20) {
+                for entry in &model.classpath {
                     let kind = match entry.kind {
                         EntryKind::Source => "Source",
                         EntryKind::Library => "Library",
@@ -540,12 +542,6 @@ impl CedarApp {
                             "unresolved"
                         },
                         display_path(&entry.path)
-                    ));
-                }
-                if model.classpath.len() > 20 {
-                    ui.label(format!(
-                        "{} more classpath entries",
-                        model.classpath.len() - 20
                     ));
                 }
             });

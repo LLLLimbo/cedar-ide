@@ -139,6 +139,8 @@ impl CedarApp {
     pub(super) fn begin_java_startup(&mut self, operation: Operation) {
         let now = self.editor_ctx.input(|input| input.time);
         self.language.automatic = false;
+        self.language.running_startup_id = None;
+        self.language.maven_dependencies.reset();
         self.language.startup = Some(Startup {
             generation: self.generation,
             session: self.language.session,
@@ -198,6 +200,8 @@ impl CedarApp {
             startup.unverified = true;
         }
         self.language.running = false;
+        self.language.running_startup_id = None;
+        self.language.maven_dependencies.reset();
         self.language.automatic = false;
         self.language.intent = None;
         self.language.restart_blocked = true;
@@ -367,6 +371,7 @@ impl CedarApp {
                     return;
                 }
                 self.language.startup = None;
+                self.language.running_startup_id = Some(id);
                 self.apply_language_action(
                     Action {
                         session: action.session,

@@ -253,10 +253,14 @@ mod tests {
         for capability in cedar_protocol::JAVA_MAVEN_CAPABILITIES {
             assert!(!a.as_ref().unwrap().supports(capability));
         }
-        b.as_mut()
+        assert!(!a
+            .as_ref()
             .unwrap()
-            .capabilities
-            .retain(|name| !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str()));
+            .supports(cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY));
+        b.as_mut().unwrap().capabilities.retain(|name| {
+            !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str())
+                && name != cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY
+        });
         assert_eq!(a, b);
         assert_eq!(
             diagnostic.handle(invalid_start()).unwrap_err().code,
@@ -270,6 +274,16 @@ mod tests {
                 .attempted
         );
         diagnostic.set_allow_run(true);
+        assert_eq!(
+            diagnostic
+                .handle(Operation::LanguageMavenDependencies {
+                    startup_id: 1,
+                    pom_sha256: "unused".into()
+                })
+                .unwrap_err()
+                .code,
+            "unsupported_platform"
+        );
         assert_eq!(
             diagnostic
                 .handle(Operation::LanguageMavenModel)

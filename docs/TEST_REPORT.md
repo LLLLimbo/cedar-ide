@@ -1,48 +1,51 @@
-# Verification report · Bundle guide integrity / 0.28.1
+# Verification report · Maven dependency provenance / 0.29.0
 
-This narrow checkpoint includes the Java implementation-navigation guide in the
-Windows development bundle and verifies local links in its two entry guides.
-There are no Rust product-source or execution-policy changes.
+This checkpoint adds one optional, typed dependency-insight operation for an
+already-running trusted Maven leaf session. It separates captured direct POM
+declarations, actual JDT library observations and regular-file presence. It does
+not infer dependency edges, transitive coordinates, resolution or JAR integrity.
 
-## Prior native result and packaging defect
+## Required boundaries
 
-[0.28 implementation verification](TEST_REPORT_PHASE28_IMPLEMENTATIONS.md)
-records the successful native implementation-location acceptance. Exact public
-source `f6be7c9500ecd32a2a2ee21b672b0328f954179e` passed both OS jobs in
-[CI 37940287794](https://github.com/LLLLimbo/cedar-ide/actions/runs/37940287794).
-The Windows JDT receipt reported two type locations, one method location and an
-empty negative query, with all 24 required witnesses true in 16,729 ms.
+The existing Maven capability pair and model reply remain unchanged. The new
+operation binds the verified owned startup ID and captured POM SHA-256, checks
+the disk POM before/after one fixed bounded settings query, and exposes only
+validated workspace/cache-relative paths. Unknown observation is distinct from
+an available empty list. Case-colliding declarations retain all bounded matches.
+Frontend context also binds generation, session, request sequence and new disk
+POM evidence; unsaved drafts and Undo remain separate and intact.
 
-Independent ZIP inspection then found that the quickstart linked
-`JAVA_IMPLEMENTATIONS.md`, but the explicit packaging inventory omitted it.
-Existing payload hashes were valid; that did not establish a complete usable
-package. The original ZIP remains an incomplete distribution checkpoint.
+## Finite verification
 
-## Repair and regression scope
+Portable tests must cover schema/provenance, explicit/default declarations,
+relations and collisions, invalid metadata and bounds, unavailable observations,
+stale startup/hash/session/generation, capability refusal and frontend rendering.
+The existing normal shipping Windows Maven present/missing pair must establish
+exact declaration/path/presence and observed-or-omitted evidence, actual frontend
+binding and the unchanged source/cache/cleanup conditions within existing outer
+budgets. No new dependency downloads or test artifacts are needed.
 
-- The guide is mandatory in the source, manifest and ZIP inventories.
-- The quickstart and implementation guide's supported simple inline local links
-  must resolve to exact payload names, including the manifest when referenced.
-  External URLs are not fetched; remote content and fragment anchors are not
-  validated. This is a bounded entry-guide check, not a general Markdown parser.
-- Verification runs before bundle output is created and before extraction.
-- Regressions cover the actual guides, missing or corrupt guide bytes, invalid
-  UTF-8, manifest-consistent broken local links, case/path/query confusion,
-  fragments, external URLs, malformed large inputs and rejection without output.
+Independent protocol/provenance and frontend/state reviews have no remaining
+findings. Review closed an inherited acknowledgement gap: accepted POM reads in
+disk comparison/reload/merge verification, interrupted-save checking and report
+loading now invalidate old Maven evidence after their own request/path/revision
+checks. Other accepted file reads use the existing Open acknowledgement path.
+Rejected or pre-startup reads cannot supply a new witness; drafts remain intact.
 
-## Current verification
-
-Independent packaging review has no remaining findings. The packaging Python
-suite ran 36 tests: 35 passed and one platform-specific case was skipped.
 Strict host and Windows MSVC-target Clippy pass. The all-target host aggregate
-completed 40 suites: 1,100 passed, zero failed and 29 explicit opt-ins ignored.
-All-feature and default shipping release builds pass. Exact-source native
-CI/package verification remains pending.
-The new ZIP must contain the guide and pass all payload/provenance checks before
-this correction is accepted. All existing Java, Maven, ownership and trust-off
-bundle gates remain required.
+completed 41 suites with 1,134 passed, zero failed and 29 explicit opt-ins ignored.
+All 20 focused dependency frontend cases pass, including 256-row reachability,
+full reversed selection/focus/Undo and same-frame disk-POM invalidation. Both
+all-feature and default shipping release builds pass. The actual default Linux
+agent capability/trust smoke passes with the unchanged 24-capability inventory
+and no tool startup.
 
-The latest fully verified distribution remains 0.27 until that verification.
-Windows native GUI, authenticated SSH and full IDEA equivalence remain separate
-unmet validation or feature boundaries. The known JDT diagnostic-publication
-limitation and explicit recovery distinctions remain unchanged.
+Collector/Maven Python tests ran 99 cases: 91 passed and eight explicit platform
+or PowerShell skips. Packaging/capability tests ran 41: 40 passed and one skip.
+Actual Windows PowerShell predicates, normal-agent Maven present/missing insight
+receipts, and all exact-source package hashes remain required. No 0.29 native
+result is claimed. [0.28.1](TEST_REPORT_PHASE281_BUNDLE_GUIDE.md) is the latest fully verified
+distribution. Its ordinary Java session 2 spontaneous timeout followed by one
+successful unversioned refresh remains distinct from a spontaneous pass; the
+underlying diagnostic-publication limitation is not claimed fixed. Windows GUI
+and authenticated SSH remain unverified.

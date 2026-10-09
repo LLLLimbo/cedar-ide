@@ -54,7 +54,7 @@ fn main() {
                 "\"list_verified\":true,\"read_verified\":true,",
                 "\"write_verified\":true,\"readback_verified\":true,",
                 "\"search_verified\":true,\"stale_write_rejected\":true,",
-                "\"execution_rejected\":true,\"java_rejected\":true,\"maven_rejected\":true,\"workspace_symbols_rejected\":true,\"java_implementations_rejected\":true,",
+                "\"execution_rejected\":true,\"java_rejected\":true,\"maven_rejected\":true,\"maven_dependencies_rejected\":true,\"workspace_symbols_rejected\":true,\"java_implementations_rejected\":true,",
                 "\"client_reaped\":true}"
             )
         );
@@ -269,6 +269,7 @@ mod portable {
             "language_start_java",
             "language_start_java_begin",
             "language_start_java_maven_begin",
+            "language_maven_dependencies",
             "language_maven_model",
             "language_start_java_poll",
             "language_start_java_cancel",
@@ -414,6 +415,10 @@ mod portable {
         if !matches!(client.request(Operation::LanguageJavaImplementations { path: "NeverLaunched.java".into(), version: 1, line: 0, character: 0 }), Err(error) if error.starts_with("run_disabled:"))
         {
             return Err("java_implementations_rejected");
+        }
+        if !matches!(client.request(Operation::LanguageMavenDependencies { startup_id: 1, pom_sha256: "a".repeat(64) }), Err(error) if error.starts_with("run_disabled:"))
+        {
+            return Err("maven_dependencies_rejected");
         }
         if !client.is_connected() {
             return Err("connected");

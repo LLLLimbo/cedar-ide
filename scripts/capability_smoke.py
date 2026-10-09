@@ -21,6 +21,7 @@ WINDOWS_JAVA = {'language_start_java', 'language_start_java_begin',
                 'language_open', 'language_change', 'language_close',
                 'language_events', 'language_stop'}
 WINDOWS_MAVEN = {'language_start_java_maven_begin', 'language_maven_model'}
+WINDOWS_DEPENDENCIES = {'language_maven_dependencies'}
 WINDOWS_IMPLEMENTATIONS = {'language_java_implementations'}
 
 
@@ -51,11 +52,11 @@ def validate_platform_capabilities(info):
     else:
         assert not (TASKS | {'run', 'git_status'}) & capabilities
     if info['os'] == 'windows':
-        assert WINDOWS_JAVA | WINDOWS_MAVEN | WINDOWS_IMPLEMENTATIONS <= capabilities
+        assert WINDOWS_JAVA | WINDOWS_MAVEN | WINDOWS_IMPLEMENTATIONS | WINDOWS_DEPENDENCIES <= capabilities
         assert 'language_start' not in capabilities
     else:
         assert LANGUAGE <= capabilities
-        assert not WINDOWS_IMPLEMENTATIONS & capabilities
+        assert not (WINDOWS_IMPLEMENTATIONS | WINDOWS_DEPENDENCIES) & capabilities
 
 
 def main():
@@ -82,6 +83,7 @@ def main():
                 ('language_events', {}),
                 ('language_workspace_symbols', {'query': 'NeverLaunched'}),
                 ('language_java_implementations', {'path': 'NeverLaunched.java', 'version': 1, 'line': 0, 'character': 0}),
+                ('language_maven_dependencies', {'startup_id': 1, 'pom_sha256': 'a' * 64}),
                 ('language_stop', {}),
             ]:
                 assert untrusted.call(operation, ok=False, **fields)['code'] == 'run_disabled'

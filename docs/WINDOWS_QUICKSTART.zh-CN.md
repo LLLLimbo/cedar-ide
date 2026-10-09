@@ -144,6 +144,7 @@ LSP 和完整调试界面仍未提供。异步命令使用明确的原生 `.exe`
 在专用 Java 模式中显式选择根 `pom.xml` 导入，并配置已有的本地依赖缓存。
 Maven 模式的 **JDT data/control 路径必须是 ASCII**；工作区、JDT 和缓存仍可含中文。
 启动后显式 **Check Maven model** 查看磁盘 POM 的模型快照，未保存 POM 草稿不等于已导入模型。
+在支持该能力的 agent 上，可显式 **Inspect dependencies** 查看直接声明、JDT 报告的路径及当前文件存在性，详见 [MAVEN_DEPENDENCIES.md](MAVEN_DEPENDENCIES.md)。
 它不下载缺失依赖、不自动构建或保存；缓存和索引可能写入，受信任的配置器代码及公共
 Gradle 元数据请求仍可能发生，离线解析不是网络隔离。支持子集、重启要求与路径边界见
 [MAVEN_PROJECTS.md](MAVEN_PROJECTS.md)。

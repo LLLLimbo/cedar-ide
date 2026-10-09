@@ -67,6 +67,17 @@ impl CedarApp {
                 return Some(problem);
             }
         }
+        if let Operation::LanguageMavenDependencies {
+            startup_id,
+            pom_sha256,
+        } = operation
+        {
+            if let Some(problem) =
+                self.maven_dependencies_operation_problem(*startup_id, pom_sha256)
+            {
+                return Some(problem);
+            }
+        }
         if matches!(operation, Operation::LanguageMavenModel) {
             if let Some(problem) = self.maven_model_problem() {
                 return Some(problem);
@@ -136,6 +147,7 @@ impl CedarApp {
                 | Operation::LanguageStartJavaBegin { .. }
                 | Operation::LanguageStartJavaMavenBegin { .. }
                 | Operation::LanguageMavenModel
+                | Operation::LanguageMavenDependencies { .. }
                 | Operation::GitStatus
                 | Operation::GitChanges { .. }
                 | Operation::GitDiff { .. }

@@ -10,7 +10,18 @@ import unittest
 
 import collect_java_crash as collector
 
+DEPENDENCY_REQUIRED = (
+    'dependency_capability_advertised', 'dependency_optional_capability_rejected',
+    'dependencies_untrusted_rejected', 'dependencies_without_session_rejected',
+    'dependency_snapshot_identity_verified', 'dependency_declaration_exact',
+    'dependency_default_provenance_verified', 'dependency_expected_jar_verified',
+    'dependency_frontend_identity_verified', 'dependency_frontend_invalidated',
+    'dependency_dirty_undo_preserved', 'dependencies_changed_pom_restart_required',
+    'dependencies_after_stop_rejected',
+)
+
 PROBE_SUCCESS = {
+    'dependency_probe_outcome': 'accepted', 'dependency_error_code': 'none',
     'model_probe_outcome': 'ready', 'event_probe_outcome': 'events_accepted',
     'model_error_code': 'none', 'model_rejection': 'none', 'event_error_code': 'none',
     'event_rejection': 'none', 'rejected_diagnostic_origin': 'none',
@@ -23,6 +34,10 @@ def good_receipt():
         value = {key: True for key, kind in collector.MAVEN_CASE_FIELDS.items() if kind == 'bool'}
         value.update(PROBE_SUCCESS)
         value['owned_project_missing_library_diagnostic'] = name == 'missing'
+        value.update(dependency_queries=1, dependency_declaration_count=1,
+                     dependency_observed_library_count=1,
+                     dependency_declaration_file_present=name == 'present',
+                     dependency_observation='observed_present_file' if name == 'present' else 'observed_absent_file')
         value.update(case=name, failure_stage='none', model_status='imported' if name == 'present' else 'unresolved',
                      model_queries=1, unexpected_dependency_references=0, generated_metadata_files=8,
                      lifecycle_metadata_files=6, lifecycle_metadata_mask=63,
@@ -161,6 +176,58 @@ class MavenReceiptTests(unittest.TestCase):
                 self.assertIn('invalid_field_owned_project_missing_library_diagnostic', errors)
                 self.assertNotIn('owned_project_missing_library_diagnostic', result['records'][0]['missing'])
 
+    def test_dependency_receipt_preserves_distinct_observations_without_raw_snapshot(self):
+        for state, count in (('observed_absent_file', 1), ('not_observed', 0)):
+            with self.subTest(state=state):
+                value = good_receipt()
+                value['missing'].update(dependency_observation=state,
+                                        dependency_observed_library_count=count,
+                                        raw_snapshot={'gav': 'SECRET_SENTINEL',
+                                                      'absolute_path': 'SECRET_SENTINEL'})
+                result, errors, truncated = sanitize(value)
+                self.assertFalse(errors)
+                self.assertFalse(truncated)
+                case = result['records'][0]['missing']
+                self.assertEqual(case['dependency_observation'], state)
+                self.assertEqual(case['dependency_observed_library_count'], count)
+                self.assertIs(case['dependency_declaration_file_present'], False)
+                self.assertNotIn('SECRET_SENTINEL', json.dumps(result))
+
+    def test_dependency_rejected_declaration_count_retains_full_protocol_bound(self):
+        for count in (64, 65, 256):
+            value = good_receipt()
+            value.update(success=False, primary_failed=True)
+            value['missing'].update(success=False, primary_failed=True,
+                                    dependency_probe_outcome='snapshot_rejected',
+                                    dependency_declaration_count=count)
+            result, errors, truncated = sanitize(value)
+            self.assertFalse(errors)
+            self.assertFalse(truncated)
+            self.assertEqual(result['records'][0]['missing']['dependency_declaration_count'], count)
+            self.assertFalse(result['records'][0]['missing']['success'])
+
+    def test_dependency_receipt_rejects_malformed_boolean_counter_and_enum_fields(self):
+        fields = {name: (None, 0, 1, 'true', [], {}, [True]) for name in
+                  (*DEPENDENCY_REQUIRED, 'dependency_declaration_file_present')}
+        fields.update({
+            'dependency_queries': (None, -1, 2, True, '1', [1], {}),
+            'dependency_declaration_count': (None, -1, 257, True, '1', [1], {}),
+            'dependency_observed_library_count': (None, -1, 257, True, '1', [1], {}),
+            'dependency_observation': (None, 1, [], ['not_observed'], {}, 'SECRET_SENTINEL'),
+            'dependency_probe_outcome': (None, 1, [], ['accepted'], {}, 'SECRET_SENTINEL'),
+            'dependency_error_code': (None, 1, [], ['none'], {}, 'language_maven_invalid_model: SECRET_SENTINEL'),
+        })
+        for name in ('present', 'missing'):
+            for field, invalid_values in fields.items():
+                for invalid in invalid_values:
+                    with self.subTest(case=name, field=field, invalid=invalid):
+                        value = good_receipt()
+                        value[name][field] = invalid
+                        result, errors, _ = sanitize(value)
+                        self.assertIn('invalid_field_' + field, errors)
+                        self.assertNotIn(field, result['records'][0][name])
+                        self.assertNotIn('SECRET_SENTINEL', json.dumps(result))
+
     @unittest.skipUnless(shutil.which('pwsh'), 'PowerShell is required for the actual Maven release predicate')
     def test_actual_powershell_gate_rejects_missing_contradictory_or_forged_witnesses(self):
         good = good_receipt()
@@ -173,6 +240,9 @@ class MavenReceiptTests(unittest.TestCase):
         subset['present'].update(lifecycle_metadata_files=2, lifecycle_metadata_mask=33)
         subset['missing'].update(lifecycle_metadata_files=0, lifecycle_metadata_mask=0)
         cases.append({'name': 'exact_marker_subsets', 'records': [subset], 'accept': True})
+        omitted = copy.deepcopy(good)
+        omitted['missing'].update(dependency_observation='not_observed', dependency_observed_library_count=0)
+        cases.append({'name': 'honest_missing_observation_omitted', 'records': [omitted], 'accept': True})
 
         def reject(name, path, value=None, remove=False):
             item = copy.deepcopy(good)
@@ -185,7 +255,7 @@ class MavenReceiptTests(unittest.TestCase):
                 owner[path[-1]] = value
             cases.append({'name': name, 'records': [item], 'accept': False})
 
-        common = ('java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected',
+        common = DEPENDENCY_REQUIRED + ('java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected',
                   'model_without_session_rejected', 'async_start_begin_acknowledged',
                   'async_start_read_while_starting', 'async_start_ready', 'root_identity_verified',
                   'root_observed_live', 'maven_nature', 'custom_source', 'compiler_17',
@@ -195,6 +265,24 @@ class MavenReceiptTests(unittest.TestCase):
                   'root_handle_signaled', 'model_after_stop_rejected', 'client_reaped',
                   'synthetic_root_removed', 'success')
         for name in ('present', 'missing'):
+            for field in DEPENDENCY_REQUIRED:
+                reject(name + '_missing_' + field, [name, field], remove=True)
+                for invalid in (None, [], [True], 'true', 1):
+                    reject(name + '_dependency_bool_' + field + '_' + repr(invalid), [name, field], invalid)
+            for field in ('dependency_queries', 'dependency_declaration_count', 'dependency_observed_library_count'):
+                reject(name + '_missing_' + field, [name, field], remove=True)
+                for invalid in (None, [], [1], '1', True, -1, 2):
+                    reject(name + '_dependency_count_' + field + '_' + repr(invalid), [name, field], invalid)
+            for field in ('dependency_queries', 'dependency_declaration_count'):
+                reject(name + '_zero_' + field, [name, field], 0)
+            reject(name + '_missing_dependency_observation', [name, 'dependency_observation'], remove=True)
+            for invalid in (None, [], [good[name]['dependency_observation']], 1, 'unavailable',
+                            'not_attempted', 'rejected', 'SECRET_SENTINEL'):
+                reject(name + '_dependency_observation_' + repr(invalid), [name, 'dependency_observation'], invalid)
+            reject(name + '_missing_dependency_file', [name, 'dependency_declaration_file_present'], remove=True)
+            for invalid in (None, [], [name == 'present'], 'true', 1, name != 'present'):
+                reject(name + '_dependency_file_' + repr(invalid), [name, 'dependency_declaration_file_present'], invalid)
+            reject(name + '_dependency_zero_observed_count', [name, 'dependency_observed_library_count'], 0)
             field = 'owned_project_missing_library_diagnostic'
             reject(name + '_missing_project_witness', [name, field], remove=True)
             for invalid in (None, [], [True], 'true', 1, name == 'present'):
@@ -246,6 +334,17 @@ class MavenReceiptTests(unittest.TestCase):
                 for invalid in ([], [good[name][field]], None, 1):
                     reject(name + '_scalar_' + field + '_' + repr(invalid), [name, field], invalid)
             reject(name + '_object_array', [name], [good[name]])
+        reject('present_forged_absent_observation', ['present', 'dependency_observation'], 'observed_absent_file')
+        reject('present_forged_omitted_observation', ['present', 'dependency_observation'], 'not_observed')
+        reject('missing_forged_present_observation', ['missing', 'dependency_observation'], 'observed_present_file')
+        reject('missing_omitted_with_nonzero_library_count', ['missing', 'dependency_observation'], 'not_observed')
+        forged = copy.deepcopy(omitted)
+        forged['missing']['dependency_declaration_file_present'] = True
+        cases.append({'name': 'omission_does_not_prove_file_presence', 'records': [forged], 'accept': False})
+        for invalid in (None, [], [0], '0', True, 1):
+            forged = copy.deepcopy(omitted)
+            forged['missing']['dependency_observed_library_count'] = invalid
+            cases.append({'name': 'omitted_observation_bad_count_' + repr(invalid), 'records': [forged], 'accept': False})
         cases.extend([{'name': 'zero_tests', 'records': [], 'accept': False},
                       {'name': 'duplicate_pair', 'records': [good, good], 'accept': False}])
         with tempfile.TemporaryDirectory() as temporary:

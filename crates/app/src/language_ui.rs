@@ -7,6 +7,10 @@ mod java_diagnostics;
 mod java_implementations;
 #[path = "java_maven.rs"]
 mod java_maven;
+#[path = "java_maven_dependencies.rs"]
+mod java_maven_dependencies;
+#[cfg(all(test, windows))]
+pub(crate) use java_maven_dependencies::verify_native_maven_dependencies;
 #[path = "java_startup.rs"]
 mod java_startup;
 pub(crate) use features::FeatureRequest as JavaImplementationContext;
@@ -74,6 +78,9 @@ pub(super) enum ActionKind {
     MavenModel {
         context: java_maven::ModelContext,
     },
+    MavenDependencies {
+        context: java_maven_dependencies::DependencyContext,
+    },
     RefreshJavaDiagnostics {
         context: java_diagnostics::RefreshContext,
     },
@@ -122,6 +129,9 @@ impl Action {
     pub fn is_stop(&self) -> bool {
         matches!(self.kind, ActionKind::Stop)
     }
+    pub fn is_maven_dependencies(&self) -> bool {
+        matches!(self.kind, ActionKind::MavenDependencies { .. })
+    }
     pub fn is_maven_model(&self) -> bool {
         matches!(self.kind, ActionKind::MavenModel { .. })
     }
@@ -138,6 +148,7 @@ enum View {
     Hover,
     Activity,
     Maven,
+    MavenDependencies,
     JavaTypes,
     JavaImplementations,
 }
@@ -170,6 +181,8 @@ pub(super) struct LanguagePanel {
     java: JavaConfiguration,
     maven: java_maven::MavenConfiguration,
     maven_model: java_maven::ModelState,
+    maven_dependencies: java_maven_dependencies::DependencyState,
+    running_startup_id: Option<u64>,
     restart_blocked: bool,
     startup: Option<java_startup::Startup>,
     program: String,
@@ -200,7 +213,7 @@ impl Default for LanguagePanel {
     fn default() -> Self {
         Self {
             running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), types: java_types::TypeSearch::default(), implementations: java_implementations::ImplementationSearch::default(), implementation_replies: Vec::new(), next_version: 1, closed_uris: HashSet::new(),
-            mode: ServerMode::Generic, java: JavaConfiguration::default(), maven: java_maven::MavenConfiguration::default(), maven_model: java_maven::ModelState::default(), restart_blocked: false, startup: None,
+            mode: ServerMode::Generic, java: JavaConfiguration::default(), maven: java_maven::MavenConfiguration::default(), maven_model: java_maven::ModelState::default(), maven_dependencies: java_maven_dependencies::DependencyState::default(), running_startup_id: None, restart_blocked: false, startup: None,
             program: String::new(), args: "[]".into(), language_id: "rust".into(), capabilities: Value::Null,
             diagnostics: Diagnostics::default(), diagnostics_exited: false, java_diagnostics_refresh_supported: false, java_organize_imports_supported: false,
             diagnostic_refresh: None, diagnostic_refresh_sequence: 0, definitions: Vec::new(), hover: String::new(),
@@ -225,6 +238,8 @@ impl LanguagePanel {
         self.restart_blocked = false;
         self.startup = None;
         self.maven_model = java_maven::ModelState::default();
+        self.maven_dependencies.reset();
+        self.running_startup_id = None;
         self.sync.clear();
         self.next_version = 1;
         self.closed_uris.clear();
@@ -427,6 +442,8 @@ impl CedarApp {
         }
         self.language.diagnostic_refresh = None;
         self.language.maven_model.cancel_pending();
+        self.language.maven_dependencies.reset();
+        self.language.running_startup_id = None;
         self.language.features.reset();
         self.language.types.reset();
         self.language.implementations.reset();
@@ -656,6 +673,7 @@ impl CedarApp {
         self.language.paused_reason = None;
     }
     pub(super) fn language_tick(&mut self, ctx: &egui::Context) {
+        self.invalidate_maven_dependencies();
         if self.language.startup_active() {
             self.java_startup_tick(ctx);
             return;
@@ -893,6 +911,9 @@ impl CedarApp {
             ActionKind::RefreshJavaDiagnostics { .. } => {
                 unreachable!("refresh acknowledgements are handled before activity output")
             }
+            ActionKind::MavenDependencies { .. } => {
+                unreachable!("typed dependency replies are handled before language activity")
+            }
             ActionKind::MavenModel { .. } => {
                 unreachable!("Maven model replies are handled before activity output")
             }
@@ -1036,6 +1057,8 @@ impl CedarApp {
                 }
                 Some("closed") => {
                     self.language.diagnostics_exited = true;
+                    self.language.maven_dependencies.reset();
+                    self.language.running_startup_id = None;
                     self.language.java_diagnostics_refresh_supported = false;
                     self.language.java_organize_imports_supported = false;
                     self.language.diagnostic_refresh = None;
@@ -1332,6 +1355,7 @@ impl CedarApp {
             );
         }
         self.maven_model_controls(ui);
+        self.maven_dependencies_controls(ui);
         if self.language.running {
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(
@@ -1421,6 +1445,11 @@ impl CedarApp {
             ui.selectable_value(&mut self.language.view, View::Outline, "Outline");
             if self.language.maven_model.active() {
                 ui.selectable_value(&mut self.language.view, View::Maven, "Maven model");
+                ui.selectable_value(
+                    &mut self.language.view,
+                    View::MavenDependencies,
+                    "Dependencies",
+                );
             }
             let activity_label = if self.language.mode == ServerMode::Java {
                 "Session activity"
@@ -1439,6 +1468,7 @@ impl CedarApp {
             View::References => self.references_view(ui),
             View::Outline => self.outline_view(ui),
             View::Maven => self.maven_model_view(ui),
+            View::MavenDependencies => self.maven_dependencies_view(ui),
             View::JavaTypes => self.java_types_view(ui),
             View::JavaImplementations => self.java_implementations_view(ui),
             View::Definitions => {

@@ -276,12 +276,14 @@ fn dismissed_reads_and_errors_cannot_reopen_or_replace_a_newer_review() {
     app.error = Some("new status".into());
     // Exercise both event/job removal and the independent epoch guard.
     app.apply_disk_read(
+        0,
         old_ticket,
         Purpose::Compare,
         Ok(file("old reply", 'b')),
         true,
     );
     app.apply_disk_read(
+        0,
         old_ticket,
         Purpose::Compare,
         Err("old transport error".into()),
@@ -302,6 +304,7 @@ fn dismissed_reads_and_errors_cannot_reopen_or_replace_a_newer_review() {
     );
     app.dismiss_disk_review();
     app.apply_disk_read(
+        0,
         old_ticket,
         Purpose::Compare,
         Ok(file("old reply", 'b')),
@@ -343,6 +346,7 @@ fn stale_source_success_and_error_are_rejected_before_processing() {
             let before = format!("{:?}", app.documents[0]);
             app.error = Some("current status".into());
             app.apply_disk_read(
+                0,
                 ticket,
                 Purpose::Compare,
                 if error {

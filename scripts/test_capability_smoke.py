@@ -6,7 +6,7 @@ import capability_smoke as smoke
 
 class PlatformCapabilityTests(unittest.TestCase):
     def windows(self):
-        return smoke.BASE | smoke.TASKS | smoke.WINDOWS_JAVA | smoke.WINDOWS_MAVEN | smoke.WINDOWS_IMPLEMENTATIONS | {
+        return smoke.BASE | smoke.TASKS | smoke.WINDOWS_JAVA | smoke.WINDOWS_MAVEN | smoke.WINDOWS_IMPLEMENTATIONS | smoke.WINDOWS_DEPENDENCIES | {
             'git_changes', 'git_diff'}
 
     def check(self, platform, capabilities):
@@ -21,7 +21,7 @@ class PlatformCapabilityTests(unittest.TestCase):
                 self.check('windows', self.windows() | {capability})
 
     def test_missing_typed_routes_or_task_capabilities_fail(self):
-        for capability in smoke.WINDOWS_JAVA | smoke.WINDOWS_MAVEN | smoke.WINDOWS_IMPLEMENTATIONS | smoke.TASKS:
+        for capability in smoke.WINDOWS_JAVA | smoke.WINDOWS_MAVEN | smoke.WINDOWS_IMPLEMENTATIONS | smoke.WINDOWS_DEPENDENCIES | smoke.TASKS:
             with self.subTest(capability=capability), self.assertRaises(AssertionError):
                 self.check('windows', self.windows() - {capability})
 
@@ -38,6 +38,8 @@ class PlatformCapabilityTests(unittest.TestCase):
                 self.check(platform, capabilities - {'language_start'})
             with self.assertRaises(AssertionError):
                 self.check(platform, capabilities | smoke.WINDOWS_IMPLEMENTATIONS)
+            with self.assertRaises(AssertionError):
+                self.check(platform, capabilities | smoke.WINDOWS_DEPENDENCIES)
 
 
 if __name__ == '__main__':

@@ -191,6 +191,7 @@ impl Workspace {
                     if !self.maven_platform_supported() {
                         info.capabilities.retain(|name| {
                             !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str())
+                                && name != cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY
                         });
                     }
                     info
@@ -220,6 +221,7 @@ impl Workspace {
             | Operation::LanguageStartJavaBegin { .. }
             | Operation::LanguageStartJavaMavenBegin { .. }
             | Operation::LanguageMavenModel
+            | Operation::LanguageMavenDependencies { .. }
             | Operation::LanguageStartJavaPoll { .. }
             | Operation::LanguageStartJavaCancel { .. }
             | Operation::LanguageOpen { .. }

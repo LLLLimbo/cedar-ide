@@ -1337,6 +1337,7 @@ fn typed_maven_metadata_and_model_access_follow_existing_startup_ownership() {
             .unwrap()
             .into(),
         declared_dependencies: Vec::new(),
+        declarations: Vec::new(),
         source_paths: Vec::new(),
     });
     let id = value(
@@ -1362,10 +1363,38 @@ fn typed_maven_metadata_and_model_access_follow_existing_startup_ownership() {
     );
     assert_eq!(workspace.language.as_ref().unwrap().startup_id, Some(id));
     assert!(workspace.language.as_ref().unwrap().java_maven_model);
+    assert_eq!(
+        workspace
+            .maven_dependencies(id + 1, &digest)
+            .unwrap_err()
+            .code,
+        "language_maven_stale_snapshot"
+    );
+    assert_eq!(
+        workspace
+            .maven_dependencies(id, &"b".repeat(64))
+            .unwrap_err()
+            .code,
+        "language_maven_stale_snapshot"
+    );
+    let Payload::MavenDependencies { snapshot } =
+        workspace.maven_dependencies(id, &digest).unwrap()
+    else {
+        panic!("typed dependencies");
+    };
+    snapshot.validate_for(id, &digest, cfg!(windows)).unwrap();
+    assert!(matches!(
+        snapshot.observation,
+        cedar_protocol::MavenDependencyObservation::Unavailable { .. }
+    ));
     let model = value(workspace.maven_model().unwrap());
     assert_eq!(model["status"], "unavailable");
     assert_eq!(model["pom_sha256"], digest);
     fs::write(root.join("pom.xml"), b"changed").unwrap();
+    assert_eq!(
+        workspace.maven_dependencies(id, &digest).unwrap_err().code,
+        "language_maven_restart_required"
+    );
     assert_eq!(
         workspace.maven_model().unwrap_err().code,
         "language_maven_restart_required"
@@ -1380,6 +1409,10 @@ fn typed_maven_metadata_and_model_access_follow_existing_startup_ownership() {
     assert!(workspace.language.is_none());
     cancellation_terminal(&terminal(&mut workspace, id));
     observed.assert_dead();
+    assert_eq!(
+        workspace.maven_dependencies(id, &digest).unwrap_err().code,
+        "language_not_running"
+    );
     assert_eq!(
         workspace.maven_model().unwrap_err().code,
         "language_not_running"
