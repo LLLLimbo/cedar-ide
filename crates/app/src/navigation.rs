@@ -372,7 +372,10 @@ impl CedarApp {
             match &mut dialog.kind {
                 Kind::Files { selected } => {
                     ui.heading("Open file");
-                    ui.label(RichText::new("Open buffers and files in the current directory").small().color(MUTED));
+                    ui.label(RichText::new(format!("Open buffers and files in directory scope: /{}", self.explorer_scope())).small().color(MUTED));
+                    if !self.explorer_scope_loaded() {
+                        ui.label(RichText::new("This directory is not loaded. Expand it or Refresh in Explorer to include its files; open buffers are still available.").small().color(MUTED));
+                    }
                     let id = egui::Id::new(FILE_INPUT);
                     if dialog.focus && !ui.is_sizing_pass() {
                         ui.ctx().memory_mut(|memory| memory.request_focus(id));
@@ -386,7 +389,7 @@ impl CedarApp {
                     if query_changed {
                         *selected = None;
                     }
-                    let result = candidates(&self.documents, &self.entries, &self.navigation.query);
+                    let result = candidates(&self.documents, self.explorer_scope_entries(), &self.navigation.query);
                     let mut index = selected_index(&result.items, selected);
                     for key in &arrows {
                         if let Some(current) = index {

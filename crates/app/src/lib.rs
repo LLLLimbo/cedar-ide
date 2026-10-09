@@ -13,6 +13,11 @@ mod disk_merge;
 mod disk_merge_process_tests;
 mod disk_review;
 mod editor_state;
+mod explorer_tree;
+#[cfg(test)]
+mod explorer_tree_process_tests;
+#[cfg(test)]
+mod explorer_tree_tests;
 mod git_ui;
 #[cfg(test)]
 mod idle_disconnect_process_tests;
@@ -194,6 +199,9 @@ enum Job {
     List {
         path: String,
     },
+    TreeList {
+        ticket: explorer_tree::Ticket,
+    },
     Open {
         path: String,
         line: Option<usize>,
@@ -271,6 +279,7 @@ pub struct CedarApp {
     directory: String,
     entries: Vec<Entry>,
     directory_request: u64,
+    explorer: explorer_tree::Explorer,
     open_form: bool,
     confirm: Option<Confirm>,
     allow_close: bool,
@@ -369,6 +378,7 @@ impl CedarApp {
             directory: String::new(),
             entries: Vec::new(),
             directory_request: 0,
+            explorer: explorer_tree::Explorer::default(),
             open_form: true,
             confirm: None,
             allow_close: false,
@@ -464,6 +474,7 @@ impl CedarApp {
         self.language.reset();
         self.generation += 1;
         self.pending.clear();
+        self.explorer.reset_connection();
         self.disk_review.outstanding = None;
         self.interrupted_save_check.reset();
         for doc in &mut self.documents {
@@ -493,6 +504,7 @@ impl CedarApp {
         self.disk_review.outstanding = None;
         self.agent_info = None;
         self.generation += 1;
+        self.explorer.reset_connection();
         self.connecting_form = None;
         self.recovery.restoring_generation = None;
         self.state = if self.workspace_key.is_some() {
@@ -548,6 +560,7 @@ impl CedarApp {
         self.language.disconnected();
         self.worker = None;
         self.pending.clear();
+        self.explorer.reset_connection();
         self.disk_review.outstanding = None;
         self.interrupted_save_check.reset();
         for doc in &mut self.documents {
@@ -558,8 +571,7 @@ impl CedarApp {
     }
 
     fn list(&mut self, path: String) {
-        self.directory_request =
-            self.request(Operation::List { path: path.clone() }, Job::List { path });
+        self.explorer_list_flat(path);
     }
 
     fn navigation_changed(&mut self) {
@@ -807,7 +819,10 @@ impl CedarApp {
                     self.open_form = false;
                     self.directory.clear();
                     self.entries.clear();
-                    self.list(String::new());
+                    self.explorer.reset_connection();
+                    if self.explorer.mode == explorer_tree::Mode::Flat {
+                        self.list(String::new());
+                    }
                     if self.recovery.restoring_generation.take() == Some(self.generation) {
                         if let Some(draft) = self.recovery.pending_restore.take() {
                             if let Err(error) = self.install_recovered(draft.clone()) {
@@ -847,6 +862,17 @@ impl CedarApp {
         }
         let Some(job) = self.pending.remove(&event.id) else {
             return;
+        };
+        let job = match job {
+            Job::List { path } => {
+                self.explorer_apply_list(event, path, None);
+                return;
+            }
+            Job::TreeList { ticket } => {
+                self.explorer_apply_list(event, ticket.path.clone(), Some(ticket));
+                return;
+            }
+            other => other,
         };
         let job = if let Job::JavaImplementationOpen {
             path,
@@ -1123,21 +1149,6 @@ impl CedarApp {
             }
         };
         match (job, payload) {
-            (Job::List { path }, Payload::Entries { mut entries })
-                if event.id == self.directory_request =>
-            {
-                entries.sort_by(|a, b| {
-                    b.is_dir
-                        .cmp(&a.is_dir)
-                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-                });
-                self.directory = path;
-                self.cjk_seen |= entries
-                    .iter()
-                    .any(|entry| system_fonts::contains_cjk(&entry.name));
-                self.entries = entries;
-            }
-            (Job::List { .. }, Payload::Entries { .. }) => {}
             (
                 Job::Open {
                     path: requested,
@@ -1226,7 +1237,14 @@ impl CedarApp {
                     self.notice = format!("Saved {}", doc.path);
                 }
                 self.profile_saved(document);
-                self.list(self.directory.clone());
+                if let Some(path) = self
+                    .documents
+                    .iter()
+                    .find(|doc| doc.id == document)
+                    .map(|doc| doc.path.clone())
+                {
+                    self.explorer_saved(&path);
+                }
             }
             (Job::Search { query }, Payload::Matches { matches, truncated })
                 if event.id == self.search_request =>
@@ -1417,6 +1435,7 @@ impl CedarApp {
         }
         self.language_shortcuts(ctx);
         self.workspace_access_shortcuts(ctx);
+        self.explorer_tree_shortcuts(ctx);
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
             self.save();
         }
@@ -1652,13 +1671,17 @@ impl CedarApp {
                     }
                 };
                 let outer = egui::ScrollArea::vertical().id_salt("sidebar_scroll")
+                    // Background drag surfaces use the previous viewport rect;
+                    // changing tool/mode height can cover newly positioned rows.
+                    // Wheel, touchpad and scrollbar scrolling remain available.
+                    .drag_to_scroll(false)
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                     .min_scrolled_height(0.0).auto_shrink([false, false]).animated(false)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("EXPLORER").size(11.0).strong().color(MUTED));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let refresh = ui.add_enabled(self.ready(), egui::Button::new("R").small()).on_hover_text("Refresh directory · Ctrl/Cmd+Shift+E focuses Explorer without refreshing");
+                                let refresh = ui.add_enabled(self.ready() && !self.explorer_busy(), egui::Button::new("R").small()).on_hover_text("Refresh directory · Ctrl/Cmd+Shift+E focuses Explorer without refreshing");
                                 self.workspace_access.record(workspace_access::Target::Explorer, &refresh);
                                 self.workspace_access.record(workspace_access::Target::Refresh, &refresh);
                                 #[cfg(test)]
@@ -1666,25 +1689,45 @@ impl CedarApp {
                                 reveal(&refresh);
                                 #[cfg(test)]
                                 sidebar_layout_tests::record(ui, "R", &refresh);
-                                if refresh.clicked() { self.list(self.directory.clone()); }
+                                if refresh.clicked() { self.explorer_refresh(&self.explorer_scope()); }
                                 let new_file = ui.add_enabled(self.ready(), egui::Button::new("+").small()).on_hover_text("New UTF-8 file");
                                 reveal(&new_file);
                                 #[cfg(test)]
                                 sidebar_layout_tests::record(ui, "+", &new_file);
                                 if new_file.clicked() {
-                                    self.new_file = true; self.new_path = if self.directory.is_empty() { String::new() } else { format!("{}/", self.directory) };
+                                    self.explorer_new_file();
                                 }
                             });
                         });
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            let up = ui.add_enabled(self.ready() && !self.directory.is_empty(), egui::Button::new("Up").small()).on_hover_text("Parent directory");
+                            let up = ui.add_enabled(self.ready() && !self.explorer_busy() && self.explorer.mode == explorer_tree::Mode::Flat && !self.directory.is_empty(), egui::Button::new("Up").small()).on_hover_text("Parent directory");
                             reveal(&up);
                             #[cfg(test)]
                             sidebar_layout_tests::record(ui, "Up", &up);
                             if up.clicked() { self.list(parent_path(&self.directory)); }
-                            ui.add(egui::Label::new(RichText::new(if self.directory.is_empty() { "/" } else { &self.directory }).monospace().size(12.0)).truncate()).on_hover_text(&self.directory);
+                            let scope = self.explorer_scope();
+                            ui.add(egui::Label::new(RichText::new(format!("Scope: /{scope}")).monospace().size(12.0)).truncate()).on_hover_text(format!("Directory scope for Ctrl/Cmd+P and New File: /{scope}"));
                         });
+                        ui.horizontal(|ui| {
+                            let flat = ui.selectable_label(self.explorer.mode == explorer_tree::Mode::Flat, "Flat").on_hover_text("Browse one directory at a time");
+                            reveal(&flat);
+                            #[cfg(test)]
+                            workspace_access_tests::record(ui, "explorer_flat_mode", &flat);
+                            #[cfg(test)]
+                            sidebar_layout_tests::record(ui, "Flat", &flat);
+                            if flat.clicked() { self.explorer_set_mode(explorer_tree::Mode::Flat); }
+                            let tree = ui.selectable_label(self.explorer.mode == explorer_tree::Mode::Tree, "Tree").on_hover_text("Load folders only when explicitly expanded or refreshed. Arrow keys navigate focused rows; Enter opens or toggles; Tab moves normally");
+                            reveal(&tree);
+                            #[cfg(test)]
+                            workspace_access_tests::record(ui, "explorer_tree_mode", &tree);
+                            #[cfg(test)]
+                            sidebar_layout_tests::record(ui, "Tree", &tree);
+                            if tree.clicked() { self.explorer_set_mode(explorer_tree::Mode::Tree); }
+                        });
+                        // One fixed child isolates variable status/control counts
+                        // from the existing footer selectors' positional IDs.
+                        ui.push_id("explorer_status", |ui| self.explorer_status(ui, resized));
                         ui.separator();
                         let shortcut_help = egui::WidgetText::from(RichText::new("Ctrl/Cmd+P  Choose a file\nCtrl/Cmd+G  Go to line\nCtrl/Cmd+F  Find in file\nCtrl/Cmd+S  Save changes").size(11.0).color(MUTED))
                             .into_galley(ui, Some(egui::TextWrapMode::Wrap), ui.available_width(), egui::TextStyle::Body);
@@ -1708,11 +1751,20 @@ impl CedarApp {
                         let separator_height = 6.0;
                         let footer_height = (tool_rows_height + shortcut_help.size().y + separator_height + 3.0 * ui.spacing().item_spacing.y).ceil();
                         let file_text_width = (ui.available_width() - ui.spacing().scroll.allocated_width() - 2.0 * ui.spacing().button_padding.x).max(0.0);
-                        let file_galleys: Vec<_> = self.entries.iter().map(|entry| {
-                            let icon = if entry.is_dir { "+" } else { "·" };
+                        let tree_rows = if self.explorer.mode == explorer_tree::Mode::Tree { self.explorer_visible_rows() } else { Vec::new() };
+                        let display_entries = if self.explorer.mode == explorer_tree::Mode::Tree { tree_rows.iter().map(|row| row.entry.clone()).collect() } else { self.entries.clone() };
+                        let file_galleys: Vec<_> = display_entries.iter().enumerate().map(|(index, entry)| {
+                            let row = tree_rows.get(index);
+                            let icon = if entry.is_dir { if row.is_some_and(|row| row.expanded) { "−" } else { "+" } } else { "·" };
+                            let state = row.filter(|row| row.entry.is_dir).map_or("", |row| {
+                                if row.loading { " · loading" } else if row.stale { " · stale, Refresh" }
+                                else if row.error.is_some() { " · error, Retry" } else if !row.loaded { " · not loaded" }
+                                else { "" }
+                            });
+                            let indent = row.map_or(0.0, |row| (row.depth as f32 * 10.0).min(file_text_width * 0.35));
                             let color = if entry.is_dir { AMBER } else if syntax::supports(&entry.path) { GREEN } else { TEXT };
-                            egui::WidgetText::from(RichText::new(format!("{icon}  {}", entry.name)).color(color))
-                                .into_galley(ui, Some(egui::TextWrapMode::Wrap), file_text_width, egui::TextStyle::Button)
+                            egui::WidgetText::from(RichText::new(format!("{icon}  {}{state}", entry.name)).color(color))
+                                .into_galley(ui, Some(egui::TextWrapMode::Wrap), (file_text_width - indent).max(0.0), egui::TextStyle::Button)
                         }).collect();
                         let explorer_min_height = file_galleys.iter().fold(64.0_f32, |height, galley| {
                             height.max(galley.size().y + 2.0 * ui.spacing().button_padding.y + 2.0 * ui.spacing().item_spacing.y).max(ui.spacing().interact_size.y)
@@ -1726,15 +1778,22 @@ impl CedarApp {
                         });
                         let mut focused_entry = None;
                         let mut open = None;
-                        let explorer = egui::ScrollArea::vertical().id_salt("explorer_scroll")
+                        let mut retry = None;
+                        let explorer = egui::ScrollArea::vertical().id_salt("explorer_scroll").drag_to_scroll(false)
                             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                             .min_scrolled_height(explorer_min_height).max_height(explorer_height)
                             .auto_shrink([false, false]).animated(false).show_viewport(ui, |ui, viewport| {
-                                if self.entries.is_empty() { ui.label(RichText::new(if self.ready() { "This directory is empty" } else { "Connect a workspace to browse files" }).small().color(MUTED)); }
-                                for (entry, galley) in self.entries.iter().zip(&file_galleys) {
+                                if self.explorer.mode == explorer_tree::Mode::Flat && self.entries.is_empty() { ui.label(RichText::new(if !self.ready() { "Connect a workspace to browse files" } else if self.explorer_scope_loaded() { "This directory is empty" } else { "Directory not loaded. Refresh explicitly to load it" }).small().color(MUTED)); }
+                                for (index, (entry, galley)) in display_entries.iter().zip(&file_galleys).enumerate() {
                                     let selected = self.active().is_some_and(|doc| doc.path == entry.path);
-                                    let response = ui.add_enabled(self.ready(), egui::Button::new(galley.clone()).selected(selected).frame(selected).min_size(egui::vec2(ui.available_width(), 27.0))).on_hover_text(&entry.path);
-                                    let newly_revealed = response.gained_focus() || (resized && response.has_focus());
+                                    let response = if let Some(row) = tree_rows.get(index) {
+                                        self.explorer_tree_row(ui, row, galley.clone())
+                                    } else {
+                                        ui.add_enabled(self.ready(), egui::Button::new(galley.clone()).selected(selected).frame(selected).min_size(egui::vec2(ui.available_width(), 27.0))).on_hover_text(&entry.path)
+                                    };
+                                    let explicit_tree_reveal = self.explorer.mode == explorer_tree::Mode::Tree
+                                        && self.explorer.key_reveal.as_deref() == Some(entry.path.as_str()) && response.has_focus();
+                                    let newly_revealed = response.gained_focus() || (resized && response.has_focus()) || explicit_tree_reveal;
                                     if newly_revealed || (pending_focus == Some(response.id) && response.has_focus()) {
                                         response.scroll_to_me(None);
                                         focused_entry = Some((response.id, newly_revealed, response.rect, viewport.min.y));
@@ -1743,7 +1802,26 @@ impl CedarApp {
                                     sidebar_layout_tests::record(ui, &entry.name, &response);
                                     #[cfg(test)]
                                     workspace_access_tests::record(ui, &entry.name, &response);
-                                    if response.clicked() { open = Some(entry.clone()); }
+                                    if let Some(row) = tree_rows.get(index) {
+                                        if self.explorer_pointer_activation(ctx, &response) {
+                                            response.request_focus();
+                                            open = Some(entry.clone());
+                                        }
+                                        if let Some(error) = &row.error {
+                                            ui.label(RichText::new(error).small().color(RED));
+                                            let retry_response = explorer_tree::retry_button(ui, "branch", &entry.path, "Retry", self.ready() && !self.explorer_busy());
+                                            let newly_revealed = retry_response.gained_focus() || (resized && retry_response.has_focus());
+                                            if newly_revealed || (pending_focus == Some(retry_response.id) && retry_response.has_focus()) {
+                                                retry_response.scroll_to_me(None);
+                                                focused_entry = Some((retry_response.id, newly_revealed, retry_response.rect, viewport.min.y));
+                                            }
+                                            #[cfg(test)]
+                                            workspace_access_tests::record(ui, &format!("tree_retry:{}", entry.path), &retry_response);
+                                            if retry_response.clicked() { retry = Some(entry.path.clone()); }
+                                        } else if row.expanded && row.loaded && !row.loading && tree_rows.get(index + 1).is_none_or(|child| child.depth <= row.depth) {
+                                            ui.label(RichText::new("Empty directory").small().color(MUTED));
+                                        }
+                                    } else if response.clicked() { open = Some(entry.clone()); }
                                 }
                             });
                         if let Some((id, newly_revealed, row_rect, old_offset)) = focused_entry {
@@ -1765,7 +1843,11 @@ impl CedarApp {
                         }
                         #[cfg(test)]
                         sidebar_layout_tests::record_scroll(ctx, false, &explorer);
-                        if let Some(entry) = open { if entry.is_dir { self.list(entry.path); } else { self.open(entry.path, None); } }
+                        if let Some(path) = retry { self.explorer_refresh(&path); }
+                        if let Some(entry) = open {
+                            if self.explorer.mode == explorer_tree::Mode::Tree { self.explorer_activate(&entry.path); }
+                            else if entry.is_dir { self.list(entry.path); } else { self.open(entry.path, None); }
+                        }
                         // One persistent child emits the same five auto IDs at every
                         // width; row breaks change geometry without changing focus.
                         ui.horizontal_wrapped(|ui| {
@@ -1973,7 +2055,7 @@ impl CedarApp {
                                 self.show_file_chooser();
                             }
                             if ui.button("New file").clicked() {
-                                self.new_file = true;
+                                self.explorer_new_file();
                             }
                         });
                         ui.add_space(16.0);
@@ -2419,6 +2501,10 @@ impl CedarApp {
 }
 
 impl eframe::App for CedarApp {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.explorer_tree_input(ctx, raw_input);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.workspace_access = workspace_access::Access::default();
         #[cfg(test)]

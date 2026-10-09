@@ -490,6 +490,16 @@ fn sidebar_tool_tab_shift_tab_and_enter_follow_visual_order() {
             let (mut app, commands) = app(width, false, font_size);
             settle(&mut app, size);
             focus(&mut app, size, "+");
+            // Flat and Tree are intentional mode controls before the native
+            // inner scrollbar and the tool selectors. Assert their actual order.
+            for label in ["Flat", "Tree"] {
+                key(&mut app, size, egui::Key::Tab, egui::Modifiers::NONE);
+                assert_eq!(
+                    app.editor_ctx.memory(|memory| memory.focused()),
+                    Some(widget(&app, label).id)
+                );
+                assert_visible(&app, label);
+            }
             // Native egui scrollbars are also focusable Tab stops.
             for _ in 0..3 {
                 key(&mut app, size, egui::Key::Tab, egui::Modifiers::NONE);

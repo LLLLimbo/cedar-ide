@@ -1,0 +1,51 @@
+# Verification report · Capability inventory correction / 0.29.1
+
+This is a test-inventory correction to the dependency-insight checkpoint. No Rust
+product behavior, capability advertisements, trust policy, model schema, native
+acceptance condition or timeout is changed.
+
+## Preserved failure
+
+[0.29.0](TEST_REPORT_PHASE29_DEPENDENCIES.md) passed Ubuntu but failed Windows
+aggregate verification: its exact allowed capability set already matched all 31
+actual names, while a duplicate cfg-only numeric assertion still expected 30.
+Native dependency acceptance and the Windows package did not execute. That run
+remains failed; it is not evidence of a Maven runtime failure or success.
+
+## Correction and regression
+
+The actual Hello test continues to require exact allowed-set equality and the
+32-capability wire ceiling. Its exact count follows from that equality instead
+of a second numeric literal. A shared independent test inventory derives from
+the explicit operation list and platform policy. A host-runnable regression
+checks Linux, macOS, Windows and other targets under both backend modes, including
+unique names, forbidden generic Windows routes, optional Maven availability,
+remaining wire capacity and one-over-limit rejection. It does not simulate
+actual Windows process execution.
+
+Read-only audit of the normal isolated agent, nonshipping fixtures, protocol,
+client, Python checks and extracted-bundle inventory found no other stale count.
+Current Windows normal inventory has 31 entries, leaving one slot under the
+unchanged limit. Future growth must explicitly account for that finite capacity.
+
+## Current verification
+
+Independent inventory/patch review has no remaining findings. All four focused
+capability tests pass on the host, including the all-platform matrix. Strict
+host and Windows MSVC-target Clippy pass. The all-target host aggregate completed
+41 suites: 1,135 passed, zero failed and 29 explicit opt-ins ignored. All-feature
+and default shipping release builds pass; the normal Linux agent capability/trust
+smoke passes with 24 capabilities and no tool startup. Exact-source dual CI,
+actual Maven present/missing dependency receipts and every package payload hash
+remain required. [0.28.1](TEST_REPORT_PHASE281_BUNDLE_GUIDE.md) remains the latest
+fully verified distribution. Its original spontaneous Java timeout and successful
+one-refresh recovery remain separately recorded; no upstream fix is claimed.
+Windows native GUI and authenticated SSH remain unverified.
+
+## Exact 0.29.1 outcome
+
+Public `ee4ae8e1ca72473e22084df6cd5c4b3fbc2cb787` passed [both OS CI jobs](https://github.com/LLLLimbo/cedar-ide/actions/runs/37952399316). The first actual Maven dependency pair passed in 26,323 ms: one query, one captured declaration and one observed library per case; present was `observed_present_file`, missing was `observed_absent_file`, and all 13 required dependency witnesses were true. The omitted-library branch remains deterministic coverage, not this native observation. Existing model, POM marker, cache/source and cleanup checks passed.
+
+All 20 dependency UI cases passed on both OS. Aggregate results were Ubuntu 1,135 passed/29 opt-ins ignored and Windows 1,150 passed/82 opt-ins ignored, with required native opt-ins run by later steps. Ordinary and required-idle Java matched spontaneously; idle elapsed 40,298 ms with zero recovery. This does not fix the historically intermittent JDT publication issue.
+
+Independent verification checked all 535 payload hashes plus the manifest, exact new guide bytes and entry-guide local targets. ZIP size is 5,147,068 bytes; SHA-256 `f8bfef4ceb28577c10db36494f6ce200478761ebab1887f8bc0ae96469c370df`. The failed 0.29.0 count checkpoint remains preserved. Windows native GUI and authenticated SSH remain unverified.
