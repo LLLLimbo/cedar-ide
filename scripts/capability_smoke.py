@@ -16,6 +16,11 @@ BASE = {'list', 'read', 'write', 'search'}
 TASKS = {'run_start', 'run_poll', 'run_cancel'}
 LANGUAGE = {'language_start', 'language_open', 'language_change',
             'language_close', 'language_events', 'language_stop'}
+WINDOWS_JAVA = {'language_start_java', 'language_start_java_begin',
+                'language_start_java_poll', 'language_start_java_cancel',
+                'language_open', 'language_change', 'language_close',
+                'language_events', 'language_stop'}
+WINDOWS_MAVEN = {'language_start_java_maven_begin', 'language_maven_model'}
 
 
 def validate(hello):
@@ -32,6 +37,23 @@ def validate(hello):
     assert all(re.fullmatch(r'[a-z0-9._-]{1,64}', name) for name in capabilities)
     assert BASE <= set(capabilities)
     return info
+
+
+def validate_platform_capabilities(info):
+    capabilities = set(info['capabilities'])
+    if info['os'] in ('linux', 'macos'):
+        assert TASKS | {'run', 'git_status', 'git_changes', 'git_diff'} <= capabilities
+    elif info['os'] == 'windows':
+        # The executable is the normal isolated agent, never a fixture host.
+        assert TASKS | {'git_changes', 'git_diff'} <= capabilities
+        assert not {'run', 'git_status'} & capabilities
+    else:
+        assert not (TASKS | {'run', 'git_status'}) & capabilities
+    if info['os'] == 'windows':
+        assert WINDOWS_JAVA | WINDOWS_MAVEN <= capabilities
+        assert 'language_start' not in capabilities
+    else:
+        assert LANGUAGE <= capabilities
 
 
 def main():
@@ -69,18 +91,7 @@ def main():
         finally:
             trusted.close()
         capabilities = set(info['capabilities'])
-        if info['os'] in ('linux', 'macos'):
-            assert TASKS | {'run', 'git_status', 'git_changes', 'git_diff'} <= capabilities
-        elif info['os'] == 'windows':
-            # The executable is the isolated agent, never an in-process host.
-            assert TASKS | {'git_changes', 'git_diff'} <= capabilities
-            assert not {'run', 'git_status'} & capabilities
-        else:
-            assert not (TASKS | {'run', 'git_status'}) & capabilities
-        if info['os'] == 'windows':
-            assert not any(name.startswith('language_') for name in capabilities)
-        else:
-            assert LANGUAGE <= capabilities
+        validate_platform_capabilities(info)
         assert list(root.iterdir()) == []
         print('PASS: actual agent bounded metadata/platform advertisement/trust independence/no tool startup')
         print(json.dumps({'reported_version': info['version'], 'reported_os': info['os'],

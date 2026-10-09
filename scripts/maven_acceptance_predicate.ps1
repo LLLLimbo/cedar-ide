@@ -33,6 +33,18 @@ function Assert-MavenReceipt([object[]] $Receipts) {
         if ($case.case -cne $name -or $case.failure_stage -cne 'none') {
             throw 'Maven case did not complete.'
         }
+        $probeExpected = @{
+            model_probe_outcome = 'ready'; event_probe_outcome = 'events_accepted';
+            model_error_code = 'none'; model_rejection = 'none'; event_error_code = 'none';
+            event_rejection = 'none'; rejected_diagnostic_origin = 'none';
+            rejected_diagnostic_code_shape = 'none'; rejected_diagnostic_message_class = 'none';
+            rejected_diagnostic_severity = 'none'
+        }
+        foreach ($field in $probeExpected.Keys) {
+            if ($case.$field -isnot [string] -or $case.$field -cne $probeExpected[$field]) {
+                throw 'Maven probe branch contradicts a completed case.'
+            }
+        }
         foreach ($field in @('java_capabilities', 'generic_start_rejected', 'untrusted_start_rejected',
             'model_without_session_rejected', 'async_start_begin_acknowledged', 'async_start_read_while_starting',
             'async_start_ready', 'root_identity_verified', 'root_observed_live', 'maven_nature',

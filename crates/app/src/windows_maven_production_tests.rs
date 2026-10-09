@@ -127,6 +127,129 @@ enum ModelStatus {
     Unresolved,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ModelProbeOutcome {
+    #[default]
+    NotAttempted,
+    RequestFailed,
+    NonLanguagePayload,
+    ResponseReceived,
+    ModelRejected,
+    NotReady,
+    Ready,
+    BudgetExhausted,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ClientErrorCode {
+    #[default]
+    None,
+    UnsupportedOperation,
+    RunDisabled,
+    LanguageNotRunning,
+    LanguageMavenSessionRequired,
+    LanguageMavenUnsupported,
+    LanguageMavenRestartRequired,
+    LanguageMavenInvalidModel,
+    TransportFailure,
+    Other,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ModelRejection {
+    #[default]
+    None,
+    ProfileOrPom,
+    Status,
+    MissingClasspath,
+    ClasspathBound,
+    MissingSourcePath,
+    EscapedSourcePath,
+    DependencyResolution,
+    DependencyOrigin,
+    EntryKind,
+    ForeignOrDuplicateReference,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum EventProbeOutcome {
+    #[default]
+    NotAttempted,
+    RequestFailed,
+    NonLanguagePayload,
+    ResponseReceived,
+    EventsAccepted,
+    EventsRejected,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum EventRejection {
+    #[default]
+    None,
+    Truncated,
+    MissingEvents,
+    UnknownEvent,
+    ClosedEvent,
+    LaggedEvent,
+    MissingEventType,
+    MissingDiagnosticUri,
+    MissingDiagnostics,
+    UnexpectedPomDiagnostic,
+    UnexpectedSourceDiagnostic,
+    ForeignDocument,
+    UriEncoding,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DiagnosticOrigin {
+    #[default]
+    None,
+    Pom,
+    Source,
+    Foreign,
+    Missing,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DiagnosticCodeShape {
+    #[default]
+    None,
+    Missing,
+    StringZero,
+    StringTypeMismatch,
+    OtherString,
+    IntegerZero,
+    IntegerTypeMismatch,
+    OtherInteger,
+    Other,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DiagnosticSeverity {
+    #[default]
+    None,
+    Missing,
+    Error,
+    Warning,
+    Information,
+    Hint,
+    Other,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DiagnosticMessageClass {
+    #[default]
+    None,
+    Missing,
+    OfflineOwnedDependency,
+    PlainMissingOwnedDependency,
+    DeliberateIntToString,
+    UnresolvedCedarImport,
+    UnresolvedArithmetic,
+    Other,
+}
+
 // Only fixed tags, booleans, bounded counters and native exit status leave this
 // test. No event payloads, source text, private paths or server messages appear
 // in the receipt. The collector must independently require both cases.
@@ -136,6 +259,16 @@ struct CaseEvidence {
     failure_stage: Stage,
     model_status: ModelStatus,
     model_queries: u16,
+    model_probe_outcome: ModelProbeOutcome,
+    model_error_code: ClientErrorCode,
+    model_rejection: ModelRejection,
+    event_probe_outcome: EventProbeOutcome,
+    event_error_code: ClientErrorCode,
+    event_rejection: EventRejection,
+    rejected_diagnostic_origin: DiagnosticOrigin,
+    rejected_diagnostic_code_shape: DiagnosticCodeShape,
+    rejected_diagnostic_severity: DiagnosticSeverity,
+    rejected_diagnostic_message_class: DiagnosticMessageClass,
     java_capabilities: bool,
     generic_start_rejected: bool,
     untrusted_start_rejected: bool,
@@ -301,6 +434,79 @@ fn language_value(client: &mut Client, op: Operation) -> CheckResult<Value> {
     match client.request(op)? {
         Payload::Language { value } => Ok(value),
         _ => Err("Maven acceptance received a non-language response".into()),
+    }
+}
+
+fn client_error_code(error: &str) -> ClientErrorCode {
+    // RemoteError Display prefixes the code before ':'. Never search a server
+    // message for code-shaped substrings or export the remainder of the error.
+    let code = error.split_once(':').map_or(error, |(code, _)| code);
+    match code {
+        "unsupported_operation" => ClientErrorCode::UnsupportedOperation,
+        "run_disabled" => ClientErrorCode::RunDisabled,
+        "language_not_running" => ClientErrorCode::LanguageNotRunning,
+        "language_maven_session_required" => ClientErrorCode::LanguageMavenSessionRequired,
+        "language_maven_unsupported" => ClientErrorCode::LanguageMavenUnsupported,
+        "language_maven_restart_required" => ClientErrorCode::LanguageMavenRestartRequired,
+        "language_maven_invalid_model" => ClientErrorCode::LanguageMavenInvalidModel,
+        "transport_cancelled"
+        | "transport_write"
+        | "transport_eof"
+        | "transport_read"
+        | "transport_timeout"
+        | "transport_close"
+        | "transport_cleanup_unverified"
+        | "disconnected"
+        | "protocol_error" => ClientErrorCode::TransportFailure,
+        _ => ClientErrorCode::Other,
+    }
+}
+
+fn model_payload(response: CheckResult<Payload>, record: &mut CaseEvidence) -> CheckResult<Value> {
+    record.model_error_code = ClientErrorCode::None;
+    record.model_rejection = ModelRejection::None;
+    match response {
+        Ok(Payload::Language { value }) => {
+            record.model_probe_outcome = ModelProbeOutcome::ResponseReceived;
+            Ok(value)
+        }
+        Ok(_) => {
+            record.model_probe_outcome = ModelProbeOutcome::NonLanguagePayload;
+            Err("Maven acceptance received a non-language response".into())
+        }
+        Err(error) => {
+            record.model_probe_outcome = ModelProbeOutcome::RequestFailed;
+            record.model_error_code = client_error_code(&error);
+            Err(error)
+        }
+    }
+}
+
+fn clear_rejected_diagnostic(record: &mut CaseEvidence) {
+    record.rejected_diagnostic_origin = DiagnosticOrigin::None;
+    record.rejected_diagnostic_code_shape = DiagnosticCodeShape::None;
+    record.rejected_diagnostic_message_class = DiagnosticMessageClass::None;
+    record.rejected_diagnostic_severity = DiagnosticSeverity::None;
+}
+
+fn event_payload(response: CheckResult<Payload>, record: &mut CaseEvidence) -> CheckResult<Value> {
+    record.event_error_code = ClientErrorCode::None;
+    record.event_rejection = EventRejection::None;
+    clear_rejected_diagnostic(record);
+    match response {
+        Ok(Payload::Language { value }) => {
+            record.event_probe_outcome = EventProbeOutcome::ResponseReceived;
+            Ok(value)
+        }
+        Ok(_) => {
+            record.event_probe_outcome = EventProbeOutcome::NonLanguagePayload;
+            Err("Maven acceptance received a non-language response".into())
+        }
+        Err(error) => {
+            record.event_probe_outcome = EventProbeOutcome::RequestFailed;
+            record.event_error_code = client_error_code(&error);
+            Err(error)
+        }
     }
 }
 fn rejected(client: &mut Client, op: Operation, code: &str) -> CheckResult<()> {
@@ -659,6 +865,42 @@ fn same_path(actual: &str, expected: &Path) -> bool {
     })
 }
 fn inspect_model(value: &Value, paths: &CasePaths, record: &mut CaseEvidence) -> CheckResult<bool> {
+    record.model_rejection = ModelRejection::None;
+    let result = inspect_model_inner(value, paths, record);
+    match &result {
+        Ok(true) => record.model_probe_outcome = ModelProbeOutcome::Ready,
+        Ok(false) => record.model_probe_outcome = ModelProbeOutcome::NotReady,
+        Err(error) => {
+            record.model_probe_outcome = ModelProbeOutcome::ModelRejected;
+            record.model_rejection = match error.as_str() {
+                "Maven model profile or owned POM hash mismatch" => ModelRejection::ProfileOrPom,
+                "invalid Maven model status" => ModelRejection::Status,
+                "Maven classpath missing" => ModelRejection::MissingClasspath,
+                "Maven model exceeded classpath bound" => ModelRejection::ClasspathBound,
+                "Maven source path missing" => ModelRejection::MissingSourcePath,
+                "Maven source path escaped the generated leaf" => ModelRejection::EscapedSourcePath,
+                "Maven dependency resolution disagrees with actual case cache" => {
+                    ModelRejection::DependencyResolution
+                }
+                "Maven dependency reference has an unexpected origin" => {
+                    ModelRejection::DependencyOrigin
+                }
+                "unexpected Maven classpath entry kind" => ModelRejection::EntryKind,
+                "Maven model included a foreign or extra dependency reference" => {
+                    ModelRejection::ForeignOrDuplicateReference
+                }
+                _ => ModelRejection::None,
+            };
+        }
+    }
+    result
+}
+
+fn inspect_model_inner(
+    value: &Value,
+    paths: &CasePaths,
+    record: &mut CaseEvidence,
+) -> CheckResult<bool> {
     require(
         value["profile"] == "maven_leaf"
             && value["pom_path"] == "pom.xml"
@@ -754,6 +996,59 @@ struct DiagnosticState {
     offline_pom: bool,
     type_error: bool,
     corrected: bool,
+    trace: EventTrace,
+}
+#[derive(Clone, Copy, Default)]
+struct EventTrace {
+    rejection: EventRejection,
+    origin: DiagnosticOrigin,
+    code_shape: DiagnosticCodeShape,
+    severity: DiagnosticSeverity,
+    message_class: DiagnosticMessageClass,
+}
+
+fn diagnostic_candidate(trace: &mut EventTrace, origin: DiagnosticOrigin, item: &Value) {
+    trace.origin = origin;
+    trace.code_shape = match &item["code"] {
+        Value::Null => DiagnosticCodeShape::Missing,
+        Value::String(code) if code == "0" => DiagnosticCodeShape::StringZero,
+        Value::String(code) if code == "16777233" => DiagnosticCodeShape::StringTypeMismatch,
+        Value::String(_) => DiagnosticCodeShape::OtherString,
+        Value::Number(code) if code.as_i64() == Some(0) => DiagnosticCodeShape::IntegerZero,
+        Value::Number(code) if code.as_i64() == Some(16_777_233) => {
+            DiagnosticCodeShape::IntegerTypeMismatch
+        }
+        Value::Number(code) if code.is_i64() || code.is_u64() => DiagnosticCodeShape::OtherInteger,
+        _ => DiagnosticCodeShape::Other,
+    };
+    trace.severity = if item["severity"].is_null() {
+        DiagnosticSeverity::Missing
+    } else {
+        match item["severity"].as_u64() {
+            Some(1) => DiagnosticSeverity::Error,
+            Some(2) => DiagnosticSeverity::Warning,
+            Some(3) => DiagnosticSeverity::Information,
+            Some(4) => DiagnosticSeverity::Hint,
+            _ => DiagnosticSeverity::Other,
+        }
+    };
+    trace.message_class = match item["message"].as_str() {
+        Some(message) if message == format!("Offline / Missing artifact {DEPENDENCY_GAV}") => {
+            DiagnosticMessageClass::OfflineOwnedDependency
+        }
+        Some(message) if message == format!("Missing artifact {DEPENDENCY_GAV}") => {
+            DiagnosticMessageClass::PlainMissingOwnedDependency
+        }
+        Some("Type mismatch: cannot convert from int to String") => {
+            DiagnosticMessageClass::DeliberateIntToString
+        }
+        Some("The import cedar cannot be resolved") => {
+            DiagnosticMessageClass::UnresolvedCedarImport
+        }
+        Some("Arithmetic cannot be resolved") => DiagnosticMessageClass::UnresolvedArithmetic,
+        None if item["message"].is_null() => DiagnosticMessageClass::Missing,
+        _ => DiagnosticMessageClass::Other,
+    };
 }
 fn exact_type_diagnostic(diagnostic: &Value) -> bool {
     diagnostic["severity"] == 1
@@ -763,6 +1058,72 @@ fn exact_type_diagnostic(diagnostic: &Value) -> bool {
             == serde_json::json!({"start":{"line":5,"character":25},"end":{"line":5,"character":30}})
 }
 fn inspect_events(
+    value: &Value,
+    paths: &CasePaths,
+    kind: CaseKind,
+    diagnostics: &mut DiagnosticState,
+    correction: bool,
+) -> CheckResult<()> {
+    diagnostics.trace = EventTrace::default();
+    let result = inspect_events_inner(value, paths, kind, diagnostics, correction);
+    if let Err(error) = &result {
+        let rejection = match error.as_str() {
+            "Maven event stream was truncated" => EventRejection::Truncated,
+            "Maven events missing" => EventRejection::MissingEvents,
+            "Maven event stream closed, lagged or was malformed" => diagnostics.trace.rejection,
+            "Maven diagnostic URI missing" => EventRejection::MissingDiagnosticUri,
+            "Maven diagnostic list missing" => EventRejection::MissingDiagnostics,
+            "Maven POM reported a foreign or unexpected diagnostic" => {
+                EventRejection::UnexpectedPomDiagnostic
+            }
+            "Maven source reported a foreign or unexpected diagnostic" => {
+                EventRejection::UnexpectedSourceDiagnostic
+            }
+            "Maven diagnostics referenced a foreign document" => EventRejection::ForeignDocument,
+            "source URI failed" | "POM URI failed" => EventRejection::UriEncoding,
+            _ => EventRejection::None,
+        };
+        if !matches!(
+            rejection,
+            EventRejection::MissingDiagnosticUri
+                | EventRejection::MissingDiagnostics
+                | EventRejection::UnexpectedPomDiagnostic
+                | EventRejection::UnexpectedSourceDiagnostic
+                | EventRejection::ForeignDocument
+        ) {
+            diagnostics.trace = EventTrace::default();
+        }
+        diagnostics.trace.rejection = rejection;
+    } else {
+        // Candidate details from an accepted diagnostic never become a claimed
+        // rejection, including when the next batch has no diagnostics at all.
+        diagnostics.trace = EventTrace::default();
+    }
+    result
+}
+
+fn record_events(
+    value: &Value,
+    paths: &CasePaths,
+    record: &mut CaseEvidence,
+    diagnostics: &mut DiagnosticState,
+    correction: bool,
+) -> CheckResult<()> {
+    let result = inspect_events(value, paths, record.case, diagnostics, correction);
+    record.event_probe_outcome = if result.is_ok() {
+        EventProbeOutcome::EventsAccepted
+    } else {
+        EventProbeOutcome::EventsRejected
+    };
+    record.event_rejection = diagnostics.trace.rejection;
+    record.rejected_diagnostic_origin = diagnostics.trace.origin;
+    record.rejected_diagnostic_code_shape = diagnostics.trace.code_shape;
+    record.rejected_diagnostic_severity = diagnostics.trace.severity;
+    record.rejected_diagnostic_message_class = diagnostics.trace.message_class;
+    result
+}
+
+fn inspect_events_inner(
     value: &Value,
     paths: &CasePaths,
     kind: CaseKind,
@@ -783,14 +1144,26 @@ fn inspect_events(
             Some("notification" | "unsupported_server_request") => {}
             Some("diagnostics") => {
                 let value = &event["value"];
+                diagnostics.trace = EventTrace {
+                    origin: DiagnosticOrigin::Missing,
+                    ..EventTrace::default()
+                };
                 let uri = value["uri"]
                     .as_str()
                     .ok_or("Maven diagnostic URI missing")?;
+                diagnostics.trace.origin = if same_local_uri(uri, pom_uri.as_str()) {
+                    DiagnosticOrigin::Pom
+                } else if same_local_uri(uri, source_uri.as_str()) {
+                    DiagnosticOrigin::Source
+                } else {
+                    DiagnosticOrigin::Foreign
+                };
                 let items = value["diagnostics"]
                     .as_array()
                     .ok_or("Maven diagnostic list missing")?;
                 if same_local_uri(uri, pom_uri.as_str()) {
                     for item in items {
+                        diagnostic_candidate(&mut diagnostics.trace, DiagnosticOrigin::Pom, item);
                         require(
                             !kind.present()
                                 && item["severity"] == 1
@@ -811,6 +1184,11 @@ fn inspect_events(
                         diagnostics.corrected = true;
                     }
                     for item in items {
+                        diagnostic_candidate(
+                            &mut diagnostics.trace,
+                            DiagnosticOrigin::Source,
+                            item,
+                        );
                         if exact_type_diagnostic(item) {
                             diagnostics.type_error = true;
                         } else {
@@ -831,13 +1209,28 @@ fn inspect_events(
                         }
                     }
                 } else {
+                    if let Some(item) = items.first() {
+                        diagnostic_candidate(
+                            &mut diagnostics.trace,
+                            DiagnosticOrigin::Foreign,
+                            item,
+                        );
+                    }
                     require(
                         items.is_empty(),
                         "Maven diagnostics referenced a foreign document",
                     )?;
                 }
             }
-            _ => return Err("Maven event stream closed, lagged or was malformed".into()),
+            _ => {
+                diagnostics.trace.rejection = match event["type"].as_str() {
+                    Some("closed") => EventRejection::ClosedEvent,
+                    Some("lagged") => EventRejection::LaggedEvent,
+                    None => EventRejection::MissingEventType,
+                    Some(_) => EventRejection::UnknownEvent,
+                };
+                return Err("Maven event stream closed, lagged or was malformed".into());
+            }
         }
     }
     Ok(())
@@ -852,13 +1245,17 @@ fn await_model(
     let deadline = Instant::now() + MODEL_BUDGET;
     while record.model_queries < MAX_MODEL_QUERIES && Instant::now() < deadline {
         record.model_queries += 1;
-        let model = language_value(client, Operation::LanguageMavenModel)?;
+        let model = model_payload(client.request(Operation::LanguageMavenModel), record)?;
         let ready = inspect_model(&model, paths, record)?;
-        let events = language_value(client, Operation::LanguageEvents)?;
-        inspect_events(&events, paths, record.case, diagnostics, false)?;
+        let events = event_payload(client.request(Operation::LanguageEvents), record)?;
+        record_events(&events, paths, record, diagnostics, false)?;
         record.offline_pom_diagnostic = diagnostics.offline_pom;
+        let within_budget = Instant::now() < deadline;
+        if !within_budget {
+            record.model_probe_outcome = ModelProbeOutcome::BudgetExhausted;
+        }
         require(
-            Instant::now() < deadline,
+            within_budget,
             "Maven model request exceeded its fixed budget",
         )?;
         if ready && (record.case.present() || diagnostics.offline_pom) {
@@ -872,6 +1269,7 @@ fn await_model(
             break;
         }
     }
+    record.model_probe_outcome = ModelProbeOutcome::BudgetExhausted;
     Err("Maven model did not establish its bounded present/missing witness".into())
 }
 
@@ -946,8 +1344,8 @@ fn semantic_queries(
     )?;
     record.completion = true;
     while Instant::now() < deadline && !diagnostics.type_error {
-        let events = language_value(client, Operation::LanguageEvents)?;
-        inspect_events(&events, paths, record.case, diagnostics, false)?;
+        let events = event_payload(client.request(Operation::LanguageEvents), record)?;
+        record_events(&events, paths, record, diagnostics, false)?;
         if !diagnostics.type_error {
             thread::sleep(MODEL_INTERVAL);
         }
@@ -993,8 +1391,8 @@ fn semantic_queries(
     )?;
     record.dirty_change_acknowledged = true;
     while Instant::now() < deadline && !diagnostics.corrected {
-        let events = language_value(client, Operation::LanguageEvents)?;
-        inspect_events(&events, paths, record.case, diagnostics, true)?;
+        let events = event_payload(client.request(Operation::LanguageEvents), record)?;
+        record_events(&events, paths, record, diagnostics, true)?;
         if !diagnostics.corrected {
             thread::sleep(MODEL_INTERVAL);
         }
@@ -1797,6 +2195,292 @@ fn maven_missing_exact_model_reference_is_expected_negative_evidence() -> CheckR
         .push(expected["classpath"][1].clone());
     assert!(inspect_model(&duplicate, &paths, &mut record).is_err());
     Ok(())
+}
+
+#[test]
+fn maven_model_probe_receipt_distinguishes_request_payload_and_shape_failures() -> CheckResult<()> {
+    let paths = CasePaths {
+        root: PathBuf::from(r"C:\owned\workspace 雪"),
+        repository: PathBuf::from(r"C:\owned\repository 雪"),
+        data: PathBuf::from(r"C:\owned\data"),
+    };
+    let mut record = CaseEvidence::default();
+    let error = "language_maven_invalid_model: never-export-private-detail";
+    assert_eq!(
+        model_payload(Err(error.into()), &mut record).unwrap_err(),
+        error
+    );
+    assert_eq!(record.model_probe_outcome, ModelProbeOutcome::RequestFailed);
+    assert_eq!(
+        record.model_error_code,
+        ClientErrorCode::LanguageMavenInvalidModel
+    );
+    assert_eq!(
+        client_error_code("other: language_maven_invalid_model: never-export-private-detail"),
+        ClientErrorCode::Other
+    );
+    assert_eq!(
+        client_error_code("transport_timeout: never-export-private-detail"),
+        ClientErrorCode::TransportFailure
+    );
+    assert_eq!(
+        client_error_code("transport_unknown: never-export-private-detail"),
+        ClientErrorCode::Other
+    );
+    assert!(model_payload(
+        Ok(Payload::GitStatus {
+            text: "never-export-private-detail".into()
+        }),
+        &mut record
+    )
+    .is_err());
+    assert_eq!(
+        record.model_probe_outcome,
+        ModelProbeOutcome::NonLanguagePayload
+    );
+    assert_eq!(record.model_error_code, ClientErrorCode::None);
+    let model = model_payload(Ok(Payload::Language { value: Value::Null }), &mut record)?;
+    assert_eq!(
+        record.model_probe_outcome,
+        ModelProbeOutcome::ResponseReceived
+    );
+    assert!(inspect_model(&model, &paths, &mut record).is_err());
+    assert_eq!(record.model_probe_outcome, ModelProbeOutcome::ModelRejected);
+    assert_eq!(record.model_rejection, ModelRejection::ProfileOrPom);
+    let mut model = serde_json::json!({
+        "profile":"maven_leaf", "status":"unavailable", "pom_path":"pom.xml",
+        "pom_sha256":POM_SHA256, "restart_required":false, "maven_nature":false
+    });
+    assert!(!inspect_model(&model, &paths, &mut record)?);
+    assert_eq!(record.model_probe_outcome, ModelProbeOutcome::NotReady);
+    assert_eq!(record.model_rejection, ModelRejection::None);
+    model["status"] = "never-export-private-detail".into();
+    assert!(inspect_model(&model, &paths, &mut record).is_err());
+    assert_eq!(record.model_rejection, ModelRejection::Status);
+    model["status"] = "imported".into();
+    model["maven_nature"] = true.into();
+    model["source_paths"] = serde_json::json!(["source-java"]);
+    model["compiler"] = serde_json::json!({"source":"17","compliance":"17","target":"17"});
+    assert!(inspect_model(&model, &paths, &mut record).is_err());
+    assert_eq!(record.model_rejection, ModelRejection::MissingClasspath);
+    let encoded = serde_json::to_string(&record).unwrap();
+    assert!(!encoded.contains("never-export-private-detail"));
+    assert!(!encoded.contains("C:\\owned"));
+    Ok(())
+}
+
+#[test]
+fn maven_event_probe_receipt_distinguishes_request_structure_and_diagnostic_rejection(
+) -> CheckResult<()> {
+    let paths = CasePaths {
+        root: PathBuf::from(r"C:\owned\workspace 雪"),
+        repository: PathBuf::from(r"C:\owned\repository 雪"),
+        data: PathBuf::from(r"C:\owned\data"),
+    };
+    let mut record = CaseEvidence {
+        case: CaseKind::Missing,
+        ..CaseEvidence::default()
+    };
+    let mut diagnostics = DiagnosticState::default();
+    let unavailable = serde_json::json!({
+        "profile":"maven_leaf", "status":"unavailable", "pom_path":"pom.xml",
+        "pom_sha256":POM_SHA256, "restart_required":false, "maven_nature":false
+    });
+    assert!(!inspect_model(&unavailable, &paths, &mut record)?);
+    assert_eq!(record.model_probe_outcome, ModelProbeOutcome::NotReady);
+    assert!(event_payload(
+        Err("transport_read: never-export-private-detail".into()),
+        &mut record
+    )
+    .is_err());
+    assert_eq!(record.event_probe_outcome, EventProbeOutcome::RequestFailed);
+    assert_eq!(record.event_error_code, ClientErrorCode::TransportFailure);
+    assert!(event_payload(
+        Ok(Payload::GitStatus {
+            text: "never-export-private-detail".into()
+        }),
+        &mut record
+    )
+    .is_err());
+    assert_eq!(
+        record.event_probe_outcome,
+        EventProbeOutcome::NonLanguagePayload
+    );
+    assert_eq!(record.event_error_code, ClientErrorCode::None);
+    for (value, expected) in [
+        (
+            serde_json::json!({"truncated":true,"events":[]}),
+            EventRejection::Truncated,
+        ),
+        (
+            serde_json::json!({"truncated":false}),
+            EventRejection::MissingEvents,
+        ),
+        (
+            serde_json::json!({"truncated":false,"events":[{"type":"closed"}]}),
+            EventRejection::ClosedEvent,
+        ),
+        (
+            serde_json::json!({"truncated":false,"events":[{"type":"lagged"}]}),
+            EventRejection::LaggedEvent,
+        ),
+        (
+            serde_json::json!({"truncated":false,"events":[{}]}),
+            EventRejection::MissingEventType,
+        ),
+        (
+            serde_json::json!({"truncated":false,"events":[{"type":1}]}),
+            EventRejection::MissingEventType,
+        ),
+        (
+            serde_json::json!({"truncated":false,"events":[{"type":"new_server_event"}]}),
+            EventRejection::UnknownEvent,
+        ),
+    ] {
+        let value = event_payload(Ok(Payload::Language { value }), &mut record)?;
+        assert_eq!(
+            record.event_probe_outcome,
+            EventProbeOutcome::ResponseReceived
+        );
+        assert!(record_events(&value, &paths, &mut record, &mut diagnostics, false).is_err());
+        assert_eq!(
+            record.event_probe_outcome,
+            EventProbeOutcome::EventsRejected
+        );
+        assert_eq!(record.event_rejection, expected);
+        assert_eq!(record.rejected_diagnostic_origin, DiagnosticOrigin::None);
+    }
+    let pom_uri =
+        url::Url::from_file_path(paths.root.join("pom.xml")).map_err(|_| "test POM URI failed")?;
+    let batch = |item: Value| {
+        serde_json::json!({"truncated":false,"events":[{"type":"diagnostics","value":{
+        "uri":pom_uri.as_str(),"diagnostics":[item]}}]})
+    };
+    for (item, shape, severity, message) in [
+        (
+            serde_json::json!({"severity":1,"code":0,"message":format!("Offline / Missing artifact {DEPENDENCY_GAV}")}),
+            DiagnosticCodeShape::IntegerZero,
+            DiagnosticSeverity::Error,
+            DiagnosticMessageClass::OfflineOwnedDependency,
+        ),
+        (
+            serde_json::json!({"severity":2,"code":"0","message":format!("Offline / Missing artifact {DEPENDENCY_GAV}")}),
+            DiagnosticCodeShape::StringZero,
+            DiagnosticSeverity::Warning,
+            DiagnosticMessageClass::OfflineOwnedDependency,
+        ),
+        (
+            serde_json::json!({"severity":1,"code":"0","message":format!("Missing artifact {DEPENDENCY_GAV}")}),
+            DiagnosticCodeShape::StringZero,
+            DiagnosticSeverity::Error,
+            DiagnosticMessageClass::PlainMissingOwnedDependency,
+        ),
+        (
+            serde_json::json!({"severity":1,"code":"0","message":"never-export-private-detail"}),
+            DiagnosticCodeShape::StringZero,
+            DiagnosticSeverity::Error,
+            DiagnosticMessageClass::Other,
+        ),
+    ] {
+        assert!(record_events(&batch(item), &paths, &mut record, &mut diagnostics, false).is_err());
+        assert_eq!(
+            record.event_rejection,
+            EventRejection::UnexpectedPomDiagnostic
+        );
+        assert_eq!(record.rejected_diagnostic_origin, DiagnosticOrigin::Pom);
+        assert_eq!(record.rejected_diagnostic_code_shape, shape);
+        assert_eq!(record.rejected_diagnostic_severity, severity);
+        assert_eq!(record.rejected_diagnostic_message_class, message);
+        assert!(!diagnostics.offline_pom);
+        assert_eq!(record.model_probe_outcome, ModelProbeOutcome::NotReady);
+    }
+    let mut missing_uri = batch(serde_json::json!({"code":"0"}));
+    missing_uri["events"][0]["value"]
+        .as_object_mut()
+        .unwrap()
+        .remove("uri");
+    assert!(record_events(&missing_uri, &paths, &mut record, &mut diagnostics, false).is_err());
+    assert_eq!(record.event_rejection, EventRejection::MissingDiagnosticUri);
+    assert_eq!(record.rejected_diagnostic_origin, DiagnosticOrigin::Missing);
+    assert_eq!(
+        record.rejected_diagnostic_code_shape,
+        DiagnosticCodeShape::None
+    );
+    let mut foreign = batch(
+        serde_json::json!({"severity":1,"code":16777233,"message":"Type mismatch: cannot convert from int to String"}),
+    );
+    foreign["events"][0]["value"]["uri"] = "file:///C:/foreign/pom.xml".into();
+    assert!(record_events(&foreign, &paths, &mut record, &mut diagnostics, false).is_err());
+    assert_eq!(record.event_rejection, EventRejection::ForeignDocument);
+    assert_eq!(record.rejected_diagnostic_origin, DiagnosticOrigin::Foreign);
+    assert_eq!(
+        record.rejected_diagnostic_code_shape,
+        DiagnosticCodeShape::IntegerTypeMismatch
+    );
+    assert_eq!(
+        record.rejected_diagnostic_message_class,
+        DiagnosticMessageClass::DeliberateIntToString
+    );
+    let encoded = serde_json::to_string(&record).unwrap();
+    assert!(!encoded.contains("never-export-private-detail"));
+    assert!(!encoded.contains("file:///"));
+    let accepted = batch(
+        serde_json::json!({"severity":1,"code":"0","message":format!("Offline / Missing artifact {DEPENDENCY_GAV}")}),
+    );
+    record_events(&accepted, &paths, &mut record, &mut diagnostics, false)?;
+    assert!(diagnostics.offline_pom);
+    assert_eq!(
+        record.event_probe_outcome,
+        EventProbeOutcome::EventsAccepted
+    );
+    assert_eq!(record.event_rejection, EventRejection::None);
+    assert_eq!(record.rejected_diagnostic_origin, DiagnosticOrigin::None);
+    assert_eq!(
+        record.rejected_diagnostic_code_shape,
+        DiagnosticCodeShape::None
+    );
+    assert_eq!(
+        record.rejected_diagnostic_severity,
+        DiagnosticSeverity::None
+    );
+    assert_eq!(
+        record.rejected_diagnostic_message_class,
+        DiagnosticMessageClass::None
+    );
+    Ok(())
+}
+
+#[test]
+fn maven_diagnostic_trace_classifies_only_fixed_codes_and_exact_messages() {
+    for (code, shape) in [
+        (Value::Null, DiagnosticCodeShape::Missing),
+        (serde_json::json!("0"), DiagnosticCodeShape::StringZero),
+        (
+            serde_json::json!("16777233"),
+            DiagnosticCodeShape::StringTypeMismatch,
+        ),
+        (
+            serde_json::json!("private-code"),
+            DiagnosticCodeShape::OtherString,
+        ),
+        (serde_json::json!(0), DiagnosticCodeShape::IntegerZero),
+        (
+            serde_json::json!(16777233),
+            DiagnosticCodeShape::IntegerTypeMismatch,
+        ),
+        (serde_json::json!(123), DiagnosticCodeShape::OtherInteger),
+        (serde_json::json!(true), DiagnosticCodeShape::Other),
+    ] {
+        let mut trace = EventTrace::default();
+        diagnostic_candidate(
+            &mut trace,
+            DiagnosticOrigin::Source,
+            &serde_json::json!({"code":code,"severity":3,"message":"prefix Type mismatch: cannot convert from int to String"}),
+        );
+        assert_eq!(trace.code_shape, shape);
+        assert_eq!(trace.severity, DiagnosticSeverity::Information);
+        assert_eq!(trace.message_class, DiagnosticMessageClass::Other);
+    }
 }
 
 #[test]

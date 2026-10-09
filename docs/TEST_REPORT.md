@@ -143,3 +143,40 @@ Cargo.lock are unchanged. Python collector/receipt/cache, bundle and export test
 passed with their previously stated local platform/tool skips. Independent review
 found no blocking issue. Exact native classification and the missing case remain
 pending; no retrospective pass is assigned to the earlier failed pair.
+
+## Observed native metadata classification and missing-case diagnosis
+
+Public commit `070fe1966c2d0946b03e4fb8f88a5157d24ba212` in
+[CI run 37880050989](https://github.com/LLLLimbo/cedar-ide/actions/runs/37880050989)
+proved the new classification in the present case: six lifecycle markers, mask
+63, eight total metadata files and zero foreign files. The present case completed
+all required model, semantic, POM-change, integrity and natural-zero-exit witnesses.
+This establishes identities only for the current classified files, not those
+omitted from the earlier red receipt.
+
+The missing case now ran, retained absent dependency JAR/POM and unchanged inputs,
+and cleaned up with natural root exit zero. It failed at the model stage after
+one query; the receipt’s default/unavailable status and false model flags do not
+distinguish a rejected response from an event rejection. The model polling code
+already continues on an ordinary unavailable response. No readiness or missing-
+dependency criterion is weakened. A diagnostic-only follow-up records fixed branch,
+error-code and rejected-diagnostic categories without raw payloads, messages, paths
+or inherited values. Request order, cadence and budgets remain unchanged.
+
+A separate old fixture test compared nonshipping generic-language Hello directly
+with normal Hello. The fixture intentionally omits Maven. The corrected assertion
+filters exactly those two capabilities while preserving equality for everything
+else, and explicitly requires both Maven operations to remain unsupported there.
+The older Python smoke’s Windows expectations also now require typed Java/Maven
+while retaining generic-language and unsupported-run rejection. Five pure tests
+cover those expectations; they do not claim actual Windows process execution.
+All prior failed receipts remain unchanged and the overall native gate remains red.
+
+The diagnostic-only follow-up passed 922 host Rust tests, strict host/MSVC
+all-target/all-feature Clippy, formatting and diff checks. Three new deterministic
+Windows branch-test groups compile under MSVC and await native execution. The
+collector’s 78 tests retain the same three local skips; Maven receipt tests pass
+four with two native/tool skips. All ten Rust trace-enum sets exactly match the
+collector whitelist. The five pure capability expectations and actual Linux
+agent capability smoke passed. Independent review found no acceptance, privacy
+or production-guard relaxation. A new exact native run remains necessary.

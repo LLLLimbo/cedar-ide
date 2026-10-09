@@ -10,10 +10,18 @@ import unittest
 
 import collect_java_crash as collector
 
+PROBE_SUCCESS = {
+    'model_probe_outcome': 'ready', 'event_probe_outcome': 'events_accepted',
+    'model_error_code': 'none', 'model_rejection': 'none', 'event_error_code': 'none',
+    'event_rejection': 'none', 'rejected_diagnostic_origin': 'none',
+    'rejected_diagnostic_code_shape': 'none', 'rejected_diagnostic_message_class': 'none',
+    'rejected_diagnostic_severity': 'none',
+}
 
 def good_receipt():
     def case(name):
         value = {key: True for key, kind in collector.MAVEN_CASE_FIELDS.items() if kind == 'bool'}
+        value.update(PROBE_SUCCESS)
         value.update(case=name, failure_stage='none', model_status='imported' if name == 'present' else 'unresolved',
                      model_queries=1, unexpected_dependency_references=0, generated_metadata_files=8,
                      lifecycle_metadata_files=6, lifecycle_metadata_mask=63,
@@ -75,6 +83,8 @@ class MavenReceiptTests(unittest.TestCase):
             ('present', 'lifecycle_metadata_files', 7),
             ('missing', 'lifecycle_metadata_mask', 64),
             ('missing', 'lifecycle_metadata_mask', True),
+            ('missing', 'model_error_code', 'language_maven_invalid_model: SECRET_SENTINEL'),
+            ('present', 'event_rejection', 'SECRET_SENTINEL'),
             ('missing', 'generated_project_files', 257)]:
             with self.subTest(case=case, field=field):
                 value = good_receipt()
@@ -102,6 +112,25 @@ class MavenReceiptTests(unittest.TestCase):
         self.assertFalse(errors)
         self.assertIsNone(result['records'][0]['missing']['stop_status'])
         self.assertFalse(result['records'][0]['success'])
+
+    def test_failed_probe_retains_fixed_categories_without_raw_response(self):
+        value = good_receipt()
+        value.update(success=False, primary_failed=True)
+        value['missing'].update(success=False, primary_failed=True,
+                                event_probe_outcome='events_rejected',
+                                event_rejection='unexpected_pom_diagnostic',
+                                rejected_diagnostic_origin='pom',
+                                rejected_diagnostic_code_shape='integer_zero',
+                                rejected_diagnostic_message_class='offline_owned_dependency',
+                                rejected_diagnostic_severity='error',
+                                raw_model={'text': 'SECRET_SENTINEL'},
+                                raw_diagnostic='SECRET_SENTINEL')
+        result, errors, _ = sanitize(value)
+        self.assertFalse(errors)
+        rejected = result['records'][0]['missing']
+        self.assertEqual(rejected['event_rejection'], 'unexpected_pom_diagnostic')
+        self.assertEqual(rejected['rejected_diagnostic_code_shape'], 'integer_zero')
+        self.assertNotIn('SECRET_SENTINEL', json.dumps(result))
 
     @unittest.skipUnless(shutil.which('pwsh'), 'PowerShell is required for the actual Maven release predicate')
     def test_actual_powershell_gate_rejects_missing_contradictory_or_forged_witnesses(self):
@@ -137,6 +166,10 @@ class MavenReceiptTests(unittest.TestCase):
                   'root_handle_signaled', 'model_after_stop_rejected', 'client_reaped',
                   'synthetic_root_removed', 'success')
         for name in ('present', 'missing'):
+            for field in PROBE_SUCCESS:
+                for invalid in (None, [], [PROBE_SUCCESS[field]], 'other', 'SECRET_SENTINEL'):
+                    reject(name + '_probe_' + field + '_' + repr(invalid), [name, field], invalid)
+                reject(name + '_probe_missing_' + field, [name, field], remove=True)
             for field in common:
                 reject(name + '_' + field, [name, field], False)
             reject(name + '_missing_boolean', [name, 'source_unchanged'], remove=True)

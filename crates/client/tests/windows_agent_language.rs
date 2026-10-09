@@ -13,7 +13,10 @@
 #[path = "support/windows_task_harness.rs"]
 mod harness;
 
-use cedar_protocol::{LanguageQueryKind, Operation, Payload, JAVA_LANGUAGE_SESSION_CAPABILITIES};
+use cedar_protocol::{
+    LanguageQueryKind, Operation, Payload, JAVA_LANGUAGE_SESSION_CAPABILITIES,
+    JAVA_MAVEN_CAPABILITIES,
+};
 use cedar_tasks::TaskState;
 use cedar_workspace::{BackendMode, Workspace};
 use harness::*;
@@ -226,7 +229,13 @@ fn fixture_trust_is_explicit_and_normal_all_feature_hosts_remain_gated() {
         }
     }
     let mut untrusted = validation_agent(root.path(), false);
-    assert_eq!(metadata(untrusted.ok(Operation::Hello)), info);
+    // Maven is a normal typed production route. This nonshipping generic
+    // language fixture deliberately excludes it even in an all-features build.
+    let mut fixture_info = info.clone();
+    fixture_info
+        .capabilities
+        .retain(|name| !JAVA_MAVEN_CAPABILITIES.contains(&name.as_str()));
+    assert_eq!(metadata(untrusted.ok(Operation::Hello)), fixture_info);
     assert_eq!(
         untrusted
             .request(language_start(&lsp_dir, None))
@@ -247,6 +256,24 @@ fn fixture_trust_is_explicit_and_normal_all_feature_hosts_remain_gated() {
     assert!(!lsp_dir.join("root.lock").exists());
     assert!(!root.path().join("must-not-run").exists());
     untrusted.close_cleanly();
+
+    let mut trusted_fixture = validation_agent(root.path(), true);
+    assert_eq!(metadata(trusted_fixture.ok(Operation::Hello)), fixture_info);
+    for operation in [
+        Operation::LanguageStartJavaMavenBegin {
+            java_executable: String::new(),
+            distribution: String::new(),
+            data_directory: String::new(),
+            local_repository: String::new(),
+        },
+        Operation::LanguageMavenModel,
+    ] {
+        assert_eq!(
+            trusted_fixture.request(operation).unwrap_err().code,
+            "unsupported_platform"
+        );
+    }
+    trusted_fixture.close_cleanly();
 }
 
 #[test]
