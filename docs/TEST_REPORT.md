@@ -1,62 +1,74 @@
-# Verification report · compact sidebar access / 0.26.3
+# Verification report · keyboard workspace access / 0.27.0
 
-This bounded follow-up makes the sidebar scroll when a 780×540 window and the
-tools pane requesting its default 245-point height leave insufficient height for the explorer, selectors
-and help. It retains all controls and help text, the existing action order and
-ordinary-height footer placement. A constant solid outer scrollbar gutter makes
-width allocation deterministic; narrow sidebars may stack the selectors.
+This bounded presentation-only change supplies explicit keyboard routes between
+editing, directory browsing and the selected tools view. Hiding tools reclaims
+workspace space while preserving drafts and tool state. It does not redesign the
+expanded forms or guarantee simultaneous visibility of every control.
 
-The scope is the sidebar. Maximizing tools until they consume all remaining space,
-and center-editor overflow from tabs or Find/Replace, are separate responsive
-layout limitations. This change does not resize the tools pane, alter execution
-trust, start services, write files, or promise simultaneous visibility of all
-content in compact space. Compact success means each control and help line can
-be reached and read through ordinary scrolling and keyboard focus.
+## Intended actions and invariants
+
+- Ctrl/Cmd+J toggles tools. Hiding returns focus to the current editor, or an
+  available Explorer anchor when no document is open. Showing retains the selected
+  tool and focuses its rendered header selector. The existing close button shares
+  the hide/return behavior.
+- Ctrl/Cmd+Shift+E hides tools and focuses Explorer Refresh without issuing a read.
+  If Refresh is disabled or unavailable, it does not substitute another tool.
+- Documents, selection, Undo/Redo, recovery, unknown-save state, tool fields,
+  results, filters and scroll state are preserved. These actions issue no worker
+  commands and do not stop tasks or language services.
+- One-shot focus yields to modal ownership, newer intent, generation/document
+  changes and conflicting input batches. Native repeat does not repeatedly toggle.
+  Mixed input batches conservatively ignore the access shortcut while preserving
+  the original widget's other input, including text preceding the shortcut.
 
 ## Finite acceptance
 
-- Production panel order at 780×540 with the default requested tools height (actual content-derived bounds recorded), and ordinary
-  1178×814/1320×880 sizes, across 180/246/460-point sidebar widths.
-- Empty and long Unicode file lists; ordinary and larger fonts; stable gutter,
-  no overlapping click targets, and every selector/help line reachable.
-- Pointer selection, keyboard focus reveal through both scroll levels, first/last
-  file access and resize transitions preserve selected tool, dirty draft and Undo.
-- One owned cloud Linux native trust-off pass at compact and ordinary sizes.
-  No Save or execution; fixture hashes and owned-window cleanup are checked.
-- Exact source host/MSVC checks, full dual-platform CI and regenerated package.
+Production-frame tests cover all five tools, populated reports, expanded Language,
+empty/no-document cases, Find/Replace, resizing, modal/repeat/mixed input and focus
+precedence. The existing 14 sidebar regressions remain required. A cloud Linux
+trust-off native pass at 780×540 must demonstrate the keyboard route back to visible
+editing, reopening unchanged tools, and Explorer traversal while preserving dirty
+selection and Undo. Source hashes and owned cleanup are checked; no Save or
+execution is part of the native pass.
 
 ## Current status
 
-Fourteen focused renderer/state regressions passed, including nested keyboard
-reveal, wheel handoff, scrollbar dragging, resize/draft/Undo preservation, and
-finite recovery from zero available height. A held-thumb zero-height assertion
-and a temporary-layout focus loss were reproduced and repaired before release.
-The clicked-selector recovery is one-shot and yields to newer input/focus; ten
-cancellation cases passed. Independent source and Context-lock review is clear.
+Independent source review is clear. All 16 workspace-access production-frame
+tests and all 14 unchanged sidebar regressions pass locally. The access cases
+include a zero-visible-editor close, batched close clicks, exact native modifier
+forms, window focus loss, stale generation/document state, populated report
+scroll retention and held-key preservation of a newer Find-field focus.
 
-Final host aggregate checks passed 1,054 Rust tests across 40 suites, with 29
-opt-in tests ignored. Strict host and MSVC all-target/all-feature Clippy passed,
-and both all-feature workspace and default-feature frontend/agent release builds
-succeeded. The exact default-feature Linux binary passed the owned native trust-off
-check at 780×540 with a populated report producing an approximately 253-point tools
-pane, at 246- and 180-point sidebar widths. All five selectors were activated through
-Tab/Enter, Shift/Tab revealed the preceding selector, inner wheel and outer
-scrollbar navigation worked, and first/last Unicode files opened through pointer
-and scrolling. Native keyboard reveal of the final file was not established after
-Language content expanded the tools pane to approximately 357 points; that is not
-counted as a passing case. Nested last-file keyboard reveal remains covered by the
-headless regressions. Resizing back to
-1178×814 retained the selected dirty text; focused-editor Undo/Redo restored the
-expected original/draft text. All 80 initial files and the separately generated
-report retained their expected hashes. No Save occurred; owned recovery and
-application/terminal cleanup completed. Private screenshots are excluded.
+An earlier retained-sidebar run failed three cases after adding two visible help
+lines. Restoring the original four-line footer and placing the new guidance in
+existing tooltips resolved those failures without changing the sidebar tests.
+Final-code strict host and Windows MSVC-target Clippy pass. The host aggregate
+completed 40 suites with 1,070 passed, zero failed and 29 opt-in tests ignored;
+required process/native opt-ins remain part of the full CI workflow. All-feature
+and default shipping release builds also pass.
 
-The native 180-point case fit two rows with its actual font metrics; larger-font
-stacking is covered by headless tests, not claimed as a native observation. Linux
-Local uses the embedded Workspace backend. These checks do not establish Windows
-GUI, trusted execution or authenticated SSH behavior.
+## Cloud Linux native workflow
 
-Exact final-source dual-platform CI and a regenerated package remain required. The preceding
-[0.26.2 acceptance](TEST_REPORT_PHASE26_USABILITY.md) remains the latest verified
-checkpoint. Its known minimum-height limitation is preserved in that historical
-report. No native Windows GUI or authenticated SSH claim is added.
+The final default-release binary ran against a generated Unicode workspace with
+execution trust off. At an observed 780×540 window, the expanded Language pane
+crowded out the editor. Ctrl+J hid it, revealed the selected dirty text and directed
+the next typed character to that selection. Undo restored the prior selected
+text; reopening retained Language and its visible disabled default fields, with
+the header focused. Ctrl+Shift+E hid it and focused Explorer Refresh. Keyboard
+Tab/Enter opened both the first and final Unicode file. Returning preserved the
+dirty draft and selection; Undo reached the original clean text and Redo restored
+the edits. Keyboard activation of the tools close button also returned usable
+editor focus. The normal 1178×814 window size was restored afterward.
+
+These are cloud Linux native observations. Populated editable tool fields and
+report scroll retention are covered by headless production-frame tests; the
+trust-off native Language fields remained disabled. Full expanded-form layout,
+Windows native GUI and real SSH are not covered. All 32 generated workspace
+files retained their exact names and SHA256 hashes after the pass. The owned app
+exited after explicitly discarding its draft, leaving no recovery draft records;
+unrelated desktop windows were preserved. No project Save or execution was used.
+The preceding
+[0.26.3 acceptance](TEST_REPORT_PHASE26_COMPACT.md) remains the latest verified
+checkpoint. Exact new-source checks, dual-platform CI and package verification
+remain required. No Windows GUI, authenticated SSH or full responsive-form claim
+is added.

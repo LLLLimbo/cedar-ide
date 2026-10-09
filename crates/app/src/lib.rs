@@ -53,6 +53,9 @@ mod test_report_ui_tests;
 mod test_reports;
 pub mod text_edits;
 mod worker;
+mod workspace_access;
+#[cfg(test)]
+mod workspace_access_tests;
 
 use cedar_client::ConnectionSpec;
 use cedar_protocol::{AgentInfo, Entry, Operation, Payload, SearchMatch};
@@ -283,6 +286,7 @@ pub struct CedarApp {
     test_report: test_report_ui::TestReportPanel,
     language: language_ui::LanguagePanel,
     navigation: navigation::Navigation,
+    workspace_access: workspace_access::Access,
     new_file: bool,
     new_path: String,
     find_open: bool,
@@ -380,6 +384,7 @@ impl CedarApp {
             test_report: test_report_ui::TestReportPanel::default(),
             language: language_ui::LanguagePanel::default(),
             navigation: navigation::Navigation::default(),
+            workspace_access: workspace_access::Access::default(),
             new_file: false,
             new_path: String::new(),
             find_open: false,
@@ -1330,6 +1335,7 @@ impl CedarApp {
             return;
         }
         self.language_shortcuts(ctx);
+        self.workspace_access_shortcuts(ctx);
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
             self.save();
         }
@@ -1523,6 +1529,9 @@ impl CedarApp {
                     previous.is_some_and(|previous| previous != size)
                 });
                 let activation_id = ui.make_persistent_id("sidebar_activation_reveal");
+                if self.workspace_access.cancel_sidebar_reveal() {
+                    ctx.data_mut(|data| data.remove::<(egui::Id, bool, Tool)>(activation_id));
+                }
                 let mut activation = ctx.data(|data| data.get_temp::<(egui::Id, bool, Tool)>(activation_id));
                 if let Some((id, _, tool)) = activation {
                     // A new intent cancels even while the sidebar has no space.
@@ -1568,7 +1577,11 @@ impl CedarApp {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("EXPLORER").size(11.0).strong().color(MUTED));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let refresh = ui.add_enabled(self.ready(), egui::Button::new("R").small()).on_hover_text("Refresh directory");
+                                let refresh = ui.add_enabled(self.ready(), egui::Button::new("R").small()).on_hover_text("Refresh directory · Ctrl/Cmd+Shift+E focuses Explorer without refreshing");
+                                self.workspace_access.record(workspace_access::Target::Explorer, &refresh);
+                                self.workspace_access.record(workspace_access::Target::Refresh, &refresh);
+                                #[cfg(test)]
+                                workspace_access_tests::record(ui, "explorer_refresh", &refresh);
                                 reveal(&refresh);
                                 #[cfg(test)]
                                 sidebar_layout_tests::record(ui, "R", &refresh);
@@ -1647,6 +1660,8 @@ impl CedarApp {
                                     }
                                     #[cfg(test)]
                                     sidebar_layout_tests::record(ui, &entry.name, &response);
+                                    #[cfg(test)]
+                                    workspace_access_tests::record(ui, &entry.name, &response);
                                     if response.clicked() { open = Some(entry.clone()); }
                                 }
                             });
@@ -1677,9 +1692,15 @@ impl CedarApp {
                             ui.set_row_height(tool_row_height);
                             for (index, (tool, label)) in tool_labels.into_iter().enumerate() {
                                 let response = ui.selectable_label(self.tools_open && self.tool == tool, label);
+                                if index == 0 {
+                                    // An offline workspace has no enabled Refresh.
+                                    self.workspace_access.record(workspace_access::Target::Explorer, &response);
+                                }
                                 reveal(&response);
                                 #[cfg(test)]
                                 sidebar_layout_tests::record(ui, label, &response);
+                                #[cfg(test)]
+                                workspace_access_tests::record(ui, &format!("sidebar_{label}"), &response);
                                 if response.clicked() {
                                     self.tool = tool; self.tools_open = true;
                                     // Opening a tool can temporarily consume all space
@@ -1691,7 +1712,7 @@ impl CedarApp {
                             }
                         });
                         ui.add(egui::Separator::default().spacing(separator_height));
-                        let help = ui.label(shortcut_help);
+                        let help = ui.label(shortcut_help).on_hover_text("Ctrl/Cmd+J  Hide tools and return to editor, or show the selected tool\nCtrl/Cmd+Shift+E  Hide tools and focus Explorer without refreshing");
                         #[cfg(test)]
                         sidebar_layout_tests::record(ui, "help", &help);
                         #[cfg(not(test))]
@@ -1708,16 +1729,22 @@ impl CedarApp {
         if !self.tools_open {
             return;
         }
+        let mut close_tools = None;
         egui::TopBottomPanel::bottom("tools").default_height(245.0).height_range(150.0..=500.0).resizable(true)
             .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0)).show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.selectable_label(self.tool == Tool::Search, "PROJECT SEARCH").clicked() { self.tool = Tool::Search; }
-                    if ui.selectable_label(self.tool == Tool::Git, "GIT CHANGES").clicked() { self.tool = Tool::Git; }
-                    if ui.selectable_label(self.tool == Tool::Run, "COMMANDS").clicked() { self.tool = Tool::Run; }
-                    if ui.selectable_label(self.tool == Tool::Language, "LANGUAGE").clicked() { self.tool = Tool::Language; }
-                    if ui.selectable_label(self.tool == Tool::Tests, "TEST RESULTS").clicked() { self.tool = Tool::Tests; }
+                    for (tool, label) in [(Tool::Search, "PROJECT SEARCH"), (Tool::Git, "GIT CHANGES"), (Tool::Run, "COMMANDS"), (Tool::Language, "LANGUAGE"), (Tool::Tests, "TEST RESULTS")] {
+                        let response = ui.selectable_label(self.tool == tool, label).on_hover_text("Ctrl/Cmd+J hides tools or returns to the selected tool");
+                        self.workspace_access.record(workspace_access::Target::Tool(tool), &response);
+                        #[cfg(test)]
+                        workspace_access_tests::record(ui, label, &response);
+                        if response.clicked() { self.tool = tool; }
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("x").on_hover_text("Hide tools").clicked() { self.tools_open = false; }
+                        let close = ui.small_button("x").on_hover_text("Hide tools and return to editor · Ctrl/Cmd+J");
+                        #[cfg(test)]
+                        workspace_access_tests::record(ui, "close_tools", &close);
+                        if close.clicked() { close_tools = Some(close); }
                     });
                 });
                 ui.separator();
@@ -1727,6 +1754,8 @@ impl CedarApp {
                         if self.ready() && !self.backend_supports("search") { ui.colored_label(AMBER, self.unsupported_message("search")); }
                         ui.horizontal(|ui| {
                             let edit = ui.add(egui::TextEdit::singleline(&mut self.search_query).hint_text("Find text across the workspace...").desired_width((ui.available_width() - 175.0).max(180.0)));
+                            #[cfg(test)]
+                            workspace_access_tests::record(ui, "search_query", &edit);
                             let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                             if ui.add_enabled(self.backend_supports("search"), egui::Button::new("Search")).clicked() || enter { self.search(); }
                             ui.label(RichText::new(format!("{} results", self.search_results.len())).small().color(MUTED));
@@ -1749,6 +1778,9 @@ impl CedarApp {
                     Tool::Tests => self.test_report_panel(ui),
                 }
             });
+        if let Some(response) = close_tools {
+            self.close_tools(ctx, &response);
+        }
     }
 
     fn connection_fields(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -2189,6 +2221,10 @@ impl CedarApp {
                             .margin(egui::vec2(10.0, 0.0))
                             .layouter(&mut layouter)
                             .show(ui);
+                        self.workspace_access
+                            .record(workspace_access::Target::Editor(doc.id), &output.response);
+                        #[cfg(test)]
+                        workspace_access_tests::record(ui, "editor", &output.response);
                         if let Some(index) = scroll_to {
                             let cursor_rect = output
                                 .galley
@@ -2303,6 +2339,9 @@ impl CedarApp {
 
 impl eframe::App for CedarApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.workspace_access = workspace_access::Access::default();
+        #[cfg(test)]
+        workspace_access_tests::begin(ctx);
         self.poll();
         self.begin_navigation_frame(ctx);
         self.recovery_tick(ctx);
@@ -2370,6 +2409,7 @@ impl eframe::App for CedarApp {
         self.language_tick(ctx);
         self.recovery_tick(ctx);
         self.finish_recovery_close_frame(ctx);
+        self.finish_workspace_access_frame(ctx);
     }
 }
 

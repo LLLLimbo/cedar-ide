@@ -32,6 +32,8 @@ Shortcuts:
 | Ctrl/Cmd+F | Find and preview literal replacements in the current buffer |
 | Ctrl/Cmd+S | Save |
 | Ctrl/Cmd+W | Close the current tab |
+| Ctrl/Cmd+J | Hide tools and return to the editor, or reopen the selected tool |
+| Ctrl/Cmd+Shift+E | Hide tools and focus enabled Explorer Refresh without refreshing |
 | Ctrl+Space | Request completion |
 | F12 | Go to definition |
 | Ctrl/Cmd+K | Show hover information |
@@ -39,6 +41,13 @@ Shortcuts:
 | Ctrl/Cmd+Shift+Z | Redo |
 
 The explorer's **R** button refreshes its directory; **Up** opens its parent.
+Hiding tools retains their fields, results and filters and does not stop tasks or
+language services. The tools **x** button also returns to the editor. Without an
+open document, hiding tools uses an available sidebar anchor. Access shortcuts
+yield to modal input and ignore mixed input batches rather than diverting text,
+paste or another action. Holding the shortcut does not repeatedly toggle tools.
+These shortcuts provide an alternative at small window heights; expanded forms
+and crowded center controls still have separate responsive-layout limitations.
 
 ## Agent capabilities and trust
 

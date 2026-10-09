@@ -400,7 +400,7 @@ impl CedarApp {
         let report = &snapshot.report;
         let counts = &report.counts;
         let mut select = None;
-        egui::ScrollArea::vertical().id_salt("test_report_contents").show(ui, |ui| {
+        let scroll = egui::ScrollArea::vertical().id_salt("test_report_contents").show(ui, |ui| {
             ui.label(RichText::new("Historical report snapshot. It does not establish the current source or test state. Refresh report explicitly to read disk again").small().color(AMBER));
             ui.label(RichText::new(format!("Path: {}", snapshot.source.path)).monospace().small());
             ui.label(RichText::new(format!("Source revision: {}", snapshot.revision)).monospace().small());
@@ -453,6 +453,14 @@ impl CedarApp {
                 }
             }
         });
+        #[cfg(test)]
+        crate::workspace_access_tests::record_report_scroll(
+            ui.ctx(),
+            scroll.id,
+            scroll.state.offset,
+        );
+        #[cfg(not(test))]
+        let _ = scroll;
         if let Some(index) = select {
             self.test_report.select(index);
         }
