@@ -120,6 +120,9 @@ fn java_diagnostics_refresh_supported(authorized_java_session: bool, initialize:
 #[cfg(test)]
 #[path = "language_refresh_tests.rs"]
 mod java_refresh_tests;
+#[cfg(test)]
+#[path = "language_workspace_symbols_tests.rs"]
+mod workspace_symbols_tests;
 fn stop_production_java(client: LspClient) -> Result<Payload, RemoteError> {
     // Do not run a semantic/indexing query on user Stop. The typed transport
     // outcome distinguishes a natural exit from joined forced cleanup.
@@ -537,6 +540,16 @@ impl Workspace {
                 })?;
                 session.open_document(&uri)?;
                 let value = session.client.document_symbols(&uri).map_err(lsp_error)?;
+                Ok(Payload::Language { value })
+            }
+            Operation::LanguageWorkspaceSymbols { query } => {
+                let session = self.language.as_ref().ok_or_else(|| {
+                    error("language_not_running", "Start a language server first")
+                })?;
+                let value = session
+                    .client
+                    .workspace_symbols(&query)
+                    .map_err(lsp_error)?;
                 Ok(Payload::Language { value })
             }
             Operation::LanguageResolveUri { uri } => {

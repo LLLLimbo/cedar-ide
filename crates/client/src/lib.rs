@@ -488,6 +488,7 @@ fn is_language_session_operation(op: &Operation) -> bool {
             | Operation::LanguageRefreshJavaDiagnostics { .. }
             | Operation::LanguageReferences { .. }
             | Operation::LanguageDocumentSymbols { .. }
+            | Operation::LanguageWorkspaceSymbols { .. }
             | Operation::LanguageResolveUri { .. }
             | Operation::LanguageResolveCompletion { .. }
             | Operation::LanguageEvents

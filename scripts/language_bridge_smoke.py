@@ -37,10 +37,14 @@ with tempfile.TemporaryDirectory(prefix="cedar-lsp-bridge-") as tmp:
         return result.get("Ok", result.get("Err"))
 
     assert call("hello")["protocol"] == 4
+    assert call("language_workspace_symbols", ok=False, query="Hello")["code"] == "language_not_running"
     for operation, params in feature_operations():
         assert call(operation, ok=False, **params)["code"] == "language_not_running"
     started = call("language_start", program=server, args=["normal", str(audit)])
     assert started["value"]["started"]
+    workspace_symbols = call("language_workspace_symbols", query=" 你好.Type* ")["value"]
+    assert workspace_symbols[0]["name"] == "Hello" and workspace_symbols[0]["kind"] == 5
+    assert call("language_workspace_symbols", ok=False, query="   ")["code"] == "language_error"
     assert call("language_start", ok=False, program=server, args=[])["code"] == "language_running"
     for operation, params in feature_operations():
         assert call(operation, ok=False, **params)["code"] == "language_document_closed"
@@ -88,10 +92,14 @@ with tempfile.TemporaryDirectory(prefix="cedar-lsp-bridge-") as tmp:
     assert call("language_query", ok=False, path="Hello.java", line=0, character=0, kind="hover")["code"] == "language_document_closed"
     for operation, params in feature_operations():
         assert call(operation, ok=False, **params)["code"] == "language_document_closed"
+    assert call("language_workspace_symbols", query="Hello")["value"][0]["name"] == "Hello"
     call("language_stop")
+    assert call("language_workspace_symbols", ok=False, query="Hello")["code"] == "language_not_running"
     for operation, params in feature_operations():
         assert call(operation, ok=False, **params)["code"] == "language_not_running"
     messages = [json.loads(line) for line in audit.read_text().splitlines()]
+    workspace_queries = [m for m in messages if m.get("method") == "workspace/symbol"]
+    assert [m["params"] for m in workspace_queries] == [{"query": " 你好.Type* "}, {"query": "Hello"}]
     formats = [m for m in messages if m.get("method") == "textDocument/formatting"]
     assert len(formats) == 1, "stale/invalid/closed format requests reached the server"
     assert formats[0]["params"] == {"textDocument": {"uri": uri}, "options": {"tabSize": 4, "insertSpaces": True}}

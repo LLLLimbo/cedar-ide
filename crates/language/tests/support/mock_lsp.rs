@@ -117,12 +117,13 @@ fn main() {
                 let mut capabilities = if mode == "no-capabilities" {
                     json!({})
                 } else {
-                    json!({"textDocumentSync":{"openClose":true,"change":if mode == "incremental" {2} else {1}}, "completionProvider":{"resolveProvider":true}, "definitionProvider":true,"hoverProvider":true,"documentFormattingProvider":true,"referencesProvider":true,"documentSymbolProvider":true})
+                    json!({"textDocumentSync":{"openClose":true,"change":if mode == "incremental" {2} else {1}}, "completionProvider":{"resolveProvider":true}, "definitionProvider":true,"hoverProvider":true,"documentFormattingProvider":true,"referencesProvider":true,"documentSymbolProvider":true,"workspaceSymbolProvider":true})
                 };
                 for capability in [
                     "documentFormattingProvider",
                     "referencesProvider",
                     "documentSymbolProvider",
+                    "workspaceSymbolProvider",
                 ] {
                     match mode {
                         "navigation-no-provider" => {
@@ -203,6 +204,25 @@ fn main() {
                 json!({"uri":message["params"]["textDocument"]["uri"],"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}})
             }
             "textDocument/hover" => json!({"contents":{"kind":"plaintext","value":"mock hover"}}),
+            "workspace/symbol" => {
+                assert!(initialized && !shutdown);
+                assert_eq!(message["params"].as_object().unwrap().len(), 1);
+                assert!(message["params"]["query"].is_string());
+                if mode == "workspace-symbol-error" {
+                    send(
+                        &mut output,
+                        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":"mock workspace symbol error"}}),
+                    );
+                    continue;
+                }
+                if mode == "workspace-symbol-custom" {
+                    let path =
+                        std::path::Path::new(args.get(2).unwrap()).with_extension("result.json");
+                    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+                } else {
+                    json!([{"name":"Hello","kind":5,"containerName":"demo","location":{"uri":"file:///mock/Hello.java","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":5}}}}])
+                }
+            }
             "textDocument/formatting"
             | "textDocument/references"
             | "textDocument/documentSymbol" => {

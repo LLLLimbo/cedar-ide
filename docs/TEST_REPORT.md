@@ -1,58 +1,59 @@
-# Verification report · explicit test-result snapshots / 0.23.0
+# Verification report · explicit Java type navigation / 0.24.0
 
-This checkpoint adds a read-only Tests panel for one explicitly selected relative
-report path. It reuses ordinary workspace Read and requires no execution trust,
-new protocol operation, compiler, test engine, language server or background scan.
-The supported subset and user-visible limitations are in [Test results](TEST_RESULTS.md).
+This checkpoint adds explicit standard workspace/symbol queries on an already
+running trusted Java session, with actual provider gating, bounded inert results
+and existing root-confined navigation. See [scope and limitations](JAVA_TYPE_SEARCH.md).
 
-The previous 0.22 checkpoint passed exact Ubuntu/Windows CI at public commit
-`39ac129041a422853f40ac30f5f8e450539b9675`,
-[run 37890453917](https://github.com/LLLLimbo/cedar-ide/actions/runs/37890453917).
-Its real Maven present/missing pair passed in 19,596 ms with one model query each,
-required project-marker and offline-POM witnesses false/true, preserved inputs and
-verified cleanup. The extracted Windows package passed all checks including the
-new Maven trust rejection. Earlier red checkpoints and their distinctions remain
-in the [phase 22 final report](TEST_REPORT_PHASE22_FINAL.md) and its linked history.
+The previous 0.23 source `edfbf41aaea6633f20e0fbaf8316c8459507e895` passed
+[exact Ubuntu/Windows CI 37893145529](https://github.com/LLLLimbo/cedar-ide/actions/runs/37893145529).
+The explicit report-read test executed on both platforms with seven reads and all
+preservation/cleanup witnesses. Its verified Windows package contained 530 payloads.
+The historical pre-publication report is retained [here](TEST_REPORT_PHASE23.md).
 
 ## Finite acceptance
 
-- Bounded single-testsuite XML parsing; explicit ordinary outcomes and visible
-  unsupported retry/flaky cases; no partial-success report after malformed XML,
-  limit overflow or inconsistent declared counts.
-- No DTD/custom entity resolution, external schema fetch, retained properties or
-  system output. Failure text is inert and bounded.
-- Exact connection/load/path/revision binding; stale replies cannot replace a
-  newer snapshot. Clear/path changes/reconnect invalidate pending view ownership.
-- Existing dirty buffers, Undo and recovery remain independent. No inferred source
-  navigation, report persistence, test discovery or automatic execution.
-- Explicit ignored acceptance drives real normal-agent trust-off reads on both
-  platforms, checks the exact upstream fixture identity, newer-load/session races,
-  errors, unchanged generated files/draft and reaped process cleanup.
-
-A retained 869-byte Apache Surefire 3.5.4 upstream report fixture has independently
-verified source commit, Git blob, SHA256, license and checkout byte preservation.
-This is compatibility with that upstream regression fixture, not a new Surefire
-or JUnit engine execution. No dependency cache or executable download is added.
-quick-xml was already locked transitively; the frontend adds a direct dependency
-on the same version without upgrading external packages.
+- Optional operation and complete lifecycle checks; no implicit language startup,
+  writes, command execution, recursive scan or repeated query loop.
+- Actual workspaceSymbolProvider support and bounded query/result validation,
+  rejecting incomplete/malformed/oversized results without partial success.
+- Query, connection and language-session identity; invalidation after edits,
+  dismissal, restart or reconnect. Navigation retains dirty buffers and Undo.
+- Existing normal-agent native Java Quick acceptance gains one generated unopened
+  type witness, exact URI/range, empty negative query and ordinary read navigation.
+  Existing process budgets, shutdown truthfulness, source integrity and prior gates remain.
+- Comprehensive capability inventories include normal and nonshipping hosts and the
+  extracted trust-off bundle, preserving strict equality and rejection checks.
 
 ## Current verification status
 
-The final host aggregate passed 951 Rust tests across 40 suites, with 24 explicit
-opt-in tests ignored. All 29 new parser/UI tests passed. Strict host and MSVC
-all-target/all-feature Clippy, formatting and diff checks passed. The default-feature
-release frontend and agent built successfully. The actual Linux normal-agent report
-test then passed with seven explicit reads: every fixed trust-off, revision, stale
-load/session, malformed/missing, draft/source preservation and joined cleanup
-witness was true. It did not start a test engine or language server.
+The final host aggregate passed 980 Rust tests across 40 suites, with 24 explicit
+opt-in tests ignored. All 18 new chooser tests passed, including real egui frame
+Search/Enter/Escape/row activation, late query/resolve/read rejection and rendered
+selection with actual Document Undo/Redo. Strict host and MSVC all-target/all-feature
+Clippy passed after the final CJK query font regression. Cross-compilation is not
+Windows execution.
 
-The bundle suite passed 28 of 29 with one platform skip; export tests passed two.
-Existing Maven receipt tests passed five of seven (native Windows/PowerShell skipped
-locally), and the collector passed 75 of 78 with three platform/tool skips.
-Independent parser/security and UI/session reviews found no remaining blocker.
-The XML review caught adjacent-attribute and duplicate-BOM acceptance gaps; both
-were corrected and covered by passing regressions before these final checks.
+The collector passed 77 of 81 tests with four platform/tool skips. Its new native
+PowerShell predicate test is skipped locally because PowerShell is unavailable;
+Windows CI must execute it. Bundle tests passed 28 of 29 with one platform skip,
+export tests passed two, capability tests five, Git fixture tests six, frozen Maven
+cache tests eleven, Maven acceptance tests five of seven with two skips, process
+resource observer tests 79 and GC collector tests 36.
 
-Fresh exact dual-platform CI must still execute the new normal-agent read test on
-Windows and regenerate/verify the package. No 0.23 native package, manual GUI or
-real SSH validation is claimed here.
+Independent protocol/security, UI/session and native receipt reviews found no
+remaining blocker. Reviews identified and corrected global Escape consumption,
+stale line-jump selection replacement and incomplete frontend receipt evidence.
+The final helper binds the exact verified native query/result and checks selection
+after editor frames, plus actual Undo/Redo text and version changes.
+
+The default-feature release frontend and agent built successfully. Actual Linux
+normal-agent capability/trust checks passed with 24 capabilities, and the real
+agent-to-mock-LSP process chain passed its explicit literal workspace queries,
+no-document operation, empty-query rejection and unchanged-source checks. This
+is protocol integration evidence, not a real JDT index witness.
+
+Fresh exact native CI must establish the unopened JDT type and all package gates.
+No 0.24 native acceptance is claimed before that run. Windows GUI and authenticated
+SSH remain separately unverified. Existing JDT spontaneous-diagnostic loss remains
+an openly documented limitation; explicit refresh is a supported mitigation, not
+an upstream causal fix.

@@ -231,6 +231,7 @@ impl Workspace {
             | Operation::LanguageRefreshJavaDiagnostics { .. }
             | Operation::LanguageReferences { .. }
             | Operation::LanguageDocumentSymbols { .. }
+            | Operation::LanguageWorkspaceSymbols { .. }
             | Operation::LanguageResolveUri { .. }
             | Operation::LanguageResolveCompletion { .. }
             | Operation::LanguageEvents

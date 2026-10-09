@@ -10,6 +10,155 @@ pub const MAX_OUTLINE_ITEMS: usize = 2_000;
 pub const MAX_OUTLINE_DEPTH: usize = 32;
 const MAX_URI_BYTES: usize = 16 * 1024;
 const MAX_RETAINED_BYTES: usize = 512 * 1024;
+pub const MAX_WORKSPACE_SYMBOLS: usize = 256;
+
+#[derive(Clone, Debug)]
+pub struct WorkspaceSymbol {
+    pub name: String,
+    pub container: String,
+    pub kind: u32,
+    pub deprecated: bool,
+    pub location: Location,
+}
+
+pub fn validate_workspace_query(query: &str) -> Result<(), String> {
+    if query.trim().is_empty() || query.len() > 256 || query.chars().any(char::is_control) {
+        return Err("Enter 1–256 UTF-8 bytes without control characters".into());
+    }
+    Ok(())
+}
+
+/// Accept only complete, bounded SymbolInformation rows. No URI or extension
+/// is executed, resolved or opened while parsing this unversioned index snapshot.
+pub fn parse_workspace_symbols(value: &Value) -> Result<Vec<WorkspaceSymbol>, String> {
+    use std::io::{self, Write};
+    struct Budget(usize);
+    impl Write for Budget {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 = self.0.checked_sub(bytes.len()).ok_or_else(|| {
+                io::Error::other("Workspace symbols exceed the 1 MiB response limit")
+            })?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut stack = vec![(value, 0)];
+    let mut nodes = 0;
+    while let Some((value, depth)) = stack.pop() {
+        nodes += 1;
+        let children = match value {
+            Value::Array(values) => values.len(),
+            Value::Object(values) => values.len(),
+            _ => 0,
+        };
+        if depth > 8 || nodes + children + stack.len() > 16 * 1024 {
+            return Err("Workspace symbols exceed the response shape limit".into());
+        }
+        match value {
+            Value::Array(values) => stack.extend(values.iter().map(|value| (value, depth + 1))),
+            Value::Object(values) => stack.extend(values.values().map(|value| (value, depth + 1))),
+            _ => {}
+        }
+    }
+    serde_json::to_writer(Budget(1024 * 1024), value)
+        .map_err(|_| "Workspace symbols exceed the 1 MiB response limit")?;
+    if value.is_null() {
+        return Ok(vec![]);
+    }
+    let values = value
+        .as_array()
+        .ok_or("Workspace symbols must be a flat array or null")?;
+    if values.len() > MAX_WORKSPACE_SYMBOLS {
+        return Err("More than 256 workspace symbols; narrow the query".into());
+    }
+    let mut budget = TextBudget::default();
+    let mut rows = Vec::with_capacity(values.len());
+    for value in values {
+        let map = object(value, "Workspace symbol")?;
+        if ["children", "range", "selectionRange", "detail", "data"]
+            .iter()
+            .any(|key| map.contains_key(*key))
+        {
+            return Err(
+                "Expected complete flat SymbolInformation; lazy symbol resolution is unsupported"
+                    .into(),
+            );
+        }
+        let name = budget.retain(required(map, "name")?, "Symbol name", 4096)?;
+        let container = match map.get("containerName") {
+            Some(value) => budget.retain(value, "Symbol container", 4096)?,
+            None => String::new(),
+        };
+        if name.is_empty() || name.chars().chain(container.chars()).any(char::is_control) {
+            return Err("Symbol names and containers must be plain text without controls".into());
+        }
+        let kind = required(map, "kind")?
+            .as_u64()
+            .filter(|kind| (1..=26).contains(kind))
+            .ok_or("Symbol kind must be an integer in 1..=26")? as u32;
+        let location = location(required(map, "location")?, &mut budget)?;
+        let scheme = location.uri.split_once(':').map(|(scheme, _)| scheme);
+        if location
+            .uri
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace())
+            || !scheme.is_some_and(|scheme| {
+                scheme
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphabetic)
+                    && scheme
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"+.-".contains(&byte))
+            })
+        {
+            return Err(
+                "Symbol location must be an absolute URI without whitespace or controls".into(),
+            );
+        }
+        let tagged = match map.get("tags") {
+            None => false,
+            Some(value) => {
+                let tags = value
+                    .as_array()
+                    .filter(|tags| {
+                        tags.len() <= 1 && tags.iter().all(|tag| tag.as_u64() == Some(1))
+                    })
+                    .ok_or("Invalid workspace symbol tags")?;
+                !tags.is_empty()
+            }
+        };
+        let deprecated = match map.get("deprecated") {
+            None => tagged,
+            Some(value) => {
+                value
+                    .as_bool()
+                    .ok_or("Invalid workspace symbol deprecated flag")?
+                    || tagged
+            }
+        };
+        rows.push(WorkspaceSymbol {
+            name,
+            container,
+            kind,
+            deprecated,
+            location,
+        });
+    }
+    rows.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.container.cmp(&b.container))
+            .then_with(|| a.location.uri.cmp(&b.location.uri))
+            .then_with(|| a.location.range.start.cmp(&b.location.range.start))
+            .then_with(|| a.location.range.end.cmp(&b.location.range.end))
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| a.deprecated.cmp(&b.deprecated))
+    });
+    Ok(rows)
+}
 
 #[derive(Clone, Debug)]
 pub struct OutlineItem {

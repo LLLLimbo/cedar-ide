@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 23 / 0.23.0
+# 功能矩阵与后续验收 · checkpoint 24 / 0.24.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -22,7 +22,7 @@
 | Windows进程基础 | 原子Job绑定、私有本机管道、完成后回收的异步I/O、严格argv、固定64KiB owned stdin；0.8.3的48单元+21生命周期+12语言传输全部实际通过 | 0.8.12直接真实Java三会话与3项agent语言夹具已通过；0.8.15真实agent/编辑器三会话已通过；0.8.16真实任务并发/强制所有者清理已通过；不等同GUI或恶意代码沙箱 |
 | Windows本地后端 | 同目录精确cedar-agent.exe；固定IsolatedAgent模式、信任独立、异步任务三项能力；绝对原生.exe路径；完整u32退出码 | 无PATH/PATHEXT或batch解析；缺失bundle无回退；旧GitStatus/同步Run/通用LSP/DAP仍禁用；显式Git变更/单文件diff已通过0.15.4同提交原生验收；新增专用Java/JDT正常路径已通过0.9.0 CI；原生 Windows GUI 待验收；LSP Job底层已验证，直接真实Java和非分发agent并发夹具已通过；0.8.15真实agent/编辑器已通过；0.8.16任务并发已通过；0.9.0正式Java路径已通过 |
 | 任务安全 | 配置操作零自动执行；每连接一个异步任务、1–300 秒、每流 256 KiB、8 个历史记录；Linux 普通进程组清理；不自动重试不明结果 | 非 OS 沙箱，恶意逃逸后代可能存活；Unix 强杀 agent 不保证任务清理；Windows 已验证 Job 随所有者退出清理；遗留同步 Run/Git/LSP/DAP 不计入异步任务限额 |
-| 搜索 | 有界文本搜索、结果跳转；语言服务引用查找与工作区边界导航 | 正则、替换、全工作区符号索引 |
+| 搜索 | 有界文本搜索、结果跳转；语言服务引用查找、显式 Java 类型索引查询与工作区边界导航 | 正则、跨文件替换、通用符号索引；类型结果无版本且可能滞后 |
 | Git | 可信工作区显式状态与单文件 staged/unstaged diff；明确Git 2.45+路径；根目录/字面量路径/有界进程；旧agent保留状态回退 | 0.15.4新路径已通过双平台真实Git验收；过滤器仍可执行代码；无后台轮询/暂存/提交/重置/抓取；linked worktree、子模块、冲突diff、blame/merge、分支/远端管理尚缺 |
 | 插件 | Rust crate 扩展边界 | 稳定插件 ABI/协议、权限、生命周期、市场；无 IDEA 插件兼容承诺 |
 | 企业功能 | 无 | 数据库、Spring、Web、容器、应用服务器、Profiler、协作等需分别设计 |

@@ -51,6 +51,7 @@ fn main() {
         };
         let id: u64 = id.split([',', '}']).next().unwrap().parse().unwrap();
         let organize = request.contains("\"method\":\"workspace/executeCommand\"");
+        let symbols = request.contains("\"method\":\"workspace/symbol\"");
         if organize {
             if let Ok(apply) = fs::read_to_string(directory.join("server-apply-edit.json")) {
                 write!(output, "Content-Length: {}\r\n\r\n{apply}", apply.len()).unwrap();
@@ -62,6 +63,9 @@ fn main() {
         } else if organize {
             fs::read_to_string(directory.join("organize-result.json"))
                 .unwrap_or_else(|_| "{}".into())
+        } else if symbols {
+            fs::read_to_string(directory.join("symbols-result.json"))
+                .unwrap_or_else(|_| "null".into())
         } else {
             "null".into()
         };

@@ -271,6 +271,7 @@ fn capability_names_match_each_operation_or_its_explicit_bridge_name() {
         json!({"type":"language_organize_java_imports","path":"a.java","version":1}),
         json!({"type":"language_references","path":"a","line":0,"character":0,"include_declaration":true}),
         json!({"type":"language_document_symbols","path":"a"}),
+        json!({"type":"language_workspace_symbols","query":" 你好*Type "}),
         json!({"type":"language_resolve_uri","uri":"file:///a"}),
         json!({"type":"language_resolve_completion","item":{}}),
         json!({"type":"language_events"}),
@@ -333,10 +334,42 @@ fn capability_names_match_each_operation_or_its_explicit_bridge_name() {
         "language_format",
         "language_references",
         "language_document_symbols",
+        "language_workspace_symbols",
         "language_resolve_completion",
     ] {
         assert!(!LANGUAGE_SESSION_CAPABILITIES.contains(&optional));
         assert!(!JAVA_LANGUAGE_SESSION_CAPABILITIES.contains(&optional));
+    }
+}
+
+#[test]
+fn workspace_symbol_query_is_typed_optional_and_never_legacy_supported() {
+    let wire = json!({"type":"language_workspace_symbols","query":" 你好.Type* "});
+    let operation: Operation = serde_json::from_value(wire.clone()).unwrap();
+    assert!(
+        matches!(&operation, Operation::LanguageWorkspaceSymbols { query } if query == " 你好.Type* ")
+    );
+    assert_eq!(
+        operation.capability_name(),
+        Some("language_workspace_symbols")
+    );
+    assert_eq!(serde_json::to_value(operation).unwrap(), wire);
+    assert_eq!(PROTOCOL_VERSION, 4);
+    assert_eq!(MAX_AGENT_CAPABILITIES, 32);
+    assert!(!supports_capability(None, "language_workspace_symbols"));
+    assert!(!supports_capability(
+        Some(&agent()),
+        "language_workspace_symbols"
+    ));
+    assert!(!LANGUAGE_SESSION_CAPABILITIES.contains(&"language_workspace_symbols"));
+    assert!(!JAVA_LANGUAGE_SESSION_CAPABILITIES.contains(&"language_workspace_symbols"));
+    for invalid in [
+        json!({"type":"language_workspace_symbols"}),
+        json!({"type":"language_workspace_symbols","query":null}),
+        json!({"type":"language_workspace_symbols","query":7}),
+        json!({"type":"language_workspace_symbols","query":["Type"]}),
+    ] {
+        assert!(serde_json::from_value::<Operation>(invalid).is_err());
     }
 }
 

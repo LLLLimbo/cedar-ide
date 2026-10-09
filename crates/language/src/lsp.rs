@@ -229,7 +229,8 @@ impl LspClient {
                 "initializationOptions": initialization_options,
                 "capabilities": {
                     "general": {"positionEncodings":["utf-16"]},
-                    "workspace": {"applyEdit":false, "configuration":false, "workspaceFolders":false},
+                    "workspace": {"applyEdit":false, "configuration":false, "workspaceFolders":false,
+                        "symbol":{"dynamicRegistration":false}},
                     "window": {"workDoneProgress":false},
                     "textDocument": {
                         "synchronization": {"dynamicRegistration":false,"willSave":false,"willSaveWaitUntil":false,"didSave":false},
@@ -489,6 +490,26 @@ impl LspClient {
             "textDocument/documentSymbol",
             json!({"textDocument":{"uri":uri}}),
         )
+    }
+
+    /// Standard workspace/symbol with a literal, bounded query. Requires an
+    /// initialized, advertising server, but no open document or cursor. Only
+    /// complete flat SymbolInformation locations are supported; returned URIs
+    /// still require independent workspace confinement before navigation.
+    pub fn workspace_symbols(&self, query: &str) -> Result<Value, Error> {
+        let _gate = self.gate.read().unwrap();
+        let (capabilities, _) = self.ready()?;
+        if !capabilities
+            .get("workspaceSymbolProvider")
+            .is_some_and(|value| value == &Value::Bool(true) || value.is_object())
+        {
+            return Err(Error::Unsupported("workspace/symbol".into()));
+        }
+        crate::workspace_symbols::validate_query(query)?;
+        let result = self
+            .rpc
+            .request("workspace/symbol", json!({"query":query}))?;
+        crate::workspace_symbols::normalize_result(result)
     }
 
     /// Escape hatch for extensions after initialization. Caller owns capability

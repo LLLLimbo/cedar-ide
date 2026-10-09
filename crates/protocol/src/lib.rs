@@ -232,6 +232,10 @@ pub enum Operation {
     LanguageDocumentSymbols {
         path: String,
     },
+    /// Standard workspace/symbol query; no document, command or resolve bridge.
+    LanguageWorkspaceSymbols {
+        query: String,
+    },
     LanguageResolveUri {
         uri: String,
     },
@@ -288,6 +292,7 @@ impl Operation {
             Self::LanguageOrganizeJavaImports { .. } => "language_organize_java_imports",
             Self::LanguageReferences { .. } => "language_references",
             Self::LanguageDocumentSymbols { .. } => "language_document_symbols",
+            Self::LanguageWorkspaceSymbols { .. } => "language_workspace_symbols",
             Self::LanguageResolveUri { .. } => "language_resolve_uri",
             Self::LanguageResolveCompletion { .. } => "language_resolve_completion",
             Self::LanguageEvents => "language_events",
@@ -518,6 +523,7 @@ mod tests {
             serde_json::json!({"type":"language_format","path":"src/你好.java","version":7,"tab_size":4,"insert_spaces":true}),
             serde_json::json!({"type":"language_references","path":"src/你好.java","line":2,"character":3,"include_declaration":false}),
             serde_json::json!({"type":"language_document_symbols","path":"src/你好.java"}),
+            serde_json::json!({"type":"language_workspace_symbols","query":" 你好*Type "}),
         ] {
             let request = serde_json::json!({"id":42,"op":op});
             let decoded: Request = serde_json::from_value(request.clone()).unwrap();

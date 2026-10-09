@@ -189,6 +189,18 @@ AGENT_TRANSCRIPT_FIELDS = {
                              'definition', 'completion', 'resolve', 'apply', 'undo', 'redo',
                              'sync', 'correction', 'close', 'stop', 'root_exit', 'agent_exit',
                              'fixture_cleanup')},
+    # Quick-only workspace type witness. No query, type name, URI, source,
+    # provider response, protocol or private diagnostic text is retained.
+    'windows_java_workspace_types': dict.fromkeys((
+        'exercised', 'capability_supported', 'provider_supported', 'target_unopened',
+        'exact_type_name', 'exact_type_uri', 'exact_declaration_range', 'negative_query_empty',
+        'resolved_path_exact', 'ordinary_read_exact', 'actual_frontend_navigation',
+        'dirty_buffer_reused', 'undo_redo_preserved', 'source_unchanged',
+        'root_handle_signaled', 'client_reaped', 'synthetic_root_removed',
+        'primary_failed', 'cleanup_failed', 'success', 'elapsed_saturated'), 'bool')
+        | {'failure_stage': ('none', 'setup', 'support', 'query', 'negative_query',
+                             'resolve', 'read', 'frontend'),
+           'elapsed_ms': ('integer_range', 0, 240000)},
     # Quick-only organize-imports receipt. In particular, neither source edits,
     # candidate names/URIs nor raw JDT responses are ever copied into evidence.
     'windows_java_organize_imports': dict.fromkeys((

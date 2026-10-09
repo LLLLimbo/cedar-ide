@@ -193,6 +193,11 @@ enum Job {
         navigation: u64,
         source: run_ui::BuildSource,
     },
+    JavaTypeOpen {
+        path: String,
+        navigation: u64,
+        context: language_ui::JavaTypeContext,
+    },
     Save {
         document: u64,
         snapshot: String,
@@ -588,7 +593,9 @@ impl CedarApp {
             return;
         }
         let pending = self.pending.iter().find_map(|(id, job)| match job {
-            Job::Open { path: pending, .. } | Job::BuildProblemOpen { path: pending, .. }
+            Job::Open { path: pending, .. }
+            | Job::BuildProblemOpen { path: pending, .. }
+            | Job::JavaTypeOpen { path: pending, .. }
                 if pending == &path =>
             {
                 Some(*id)
@@ -786,6 +793,50 @@ impl CedarApp {
         let Some(job) = self.pending.remove(&event.id) else {
             return;
         };
+        let job = if let Job::JavaTypeOpen {
+            path,
+            navigation,
+            context,
+        } = job
+        {
+            // A dismissed/replaced index query cannot open a late file, change
+            // selection, or surface its old error. Transport failure still wins.
+            if !event.connected {
+                self.disconnected(
+                    "The connection closed while opening a Java type. Your drafts are retained"
+                        .into(),
+                );
+                return;
+            }
+            if navigation != self.navigation_epoch || !self.java_type_context_current(&context) {
+                return;
+            }
+            Job::Open {
+                path,
+                line: None,
+                navigation,
+            }
+        } else {
+            job
+        };
+        if let Job::Language(action) = &job {
+            if matches!(
+                action.kind,
+                language_ui::ActionKind::WorkspaceSymbols { .. }
+                    | language_ui::ActionKind::JavaTypeResolve { .. }
+            ) {
+                if !event.connected {
+                    self.disconnected(
+                        "The connection closed while finding a Java type. Your drafts are retained"
+                            .into(),
+                    );
+                    return;
+                }
+                if !self.java_type_action_current(action) {
+                    return;
+                }
+            }
+        }
         if let Job::TestReportRead(load) = job {
             // A stale view cannot hide a failure of the current transport.
             if !event.connected {
@@ -1093,9 +1144,18 @@ impl CedarApp {
                 if matches!(
                     action.kind,
                     language_ui::ActionKind::RefreshJavaDiagnostics { .. }
+                        | language_ui::ActionKind::WorkspaceSymbols { .. }
                 ) =>
             {
-                let error = "Unexpected Java diagnostic refresh response; diagnostic freshness is unchanged".to_owned();
+                let error = if matches!(
+                    action.kind,
+                    language_ui::ActionKind::WorkspaceSymbols { .. }
+                ) {
+                    "Unexpected Java type search response; no results were accepted"
+                } else {
+                    "Unexpected Java diagnostic refresh response; diagnostic freshness is unchanged"
+                }
+                .to_owned();
                 self.language_error(&action, &error);
                 self.error = Some(error);
             }

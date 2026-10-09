@@ -10,6 +10,7 @@ pub mod framing;
 mod lsp;
 mod shutdown;
 mod transport;
+mod workspace_symbols;
 
 pub use lsp::{
     Diagnostic, LspAbortHandle, LspClient, LspEvent, Position, PublishDiagnostics, Range,

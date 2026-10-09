@@ -1035,12 +1035,21 @@ mod tests {
         assert_eq!(settings, fs::read_to_string(&paths.user_settings).unwrap());
         assert_eq!(fs::read_dir(&paths.home).unwrap().count(), 0);
         let config = initialization_options("file:///project/pom.xml", &paths);
+        assert!(config.get("extendedClientCapabilities").is_none());
+        assert_eq!(config["settings"]["java"]["search"]["scope"], "all");
+        assert!(config["settings"]["java"]["symbols"]
+            .get("includeSourceMethodDeclarations")
+            .is_none());
         assert_eq!(
             config["projectConfigurations"],
             json!(["file:///project/pom.xml"])
         );
         assert_eq!(
             config["settings"]["java"]["import"]["maven"]["offline"]["enabled"],
+            true
+        );
+        assert_eq!(
+            config["settings"]["java"]["import"]["maven"]["enabled"],
             true
         );
         assert_eq!(

@@ -213,6 +213,19 @@ class CrashCollectionTests(unittest.TestCase):
         return {**self.agent_production_fixture(), 'kind': 'windows_java_gc_control',
                 'route': 'diagnostic_agent_normal_client'}
 
+    def agent_workspace_type_fixture(self):
+        return {
+            'kind': 'windows_java_workspace_types', 'exercised': True,
+            'capability_supported': True, 'provider_supported': True, 'target_unopened': True,
+            'exact_type_name': True, 'exact_type_uri': True, 'exact_declaration_range': True,
+            'negative_query_empty': True, 'resolved_path_exact': True, 'ordinary_read_exact': True,
+            'actual_frontend_navigation': True, 'dirty_buffer_reused': True,
+            'undo_redo_preserved': True, 'source_unchanged': True,
+            'root_handle_signaled': True, 'client_reaped': True, 'synthetic_root_removed': True,
+            'primary_failed': False, 'cleanup_failed': False, 'success': True,
+            'failure_stage': 'none', 'elapsed_ms': 1234, 'elapsed_saturated': False,
+        }
+
     def agent_organize_fixture(self):
         return {
             'kind': 'windows_java_organize_imports', 'exercised': True, 'supported': True,
@@ -1043,6 +1056,106 @@ foreach ($case in (Get-Content -LiteralPath $CasesFile -Raw | ConvertFrom-Json))
                         self.assertNotIn(field, record)
                         self.assertEqual(source['errors'], ['invalid_field_' + field])
                     self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_workspace_type_receipt_preserves_failure_without_private_result_data(self):
+        good = self.agent_workspace_type_fixture()
+        failed = {**good, 'success': False, 'primary_failed': True, 'failure_stage': 'query',
+                  'exact_type_name': False, 'exact_type_uri': False, 'exact_declaration_range': False,
+                  'actual_frontend_navigation': False, 'dirty_buffer_reused': False,
+                  'undo_redo_preserved': False}
+        expected = [good, failed]
+        path = self.agent_source([{**record, 'query': 'SECRET_QUERY', 'name': 'SECRET_TYPE',
+            'uri': 'file:///SECRET_ROOT/Source.java', 'path': 'C:\\SECRET_ROOT',
+            'source': 'SECRET_SOURCE', 'draft': 'SECRET_DIRTY_TEXT',
+            'revision': 'SECRET_REVISION', 'response': {'result': 'SECRET_PROTOCOL'},
+            'error': 'SECRET_ERROR', 'raw_output': 'SECRET_PRIVATE_LOG', 'pid': 314,
+        } for record in expected])
+        report = collector.collect(self.root, agent_transcript=path)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['acceptance_result'], 'not_evaluated')
+        self.assertEqual(report['agent_transcript']['evidence']['records'], expected)
+        for private in ('SECRET_', 'file:///', str(self.root), 'raw_output', 'revision', 'pid'):
+            self.assertNotIn(private, json.dumps(report))
+        other, errors, truncation = collector.sanitize_transcript(path.read_bytes(), collector.LIMITS)
+        self.assertEqual(other['records'], [])
+        self.assertEqual(other['omitted_other_json_records'], 2)
+        self.assertEqual(errors, set())
+        self.assertEqual(truncation, set())
+
+    def test_workspace_type_receipt_enforces_boolean_scalar_and_counter_types(self):
+        fixture = self.agent_workspace_type_fixture()
+        fields = [key for key, value in fixture.items() if type(value) is bool]
+        self.assertEqual(len(fields), 21)
+        for field in fields:
+            for value in (True, False, 0, 1, 0.0, None, 'SECRET_BOOLEAN', [], {}):
+                with self.subTest(field=field, value=value):
+                    report = collector.collect(self.root, agent_transcript=self.agent_source([
+                        {**fixture, field: value}]))
+                    source = report['agent_transcript']
+                    record = source['evidence']['records'][0]
+                    valid = type(value) is bool
+                    self.assertEqual(report['status'], 'complete' if valid else 'error')
+                    if valid:
+                        self.assertIs(record[field], value)
+                    else:
+                        self.assertNotIn(field, record)
+                        self.assertEqual(source['errors'], ['invalid_field_' + field])
+                    self.assertNotIn('SECRET_', json.dumps(report))
+        for value in (0, 240000, -1, 240001, True, 1.0, None, 'SECRET_COUNT'):
+            with self.subTest(elapsed_ms=value):
+                report = collector.collect(self.root, agent_transcript=self.agent_source([
+                    {**fixture, 'elapsed_ms': value}]))
+                valid = type(value) is int and 0 <= value <= 240000
+                self.assertEqual(report['status'], 'complete' if valid else 'error')
+                self.assertNotIn('SECRET_', json.dumps(report))
+        stages = ('none', 'setup', 'support', 'query', 'negative_query', 'resolve', 'read', 'frontend')
+        for stage in (*stages, 'SECRET_STAGE', 'owner_death', 0, None, []):
+            with self.subTest(stage=stage):
+                report = collector.collect(self.root, agent_transcript=self.agent_source([
+                    {**fixture, 'failure_stage': stage}]))
+                valid = isinstance(stage, str) and stage in stages
+                self.assertEqual(report['status'], 'complete' if valid else 'error')
+                self.assertNotIn('SECRET_', json.dumps(report))
+
+    @unittest.skipUnless(shutil.which('pwsh'), 'PowerShell is required for the actual workspace type predicate')
+    def test_actual_workspace_type_predicate_rejects_missing_and_forged_witnesses(self):
+        good = self.agent_workspace_type_fixture()
+        cases = [{'name': 'complete', 'records': [good], 'accept': True},
+                 {'name': 'zero_tests', 'records': [], 'accept': False},
+                 {'name': 'duplicate_receipts', 'records': [good, good], 'accept': False},
+                 {'name': 'wrong_kind', 'records': [{**good, 'kind': 'windows_java_production'}], 'accept': False}]
+        for field, original in good.items():
+            missing = dict(good)
+            del missing[field]
+            cases.append({'name': 'missing_' + field, 'records': [missing], 'accept': False})
+            if type(original) is bool:
+                invalids = (not original, 0, 1, None, 'true', [], [original], {})
+            elif field == 'elapsed_ms':
+                invalids = (-1, 240001, True, 1.5, None, '1234', [], [1234])
+            else:
+                invalids = (None, 0, [], [original], 'SECRET_ENUM')
+            for invalid in invalids:
+                cases.append({'name': field + '_' + repr(invalid),
+                              'records': [{**good, field: invalid}], 'accept': False})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = root / 'cases.json'
+            data.write_text(json.dumps(cases), encoding='utf-8')
+            script = root / 'predicate-test.ps1'
+            script.write_text(r'''param($Predicate, $Cases)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+. $Predicate
+foreach ($case in (Get-Content -LiteralPath $Cases -Raw | ConvertFrom-Json)) {
+    $accepted = $false
+    try { Assert-WorkspaceTypeReceipt -Receipts @($case.records); $accepted = $true } catch {}
+    if ($accepted -ne $case.accept) { throw ('Unexpected workspace type verdict: ' + $case.name) }
+}
+''', encoding='utf-8')
+            result = subprocess.run([shutil.which('pwsh'), '-NoLogo', '-NoProfile', '-File', str(script),
+                                     '-Predicate', str(Path(__file__).with_name('java_workspace_type_acceptance_predicate.ps1').resolve()),
+                                     '-Cases', str(data)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_organize_receipts_preserve_failures_without_source_protocol_or_candidate_data(self):
         failed = {**self.agent_organize_fixture(), 'success': False, 'primary_failed': True,

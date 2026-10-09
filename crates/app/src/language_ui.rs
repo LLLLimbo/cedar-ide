@@ -7,6 +7,9 @@ mod java_diagnostics;
 mod java_maven;
 #[path = "java_startup.rs"]
 mod java_startup;
+#[path = "java_types.rs"]
+mod java_types;
+pub(crate) use java_types::TypeContext as JavaTypeContext;
 
 use crate::{
     completion::{self, Candidate, Position, Range},
@@ -74,6 +77,15 @@ pub(super) enum ActionKind {
     Feature {
         request: features::FeatureRequest,
     },
+    WorkspaceSymbols {
+        context: JavaTypeContext,
+    },
+    JavaTypeResolve {
+        context: JavaTypeContext,
+        sequence: u64,
+        navigation: u64,
+        location: Location,
+    },
     ResolveUri {
         sequence: u64,
         navigation: u64,
@@ -113,6 +125,7 @@ enum View {
     Hover,
     Activity,
     Maven,
+    JavaTypes,
 }
 struct CompletionMenu {
     context: QueryContext,
@@ -134,6 +147,7 @@ pub(super) struct LanguagePanel {
     pub session: u64,
     pub sync: SyncTracker,
     features: features::FeatureState,
+    types: java_types::TypeSearch,
     next_version: i32,
     closed_uris: HashSet<String>,
     mode: ServerMode,
@@ -169,7 +183,7 @@ pub(super) struct LanguagePanel {
 impl Default for LanguagePanel {
     fn default() -> Self {
         Self {
-            running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), next_version: 1, closed_uris: HashSet::new(),
+            running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), types: java_types::TypeSearch::default(), next_version: 1, closed_uris: HashSet::new(),
             mode: ServerMode::Generic, java: JavaConfiguration::default(), maven: java_maven::MavenConfiguration::default(), maven_model: java_maven::ModelState::default(), restart_blocked: false, startup: None,
             program: String::new(), args: "[]".into(), language_id: "rust".into(), capabilities: Value::Null,
             diagnostics: Diagnostics::default(), diagnostics_exited: false, java_diagnostics_refresh_supported: false, java_organize_imports_supported: false,
@@ -183,6 +197,7 @@ impl Default for LanguagePanel {
 impl LanguagePanel {
     pub fn reset(&mut self) {
         self.features.reset();
+        self.types.reset();
         self.session = self.session.wrapping_add(1);
         self.running = false;
         self.restart_blocked = false;
@@ -390,6 +405,7 @@ impl CedarApp {
         self.language.diagnostic_refresh = None;
         self.language.maven_model.cancel_pending();
         self.language.features.reset();
+        self.language.types.reset();
         self.language.intent = None;
         self.language.automatic = false;
         self.language_request(Operation::LanguageStop, ActionKind::Stop);
@@ -512,6 +528,7 @@ impl CedarApp {
         match action.kind {
             ActionKind::Start => "Java server startup failed. Check the Java executable, JDT distribution and data directory on the workspace host.".into(),
             ActionKind::Stop => "Java session closed; process cleanup could not be verified. Reconnect before starting another Java session.".into(),
+            ActionKind::WorkspaceSymbols { .. } => "Find Java type failed. Try a narrower query or retry after indexing; no draft was changed.".into(),
             _ => "Java request failed. Your unsaved draft is retained; reconnect if the session is no longer available.".into(),
         }
     }
@@ -520,6 +537,7 @@ impl CedarApp {
             return;
         }
         match action.kind {
+            ActionKind::WorkspaceSymbols { ref context } => self.java_type_error(context, error),
             ActionKind::Sync {
                 document,
                 edit_version,
@@ -612,6 +630,7 @@ impl CedarApp {
         }
         self.invalidate_diagnostics_refresh();
         self.invalidate_language_features();
+        self.invalidate_java_types();
         if !self.ready() || !self.language.running || self.close_after_language_stop {
             return;
         }
@@ -708,7 +727,7 @@ impl CedarApp {
     }
 
     pub(super) fn apply_language_action(&mut self, action: Action, value: Value) {
-        if action.session != self.language.session {
+        if action.session != self.language.session || !self.java_type_action_current(&action) {
             return;
         }
         if action.is_java_startup() {
@@ -842,6 +861,15 @@ impl CedarApp {
                 unreachable!("Maven model replies are handled before activity output")
             }
             ActionKind::Feature { request } => self.apply_language_feature(request, value),
+            ActionKind::WorkspaceSymbols { context } => self.apply_java_types(context, value),
+            ActionKind::JavaTypeResolve {
+                context,
+                sequence,
+                navigation,
+                location,
+            } => {
+                self.apply_java_type_resolve(context, sequence, navigation, location, value);
+            }
             ActionKind::Query { context, kind } => {
                 if self.language.features.has_request_or_preview()
                     || !self.query_is_current(&context)
@@ -891,31 +919,7 @@ impl CedarApp {
                 navigation,
                 location,
             } => {
-                if sequence != self.language.navigation_sequence
-                    || navigation != self.navigation_epoch
-                {
-                    return;
-                }
-                let Some(path) = value.get("path").and_then(Value::as_str) else {
-                    self.error = Some("Agent did not return a workspace path".into());
-                    return;
-                };
-                if !safe_relative_path(path) {
-                    self.error = Some("Agent returned an unsafe navigation path; ignored".into());
-                    return;
-                }
-                let path = path.to_owned();
-                self.open(path.clone(), None);
-                self.language.deferred_navigation.insert(
-                    path.clone(),
-                    DeferredNavigation {
-                        session: self.language.session,
-                        sequence: self.language.navigation_sequence,
-                        navigation: self.navigation_epoch,
-                        range: location.range,
-                    },
-                );
-                self.complete_language_navigation(&path);
+                self.apply_resolved_language_location(sequence, navigation, location, value);
             }
             ActionKind::ResolveCompletion {
                 context,
@@ -990,6 +994,7 @@ impl CedarApp {
                     self.language.java_organize_imports_supported = false;
                     self.language.diagnostic_refresh = None;
                     self.language.features.reset();
+                    self.language.types.reset();
                     self.language.automatic = false;
                     self.language.intent = None;
                     self.language.completions = None;
@@ -1016,6 +1021,13 @@ impl CedarApp {
                 })
     }
     fn navigate_language(&mut self, location: Location) {
+        self.navigate_language_with_type(location, None);
+    }
+    fn navigate_language_with_type(
+        &mut self,
+        location: Location,
+        context: Option<JavaTypeContext>,
+    ) {
         if !self.ready() || !self.language.running {
             return;
         }
@@ -1035,12 +1047,52 @@ impl CedarApp {
             Operation::LanguageResolveUri {
                 uri: location.uri.clone(),
             },
-            ActionKind::ResolveUri {
-                sequence,
-                navigation,
-                location,
+            match context {
+                Some(context) => ActionKind::JavaTypeResolve {
+                    context,
+                    sequence,
+                    navigation,
+                    location,
+                },
+                None => ActionKind::ResolveUri {
+                    sequence,
+                    navigation,
+                    location,
+                },
             },
         );
+    }
+    fn apply_resolved_language_location(
+        &mut self,
+        sequence: u64,
+        navigation: u64,
+        location: Location,
+        value: Value,
+    ) -> Option<String> {
+        if sequence != self.language.navigation_sequence || navigation != self.navigation_epoch {
+            return None;
+        }
+        let Some(path) = value.get("path").and_then(Value::as_str) else {
+            self.error = Some("Agent did not return a workspace path".into());
+            return None;
+        };
+        if !safe_relative_path(path) {
+            self.error = Some("Agent returned an unsafe navigation path; ignored".into());
+            return None;
+        }
+        let path = path.to_owned();
+        self.open(path.clone(), None);
+        self.language.deferred_navigation.insert(
+            path.clone(),
+            DeferredNavigation {
+                session: self.language.session,
+                sequence: self.language.navigation_sequence,
+                navigation: self.navigation_epoch,
+                range: location.range,
+            },
+        );
+        self.complete_language_navigation(&path);
+        Some(path)
     }
     pub(super) fn complete_language_navigation(&mut self, path: &str) {
         if !self.documents.iter().any(|doc| doc.path == path) {
@@ -1062,7 +1114,7 @@ impl CedarApp {
         let end = completion::position_to_offsets(&doc.text, navigation.range.end);
         match (start, end) {
             (Ok((_, start)), Ok((_, end))) if start <= end => {
-                self.active_document = Some(doc.id); doc.scroll_to = Some(start);
+                self.active_document = Some(doc.id); doc.jump_to = None; doc.scroll_to = Some(start);
                 let id = egui::Id::new(("editor", doc.id));
                 let mut state = egui::TextEdit::load_state(&self.editor_ctx, id).unwrap_or_default();
                 state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(start), egui::text::CCursor::new(end))));
@@ -1316,6 +1368,7 @@ impl CedarApp {
             ui.selectable_value(&mut self.language.view, View::Format, "Format");
             if self.language.mode == ServerMode::Java {
                 ui.selectable_value(&mut self.language.view, View::Imports, "Imports");
+                self.java_type_controls(ui);
             }
             ui.selectable_value(&mut self.language.view, View::References, "References");
             ui.selectable_value(&mut self.language.view, View::Outline, "Outline");
@@ -1339,6 +1392,7 @@ impl CedarApp {
             View::References => self.references_view(ui),
             View::Outline => self.outline_view(ui),
             View::Maven => self.maven_model_view(ui),
+            View::JavaTypes => self.java_types_view(ui),
             View::Definitions => {
                 let mut selected = None;
                 egui::ScrollArea::vertical()
@@ -1553,6 +1607,9 @@ impl CedarApp {
     pub(super) fn language_shortcuts(&mut self, ctx: &egui::Context) {
         // Consume modal Escape before the app-wide Escape handler.
         if self.format_preview_shortcut(ctx) {
+            return;
+        }
+        if self.java_type_shortcuts(ctx) {
             return;
         }
         if self.language.completion_popup {

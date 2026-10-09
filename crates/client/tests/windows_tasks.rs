@@ -60,6 +60,7 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
             "language_start_java_maven_begin",
             "language_start_java_poll",
             "language_stop",
+            "language_workspace_symbols",
             "list",
             "read",
             "run_cancel",

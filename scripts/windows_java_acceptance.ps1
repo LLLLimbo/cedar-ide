@@ -20,6 +20,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 if (-not $IsWindows) { throw 'This acceptance script requires native Windows.' }
 if ($MavenOnly -and $GcDiagnosticControl) { throw 'Select only one isolated acceptance workload.' }
 . (Join-Path $PSScriptRoot 'maven_acceptance_predicate.ps1')
+. (Join-Path $PSScriptRoot 'java_workspace_type_acceptance_predicate.ps1')
 if ([string]::IsNullOrWhiteSpace($ScratchRoot)) { throw 'Set an explicit test scratch root.' }
 if ([string]::IsNullOrWhiteSpace($Java)) {
     if ([string]::IsNullOrWhiteSpace($env:JAVA_HOME_21_X64)) {
@@ -80,7 +81,8 @@ function Record([string] $Text) {
 function Assert-ProductionReceipt(
     [object[]] $Receipts,
     [ValidateSet('windows_java_production', 'windows_java_gc_control')]
-    [string] $Kind = 'windows_java_production'
+    [string] $Kind = 'windows_java_production',
+    [switch] $RequireWorkspaceTypes
 ) {
     $expectedRoute = if ($Kind -ceq 'windows_java_gc_control') { 'diagnostic_agent_normal_client' } else { 'normal_agent_client' }
     $production = @($Receipts | Where-Object { $_.kind -ceq $Kind })
@@ -108,6 +110,10 @@ function Assert-ProductionReceipt(
     }
     if ($Kind -ceq 'windows_java_gc_control' -and $record.stop_status -cne 'graceful') {
         throw 'A forced exit cannot satisfy the diagnostic control natural-shutdown requirement.'
+    }
+    if ($RequireWorkspaceTypes) {
+        if ($Kind -cne 'windows_java_production') { throw 'Workspace type witness requires the shipping Quick route.' }
+        Assert-WorkspaceTypeReceipt -Receipts $Receipts
     }
 }
 function Assert-AgentEditorReceipt([object[]] $Receipts) {
@@ -525,7 +531,7 @@ finally {
                     'task_cap_not_reached', 'source_unchanged', 'synthetic_root_removed', 'success')) {
                     if (-not $record.$field) { throw 'Forced-owner cleanup witness is incomplete.' }
                 }
-                Assert-ProductionReceipt -Receipts @($collected.agent_transcript.evidence.records)
+                Assert-ProductionReceipt -Receipts @($collected.agent_transcript.evidence.records) -RequireWorkspaceTypes
                 }
             }
         }

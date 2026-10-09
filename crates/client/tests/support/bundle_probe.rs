@@ -54,7 +54,7 @@ fn main() {
                 "\"list_verified\":true,\"read_verified\":true,",
                 "\"write_verified\":true,\"readback_verified\":true,",
                 "\"search_verified\":true,\"stale_write_rejected\":true,",
-                "\"execution_rejected\":true,\"java_rejected\":true,\"maven_rejected\":true,",
+                "\"execution_rejected\":true,\"java_rejected\":true,\"maven_rejected\":true,\"workspace_symbols_rejected\":true,",
                 "\"client_reaped\":true}"
             )
         );
@@ -281,6 +281,7 @@ mod portable {
             "language_format",
             "language_references",
             "language_document_symbols",
+            "language_workspace_symbols",
             "language_resolve_uri",
             "language_resolve_completion",
             "language_events",
@@ -404,6 +405,10 @@ mod portable {
             {
                 return Err("maven_rejected");
             }
+        }
+        if !matches!(client.request(Operation::LanguageWorkspaceSymbols { query: "NeverLaunched".into() }), Err(error) if error.starts_with("run_disabled:"))
+        {
+            return Err("workspace_symbols_rejected");
         }
         if !client.is_connected() {
             return Err("connected");

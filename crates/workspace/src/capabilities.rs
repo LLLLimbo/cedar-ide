@@ -40,6 +40,7 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
             "language_format",
             "language_references",
             "language_document_symbols",
+            "language_workspace_symbols",
             "language_resolve_uri",
             "language_resolve_completion",
             "language_events",
@@ -170,6 +171,9 @@ mod tests {
             Operation::LanguageDocumentSymbols {
                 path: "a.rs".into(),
             },
+            Operation::LanguageWorkspaceSymbols {
+                query: "Type".into(),
+            },
             Operation::LanguageResolveUri {
                 uri: "file:///a.rs".into(),
             },
@@ -231,6 +235,7 @@ mod tests {
                 "language_format",
                 "language_references",
                 "language_document_symbols",
+                "language_workspace_symbols",
                 "language_resolve_completion",
             ]) {
                 assert_eq!(
@@ -258,6 +263,19 @@ mod tests {
             }
             expected.sort_unstable();
             assert_eq!(agent.capabilities, expected);
+            assert!(agent.capabilities.len() <= cedar_protocol::MAX_AGENT_CAPABILITIES);
+            if cfg!(any(target_os = "linux", target_os = "macos")) {
+                assert_eq!(agent.capabilities.len(), 24);
+            } else if cfg!(windows) {
+                assert_eq!(
+                    agent.capabilities.len(),
+                    if backend_mode == BackendMode::IsolatedAgent {
+                        29
+                    } else {
+                        4
+                    }
+                );
+            }
             assert!(!agent.supports("terminal"));
         }
     }

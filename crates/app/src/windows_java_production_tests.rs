@@ -435,6 +435,168 @@ fn organize_files_unchanged(created: &[(PathBuf, &'static str)]) -> bool {
             .all(|(path, source)| fs::read(path).is_ok_and(|bytes| bytes == source.as_bytes()))
 }
 
+fn prepare_workspace_type_file(
+    root: &Path,
+    created: &mut Option<(PathBuf, workspace_types::Fixture)>,
+) -> CheckResult<()> {
+    use std::io::Write;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "synthetic type clock predates the epoch")?
+        .as_nanos();
+    let fixture = workspace_types::Fixture::new(nonce);
+    let path = root.join(&fixture.path);
+    io(fs::create_dir_all(
+        path.parent().ok_or("synthetic type parent missing")?,
+    ))?;
+    let mut file = io(fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path))?;
+    // Keep the expected bytes even when the write fails, independently of the
+    // semantic result and before the enclosing owned directory is removed.
+    *created = Some((path, fixture));
+    io(file.write_all(created.as_ref().unwrap().1.source.as_bytes()))
+}
+
+fn workspace_type_file_unchanged(created: &Option<(PathBuf, workspace_types::Fixture)>) -> bool {
+    created.as_ref().is_some_and(|(path, fixture)| {
+        fs::read(path).is_ok_and(|bytes| bytes == fixture.source.as_bytes())
+    })
+}
+
+fn workspace_type_request(
+    client: &mut Client,
+    deadline: Instant,
+    op: Operation,
+) -> CheckResult<Value> {
+    require(
+        Instant::now() < deadline,
+        "workspace type witness exhausted the Quick session budget",
+    )?;
+    client_language(client, op)
+}
+
+fn production_workspace_type(
+    client: &mut Client,
+    initialized: &Value,
+    created: &Option<(PathBuf, workspace_types::Fixture)>,
+    deadline: Instant,
+    receipt: &mut workspace_types::Evidence,
+) -> CheckResult<()> {
+    receipt.exercised = true;
+    receipt.failure_stage = workspace_types::Stage::Support;
+    let Payload::Hello {
+        agent: Some(info), ..
+    } = client.handshake()
+    else {
+        return Err("workspace type agent metadata missing".into());
+    };
+    require(
+        info.supports("language_workspace_symbols"),
+        "workspace type capability missing",
+    )?;
+    receipt.capability_supported = true;
+    let provider = &initialized["initialize"]["capabilities"]["workspaceSymbolProvider"];
+    require(
+        provider == true || provider.is_object(),
+        "workspace symbol provider missing",
+    )?;
+    receipt.provider_supported = true;
+    let (absolute, fixture) = created.as_ref().ok_or("synthetic workspace type missing")?;
+    let expected = url::Url::from_file_path(ordinary_path(absolute)?)
+        .map_err(|_| "cannot encode synthetic workspace type URI")?;
+    receipt.failure_stage = workspace_types::Stage::Query;
+    // This generated source has never received didOpen. There is exactly one
+    // explicit symbol query after initial semantic readiness, with no indexing
+    // retry or additional readiness/sleep window.
+    let symbols = workspace_type_request(
+        client,
+        deadline,
+        Operation::LanguageWorkspaceSymbols {
+            query: fixture.name.clone(),
+        },
+    )?;
+    let target_uri = fixture.exact_symbol(&symbols, expected.as_str())?;
+    receipt.target_unopened = true;
+    receipt.exact_type_name = true;
+    receipt.exact_type_uri = true;
+    receipt.exact_declaration_range = true;
+    receipt.failure_stage = workspace_types::Stage::NegativeQuery;
+    let negative = workspace_type_request(
+        client,
+        deadline,
+        Operation::LanguageWorkspaceSymbols {
+            query: fixture.negative_query.clone(),
+        },
+    )?;
+    require(
+        workspace_types::empty_result(&negative),
+        "negative workspace type query was not empty",
+    )?;
+    receipt.negative_query_empty = true;
+    receipt.failure_stage = workspace_types::Stage::Resolve;
+    let resolved = workspace_type_request(
+        client,
+        deadline,
+        Operation::LanguageResolveUri {
+            uri: target_uri.clone(),
+        },
+    )?;
+    require(
+        resolved["path"] == fixture.path,
+        "workspace type did not resolve to the owned source",
+    )?;
+    receipt.resolved_path_exact = true;
+    receipt.failure_stage = workspace_types::Stage::Read;
+    require(
+        Instant::now() < deadline,
+        "workspace type read exhausted the Quick session budget",
+    )?;
+    let Payload::File {
+        path,
+        text,
+        revision,
+    } = client.request(Operation::Read {
+        path: fixture.path.clone(),
+    })?
+    else {
+        return Err("workspace type ordinary read returned no source file".into());
+    };
+    let range = fixture.declaration();
+    let (start, _) = completion::position_to_offsets(&text, range.start)?;
+    let (end, _) = completion::position_to_offsets(&text, range.end)?;
+    require(
+        path == fixture.path
+            && text == fixture.source
+            && text.get(start..end) == Some(fixture.name.as_str())
+            && workspace_type_file_unchanged(created),
+        "workspace type ordinary read/source/declaration mismatch",
+    )?;
+    receipt.ordinary_read_exact = true;
+    receipt.failure_stage = workspace_types::Stage::Frontend;
+    crate::CedarApp::java_type_navigation_acceptance(
+        symbols,
+        &target_uri,
+        &path,
+        &text,
+        &revision,
+    )?;
+    receipt.actual_frontend_navigation = true;
+    receipt.dirty_buffer_reused = true;
+    receipt.undo_redo_preserved = true;
+    require(
+        workspace_type_file_unchanged(created),
+        "workspace type navigation changed source bytes",
+    )?;
+    require(
+        receipt.semantics_passed(),
+        "workspace type semantic witness was incomplete",
+    )?;
+    receipt.failure_stage = workspace_types::Stage::None;
+    Ok(())
+}
+
 fn organize_language(client: &mut Client, deadline: Instant, op: Operation) -> CheckResult<Value> {
     // No indexing retries or added wait window. This bounds when additional
     // work may begin; each request keeps the normal Client timeout and the
@@ -746,6 +908,8 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
     let mut source_path: Option<PathBuf> = None;
     let mut organize_files = Vec::new();
     let mut organize_receipt = organize::Evidence::new();
+    let mut workspace_type_file = None;
+    let mut workspace_type_receipt = workspace_types::Evidence::new();
     let primary = checked(|| {
         require(
             profile == ObservationProfile::Quick || instrumentation_ready,
@@ -768,6 +932,7 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         prepare_project_files(&root)?;
         if profile == ObservationProfile::Quick {
             prepare_organize_files(&root, &mut organize_files)?;
+            prepare_workspace_type_file(&root, &mut workspace_type_file)?;
         }
         let data = base.join("external JDT data 雪");
         io(fs::create_dir(&data))?;
@@ -966,6 +1131,17 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             }));
         }
         resource_phase(started, ResourcePhase::QueryWorkload);
+        if profile == ObservationProfile::Quick {
+            stage.set(FailureStage::Definition);
+            production_workspace_type(
+                client,
+                &initialized,
+                &workspace_type_file,
+                started + Duration::from_secs(180),
+                &mut workspace_type_receipt,
+            )?;
+            unchanged(&source)?;
+        }
         let cursor = completion::byte_to_position(
             SOURCE,
             SOURCE.rfind("greeting").ok_or("fixture reference")? + 3,
@@ -1305,6 +1481,12 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         cleanup_errors.push("normal source bytes changed before cleanup".into());
     }
     if profile == ObservationProfile::Quick {
+        workspace_type_receipt.source_unchanged =
+            workspace_type_file_unchanged(&workspace_type_file);
+        if workspace_type_file.is_some() && !workspace_type_receipt.source_unchanged {
+            failure_stage.get_or_insert(FailureStage::FixtureCleanup);
+            cleanup_errors.push("workspace type source bytes changed before cleanup".into());
+        }
         organize_receipt.source_files_unchanged = organize_files_unchanged(&organize_files);
         if !organize_files.is_empty() && !organize_receipt.source_files_unchanged {
             failure_stage.get_or_insert(FailureStage::FixtureCleanup);
@@ -1350,6 +1532,25 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
     record.primary_failed = primary.is_err();
     record.cleanup_failed = !cleanup_errors.is_empty();
     if profile == ObservationProfile::Quick {
+        workspace_type_receipt.root_handle_signaled = record.root_handle_signaled;
+        workspace_type_receipt.client_reaped = record.client_reaped;
+        workspace_type_receipt.synthetic_root_removed = record.synthetic_root_removed;
+        workspace_type_receipt.primary_failed = record.primary_failed;
+        workspace_type_receipt.cleanup_failed = record.cleanup_failed;
+        workspace_type_receipt.success = primary.is_ok()
+            && cleanup_errors.is_empty()
+            && workspace_type_receipt.semantics_passed()
+            && workspace_type_receipt.source_unchanged
+            && workspace_type_receipt.root_handle_signaled
+            && workspace_type_receipt.client_reaped
+            && workspace_type_receipt.synthetic_root_removed;
+        let elapsed = started.elapsed().as_millis();
+        workspace_type_receipt.elapsed_ms = elapsed.min(240_000) as u32;
+        workspace_type_receipt.elapsed_saturated = elapsed > 240_000;
+        println!(
+            "{}",
+            serde_json::to_string(&workspace_type_receipt).expect("typed workspace type evidence")
+        );
         organize_receipt.root_handle_signaled = record.root_handle_signaled;
         organize_receipt.client_reaped = record.client_reaped;
         organize_receipt.synthetic_root_removed = record.synthetic_root_removed;
@@ -1400,6 +1601,7 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
                 && record.diagnostics_refresh_supported
                 && record.diagnostics_refresh_requested
                 && record.diagnostics_refresh_witness
+                && workspace_type_receipt.success
                 && organize_receipt.success))
         && (profile != ObservationProfile::GcDiagnostic || natural_shutdown_verified);
     record.failure_stage = if record.success {

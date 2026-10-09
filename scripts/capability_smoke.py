@@ -78,6 +78,7 @@ def main():
                 ('run_cancel', {'task_id': 1}),
                 ('language_start', {'program': 'cedar-no-such-tool', 'args': []}),
                 ('language_events', {}),
+                ('language_workspace_symbols', {'query': 'NeverLaunched'}),
                 ('language_stop', {}),
             ]:
                 assert untrusted.call(operation, ok=False, **fields)['code'] == 'run_disabled'

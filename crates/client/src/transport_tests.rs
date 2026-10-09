@@ -690,6 +690,9 @@ fn advanced_operations() -> Vec<Operation> {
         Operation::LanguageDocumentSymbols {
             path: "fixture.txt".into(),
         },
+        Operation::LanguageWorkspaceSymbols {
+            query: "Fixture".into(),
+        },
         Operation::LanguageResolveUri {
             uri: "file:///fixture.txt".into(),
         },
@@ -918,6 +921,7 @@ fn java_capabilities() -> Vec<&'static str> {
             "language_format",
             "language_references",
             "language_document_symbols",
+            "language_workspace_symbols",
             "language_resolve_uri",
             "language_resolve_completion",
         ])

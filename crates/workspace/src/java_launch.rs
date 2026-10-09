@@ -294,6 +294,12 @@ mod tests {
     fn production_initialization_never_claims_a_class_file_content_viewer() {
         let value = initialization_options();
         assert!(value.get("extendedClientCapabilities").is_none());
+        // Standard workspace/symbol uses the existing indexed type scope. It
+        // does not enable method search, importers or a class-file viewer.
+        assert_eq!(value["settings"]["java"]["search"]["scope"], "all");
+        assert!(value["settings"]["java"]["symbols"]
+            .get("includeSourceMethodDeclarations")
+            .is_none());
         assert_eq!(
             value["settings"]["java"]["import"]["maven"]["enabled"],
             false

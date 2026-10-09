@@ -1015,3 +1015,248 @@ fn new_features_preserve_null_empty_flat_and_server_error_results() {
     );
     client.shutdown().unwrap();
 }
+
+#[test]
+fn workspace_symbols_require_live_static_provider_but_no_open_document() {
+    for mode in ["normal", "navigation-object-provider"] {
+        let directory = tempfile::tempdir().unwrap();
+        let audit_path = directory.path().join("workspace-symbols.jsonl");
+        let client = LspClient::spawn(config(mode, Some(&audit_path)), options()).unwrap();
+        assert!(matches!(
+            client.workspace_symbols("Type"),
+            Err(Error::InvalidState(_))
+        ));
+        client.initialize(None, Value::Null).unwrap();
+        for query in [" 你好.Type* ".to_owned(), "🦀".repeat(64), "x".repeat(256)] {
+            let result = client.workspace_symbols(&query).unwrap();
+            assert_eq!(result[0]["name"], "Hello");
+        }
+        client.shutdown().unwrap();
+        assert!(matches!(
+            client.workspace_symbols("Type"),
+            Err(Error::InvalidState(_))
+        ));
+        let audit: Vec<Value> = std::fs::read_to_string(audit_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            audit[0]["params"]["capabilities"]["workspace"]["symbol"],
+            json!({"dynamicRegistration":false})
+        );
+        let methods: Vec<_> = audit
+            .iter()
+            .map(|entry| entry["method"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            methods,
+            [
+                "initialize",
+                "initialized",
+                "workspace/symbol",
+                "workspace/symbol",
+                "workspace/symbol",
+                "shutdown",
+                "exit"
+            ]
+        );
+        assert_eq!(audit[2]["params"], json!({"query":" 你好.Type* "}));
+        assert_eq!(audit[3]["params"], json!({"query":"🦀".repeat(64)}));
+        assert_eq!(audit[4]["params"], json!({"query":"x".repeat(256)}));
+    }
+}
+
+#[test]
+fn workspace_symbols_reject_missing_false_invalid_providers_and_bad_queries_before_rpc() {
+    for mode in [
+        "no-capabilities",
+        "navigation-no-provider",
+        "navigation-false-provider",
+        "navigation-invalid-provider",
+        "normal",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let audit_path = directory.path().join("unsupported.jsonl");
+        let client = ready(mode, Some(&audit_path));
+        if mode == "normal" {
+            for query in [
+                String::new(),
+                "   ".into(),
+                "\u{2003}".into(),
+                "x".repeat(257),
+                "🦀".repeat(65),
+                "a\nb".into(),
+                "a\tb".into(),
+                "a\0b".into(),
+                "a\u{7f}b".into(),
+                "a\u{85}b".into(),
+            ] {
+                assert!(
+                    matches!(
+                        client.workspace_symbols(&query),
+                        Err(Error::InvalidState(_))
+                    ),
+                    "{query:?}"
+                );
+            }
+        } else {
+            assert!(
+                matches!(client.workspace_symbols("Type"), Err(Error::Unsupported(method)) if method == "workspace/symbol")
+            );
+        }
+        client.shutdown().unwrap();
+        assert!(!std::fs::read_to_string(audit_path)
+            .unwrap()
+            .contains("\"method\":\"workspace/symbol\""));
+    }
+}
+
+#[test]
+fn workspace_symbols_validate_complete_bounded_results_without_partial_success() {
+    let directory = tempfile::tempdir().unwrap();
+    let audit_path = directory.path().join("custom.jsonl");
+    let result_path = audit_path.with_extension("result.json");
+    let client = ready("workspace-symbol-custom", Some(&audit_path));
+    let symbol = json!({"name":"Type","kind":5,"containerName":"demo","tags":[1],"deprecated":true,
+        "location":{"uri":"file:///mock/%E4%BD%A0%20Type.java","range":{"start":{"line":0,"character":0},"end":{"line":1,"character":3}}}});
+    for result in [
+        Value::Null,
+        json!([]),
+        json!([symbol.clone()]),
+        json!(vec![symbol.clone(); 256]),
+    ] {
+        std::fs::write(&result_path, result.to_string()).unwrap();
+        assert_eq!(client.workspace_symbols("Type").unwrap(), result);
+    }
+    let mut extended = symbol.clone();
+    extended["command"] = json!({"command":"mock.mustNotRun"});
+    extended["textEdit"] = json!({"newText":"never apply"});
+    extended["data"] = json!({"resolve":"never"});
+    std::fs::write(&result_path, json!([extended]).to_string()).unwrap();
+    assert_eq!(
+        client.workspace_symbols("Type").unwrap(),
+        json!([symbol.clone()])
+    );
+    let mut bad_symbols = Vec::new();
+    for (field, value) in [
+        ("name", Value::Null),
+        ("name", json!("")),
+        ("name", json!("x".repeat(4097))),
+        ("name", json!("a\nb")),
+        ("kind", json!(0)),
+        ("kind", json!(27)),
+        ("kind", json!(1.5)),
+        ("containerName", json!("x".repeat(4097))),
+        ("containerName", json!(false)),
+        ("tags", json!([1, 1])),
+        ("tags", json!([2])),
+        ("tags", json!("1")),
+        ("deprecated", json!(1)),
+        ("children", json!([])),
+    ] {
+        let mut bad = symbol.clone();
+        bad[field] = value;
+        bad_symbols.push(bad);
+    }
+    for uri in [
+        "relative.java".to_owned(),
+        "file:///a\nb".into(),
+        "file:///a b".into(),
+        format!("file:///{}", "x".repeat(16 * 1024)),
+    ] {
+        let mut bad = symbol.clone();
+        bad["location"]["uri"] = json!(uri);
+        bad_symbols.push(bad);
+    }
+    for range in [
+        Value::Null,
+        json!({"start":{"line":0,"character":0}}),
+        json!({"start":{"line":0,"character":4},"end":{"line":0,"character":3}}),
+        json!({"start":{"line":-1,"character":0},"end":{"line":1,"character":3}}),
+        json!({"start":{"line":0,"character":0},"end":{"line":2147483648_u64,"character":3}}),
+    ] {
+        let mut bad = symbol.clone();
+        bad["location"]["range"] = range;
+        bad_symbols.push(bad);
+    }
+    let mut malformed = vec![
+        json!({}),
+        json!("invalid"),
+        json!(vec![symbol.clone(); 257]),
+    ];
+    malformed.extend(
+        bad_symbols
+            .into_iter()
+            .map(|bad| json!([symbol.clone(), bad])),
+    );
+    let mut lazy = symbol.clone();
+    lazy["location"].as_object_mut().unwrap().remove("range");
+    malformed.push(json!([lazy]));
+    let mut oversized = symbol.clone();
+    oversized["data"] = json!("x".repeat(1024 * 1024));
+    malformed.push(json!([oversized]));
+    let mut deep = symbol.clone();
+    let mut data = Value::Null;
+    for _ in 0..9 {
+        data = json!([data]);
+    }
+    deep["data"] = data;
+    malformed.push(json!([deep]));
+    let mut wide = symbol.clone();
+    wide["data"] = json!(vec![Value::Null; 16 * 1024]);
+    malformed.push(json!([wide]));
+    let mut large_text = symbol.clone();
+    large_text["name"] = json!("x".repeat(4096));
+    malformed.push(json!(vec![large_text; 128]));
+    for result in malformed {
+        std::fs::write(&result_path, result.to_string()).unwrap();
+        assert!(matches!(
+            client.workspace_symbols("Type"),
+            Err(Error::Protocol(_))
+        ));
+    }
+    // Rejection does not poison the running server or execute a fallback.
+    std::fs::write(&result_path, json!([symbol.clone()]).to_string()).unwrap();
+    assert_eq!(client.workspace_symbols("Type").unwrap(), json!([symbol]));
+    client.shutdown().unwrap();
+    for line in std::fs::read_to_string(audit_path).unwrap().lines() {
+        let request: Value = serde_json::from_str(line).unwrap();
+        assert!(matches!(
+            request["method"].as_str().unwrap(),
+            "initialize" | "initialized" | "workspace/symbol" | "shutdown" | "exit"
+        ));
+    }
+}
+
+#[test]
+fn workspace_symbols_report_server_errors_without_fallback_requests() {
+    let directory = tempfile::tempdir().unwrap();
+    let audit_path = directory.path().join("error.jsonl");
+    let client = ready("workspace-symbol-error", Some(&audit_path));
+    assert!(matches!(
+        client.workspace_symbols("Type"),
+        Err(Error::Remote { code: -32602, .. })
+    ));
+    client.shutdown().unwrap();
+    let methods: Vec<String> = std::fs::read_to_string(audit_path)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<Value>(line).unwrap()["method"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        methods,
+        [
+            "initialize",
+            "initialized",
+            "workspace/symbol",
+            "shutdown",
+            "exit"
+        ]
+    );
+}

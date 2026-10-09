@@ -137,3 +137,7 @@ LSP 和完整调试界面仍未提供。异步命令使用明确的原生 `.exe`
 在 Tests 面板输入工作区相对 XML 路径并显式 Load，可阅读历史测试结果。
 执行信任关闭也可使用；不会运行测试、扫描目录或写入文件。报告不证明当前草稿通过测试。
 支持的 Surefire/JUnit 子集和限制见 [TEST_RESULTS.md](TEST_RESULTS.md)。
+
+## 查找 Java 类型
+
+在已经启动的受信任 Java 会话中，使用 Language 面板的 Find Java type，输入类型名并显式 Search。支持能力由 agent 和实际语言服务共同决定；搜索不会自动启动服务或保存文件。选择结果可读取工作区内的文件，已有脏稿及撤销保持。服务端索引结果没有文档版本，可能滞后于未保存修改；无结果也不代表项目中不存在该类型。详见 [JAVA_TYPE_SEARCH.md](JAVA_TYPE_SEARCH.md)。
