@@ -1,10 +1,20 @@
 # Pure required-idle release predicate. Loading this file launches nothing.
 # The collector rejects duplicate JSON keys before ConvertFrom-Json is used.
-function Assert-IdleCorrectionReceipt([object[]] $Receipts) {
-    $matching = @($Receipts | Where-Object {
-        $_ -is [pscustomobject] -and $_.kind -is [string] -and
-        $_.kind -ceq 'windows_java_idle_correction'
-    })
+function Assert-IdleCorrectionReceipt([object] $Receipts) {
+    # Keep the caller's JSON shape intact: no array-subexpression at the call
+    # site, no array-typed parameter coercion, and no filtering pipeline here.
+    if ($Receipts -isnot [array]) { throw 'Idle receipts must be a JSON array.' }
+    $matching = [Collections.Generic.List[object]]::new()
+    for ($index = 0; $index -lt $Receipts.Length; $index++) {
+        $candidate = $Receipts[$index]
+        if ($candidate -is [array] -or $candidate -isnot [pscustomobject] -or
+            $candidate.kind -isnot [string]) {
+            throw 'Idle receipt collection must contain scalar receipt objects.'
+        }
+        if ($candidate.kind -ceq 'windows_java_idle_correction') {
+            $matching.Add($candidate)
+        }
+    }
     if ($matching.Count -ne 1) { throw 'Expected exactly one required idle correction receipt.' }
     $record = $matching[0]
     foreach ($field in @('kind', 'route', 'failure_stage', 'stop_status', 'stop_reason',

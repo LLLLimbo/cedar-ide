@@ -1161,8 +1161,21 @@ foreach ($case in (Get-Content -LiteralPath $CasesFile -Raw | ConvertFrom-Json))
                  {'name': 'recovered_unversioned', 'records': [recovered], 'accept': True},
                  {'name': 'recovered_versioned', 'records': [{**recovered, 'recovery_unversioned': False}], 'accept': True},
                  {'name': 'zero_tests', 'records': [], 'accept': False},
+                 {'name': 'scalar_receipt_root', 'records': recovered, 'accept': False},
+                 {'name': 'null_receipt_root', 'records': None, 'accept': False},
+                 {'name': 'string_receipt_root', 'records': 'SECRET_ROOT', 'accept': False},
+                 {'name': 'number_receipt_root', 'records': 7, 'accept': False},
                  {'name': 'duplicate_receipts', 'records': [spontaneous, recovered], 'accept': False},
                  {'name': 'array_receipt', 'records': [[recovered]], 'accept': False},
+                 {'name': 'array_duplicate_receipts', 'records': [[spontaneous, recovered]], 'accept': False},
+                 {'name': 'deeper_array_receipt', 'records': [[[recovered]]], 'accept': False},
+                 {'name': 'array_before_scalar_receipt', 'records': [[recovered], spontaneous], 'accept': False},
+                 {'name': 'array_after_scalar_receipt', 'records': [spontaneous, [recovered]], 'accept': False},
+                 {'name': 'empty_array_with_valid_receipt', 'records': [[], recovered], 'accept': False},
+                 {'name': 'unrelated_array_with_valid_receipt', 'records': [[self.agent_production_fixture()], recovered], 'accept': False},
+                 {'name': 'null_with_valid_receipt', 'records': [None, recovered], 'accept': False},
+                 {'name': 'string_with_valid_receipt', 'records': ['SECRET_SCALAR', recovered], 'accept': False},
+                 {'name': 'number_with_valid_receipt', 'records': [7, recovered], 'accept': False},
                  {'name': 'unrelated_quick', 'records': [self.agent_production_fixture()], 'accept': False},
                  {'name': 'independent_quick_and_idle', 'records': [self.agent_production_fixture(), recovered], 'accept': True}]
         for fixture in (spontaneous, recovered):
@@ -1216,6 +1229,10 @@ foreach ($case in (Get-Content -LiteralPath $CasesFile -Raw | ConvertFrom-Json))
         reject('graceful_nonzero_exit', root_exit_code=1)
         reject('noncompleted_stop', stop_status='error', stop_reason='transport_failure')
         for case in cases:
+            case['array_root'] = isinstance(case['records'], list)
+            case['top_level_count'] = len(case['records']) if case['array_root'] else 0
+            case['nested_arrays'] = (sum(isinstance(record, list) for record in case['records'])
+                                     if case['array_root'] else 0)
             if case['accept']:
                 idle = next(record for record in case['records']
                             if record['kind'] == 'windows_java_idle_correction')
@@ -1225,9 +1242,22 @@ foreach ($case in (Get-Content -LiteralPath $CasesFile -Raw | ConvertFrom-Json))
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . $Predicate
+function Assert-TestArgumentShape([object] $Receipts, [bool] $ArrayRoot, [int] $ExpectedCount, [int] $ExpectedArrays) {
+    # Use the production parameter type and the identical call-site expression.
+    # This proves that the caller/binder retains both root and element shapes.
+    if (($Receipts -is [array]) -ne $ArrayRoot) { throw 'Test call changed receipt root shape.' }
+    if (-not $ArrayRoot) { return }
+    if ($Receipts.Length -ne $ExpectedCount) { throw 'Test call changed top-level receipt count.' }
+    $arrays = 0
+    for ($index = 0; $index -lt $Receipts.Length; $index++) {
+        if ($Receipts[$index] -is [array]) { $arrays++ }
+    }
+    if ($arrays -ne $ExpectedArrays) { throw 'Test call flattened a nested receipt array.' }
+}
 foreach ($case in (Get-Content -LiteralPath $Cases -Raw | ConvertFrom-Json -Depth 10)) {
+    Assert-TestArgumentShape -Receipts $case.records -ArrayRoot $case.array_root -ExpectedCount $case.top_level_count -ExpectedArrays $case.nested_arrays
     $accepted = $false; $count = -1
-    try { $count = Assert-IdleCorrectionReceipt -Receipts @($case.records); $accepted = $true } catch {}
+    try { $count = Assert-IdleCorrectionReceipt -Receipts $case.records; $accepted = $true } catch {}
     if ($accepted -ne $case.accept -or ($accepted -and $count -ne $case.count)) {
         throw ('Unexpected idle verdict: ' + $case.name)
     }

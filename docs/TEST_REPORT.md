@@ -62,3 +62,21 @@ The all-feature release and default-feature frontend/agent release both built.
 Exact native CI, whether conditional recovery actually ran, and a regenerated
 package remain pending. A native spontaneous-only pass would not be
 reported as observed recovery.
+
+
+## Native predicate checkpoint and narrow repair
+
+Public `0d30684d69d25d3b3f670d76b418a18ccc5d9913` ran
+[CI 37912542153](https://github.com/LLLLimbo/cedar-ide/actions/runs/37912542153).
+Both platforms executed the actual PowerShell matrix and failed because the
+nested `array_receipt` negative was accepted. This early failure prevented Rust
+compilation and Java/Maven execution; no package or runtime verdict resulted.
+
+The repair preserves the received JSON array through the call site and object
+parameter, then checks each indexed scalar receipt before matching. It removes
+the filtering pipeline at that boundary. The original failing negative remains,
+with additional scalar/null/deep-array/mixed-valid controls and an independent
+argument-shape assertion in the native harness. Collector duplicate-key rejection
+remains separate from PowerShell's parsed-object checks. Production/Rust code,
+all timing criteria and historical failed verdicts are unchanged. The same 0.26.1
+development version requires a new exact native run before acceptance.

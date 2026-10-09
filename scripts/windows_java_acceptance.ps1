@@ -518,7 +518,7 @@ finally {
                     $null = Assert-MavenReceipt -Receipts @($collected.agent_transcript.evidence.records)
                 } else {
                 $spontaneousTimeouts = Assert-AgentEditorReceipt -Receipts @($collected.agent_transcript.evidence.records)
-                $idleSpontaneousTimeouts = Assert-IdleCorrectionReceipt -Receipts @($collected.agent_transcript.evidence.records)
+                $idleSpontaneousTimeouts = Assert-IdleCorrectionReceipt -Receipts $collected.agent_transcript.evidence.records
                 Record ("Required idle workflow verified; original spontaneous timeout count=$idleSpontaneousTimeouts; successful refresh preserves original correction_diagnostics=false.")
                 $concurrency = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_concurrency' })
                 $forced = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_forced_cleanup' })
