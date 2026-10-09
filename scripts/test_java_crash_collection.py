@@ -209,6 +209,39 @@ class CrashCollectionTests(unittest.TestCase):
             'failure_stage': 'none', 'elapsed_ms': 1500, 'elapsed_saturated': False,
         }
 
+    def agent_idle_fixture(self, recovered=False):
+        record = {**self.agent_production_fixture(),
+            'kind': 'windows_java_idle_correction',
+            'async_start_exercised': False, 'async_start_begin_acknowledged': False,
+            'async_start_read_while_starting': False, 'async_start_ready': False,
+            'diagnostics_refresh_exercised': False, 'diagnostics_refresh_requested': False,
+            'diagnostics_refresh_witness': False, 'diagnostics_refresh_unversioned': False,
+            'spontaneous_result': 'matched', 'spontaneous_success': True,
+            'spontaneous_matching_batches': 1, 'recovery_attempts': 0,
+            'recovery_result': 'not_attempted', 'recovery_acknowledged': False,
+            'recovery_witness': False, 'recovery_unversioned': False,
+            'recovery_budget_sufficient': False, 'recovery_available_budget_ms': 0,
+            'workflow_success': True, 'primary_deadline_ms': 360000,
+            'outer_deadline_ms': 480000, 'cleanup_reserve_ms': 120000,
+            'request_timeout_ms': 75000, 'spontaneous_dispatch_window_ms': 60000,
+            'diagnostic_wait_admission_ms': 135000, 'initial_idle_ms': 30000,
+            'recovery_budget_ms': 165000, 'recovery_admission_ms': 240000,
+            'close_budget_ms': 75000, 'stop_budget_ms': 75000,
+            'root_exit_budget_ms': 3000, 'client_reap_budget_ms': 30000,
+            'cleanup_bookkeeping_ms': 9000, 'primary_deadline_met': True,
+            'cleanup_deadline_met': True, 'cleanup_reserve_preserved': True,
+            'deadline_failed': False, 'primary_elapsed_ms': 40000,
+            'cleanup_started_ms': 40000, 'elapsed_ms': 41000,
+        }
+        if recovered:
+            record.update(correction_diagnostics=False, spontaneous_result='timeout',
+                spontaneous_success=False, spontaneous_matching_batches=0,
+                recovery_attempts=1, recovery_result='matched', recovery_acknowledged=True,
+                recovery_witness=True, recovery_unversioned=True, recovery_budget_sufficient=True,
+                recovery_available_budget_ms=250000, primary_elapsed_ms=120000,
+                cleanup_started_ms=120000, elapsed_ms=121000)
+        return record
+
     def agent_gc_control_fixture(self):
         return {**self.agent_production_fixture(), 'kind': 'windows_java_gc_control',
                 'route': 'diagnostic_agent_normal_client'}
@@ -1056,6 +1089,154 @@ foreach ($case in (Get-Content -LiteralPath $CasesFile -Raw | ConvertFrom-Json))
                         self.assertNotIn(field, record)
                         self.assertEqual(source['errors'], ['invalid_field_' + field])
                     self.assertNotIn('SECRET_', json.dumps(report))
+
+    def test_idle_receipt_keeps_separate_spontaneous_recovered_and_failed_verdicts(self):
+        failed = {**self.agent_idle_fixture(True), 'success': False, 'workflow_success': False,
+                  'primary_failed': True, 'failure_stage': 'correction',
+                  'recovery_result': 'timeout', 'recovery_witness': False}
+        for expected in (self.agent_idle_fixture(), self.agent_idle_fixture(True), failed):
+            with self.subTest(result=expected['recovery_result']):
+                raw = {**expected, 'source': 'SECRET_SOURCE', 'uri': 'file:///SECRET_ROOT/Main.java',
+                       'path': 'C:\\SECRET_ROOT', 'environment': {'TOKEN': 'SECRET_ENV'},
+                       'raw_output': 'SECRET_VM_LOG', 'response': {'raw': 'SECRET_JDT'},
+                       'diagnostics': ['SECRET_MESSAGE'], 'pid': 314}
+                report = collector.collect(self.root, agent_transcript=self.agent_source([raw]))
+                self.assertEqual(report['status'], 'complete')
+                self.assertEqual(report['acceptance_result'], 'not_evaluated')
+                self.assertEqual(report['agent_transcript']['evidence']['records'], [expected])
+                for private in ('SECRET_', 'file:///', 'raw_output', 'environment', 'pid'):
+                    self.assertNotIn(private, json.dumps(report))
+                result, errors, truncated = collector.sanitize_transcript(
+                    json.dumps(raw).encode(), collector.LIMITS)
+                self.assertEqual(result['records'], [])
+                self.assertFalse(errors)
+                self.assertFalse(truncated)
+
+    def test_idle_receipt_requires_every_typed_scalar_and_exact_fixed_budgets(self):
+        fixture = self.agent_idle_fixture(True)
+        schema = collector.AGENT_TRANSCRIPT_FIELDS['windows_java_idle_correction']
+        self.assertEqual(set(fixture), {'kind', *schema})
+        for field, kind in schema.items():
+            missing = dict(fixture)
+            del missing[field]
+            _, errors, _ = collector.sanitize_agent_transcript(json.dumps(missing).encode(), collector.LIMITS)
+            self.assertIn('missing_field_' + field, errors)
+            invalids = [None, [], [fixture[field]], {}, 'SECRET_INVALID']
+            if kind == 'bool':
+                invalids += [0, 1, 0.0]
+            elif isinstance(kind, tuple) and kind[0] == 'integer_range':
+                invalids += [True, False, 1.0, kind[1] - 1, kind[2] + 1]
+            elif kind == '?u32':
+                invalids.remove(None)
+                invalids += [True, False, -1, 2 ** 32, 1.0]
+            else:
+                invalids += [True, False, 0, 1.0]
+            for invalid in invalids:
+                with self.subTest(field=field, invalid=invalid):
+                    result, errors, _ = collector.sanitize_agent_transcript(
+                        json.dumps({**fixture, field: invalid}).encode(), collector.LIMITS)
+                    self.assertIn('invalid_field_' + field, errors)
+                    self.assertNotIn(field, result['records'][0])
+                    self.assertNotIn('SECRET_', json.dumps(result))
+
+    def test_idle_receipt_duplicate_records_and_json_fields_fail_closed(self):
+        fixture = self.agent_idle_fixture()
+        data = json.dumps(fixture)
+        _, errors, _ = collector.sanitize_agent_transcript((data + '\n' + data).encode(), collector.LIMITS)
+        self.assertEqual(errors, {'duplicate_idle_receipt'})
+        for extra in ('"success":false', '"success":true', '"kind":"windows_java_idle_correction"',
+                      '"SECRET_UNKNOWN":"SECRET_VALUE","SECRET_UNKNOWN":true'):
+            with self.subTest(extra=extra):
+                duplicate = data[:-1] + ',' + extra + '}'
+                result, errors, _ = collector.sanitize_agent_transcript(duplicate.encode(), collector.LIMITS)
+                self.assertEqual(result['records'], [])
+                self.assertEqual(errors, {'duplicate_idle_receipt_field'})
+                self.assertNotIn('SECRET_', json.dumps(result))
+
+    @unittest.skipUnless(shutil.which('pwsh'), 'PowerShell is required for the actual required-idle predicate')
+    def test_actual_idle_powershell_gate_rejects_missing_forged_and_late_witnesses(self):
+        spontaneous = self.agent_idle_fixture()
+        recovered = self.agent_idle_fixture(True)
+        cases = [{'name': 'spontaneous', 'records': [spontaneous], 'accept': True},
+                 {'name': 'recovered_unversioned', 'records': [recovered], 'accept': True},
+                 {'name': 'recovered_versioned', 'records': [{**recovered, 'recovery_unversioned': False}], 'accept': True},
+                 {'name': 'zero_tests', 'records': [], 'accept': False},
+                 {'name': 'duplicate_receipts', 'records': [spontaneous, recovered], 'accept': False},
+                 {'name': 'array_receipt', 'records': [[recovered]], 'accept': False},
+                 {'name': 'unrelated_quick', 'records': [self.agent_production_fixture()], 'accept': False},
+                 {'name': 'independent_quick_and_idle', 'records': [self.agent_production_fixture(), recovered], 'accept': True}]
+        for fixture in (spontaneous, recovered):
+            label = fixture['spontaneous_result'] + '_'
+            forced = {**fixture, 'stop_status': 'forced', 'stop_reason': 'grace_expired',
+                      'root_exit_code': 1067, 'shutdown_response_received': False, 'exit_frame_completed': False}
+            cases.append({'name': label + 'honest_owned_forced_stop', 'records': [forced], 'accept': True})
+            for field, original in fixture.items():
+                missing = dict(fixture)
+                del missing[field]
+                cases.append({'name': label + 'missing_' + field, 'records': [missing], 'accept': False})
+                invalids = [None, [], [original], {}, 'SECRET_SCALAR']
+                if type(original) is bool:
+                    invalids += [0, 1, 0.0]
+                    if field != 'recovery_unversioned' or not fixture['recovery_witness']:
+                        invalids += [not original]
+                elif type(original) is int:
+                    invalids += [-1, True, False, float(original), 2 ** 53]
+                    if field in collector.IDLE_FIXED_BUDGETS:
+                        invalids += [original - 1, original + 1]
+                for invalid in invalids:
+                    cases.append({'name': label + field + '_' + repr(invalid),
+                                  'records': [{**fixture, field: invalid}], 'accept': False})
+        def reject(name, fixture=recovered, **changes):
+            cases.append({'name': name, 'records': [{**fixture, **changes}], 'accept': False})
+        for result in collector.CORRECTION_RECOVERY_RESULTS:
+            if result != 'matched':
+                reject('failed_recovery_' + result, recovery_result=result)
+        for result in ('request_error', 'malformed_events', 'truncated', 'lagged', 'closed'):
+            reject('ineligible_' + result, spontaneous_result=result)
+        reject('insufficient_full_recovery_plus_close', recovery_available_budget_ms=239999)
+        reject('budget_before_required_idle_and_timeout', recovery_available_budget_ms=270001)
+        reject('overlarge_available_budget', recovery_available_budget_ms=360001)
+        reject('repeated_refresh', recovery_attempts=2)
+        reject('forged_spontaneous_batch', spontaneous_matching_batches=1)
+        reject('forged_spontaneous_success', spontaneous_success=True, correction_diagnostics=True)
+        reject('late_primary', primary_elapsed_ms=360000, cleanup_started_ms=360000, elapsed_ms=360001)
+        reject('late_outer', elapsed_ms=480000)
+        reject('cleanup_started_before_primary_finished', cleanup_started_ms=119999)
+        reject('elapsed_before_cleanup', elapsed_ms=119999)
+        reject('impossible_recovery_admission_time', recovery_available_budget_ms=240000,
+               primary_elapsed_ms=100000, cleanup_started_ms=100000)
+        reject('timeout_before_30_idle_plus_60_dispatch', recovery_available_budget_ms=280000,
+               primary_elapsed_ms=89999, cleanup_started_ms=89999)
+        reject('no_spontaneous_witness', spontaneous, spontaneous_matching_batches=0)
+        reject('no_initial_idle', spontaneous, primary_elapsed_ms=29999, cleanup_started_ms=29999)
+        reject('unexpected_refresh', spontaneous, recovery_attempts=1)
+        reject('unrequested_recovery_budget', spontaneous, recovery_available_budget_ms=240000)
+        reject('wrong_route', route='diagnostic_agent_normal_client')
+        reject('forced_stop_with_graceful_reason', stop_status='forced')
+        reject('graceful_nonzero_exit', root_exit_code=1)
+        reject('noncompleted_stop', stop_status='error', stop_reason='transport_failure')
+        for case in cases:
+            if case['accept']:
+                idle = next(record for record in case['records']
+                            if record['kind'] == 'windows_java_idle_correction')
+                case['count'] = int(idle['spontaneous_result'] == 'timeout')
+        data = self.private_source('idle-gate-cases.json', json.dumps(cases))
+        harness = self.private_source('idle-gate-check.ps1', r'''param($Predicate, $Cases)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+. $Predicate
+foreach ($case in (Get-Content -LiteralPath $Cases -Raw | ConvertFrom-Json -Depth 10)) {
+    $accepted = $false; $count = -1
+    try { $count = Assert-IdleCorrectionReceipt -Receipts @($case.records); $accepted = $true } catch {}
+    if ($accepted -ne $case.accept -or ($accepted -and $count -ne $case.count)) {
+        throw ('Unexpected idle verdict: ' + $case.name)
+    }
+}
+''')
+        result = subprocess.run([shutil.which('pwsh'), '-NoLogo', '-NoProfile', '-File', str(harness),
+                                 '-Predicate', str(Path(__file__).with_name('java_idle_acceptance_predicate.ps1').resolve()),
+                                 '-Cases', str(data)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_workspace_type_receipt_preserves_failure_without_private_result_data(self):
         good = self.agent_workspace_type_fixture()

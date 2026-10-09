@@ -4,7 +4,7 @@ This experiment measures the existing normal agent/Client Java route twice on
 one Windows runner. It keeps the production 512 MiB Java heap ceiling, JDK/JDT,
 source fixture, capability/trust checks and semantic workload unchanged. It does
 not test a different collector or heap size and does not change user defaults.
-Native results for this checkpoint are pending.
+The original 0.12 experiment passed exact native CI; later runs are separate observations.
 
 The earlier two-second post-diagnostics window still contained substantial
 activity and working-set growth. A heap ceiling is not a bound on total JVM
@@ -14,8 +14,14 @@ observation before proposing any memory tuning.
 
 ## Fixed workload and budgets
 
-The existing Windows acceptance script runs its previous direct, fixture,
-ownership and quick normal-production cases first. It then invokes the new
+From 0.26.1, invoke `scripts/windows_java_acceptance.ps1 -LongObservationBaselines`
+to request this experiment explicitly. `-GcDiagnosticControl` also retains the
+paired baseline prerequisite. Routine CI instead requires the separate bounded
+[idle correction workflow](WINDOWS_JAVA_ACCEPTANCE.md#required-idle-correction-workflow),
+with spontaneous and explicit-recovery outcomes reported separately.
+
+The acceptance script runs its required direct, fixture, ownership and normal
+Client behavioral cases first. When requested, it then invokes the
 ignored test `real_windows_normal_agent_java_resource_baseline` twice as separate
 processes, using the same prebuilt driver and release agent. Each trial has its
 own generated project, fresh external JDT data, marker file, private transcript,
@@ -93,3 +99,5 @@ the difference is not evidence of a regression or optimization. This experiment
 still excludes GUI rendering and real SSH and does not compare Cedar with IDEA.
 Any later tuning needs matched repeated evidence for memory, CPU, interaction
 latency and lifecycle behavior. No tuning is part of this checkpoint.
+
+The second trial in [0.26 CI 37907826294](https://github.com/LLLLimbo/cedar-ide/actions/runs/37907826294) failed its strict correction witness criterion after an acknowledged edit. Its source and owned cleanup checks passed; the original failed verdict is retained. An incomplete pair cannot support a resource comparison. Making this historical experiment opt-in does not relabel that trial or remove required idle behavioral coverage.

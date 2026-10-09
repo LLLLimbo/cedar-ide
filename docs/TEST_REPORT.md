@@ -1,55 +1,64 @@
-# Verification report · explicit conservative draft merge / 0.26.0
+# Verification report · required idle Java workflow / 0.26.1
 
-This checkpoint extends Compare with disk with an explicit preview and draft-only
-merge for strictly separated textual change regions. It adopts the reviewed disk
-baseline without marking the merged draft saved. See [scope](DRAFT_MERGE.md).
+This checkpoint keeps idle Java correction behavior in required native acceptance
+while separating the historical resource experiment into an explicit opt-in.
+Production Java deadlines, heap, protocol and draft-merge implementation are unchanged.
 
-The previous 0.25 public source `217572610a4f7122eeb7c47772ec8ff533c4b899`
-passed [exact Ubuntu/Windows CI 37903752630](https://github.com/LLLLimbo/cedar-ide/actions/runs/37903752630).
-Both platforms executed the normal-agent idle acceptance with all ten witnesses and
-all six worker process cases. Its verified Windows package contained 532 payloads
-and a manifest. The historical report remains [here](TEST_REPORT_PHASE25.md).
+The preceding [0.26 report](TEST_REPORT_PHASE26.md) records the successful new
+three-case draft-merge acceptance on both platforms and the failed Windows long
+resource trial in [CI 37907826294](https://github.com/LLLLimbo/cedar-ide/actions/runs/37907826294).
+That failure remains a failure. An acknowledged correction without an accepted
+push diagnostic is consistent with the documented limitation; its specific cause
+has not been established, and that receipt does not prove zero events.
 
-## Finite acceptance
+## Required idle workflow
 
-- Linear bounded exact-line merge; ambiguous, touching and overlapping regions
-  are refused. Unicode, repeated lines, newline variants and zero-width edits
-  have adversarial coverage. No general or semantic merge claim.
-- Preview is inert; Apply uses one fresh Read and a final-frame identity/selection
-  barrier. Missing, changed, malformed or stale responses do not mutate drafts.
-- One Undo restores the original draft and full selection. The newly observed disk
-  text/revision remains the baseline through Undo/Redo; merge itself emits no Write.
-- Recovery ownership and unowned older drafts remain intact. Task-profile drafts
-  are retained while queued mutations and outdated profile sources are invalidated.
-- Trust-off normal-agent acceptance runs on both OS: draft merge without Write,
-  later explicit Save with the new revision, conflict after another external edit,
-  and refusal when disk changes between preview and verification.
+The new nonshipping test uses the normal release agent and capability-enforcing
+Client, an owned generated project and the existing semantic/editor workload.
+It retains the initial 30-second quiet period and rapid Apply/Undo/Redo changes.
+The original spontaneous diagnostic result remains separate from workflow success.
+Only its timeout may trigger one user-equivalent typed diagnostic refresh.
+A matching version-5 or unversioned synthetic warning is required; absent version
+is disclosed and does not prove freshness or refresh causality.
 
-## Current verification status
+The fixed envelope is 480 seconds: a 360-second primary cutoff and 120 seconds
+reserved for cleanup. Primary Client calls require conservative 75-second admission
+and a post-return deadline check. The original 60-second diagnostic dispatch window
+may include a final 75-second in-flight call, so admission reserves 135 seconds.
+Recovery requires 240 seconds before the primary cutoff: the existing 165-second
+refresh/witness envelope plus 75 seconds for Close. There is no second measurement
+idle in this behavioral test. Cleanup budgets total 111 seconds (Stop 75, retained
+root checks 3 + 3, client reap 30), leaving nine seconds for bookkeeping.
 
-The host aggregate passed 1,022 Rust tests across 40 suites, with 29 opt-in tests
-ignored. New coverage includes 12 pure-engine tests and 13 transaction tests; the
-independent minimum-envelope oracle checked 29,791 Unicode/newline triples.
-Actual egui pointer Preview/Cancel/Apply and full-selection Undo/Redo passed, as did
-same-frame refusal, profile queued-action invalidation and recovery-store ownership.
+A normal pass requires the original match and no recovery attempt. A recovered
+workflow retains the original timeout/false result and requires exactly one
+acknowledged refresh and the accepted synthetic witness. Insufficient budget,
+late calls, malformed or closed event streams, request errors, failed recovery,
+changed source or incomplete cleanup remain failures. Fixed receipt predicates
+reject inconsistent outcomes and wrong scalar types.
 
-Strict host and MSVC all-target/all-feature Clippy passed. Cross-compilation is not
-Windows execution. Independent algorithm and transaction/recovery reviews found no
-blocking issue; exact line-cap parity and selection-affinity assertions were refined.
-Python checks passed: export 2, capabilities 5, Git fixture 6, Maven cache 11, resource
-observer 79, GC collector 36; collector 77/81 (four platform/tool skips), bundle 28/29
-(one skip), Maven predicates 5/7 (two skips).
+The two historical long resource trials retain their original strict spontaneous
+criteria, observation windows and comparisons behind an explicit opt-in. Recovery
+workload results are excluded from resource comparisons. No performance improvement,
+upstream causal fix, native GUI or authenticated SSH claim follows from this change.
 
-The all-feature release built successfully. Actual Linux normal-agent acceptance
-passed three generated trust-off cases: draft-only merge and later explicit Save,
-an intervening external edit rejected by the later Save revision check, and changed
-disk bytes refused during Apply verification. All 13 fixed witnesses passed, including
-no merge-generated Write, separate disk baseline, full-selection Undo/Redo, exact
-owned-agent reaping and expected final disk contents. The default-feature release
-frontend and agent also built successfully; the same three-case process acceptance
-passed against that shipping agent. All 35 disk-review tests passed on the final
-source after the last help-text correction.
+## Verification status
 
-Exact native CI and regenerated package hashes remain required before acceptance.
-This is not filesystem identity, atomic compare-and-swap, native GUI or authenticated
-SSH validation. Existing diagnostic and remote-transport limitations remain.
+The host aggregate passed 1,036 Rust tests across 40 suites, with 29 opt-in tests
+ignored on this host. All 14 new pure idle tests passed. Strict host and MSVC
+all-target/all-feature Clippy passed; cross-checking does not execute Windows.
+Independent acceptance review found no remaining blocker after correcting real-clock
+admission, retained Client ownership when early reap is refused, and separate idle
+timeout reporting.
+
+Python suites passed: export 2, capabilities 5, Git fixture 6, Maven cache 11,
+resource observer 79 and GC collector 36. Bundle tests passed 28/29 with one skip;
+crash collector passed 80/85 with five platform/tool skips; Maven predicates passed
+5/7 with two skips. PowerShell is unavailable on this host. Native CI must execute
+the actual strict predicate matrix, including missing/array/wrong-type fields,
+duplicates, contradictory recovery/cleanup and late-budget cases.
+
+The all-feature release and default-feature frontend/agent release both built.
+Exact native CI, whether conditional recovery actually ran, and a regenerated
+package remain pending. A native spontaneous-only pass would not be
+reported as observed recovery.

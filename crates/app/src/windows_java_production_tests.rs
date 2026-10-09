@@ -8,18 +8,21 @@ use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ObservationProfile {
     Quick,
+    IdleCorrection,
     ResourceBaseline,
     GcDiagnostic,
 }
 
 impl ObservationProfile {
     fn observes_resources(self) -> bool {
-        self != Self::Quick
+        matches!(self, Self::ResourceBaseline | Self::GcDiagnostic)
     }
 
     fn agent_selection(self) -> (&'static str, &'static str) {
         match self {
-            Self::Quick | Self::ResourceBaseline => ("CEDAR_AGENT_BIN", "cedar-agent.exe"),
+            Self::Quick | Self::IdleCorrection | Self::ResourceBaseline => {
+                ("CEDAR_AGENT_BIN", "cedar-agent.exe")
+            }
             Self::GcDiagnostic => (
                 "CEDAR_GC_DIAGNOSTIC_AGENT_BIN",
                 "cedar-agent-java-gc-diagnostic.exe",
@@ -30,6 +33,10 @@ impl ObservationProfile {
     fn evidence(self) -> ProductionEvidence {
         match self {
             Self::Quick | Self::ResourceBaseline => ProductionEvidence::new(),
+            Self::IdleCorrection => ProductionEvidence {
+                kind: "windows_java_idle_correction",
+                ..ProductionEvidence::new()
+            },
             Self::GcDiagnostic => ProductionEvidence {
                 kind: "windows_java_gc_control",
                 route: "diagnostic_agent_normal_client",
@@ -37,6 +44,78 @@ impl ObservationProfile {
             },
         }
     }
+}
+
+// This adapter is test-only. Old profiles forward every operation unchanged;
+// Idle conservatively admits the existing Client request deadline and checks
+// again on return. No mutable dereference or transport-timeout override exists.
+#[derive(Clone)]
+struct AcceptanceClock {
+    started: Instant,
+    idle: Option<std::rc::Rc<idle::Budget>>,
+}
+impl AcceptanceClock {
+    fn run<T>(&self, cost: Duration, operation: impl FnOnce() -> CheckResult<T>) -> CheckResult<T> {
+        match &self.idle {
+            Some(budget) => budget.run(|| self.started.elapsed(), cost, operation),
+            None => operation(),
+        }
+    }
+}
+struct AcceptanceClient {
+    inner: Client,
+    clock: AcceptanceClock,
+}
+impl AcceptanceClient {
+    fn request(&mut self, op: Operation) -> CheckResult<Payload> {
+        self.clock
+            .run(idle::REQUEST_BUDGET, || self.inner.request(op))
+    }
+    fn handshake(&self) -> &Payload {
+        self.inner.handshake()
+    }
+    fn is_connected(&self) -> bool {
+        self.inner.is_connected()
+    }
+}
+fn connect_client(
+    slot: &mut Option<AcceptanceClient>,
+    clock: &AcceptanceClock,
+    binary: &Path,
+    root: &Path,
+    allow_run: bool,
+) -> CheckResult<()> {
+    // Spawn includes the initial Hello. Retain the returned connection before
+    // the post-call clock check so a late Hello still reaches owned cleanup.
+    clock.run(idle::REQUEST_BUDGET, || {
+        *slot = Some(AcceptanceClient {
+            inner: Client::spawn_agent(binary, root, allow_run)?,
+            clock: clock.clone(),
+        });
+        Ok(())
+    })
+}
+fn reap_client(
+    slot: &mut Option<AcceptanceClient>,
+    clock: &AcceptanceClock,
+    cleanup: bool,
+) -> CheckResult<()> {
+    let cost = if cleanup {
+        idle::CLIENT_REAP_BUDGET
+    } else {
+        idle::REQUEST_BUDGET
+    };
+    // Leave ownership in the slot if primary admission refuses this reap; the
+    // independent cleanup phase must still be able to reap the owned client.
+    clock.run(cost, || {
+        slot.take()
+            .ok_or("normal Client missing during reap")?
+            .inner
+            .close_and_wait(EXIT_TIMEOUT)
+    })
+}
+fn profile_phase(profile: ObservationProfile, started: Instant, phase: ResourcePhase) -> bool {
+    profile != ObservationProfile::IdleCorrection && resource_phase(started, phase)
 }
 
 const GC_WORKSPACE_MARKER: &str = ".cedar-windows-java-gc-diagnostic";
@@ -242,14 +321,14 @@ fn resource_latency(
     }
 }
 
-fn client_language(client: &mut Client, op: Operation) -> CheckResult<Value> {
+fn client_language(client: &mut AcceptanceClient, op: Operation) -> CheckResult<Value> {
     match client.request(op)? {
         Payload::Language { value } => Ok(value),
         _ => Err("normal Client returned a non-language response".into()),
     }
 }
 fn production_diagnostics(
-    client: &mut Client,
+    client: &mut AcceptanceClient,
     uri: &str,
     phase: DiagnosticPhase,
 ) -> CheckResult<()> {
@@ -271,7 +350,7 @@ fn production_diagnostics(
     Err("normal Java diagnostic witness timed out".into())
 }
 
-fn production_refresh_diagnostics(client: &mut Client, uri: &str) -> CheckResult<bool> {
+fn production_refresh_diagnostics(client: &mut AcceptanceClient, uri: &str) -> CheckResult<bool> {
     let deadline = Instant::now() + Duration::from_secs(60);
     while Instant::now() < deadline {
         let value = client_language(client, Operation::LanguageEvents)?;
@@ -303,7 +382,7 @@ fn production_refresh_diagnostics(client: &mut Client, uri: &str) -> CheckResult
 }
 
 fn await_production_java_startup(
-    client: &mut Client,
+    client: &mut AcceptanceClient,
     startup_id: u64,
     deadline: Instant,
     observed: &mut Option<RootObservation>,
@@ -338,7 +417,10 @@ fn await_production_java_startup(
     Err("normal asynchronous Java startup exceeded its original observation deadline".into())
 }
 
-fn cancel_production_java_startup(client: &mut Client, startup_id: u64) -> CheckResult<()> {
+fn cancel_production_java_startup(
+    client: &mut AcceptanceClient,
+    startup_id: u64,
+) -> CheckResult<()> {
     let deadline = Instant::now() + EXIT_TIMEOUT;
     let mut status = client_language(client, Operation::LanguageStartJavaCancel { startup_id })?;
     loop {
@@ -391,7 +473,7 @@ fn verify_java_image(process: &RootObservation, expected: &Path) -> CheckResult<
         "normal Java identity was not live and verifiable",
     )
 }
-fn require_java_capabilities(client: &Client) -> CheckResult<()> {
+fn require_java_capabilities(client: &AcceptanceClient) -> CheckResult<()> {
     let Payload::Hello {
         agent: Some(info), ..
     } = client.handshake()
@@ -466,7 +548,7 @@ fn workspace_type_file_unchanged(created: &Option<(PathBuf, workspace_types::Fix
 }
 
 fn workspace_type_request(
-    client: &mut Client,
+    client: &mut AcceptanceClient,
     deadline: Instant,
     op: Operation,
 ) -> CheckResult<Value> {
@@ -478,7 +560,7 @@ fn workspace_type_request(
 }
 
 fn production_workspace_type(
-    client: &mut Client,
+    client: &mut AcceptanceClient,
     initialized: &Value,
     created: &Option<(PathBuf, workspace_types::Fixture)>,
     deadline: Instant,
@@ -597,7 +679,11 @@ fn production_workspace_type(
     Ok(())
 }
 
-fn organize_language(client: &mut Client, deadline: Instant, op: Operation) -> CheckResult<Value> {
+fn organize_language(
+    client: &mut AcceptanceClient,
+    deadline: Instant,
+    op: Operation,
+) -> CheckResult<Value> {
     // No indexing retries or added wait window. This bounds when additional
     // work may begin; each request keeps the normal Client timeout and the
     // original Quick watchdog remains the hard total envelope.
@@ -609,7 +695,7 @@ fn organize_language(client: &mut Client, deadline: Instant, op: Operation) -> C
 }
 
 fn organize_open(
-    client: &mut Client,
+    client: &mut AcceptanceClient,
     root: &Path,
     fixture: &organize::Fixture,
     deadline: Instant,
@@ -637,7 +723,7 @@ fn organize_open(
 }
 
 fn organize_change(
-    client: &mut Client,
+    client: &mut AcceptanceClient,
     deadline: Instant,
     uri: &str,
     version: i32,
@@ -662,7 +748,7 @@ fn organize_change(
 }
 
 fn production_organize_imports(
-    client: &mut Client,
+    client: &mut AcceptanceClient,
     root: &Path,
     initialized: &Value,
     created: &[(PathBuf, &'static str)],
@@ -877,6 +963,12 @@ fn real_windows_normal_agent_java_editor_acceptance() -> CheckResult<()> {
 }
 
 #[test]
+#[ignore = "requires native Windows, installed JDT/Java and exact normal CEDAR_AGENT_BIN; run serially"]
+fn real_windows_normal_agent_java_idle_correction_acceptance() -> CheckResult<()> {
+    normal_agent_java_acceptance(ObservationProfile::IdleCorrection)
+}
+
+#[test]
 #[ignore = "requires native Windows, installed JDT/Java, exact normal CEDAR_AGENT_BIN and sampler marker file; run serially"]
 fn real_windows_normal_agent_java_resource_baseline() -> CheckResult<()> {
     normal_agent_java_acceptance(ObservationProfile::ResourceBaseline)
@@ -890,11 +982,23 @@ fn real_windows_java_gc_diagnostic_control() -> CheckResult<()> {
 
 fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> {
     println!();
-    let _watchdog = Watchdog::start_with_timeout(Duration::from_secs(240));
     let started = Instant::now();
-    let instrumentation_ready = resource_phase(started, ResourcePhase::Starting);
+    let _watchdog =
+        Watchdog::start_with_timeout(if profile == ObservationProfile::IdleCorrection {
+            idle::OUTER_BUDGET
+        } else {
+            Duration::from_secs(240)
+        });
+    let idle_budget = (profile == ObservationProfile::IdleCorrection)
+        .then(|| std::rc::Rc::new(idle::Budget::default()));
+    let clock = AcceptanceClock {
+        started,
+        idle: idle_budget.clone(),
+    };
+    let mut idle_correction = idle::Correction::default();
+    let instrumentation_ready = profile_phase(profile, started, ResourcePhase::Starting);
     let mut fixture: Option<tempfile::TempDir> = None;
-    let mut client: Option<Client> = None;
+    let mut client: Option<AcceptanceClient> = None;
     let mut observed: Option<RootObservation> = None;
     let mut server_started = false;
     let mut startup_id = None;
@@ -912,7 +1016,7 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
     let mut workspace_type_receipt = workspace_types::Evidence::new();
     let primary = checked(|| {
         require(
-            profile == ObservationProfile::Quick || instrumentation_ready,
+            !profile.observes_resources() || instrumentation_ready,
             "resource observation requires the sampler's existing writable marker file",
         )?;
         let distribution = environment_path("CEDAR_JDTLS_HOME")?;
@@ -977,7 +1081,7 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             })
         };
         // A normal untrusted connection cannot launch Java; metadata is not trust.
-        client = Some(Client::spawn_agent(&binary, &root, false)?);
+        connect_client(&mut client, &clock, &binary, &root, false)?;
         require_java_capabilities(client.as_ref().unwrap())?;
         let denied = client
             .as_mut()
@@ -1005,7 +1109,7 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             "generic startup was not rejected by Client capabilities",
         )?;
         record.generic_start_rejected = true;
-        client.take().unwrap().close_and_wait(EXIT_TIMEOUT)?;
+        reap_client(&mut client, &clock, false)?;
         all_clients_reaped = true;
         unchanged(&source)?;
         // This explicit synthetic trust is test authorization, never a GUI action.
@@ -1013,7 +1117,7 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             verify_gc_logs_absent(&distribution)?;
         }
         all_clients_reaped = false;
-        client = Some(Client::spawn_agent(&binary, &root, true)?);
+        connect_client(&mut client, &clock, &binary, &root, true)?;
         let client = client.as_mut().unwrap();
         require_java_capabilities(client)?;
         record.java_capabilities = true;
@@ -1069,8 +1173,11 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         record.root_observed_live = true;
         verify_java_image(observed.as_ref().unwrap(), &java)?;
         record.root_identity_verified = true;
-        if profile == ObservationProfile::Quick {
-            record.diagnostics_refresh_exercised = true;
+        if matches!(
+            profile,
+            ObservationProfile::Quick | ObservationProfile::IdleCorrection
+        ) {
+            record.diagnostics_refresh_exercised = profile == ObservationProfile::Quick;
             require(
                 initialized["initialize"]["cedar_java_diagnostics_refresh"] == true,
                 "vetted Standard JDT refresh support was not established",
@@ -1083,7 +1190,7 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             initialize_started,
             ResourceLatency::JavaInitialize,
         );
-        resource_phase(started, ResourcePhase::JavaInitialized);
+        profile_phase(profile, started, ResourcePhase::JavaInitialized);
         require(
             data.join(".metadata").is_dir(),
             "normal recipe did not use the selected external data directory",
@@ -1112,7 +1219,18 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         )?;
         unchanged(&source)?;
         stage.set(FailureStage::Diagnostics);
-        production_diagnostics(client, &uri, DiagnosticPhase::Initial)?;
+        if let Some(budget) = &idle_budget {
+            idle::diagnostics(
+                budget,
+                &mut DiagnosticEvidence::new(1, DiagnosticPhase::Initial),
+                &uri,
+                |op| client_language(client, op),
+                || started.elapsed(),
+                thread::sleep,
+            )?;
+        } else {
+            production_diagnostics(client, &uri, DiagnosticPhase::Initial)?;
+        }
         record.semantic_diagnostics = true;
         unchanged(&source)?;
         resource_latency(
@@ -1121,16 +1239,24 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             open_started,
             ResourceLatency::OpenExactDiagnostics,
         );
-        if resource_phase(started, ResourcePhase::SemanticReadyIdle) || profile.observes_resources()
+        if profile == ObservationProfile::IdleCorrection {
+            clock.run(idle::INITIAL_IDLE, || {
+                thread::sleep(idle::INITIAL_IDLE);
+                Ok(())
+            })?;
+        } else if profile_phase(profile, started, ResourcePhase::SemanticReadyIdle)
+            || profile.observes_resources()
         {
             // Defined observation interval after exact diagnostics, not a claim
             // that JDT indexing or other background work has fully settled.
             thread::sleep(Duration::from_secs(match profile {
                 ObservationProfile::Quick => 2,
-                ObservationProfile::ResourceBaseline | ObservationProfile::GcDiagnostic => 30,
+                ObservationProfile::IdleCorrection
+                | ObservationProfile::ResourceBaseline
+                | ObservationProfile::GcDiagnostic => 30,
             }));
         }
-        resource_phase(started, ResourcePhase::QueryWorkload);
+        profile_phase(profile, started, ResourcePhase::QueryWorkload);
         if profile == ObservationProfile::Quick {
             stage.set(FailureStage::Definition);
             production_workspace_type(
@@ -1293,8 +1419,20 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             "normal correction URI/version mismatch",
         )?;
         record.correction_acknowledged = true;
-        production_diagnostics(client, &uri, DiagnosticPhase::Correction)?;
-        record.correction_diagnostics = true;
+        if let Some(budget) = &idle_budget {
+            let correction = idle_correction.run(
+                budget,
+                &uri,
+                |op| client_language(client, op),
+                || started.elapsed(),
+                thread::sleep,
+            );
+            record.correction_diagnostics = idle_correction.spontaneous_success;
+            correction?;
+        } else {
+            production_diagnostics(client, &uri, DiagnosticPhase::Correction)?;
+            record.correction_diagnostics = true;
+        }
         unchanged(&source)?;
         resource_latency(
             profile,
@@ -1354,10 +1492,10 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             unchanged(&source)?;
         }
         if profile.observes_resources() {
-            resource_phase(started, ResourcePhase::CorrectionReadyIdle);
+            profile_phase(profile, started, ResourcePhase::CorrectionReadyIdle);
             // A second fixed observation window, not an indexing-settled claim.
             thread::sleep(Duration::from_secs(30));
-            resource_phase(started, ResourcePhase::Closing);
+            profile_phase(profile, started, ResourcePhase::Closing);
         }
         stage.set(FailureStage::Close);
         client_language(
@@ -1375,7 +1513,12 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
     if primary.is_err() {
         failure_stage = Some(stage.get());
     }
-    resource_phase(started, ResourcePhase::Cleanup);
+    // Cleanup has its own fixed outer deadline, even after primary admission
+    // fails. Stop must never be rejected merely for crossing the primary gate.
+    if let Some(budget) = &idle_budget {
+        budget.begin_cleanup(started.elapsed());
+    }
+    profile_phase(profile, started, ResourcePhase::Cleanup);
     if !server_started {
         if let (Some(id), Some(client)) = (startup_id, client.as_mut()) {
             let cancel = checked(|| cancel_production_java_startup(client, id));
@@ -1412,10 +1555,12 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             record.shutdown_response_received = outcome.shutdown_response_received;
             record.exit_frame_completed = outcome.exit_frame_completed;
             stage.set(FailureStage::RootExit);
-            let actual = observed
-                .as_ref()
-                .ok_or("normal Java observer missing")?
-                .exit_code_with_timeout(3000)?;
+            let actual = clock.run(idle::ROOT_EXIT_BUDGET, || {
+                observed
+                    .as_ref()
+                    .ok_or("normal Java observer missing")?
+                    .exit_code_with_timeout(3000)
+            })?;
             record.root_handle_signaled = true;
             record.root_exit_code = Some(actual);
             require(
@@ -1447,8 +1592,8 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             cleanup_errors.push(error);
         }
     }
-    if let Some(client) = client.take() {
-        match checked(|| client.close_and_wait(EXIT_TIMEOUT)) {
+    if client.is_some() {
+        match checked(|| reap_client(&mut client, &clock, true)) {
             Ok(()) => all_clients_reaped = true,
             Err(error) => {
                 all_clients_reaped = false;
@@ -1459,7 +1604,9 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
     }
     record.client_reaped = all_clients_reaped;
     let root_stopped = match &observed {
-        Some(process) => match process.exit_code_with_timeout(3000) {
+        Some(process) => match clock.run(idle::ROOT_EXIT_BUDGET, || {
+            process.exit_code_with_timeout(3000)
+        }) {
             Ok(code) => {
                 record.root_handle_signaled = true;
                 record.root_exit_code = Some(code);
@@ -1529,6 +1676,12 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             cleanup_errors.push(error);
         }
     }
+    if let Some(budget) = &idle_budget {
+        if let Err(error) = budget.check(started.elapsed()) {
+            failure_stage.get_or_insert(FailureStage::FixtureCleanup);
+            cleanup_errors.push(error);
+        }
+    }
     record.primary_failed = primary.is_err();
     record.cleanup_failed = !cleanup_errors.is_empty();
     if profile == ObservationProfile::Quick {
@@ -1585,7 +1738,11 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         && record.actual_editor_apply_undo_redo
         && record.versions_2_3_4_synced
         && record.correction_acknowledged
-        && record.correction_diagnostics
+        && (if profile == ObservationProfile::IdleCorrection {
+            idle_correction.accepted() && record.diagnostics_refresh_supported
+        } else {
+            record.correction_diagnostics
+        })
         && record.source_unchanged
         && record.stop_outcome_verified
         && record.cleanup_joined
@@ -1603,20 +1760,48 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
                 && record.diagnostics_refresh_witness
                 && workspace_type_receipt.success
                 && organize_receipt.success))
-        && (profile != ObservationProfile::GcDiagnostic || natural_shutdown_verified);
+        && (profile != ObservationProfile::GcDiagnostic || natural_shutdown_verified)
+        && idle_budget
+            .as_ref()
+            .is_none_or(|budget| budget.deadlines_met(started.elapsed()));
+    let finished = started.elapsed();
+    if let Some(budget) = &idle_budget {
+        if !budget.deadlines_met(finished) {
+            record.success = false;
+            record.cleanup_failed |= budget.check(finished).is_err();
+        }
+    }
     record.failure_stage = if record.success {
         FailureStage::None
     } else {
         failure_stage.unwrap_or(FailureStage::Setup)
     };
-    let elapsed = started.elapsed().as_millis();
-    record.elapsed_ms = elapsed.min(300_000) as u32;
-    record.elapsed_saturated = elapsed > 300_000;
-    println!(
-        "{}",
-        serde_json::to_string(&record).expect("typed normal Java evidence")
-    );
-    resource_phase(started, ResourcePhase::Complete);
+    let elapsed = finished.as_millis();
+    let elapsed_limit = if profile == ObservationProfile::IdleCorrection {
+        480_000
+    } else {
+        300_000
+    };
+    record.elapsed_ms = elapsed.min(elapsed_limit) as u32;
+    record.elapsed_saturated = elapsed > elapsed_limit;
+    if let Some(budget) = &idle_budget {
+        println!(
+            "{}",
+            serde_json::to_string(&idle::Receipt::new(
+                &record,
+                &idle_correction,
+                budget,
+                finished,
+            ))
+            .expect("typed idle correction evidence")
+        );
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string(&record).expect("typed normal Java evidence")
+        );
+    }
+    profile_phase(profile, started, ResourcePhase::Complete);
     match primary {
         Err(error) => Err(format!(
             "normal Java primary failure: {error}; cleanup failures: {cleanup_errors:?}"
@@ -1626,6 +1811,21 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
         }
         Ok(()) => Ok(()),
     }
+}
+
+#[test]
+fn idle_workflow_is_shipping_and_never_a_resource_profile() {
+    let profile = ObservationProfile::IdleCorrection;
+    assert_eq!(
+        profile.agent_selection(),
+        ("CEDAR_AGENT_BIN", "cedar-agent.exe")
+    );
+    assert_eq!(profile.evidence().kind, "windows_java_idle_correction");
+    assert_eq!(profile.evidence().route, "normal_agent_client");
+    assert!(!profile.observes_resources());
+    assert!(!ObservationProfile::Quick.observes_resources());
+    assert!(ObservationProfile::ResourceBaseline.observes_resources());
+    assert!(ObservationProfile::GcDiagnostic.observes_resources());
 }
 
 #[test]

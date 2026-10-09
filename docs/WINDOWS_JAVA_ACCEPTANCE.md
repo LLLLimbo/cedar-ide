@@ -455,3 +455,36 @@ The new production receipt cannot label forced code0 as graceful; error or
 unverified cleanup fails acceptance. It emits no extra fixture diagnostic
 receipts and does not publish raw payloads. Native GUI and authenticated SSH
 are separate claims; see [the production configuration](WINDOWS_JAVA_SETUP.md).
+
+
+## Required idle correction workflow
+
+From 0.26.1, routine native acceptance includes one dedicated normal release
+agent/Client idle workflow. The generated project waits 30 seconds after initial
+diagnostics, then exercises the existing queries, editor Apply/Undo/Redo and
+version-5 correction. The original spontaneous diagnostic verdict is retained.
+On timeout only, at most one existing typed URI/version refresh is allowed. A
+separate workflow verdict requires the exact synthetic warning; unversioned
+witnesses are labeled and do not establish version freshness or causality.
+
+This test has a fixed 480-second watchdog, a 360-second primary cutoff and a
+120-second cleanup reserve. Calls have conservative 75-second admission and
+post-return checks. The original 60-second diagnostic dispatch loop can include
+one final 75-second in-flight call. Recovery admission reserves 240 seconds for
+the existing 165-second refresh/witness envelope plus Close. Cleanup checks remain
+mandatory; exhaustion cannot be reported as cleanup success. No production timeout
+changes, repeated edit, automatic background validation or second measurement
+idle are introduced.
+
+The distinct sanitized `windows_java_idle_correction` receipt keeps spontaneous
+success, recovery attempt/result, workflow success and cleanup evidence separate.
+Native reports must state whether the conditional recovery actually ran; passing
+only its deterministic branch tests is not an observed native recovery. Request
+errors, malformed/lagged/truncated streams, late calls, wrong acknowledgement or
+witness, source changes and incomplete cleanup still fail the workflow.
+
+Historical [long resource observations](LONG_JAVA_BASELINE.md) are explicit opt-in
+and retain their strict original spontaneous criteria. Their earlier failed
+trial remains failed. The recovery workflow emits no resource comparison or
+performance claim. The enclosing CI timeout is a failure boundary, not evidence
+of owned cleanup.

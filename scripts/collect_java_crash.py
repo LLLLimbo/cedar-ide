@@ -228,6 +228,35 @@ AGENT_TRANSCRIPT_FIELDS['windows_java_gc_control'] = {
     'route': ('diagnostic_agent_normal_client',),
 }
 
+# The required bounded idle workflow is separate from both Quick and the
+# unchanged long resource baseline. Only fixed scalar witnesses survive.
+IDLE_FIXED_BUDGETS = {
+    'primary_deadline_ms': 360000, 'outer_deadline_ms': 480000,
+    'cleanup_reserve_ms': 120000, 'request_timeout_ms': 75000,
+    'spontaneous_dispatch_window_ms': 60000, 'diagnostic_wait_admission_ms': 135000,
+    'initial_idle_ms': 30000, 'recovery_budget_ms': 165000,
+    'recovery_admission_ms': 240000, 'close_budget_ms': 75000,
+    'stop_budget_ms': 75000, 'root_exit_budget_ms': 3000,
+    'client_reap_budget_ms': 30000, 'cleanup_bookkeeping_ms': 9000,
+}
+AGENT_TRANSCRIPT_FIELDS['windows_java_idle_correction'] = {
+    **AGENT_TRANSCRIPT_FIELDS['windows_java_production'],
+    **dict.fromkeys(('spontaneous_success', 'recovery_acknowledged', 'recovery_witness',
+                    'recovery_unversioned', 'recovery_budget_sufficient', 'workflow_success',
+                    'primary_deadline_met', 'cleanup_deadline_met', 'cleanup_reserve_preserved',
+                    'deadline_failed'), 'bool'),
+    **{key: ('integer_range', value, value) for key, value in IDLE_FIXED_BUDGETS.items()},
+    'spontaneous_result': ('matched', 'timeout', 'request_error', 'malformed_events',
+                           'truncated', 'lagged', 'closed'),
+    'spontaneous_matching_batches': ('integer_range', 0, 65535),
+    'recovery_attempts': ('integer_range', 0, 1),
+    'recovery_result': CORRECTION_RECOVERY_RESULTS,
+    'recovery_available_budget_ms': ('integer_range', 0, 360000),
+    'primary_elapsed_ms': ('integer_range', 0, 480000),
+    'cleanup_started_ms': ('integer_range', 0, 480000),
+    'elapsed_ms': ('integer_range', 0, 480000),
+}
+
 # One fixed normal-route Maven pair. Nested schemas are declared here; no
 # arbitrary object, path, diagnostic text or environment field is forwarded.
 MAVEN_CASE_FIELDS = dict.fromkeys((
@@ -701,6 +730,7 @@ def sanitize_probe(data, limits):
 def sanitize_transcript(data, limits, schema=TRANSCRIPT_FIELDS):
     errors, truncation = set(), set()
     report = {'records': [], 'omitted_non_json_lines': 0, 'omitted_other_json_records': 0}
+    idle_seen = False
     # Each private source has a separate whitelist; arbitrary payloads never
     # become public evidence even when they appear alongside a known record.
     for line in data.decode('utf-8-sig', errors='replace').splitlines():
@@ -709,8 +739,19 @@ def sanitize_transcript(data, limits, schema=TRANSCRIPT_FIELDS):
         if len(line) > limits['transcript_line_characters']:
             truncation.add('transcript_line_characters_limit')
             continue
+        duplicate_keys = False
+
+        def object_pairs(pairs):
+            nonlocal duplicate_keys
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    duplicate_keys = True
+                value[key] = item
+            return value
+
         try:
-            value = json.loads(line)
+            value = json.loads(line, object_pairs_hook=object_pairs)
         except (ValueError, RecursionError):
             if line.lstrip().startswith('{'):
                 errors.add('malformed_json_line')
@@ -723,6 +764,16 @@ def sanitize_transcript(data, limits, schema=TRANSCRIPT_FIELDS):
             truncation.add('transcript_records_limit')
             continue
         kind = value['kind']
+        if kind == 'windows_java_idle_correction':
+            if idle_seen:
+                errors.add('duplicate_idle_receipt')
+            idle_seen = True
+            if duplicate_keys:
+                errors.add('duplicate_idle_receipt_field')
+                continue
+            for field in schema[kind]:
+                if field not in value:
+                    errors.add('missing_field_' + field)
         record = {'kind': kind} | safe_fields(value, schema[kind], errors)
         if kind == 'windows_java_gc_control' and 'route' not in value:
             errors.add('missing_gc_control_route')

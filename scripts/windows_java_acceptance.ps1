@@ -3,7 +3,8 @@
 # Real Windows JDT LS acceptance. External test dependencies are never bundled.
 # Run from repository root in an isolated CI/test process, not inside an agent.
 # CI supplies a twelve-minute process-tree deadline for the direct, editor and
-# forced-owner and two fixed long-observation workloads. A direct caller must supply
+# forced-owner and required bounded idle workloads. Historical long observations
+# are opt-in. A direct caller must supply
 # its own enclosing deadline; forced cancellation is failure, never cleanup proof.
 [CmdletBinding()]
 param(
@@ -11,6 +12,7 @@ param(
     [string] $ScratchRoot = $env:RUNNER_TEMP,
     [string] $EvidencePath = "",
     [switch] $GcDiagnosticControl,
+    [switch] $LongObservationBaselines,
     [switch] $MavenOnly
 )
 Set-StrictMode -Version Latest
@@ -18,9 +20,10 @@ $ErrorActionPreference = 'Stop'
 # Handle native exit codes explicitly; exception rendering must not echo raw VM output.
 $PSNativeCommandUseErrorActionPreference = $false
 if (-not $IsWindows) { throw 'This acceptance script requires native Windows.' }
-if ($MavenOnly -and $GcDiagnosticControl) { throw 'Select only one isolated acceptance workload.' }
+if ($MavenOnly -and ($GcDiagnosticControl -or $LongObservationBaselines)) { throw 'Select only one isolated acceptance workload.' }
 . (Join-Path $PSScriptRoot 'maven_acceptance_predicate.ps1')
 . (Join-Path $PSScriptRoot 'java_workspace_type_acceptance_predicate.ps1')
+. (Join-Path $PSScriptRoot 'java_idle_acceptance_predicate.ps1')
 if ([string]::IsNullOrWhiteSpace($ScratchRoot)) { throw 'Set an explicit test scratch root.' }
 if ([string]::IsNullOrWhiteSpace($Java)) {
     if ([string]::IsNullOrWhiteSpace($env:JAVA_HOME_21_X64)) {
@@ -208,6 +211,7 @@ function Assert-AgentEditorReceipt([object[]] $Receipts) {
 }
 $failure = $null
 $spontaneousTimeouts = 0
+$idleSpontaneousTimeouts = 0
 $stage = 'scratch creation'
 $created = $false
 $probeReport = Join-Path $scratch 'owned-java-probe-private.json'
@@ -347,6 +351,11 @@ try {
     # fails. Both exit codes remain required; neither failure is masked.
     & cargo test -p cedar-app --all-features --locked real_windows_agent_java_forced_owner_cleanup -- --ignored --nocapture --test-threads=1 *>> $agentTranscript
     $forcedExitCode = $LASTEXITCODE
+    # Required normal shipping Client workflow: the fixed initial idle and any
+    # one timeout-only refresh have their own receipt, outside resource sampling.
+    $stage = 'required bounded normal production idle correction workflow'
+    & cargo test -p cedar-app --lib --all-features --locked real_windows_normal_agent_java_idle_correction_acceptance -- --ignored --nocapture --test-threads=1 *>> $agentTranscript
+    $idleExitCode = $LASTEXITCODE
     # Build outside the measured interval and reuse this same production JVM run.
     # Cargo/compiler, the observer and earlier validation runs are not included.
     $stage = 'build normal production Java test driver for resource observation'
@@ -365,48 +374,54 @@ try {
         --phase-file (Join-Path $scratch 'resource-phases-private.jsonl') `
         --transcript $agentTranscript --output $ResourceEvidencePath --source-commit $sha
     $productionExitCode = $LASTEXITCODE
-    if ($editorExitCode -ne 0 -or $forcedExitCode -ne 0 -or $productionExitCode -ne 0) {
-        throw 'Real Windows Java editor, forced-owner or production-route acceptance failed.'
+    if ($editorExitCode -ne 0 -or $forcedExitCode -ne 0 -or $idleExitCode -ne 0 -or $productionExitCode -ne 0) {
+        throw 'Real Windows Java editor, forced-owner, required idle or production-route acceptance failed.'
     }
-    # Two separately observed, unchanged-recipe baselines. Each raw transcript
-    # stays inside generated scratch and must independently prove the same normal
-    # production semantics and cleanup. Resource values are not pass thresholds.
-    $longReports = @()
-    for ($trial = 1; $trial -le 2; $trial++) {
-        $stage = "long observation baseline trial $trial"
-        $trialRoot = Join-Path $scratch ("long-idle-trial-$trial")
-        New-Item -ItemType Directory -Path $trialRoot | Out-Null
-        $trialTranscript = Join-Path $trialRoot 'agent-transcript-private.txt'
-        $trialReport = Join-Path (Split-Path $EvidencePath -Parent) ("cedar-java-long-idle-trial-$trial.json")
-        $trialReceipt = Join-Path (Split-Path $EvidencePath -Parent) ("cedar-java-long-idle-acceptance-$trial.json")
-        $trialExitCode = 1
-        $trialCollectorExitCode = 1
-        try {
-            & python scripts/measure_process_tree.py --driver $testDrivers[0].executable `
-                --agent $env:CEDAR_AGENT_BIN --java $Java --workload long_idle_baseline --trial $trial `
-                --phase-file (Join-Path $trialRoot 'phases-private.jsonl') `
-                --transcript $trialTranscript --output $trialReport --source-commit $sha
-            $trialExitCode = $LASTEXITCODE
+    # The original pair remains available unchanged for explicit observations,
+    # and remains part of the existing GC diagnostic control recipe.
+    if ($LongObservationBaselines -or $GcDiagnosticControl) {
+        # Two separately observed, unchanged-recipe baselines. Each raw transcript
+        # stays inside generated scratch and must independently prove the same normal
+        # production semantics and cleanup. Resource values are not pass thresholds.
+        $longReports = @()
+        for ($trial = 1; $trial -le 2; $trial++) {
+            $stage = "long observation baseline trial $trial"
+            $trialRoot = Join-Path $scratch ("long-idle-trial-$trial")
+            New-Item -ItemType Directory -Path $trialRoot | Out-Null
+            $trialTranscript = Join-Path $trialRoot 'agent-transcript-private.txt'
+            $trialReport = Join-Path (Split-Path $EvidencePath -Parent) ("cedar-java-long-idle-trial-$trial.json")
+            $trialReceipt = Join-Path (Split-Path $EvidencePath -Parent) ("cedar-java-long-idle-acceptance-$trial.json")
+            $trialExitCode = 1
+            $trialCollectorExitCode = 1
+            try {
+                & python scripts/measure_process_tree.py --driver $testDrivers[0].executable `
+                    --agent $env:CEDAR_AGENT_BIN --java $Java --workload long_idle_baseline --trial $trial `
+                    --phase-file (Join-Path $trialRoot 'phases-private.jsonl') `
+                    --transcript $trialTranscript --output $trialReport --source-commit $sha
+                $trialExitCode = $LASTEXITCODE
+            }
+            finally {
+                # This collector reconstructs bounded typed receipts; never upload
+                # the private transcript, JVM output or marker file itself.
+                & python scripts/collect_java_crash.py --root $trialRoot --output $trialReceipt --agent-transcript $trialTranscript
+                $trialCollectorExitCode = $LASTEXITCODE
+            }
+            Record ("baseline_trial=$trial; test_exit_code=$trialExitCode; collector_exit_code=$trialCollectorExitCode")
+            if ($trialExitCode -ne 0 -or $trialCollectorExitCode -ne 0) {
+                throw 'Long observation baseline or its sanitized receipt collection failed.'
+            }
+            $trialCollected = Get-Content -LiteralPath $trialReceipt -Raw | ConvertFrom-Json
+            Assert-ProductionReceipt -Receipts @($trialCollected.agent_transcript.evidence.records)
+            $longReports += $trialReport
+            Record ("PASS: long observation trial $trial preserved normal Java semantics and owned cleanup.")
         }
-        finally {
-            # This collector reconstructs bounded typed receipts; never upload
-            # the private transcript, JVM output or marker file itself.
-            & python scripts/collect_java_crash.py --root $trialRoot --output $trialReceipt --agent-transcript $trialTranscript
-            $trialCollectorExitCode = $LASTEXITCODE
-        }
-        Record ("baseline_trial=$trial; test_exit_code=$trialExitCode; collector_exit_code=$trialCollectorExitCode")
-        if ($trialExitCode -ne 0 -or $trialCollectorExitCode -ne 0) {
-            throw 'Long observation baseline or its sanitized receipt collection failed.'
-        }
-        $trialCollected = Get-Content -LiteralPath $trialReceipt -Raw | ConvertFrom-Json
-        Assert-ProductionReceipt -Receipts @($trialCollected.agent_transcript.evidence.records)
-        $longReports += $trialReport
-        Record ("PASS: long observation trial $trial preserved normal Java semantics and owned cleanup.")
+        $stage = 'compare unchanged-recipe long observation trials'
+        $comparisonReport = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-java-long-idle-comparison.json'
+        & python scripts/measure_process_tree.py compare --trial-1 $longReports[0] --trial-2 $longReports[1] --output $comparisonReport
+        if ($LASTEXITCODE -ne 0) { throw 'Long observation reports were malformed or not comparable.' }
+    } else {
+        Record 'Long observation baselines not requested; no long resource trials or comparison executed.'
     }
-    $stage = 'compare unchanged-recipe long observation trials'
-    $comparisonReport = Join-Path (Split-Path $EvidencePath -Parent) 'cedar-java-long-idle-comparison.json'
-    & python scripts/measure_process_tree.py compare --trial-1 $longReports[0] --trial-2 $longReports[1] --output $comparisonReport
-    if ($LASTEXITCODE -ne 0) { throw 'Long observation reports were malformed or not comparable.' }
     if ($GcDiagnosticControl) {
         # This checkpoint opts into one diagnostic host invocation. The ordinary
         # script defaults to no GC diagnostic; no shipping launch flag changes.
@@ -503,6 +518,8 @@ finally {
                     $null = Assert-MavenReceipt -Receipts @($collected.agent_transcript.evidence.records)
                 } else {
                 $spontaneousTimeouts = Assert-AgentEditorReceipt -Receipts @($collected.agent_transcript.evidence.records)
+                $idleSpontaneousTimeouts = Assert-IdleCorrectionReceipt -Receipts @($collected.agent_transcript.evidence.records)
+                Record ("Required idle workflow verified; original spontaneous timeout count=$idleSpontaneousTimeouts; successful refresh preserves original correction_diagnostics=false.")
                 $concurrency = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_concurrency' })
                 $forced = @($collected.agent_transcript.evidence.records | Where-Object { $_.kind -ceq 'windows_java_forced_cleanup' })
                 if ($concurrency.Count -ne 1 -or $forced.Count -ne 1) {
@@ -564,5 +581,5 @@ if ($null -ne $failure) {
 if ($MavenOnly) {
     Record 'PASS: normal Maven present/missing model, semantic/error and owned-cleanup witnesses verified. Offline Maven resolution is not network isolation; JDT may request public Gradle version metadata. Generated dependency scratch was removed.'
 } else {
-    Record ("PASS: supported Java workflow and owned cleanup completed; spontaneous correction timeouts: $spontaneousTimeouts; each retained timeout used exactly one explicit refresh with an exact warning witness. Generated dependency scratch was removed.")
+    Record ("PASS: supported Java workflow and owned cleanup completed; legacy spontaneous correction timeouts: $spontaneousTimeouts; required idle spontaneous correction timeouts: $idleSpontaneousTimeouts; each retained timeout used exactly one explicit refresh with an exact warning witness. Generated dependency scratch was removed.")
 }
