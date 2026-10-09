@@ -197,6 +197,91 @@ mod tests {
         ]
     }
 
+    // Independent test inventory: every platform can be checked on every host.
+    // Keep this derived from the explicit operation list, not agent_info itself.
+    fn expected_platform_capabilities(
+        unix_commands: bool,
+        windows: bool,
+        backend_mode: BackendMode,
+    ) -> Vec<&'static str> {
+        let isolated_windows = windows && backend_mode == BackendMode::IsolatedAgent;
+        let tasks = unix_commands || isolated_windows;
+        let generic_language = !windows;
+        let mut expected = vec!["list", "read", "write", "search"];
+        for operation in execution_operations() {
+            let name = operation.capability_name().unwrap();
+            let supported = match name {
+                "language_start" => generic_language,
+                "language_start_java"
+                | "java_diagnostics_refresh"
+                | "language_organize_java_imports"
+                | "language_java_implementations"
+                | "language_start_java_begin"
+                | "language_start_java_poll"
+                | "language_start_java_cancel"
+                | "language_start_java_maven_begin"
+                | "language_maven_model"
+                | "language_maven_dependencies" => isolated_windows,
+                "git_changes" | "git_diff" => unix_commands || isolated_windows,
+                name if RUN_TASK_CAPABILITIES.contains(&name) => tasks,
+                name if name.starts_with("language_") => generic_language || isolated_windows,
+                _ => unix_commands,
+            };
+            if supported {
+                expected.push(name);
+            }
+        }
+        expected.sort_unstable();
+        expected
+    }
+
+    #[test]
+    fn every_platform_inventory_is_unique_and_checked_against_wire_capacity_on_this_host() {
+        for (os, unix_commands, windows) in [
+            ("linux", true, false),
+            ("macos", true, false),
+            ("windows", false, true),
+            ("other", false, false),
+        ] {
+            for backend_mode in [BackendMode::InProcess, BackendMode::IsolatedAgent] {
+                let expected = expected_platform_capabilities(unix_commands, windows, backend_mode);
+                assert!(
+                    expected.windows(2).all(|pair| pair[0] < pair[1]),
+                    "{os}: duplicate capability"
+                );
+                assert!(
+                    expected.len() <= cedar_protocol::MAX_AGENT_CAPABILITIES,
+                    "{os}: capability capacity exhausted"
+                );
+                let isolated_windows = windows && backend_mode == BackendMode::IsolatedAgent;
+                assert_eq!(
+                    expected.contains(&"language_maven_dependencies"),
+                    isolated_windows
+                );
+                assert_eq!(expected.contains(&"language_start"), !windows);
+                assert_eq!(expected.contains(&"run"), unix_commands);
+                assert_eq!(expected.contains(&"git_status"), unix_commands);
+                let mut info = AgentInfo {
+                    schema: AGENT_INFO_SCHEMA,
+                    version: "inventory-test".into(),
+                    os: os.into(),
+                    arch: "x86_64".into(),
+                    capabilities: expected.into_iter().map(str::to_owned).collect(),
+                };
+                info.validate().unwrap();
+                // Exercise remaining capacity and one-over rejection with the
+                // actual expected set, without a second hardcoded platform count.
+                while info.capabilities.len() < cedar_protocol::MAX_AGENT_CAPABILITIES {
+                    info.capabilities
+                        .push(format!("fixture_capacity_{}", info.capabilities.len()));
+                }
+                info.validate().unwrap();
+                info.capabilities.push("fixture_over_capacity".into());
+                assert!(info.validate().is_err());
+            }
+        }
+    }
+
     #[test]
     fn hello_reports_actual_build_platform_and_implemented_operations() {
         for backend_mode in [BackendMode::InProcess, BackendMode::IsolatedAgent] {
@@ -260,38 +345,12 @@ mod tests {
                     "{capability}"
                 );
             }
-            let mut expected = vec!["list", "read", "write", "search"];
-            for operation in execution_operations() {
-                let name = operation.capability_name().unwrap();
-                let supported =
-                    if name.starts_with("language_") || name == "java_diagnostics_refresh" {
-                        language_operation_supported(name)
-                    } else if name == "git_changes" || name == "git_diff" {
-                        super::super::git_read::platform_supported(backend_mode)
-                    } else if RUN_TASK_CAPABILITIES.contains(&name) {
-                        task_platform
-                    } else {
-                        command_platform
-                    };
-                if supported {
-                    expected.push(name);
-                }
-            }
-            expected.sort_unstable();
+            let expected =
+                expected_platform_capabilities(command_platform, cfg!(windows), backend_mode);
+            // Exact set equality also proves the exact count. Never duplicate
+            // its length in a cfg-only numeric assertion that host tests skip.
             assert_eq!(agent.capabilities, expected);
             assert!(agent.capabilities.len() <= cedar_protocol::MAX_AGENT_CAPABILITIES);
-            if cfg!(any(target_os = "linux", target_os = "macos")) {
-                assert_eq!(agent.capabilities.len(), 24);
-            } else if cfg!(windows) {
-                assert_eq!(
-                    agent.capabilities.len(),
-                    if backend_mode == BackendMode::IsolatedAgent {
-                        30
-                    } else {
-                        4
-                    }
-                );
-            }
             assert!(!agent.supports("terminal"));
         }
     }
