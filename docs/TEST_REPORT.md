@@ -1,59 +1,50 @@
-# Verification report · explicit Java type navigation / 0.24.0
+# Verification report · passive idle transport loss / 0.25.0
 
-This checkpoint adds explicit standard workspace/symbol queries on an already
-running trusted Java session, with actual provider gating, bounded inert results
-and existing root-confined navigation. See [scope and limitations](JAVA_TYPE_SEARCH.md).
+This checkpoint observes terminal activity already reported by the existing stdio
+reader/writer. An idle frontend can show a lost connection without another user
+request. See [scope and limits](IDLE_DISCONNECT.md).
 
-The previous 0.23 source `edfbf41aaea6633f20e0fbaf8316c8459507e895` passed
-[exact Ubuntu/Windows CI 37893145529](https://github.com/LLLLimbo/cedar-ide/actions/runs/37893145529).
-The explicit report-read test executed on both platforms with seven reads and all
-preservation/cleanup witnesses. Its verified Windows package contained 530 payloads.
-The historical pre-publication report is retained [here](TEST_REPORT_PHASE23.md).
+The previous 0.24 public source `e54d77cd943173ef214dcefd0cfc10c9bd58e01a`
+passed [exact Ubuntu/Windows CI 37899453166](https://github.com/LLLLimbo/cedar-ide/actions/runs/37899453166).
+Its actual Java type-query receipt passed all 18 witnesses; the verified Windows
+ZIP contained 531 payloads and a manifest. The historical pre-publication report
+is retained [here](TEST_REPORT_PHASE24.md).
 
 ## Finite acceptance
 
-- Optional operation and complete lifecycle checks; no implicit language startup,
-  writes, command execution, recursive scan or repeated query loop.
-- Actual workspaceSymbolProvider support and bounded query/result validation,
-  rejecting incomplete/malformed/oversized results without partial success.
-- Query, connection and language-session identity; invalidation after edits,
-  dismissal, restart or reconnect. Navigation retains dirty buffers and Undo.
-- Existing normal-agent native Java Quick acceptance gains one generated unopened
-  type witness, exact URI/range, empty negative query and ordinary read navigation.
-  Existing process budgets, shutdown truthfulness, source integrity and prior gates remain.
-- Comprehensive capability inventories include normal and nonshipping hosts and the
-  extracted trust-off bundle, preserving strict equality and rejection checks.
+- No heartbeat, polling loop, new watcher thread or implicit reconnection.
+- Registration and notification races cannot lose queued terminal activity.
+- Completed responses, including Write acknowledgements, precede idle loss.
+  Unacknowledged writes retain the existing unknown-outcome safeguards.
+- Generation fences prevent old events from disconnecting a replacement session.
+  Drafts, selection, Undo and owned recovery remain intact.
+- Dropping a healthy idle worker releases its mailbox and existing process owner.
+- Both-platform normal-agent acceptance uses a controlled local pipe, trust off,
+  checks a healthy idle traffic window, explicit reconnection and unchanged source.
 
 ## Current verification status
 
-The final host aggregate passed 980 Rust tests across 40 suites, with 24 explicit
-opt-in tests ignored. All 18 new chooser tests passed, including real egui frame
-Search/Enter/Escape/row activation, late query/resolve/read rejection and rendered
-selection with actual Document Undo/Redo. Strict host and MSVC all-target/all-feature
-Clippy passed after the final CJK query font regression. Cross-compilation is not
-Windows execution.
+The host aggregate passed 997 Rust tests across 40 suites, with 28 explicit
+opt-in tests ignored. Strict host and MSVC all-target/all-feature Clippy passed;
+cross-compilation is not Windows execution. Independent frontend state and
+concurrency/ownership reviews found no remaining production blocker. The reviews
+corrected passive unknown-write wording and callback-capture release under a lock.
 
-The collector passed 77 of 81 tests with four platform/tool skips. Its new native
-PowerShell predicate test is skipped locally because PowerShell is unavailable;
-Windows CI must execute it. Bundle tests passed 28 of 29 with one platform skip,
-export tests passed two, capability tests five, Git fixture tests six, frozen Maven
-cache tests eleven, Maven acceptance tests five of seven with two skips, process
-resource observer tests 79 and GC collector tests 36.
+Python checks passed: export 2, capability 5, Git fixture 6, frozen Maven cache 11,
+resource observer 79 and GC collector 36. Collector passed 77 of 81 with four
+platform/tool skips; bundle passed 28 of 29 with one skip; Maven predicates passed
+5 of 7 with two skips. Native PowerShell checks remain part of Windows CI.
 
-Independent protocol/security, UI/session and native receipt reviews found no
-remaining blocker. Reviews identified and corrected global Escape consumption,
-stale line-jump selection replacement and incomplete frontend receipt evidence.
-The final helper binds the exact verified native query/result and checks selection
-after editor frames, plus actual Undo/Redo text and version changes.
+The all-feature release built successfully. Actual Linux normal-agent controlled
+pipe acceptance passed: healthy idle had no additional requests, idle loss arrived
+without another operation, exact owned-agent reaping succeeded, and dirty draft,
+selection and Undo survived. Explicit headless worker reconnection and stale-event
+fencing passed with no Write/Run and unchanged source. All six real-worker process
+cases passed, including Write acknowledgement before EOF, repaint notification and
+dropping a healthy idle worker. The small test control marker is atomically
+published so a partial marker cannot introduce a spurious protocol failure.
 
-The default-feature release frontend and agent built successfully. Actual Linux
-normal-agent capability/trust checks passed with 24 capabilities, and the real
-agent-to-mock-LSP process chain passed its explicit literal workspace queries,
-no-document operation, empty-query rejection and unchanged-source checks. This
-is protocol integration evidence, not a real JDT index witness.
-
-Fresh exact native CI must establish the unopened JDT type and all package gates.
-No 0.24 native acceptance is claimed before that run. Windows GUI and authenticated
-SSH remain separately unverified. Existing JDT spontaneous-diagnostic loss remains
-an openly documented limitation; explicit refresh is a supported mitigation, not
-an upstream causal fix.
+The default-feature release frontend and agent also built successfully, and the
+normal-agent idle acceptance passed again against that shipping agent. Fresh exact
+native CI and package verification are required. No Windows GUI, authenticated SSH, silent
+network-stall detection or remote cleanup claim follows from these local tests.

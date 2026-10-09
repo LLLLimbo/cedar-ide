@@ -195,6 +195,11 @@ impl Default for LanguagePanel {
     }
 }
 impl LanguagePanel {
+    pub fn disconnected(&mut self) {
+        self.reset();
+        self.output = "Connection lost. The local language session is unavailable; remote cleanup could not be confirmed.".into();
+    }
+
     pub fn reset(&mut self) {
         self.features.reset();
         self.types.reset();
@@ -1777,6 +1782,30 @@ fn safe_relative_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passive_transport_loss_clears_language_capabilities_without_claiming_cleanup() {
+        let mut app = CedarApp::empty();
+        app.state = crate::ConnectionState::Ready;
+        app.language.running = true;
+        app.language.capabilities = serde_json::json!({"completionProvider": {}});
+        app.close_after_language_stop = true;
+        app.close_snapshot = Some(app.draft_versions());
+        app.apply_worker_event(crate::worker::WorkerEvent::TransportLost {
+            generation: app.generation,
+            message: "transport_closed: idle EOF".into(),
+        });
+        assert!(!app.language.running);
+        assert!(app.language.capabilities.is_null());
+        assert!(app
+            .language
+            .output
+            .contains("cleanup could not be confirmed"));
+        assert!(!app.language.output.contains("session stopped"));
+        assert!(!app.close_after_language_stop);
+        assert!(app.close_snapshot.is_none());
+        assert!(!app.allow_close);
+    }
     #[test]
     fn file_chooser_keys_take_priority_over_populated_completion_popup() {
         let (mut app, commands) = capability_app();

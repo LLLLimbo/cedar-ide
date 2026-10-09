@@ -2,8 +2,10 @@
 //! It is never part of the shipped binaries and never opens a network socket.
 use std::{
     fs::{self, OpenOptions},
-    io::{self, BufRead, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -88,6 +90,224 @@ fn capability_reply(id: u64, request: &str, directory: &Path) {
     };
     emit(format!("{{\"id\":{id},\"result\":{{\"Ok\":{payload}}}}}\n").as_bytes());
 }
+
+// Only the opt-in fixture binary exposes this relay. The normal, unmodified
+// agent still owns its workspace and receives precisely `--root <fixture>`.
+// Polling below is test control, never part of the shipping client transport.
+const RELAY_MAX_BYTES: usize = 32 * 1024 * 1024;
+const RELAY_MAX_FRAME: usize = 8 * 1024 * 1024;
+const RELAY_MAX_REQUESTS: usize = 64;
+const RELAY_WATCHDOG: Duration = Duration::from_secs(30);
+
+fn fixture_error(message: &str) -> io::Error {
+    io::Error::other(message)
+}
+
+struct RelayChild {
+    child: Child,
+    wait_owned: bool,
+}
+
+impl Drop for RelayChild {
+    fn drop(&mut self) {
+        if self.wait_owned {
+            let _ = self.child.kill();
+            loop {
+                match self.child.wait() {
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    _ => break,
+                }
+            }
+        }
+    }
+}
+
+enum RelayInput {
+    Frame(Vec<u8>),
+    Closed,
+    Failed,
+}
+
+fn normal_agent_idle_relay(directory: &Path) -> io::Result<()> {
+    let mut configured = Vec::new();
+    fs::File::open(directory.join("relay-agent-path"))?
+        .take(4097)
+        .read_to_end(&mut configured)?;
+    if configured.len() > 4096 || configured.iter().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
+        return Err(fixture_error("invalid bounded normal-agent path"));
+    }
+    let agent = PathBuf::from(
+        String::from_utf8(configured).map_err(|_| fixture_error("agent path must be UTF-8"))?,
+    );
+    if !agent.is_absolute() || !agent.is_file() {
+        return Err(fixture_error("normal-agent path must be an absolute file"));
+    }
+    let mut owner = RelayChild {
+        child: Command::new(agent)
+            .arg("--root")
+            .arg(directory)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?,
+        wait_owned: true,
+    };
+    let process_id = owner.child.id();
+    let mut agent_input = owner.child.stdin.take();
+    let mut agent_output = owner
+        .child
+        .stdout
+        .take()
+        .ok_or_else(|| fixture_error("missing agent stdout"))?;
+    marker(
+        directory,
+        "relay-agent-started",
+        process_id.to_string().as_bytes(),
+    );
+
+    let (input_tx, input_rx) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let mut reader = BufReader::new(io::stdin());
+        loop {
+            let mut line = Vec::new();
+            let received = (&mut reader)
+                .take((RELAY_MAX_FRAME + 1) as u64)
+                .read_until(b'\n', &mut line);
+            let message = match received {
+                Ok(0) => RelayInput::Closed,
+                Ok(_) if line.len() <= RELAY_MAX_FRAME && line.last() == Some(&b'\n') => {
+                    RelayInput::Frame(line)
+                }
+                _ => RelayInput::Failed,
+            };
+            let terminal = !matches!(&message, RelayInput::Frame(_));
+            if input_tx.send(message).is_err() || terminal {
+                break;
+            }
+        }
+    });
+    let (output_tx, output_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = (|| -> io::Result<()> {
+            let mut forwarded = 0usize;
+            let mut buffer = [0u8; 8192];
+            let mut output = io::stdout().lock();
+            loop {
+                let read = agent_output.read(&mut buffer)?;
+                if read == 0 {
+                    return Ok(());
+                }
+                forwarded += read;
+                if forwarded > RELAY_MAX_BYTES {
+                    return Err(fixture_error("relay response cap exceeded"));
+                }
+                output.write_all(&buffer[..read])?;
+                output.flush()?;
+            }
+        })();
+        let _ = output_tx.send(result);
+    });
+
+    let mut audit = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(directory.join("requests"))?;
+    let mut forwarded = 0usize;
+    let mut requests = 0usize;
+    let mut controlled_close = false;
+    let mut exit_success = None;
+    let mut output_drained = false;
+    let deadline = Instant::now() + RELAY_WATCHDOG;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(fixture_error("normal-agent relay watchdog expired"));
+        }
+        if !controlled_close && directory.join("relay-disconnect").exists() {
+            let mut control = Vec::new();
+            fs::File::open(directory.join("relay-disconnect"))?
+                .take(32)
+                .read_to_end(&mut control)?;
+            if control != b"close-agent-stdin\n" {
+                return Err(fixture_error("invalid idle-disconnect control"));
+            }
+            agent_input.take();
+            controlled_close = true;
+        }
+        if !output_drained {
+            match output_rx.try_recv() {
+                Ok(result) => {
+                    result?;
+                    output_drained = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(fixture_error("relay response reader stopped"))
+                }
+            }
+        }
+        if exit_success.is_none() {
+            match owner.child.try_wait() {
+                Ok(Some(status)) => {
+                    owner.wait_owned = false;
+                    exit_success = Some(status.success());
+                }
+                Ok(None) => {}
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    // Do not signal a process after exclusive wait ownership
+                    // becomes uncertain, even in this nonshipping fixture.
+                    owner.wait_owned = false;
+                    return Err(error);
+                }
+            }
+        }
+        if output_drained && exit_success.is_some() {
+            if !controlled_close || exit_success != Some(true) {
+                return Err(fixture_error(
+                    "normal agent exited without successful controlled close",
+                ));
+            }
+            marker(
+                directory,
+                "relay-agent-reaped",
+                format!(
+                "{{\"cleanup_verified\":true,\"process_id\":{process_id},\"exit_success\":true}}\n"
+            )
+                .as_bytes(),
+            );
+            return Ok(());
+        }
+        match input_rx.recv_timeout(Duration::from_millis(5)) {
+            Ok(RelayInput::Frame(line)) => {
+                forwarded += line.len();
+                requests += 1;
+                if controlled_close || forwarded > RELAY_MAX_BYTES || requests > RELAY_MAX_REQUESTS
+                {
+                    return Err(fixture_error(
+                        "relay request after close or request cap exceeded",
+                    ));
+                }
+                audit.write_all(&line)?;
+                audit.flush()?;
+                let input = agent_input
+                    .as_mut()
+                    .ok_or_else(|| fixture_error("agent input is closed"))?;
+                input.write_all(&line)?;
+                input.flush()?;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(RelayInput::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(fixture_error(
+                    "relay owner closed before controlled completion",
+                ));
+            }
+            Ok(RelayInput::Failed) => {
+                return Err(fixture_error("invalid bounded relay input frame"))
+            }
+        }
+    }
+}
+
 fn main() {
     let mut args = std::env::args_os().skip(1);
     let mut mode = args.next().unwrap().to_string_lossy().into_owned();
@@ -105,13 +325,28 @@ fn main() {
         mode = fs::read_to_string(dir.join("fixture-mode")).unwrap_or_default();
         if !matches!(
             mode.as_str(),
-            "stalled_hello" | "stalled_read" | "held_reply" | "capability_peer"
+            "stalled_hello"
+                | "stalled_read"
+                | "held_reply"
+                | "held_reply_eof"
+                | "capability_peer"
+                | "idle_eof"
+                | "idle_bad_frame"
+                | "idle_unsolicited"
+                | "normal_agent_idle_relay"
         ) {
             eprintln!("unsupported synthetic transport mode");
             std::process::exit(2);
         }
     }
     fs::write(dir.join("started"), std::process::id().to_string()).unwrap();
+    if mode == "normal_agent_idle_relay" {
+        if let Err(error) = normal_agent_idle_relay(&dir) {
+            eprintln!("normal-agent idle relay: {error}");
+            std::process::exit(2);
+        }
+        return;
+    }
     if mode == "eof_before_hello" {
         return;
     }
@@ -219,6 +454,21 @@ fn main() {
             if mode == "eof_between_requests" {
                 return;
             }
+            if matches!(
+                mode.as_str(),
+                "idle_eof" | "idle_bad_frame" | "idle_unsolicited"
+            ) {
+                marker(&dir, &format!("ready-{id}"), b"idle after Hello");
+                wait_for_release(&dir, id);
+                match mode.as_str() {
+                    "idle_eof" => return,
+                    "idle_bad_frame" => emit(b"invalid idle frame\n"),
+                    "idle_unsolicited" => capability_reply(id + 1, "\"type\":\"read\"", &dir),
+                    _ => unreachable!(),
+                }
+                drain_until_close(&mut input, &dir);
+                return;
+            }
             continue;
         }
         match mode.as_str() {
@@ -227,11 +477,14 @@ fn main() {
                 drain_until_close(&mut input, &dir);
                 return;
             }
-            "held_reply" => {
+            "held_reply" | "held_reply_eof" => {
                 marker(&dir, &format!("ready-{id}"), line.as_bytes());
                 wait_for_release(&dir, id);
                 capability_reply(id, &line, &dir);
                 marker(&dir, &format!("replied-{id}"), b"reply flushed");
+                if mode == "held_reply_eof" {
+                    return;
+                }
             }
             "stalled_read" => capability_reply(id, &line, &dir),
             "capability_peer" => capability_reply(id, &line, &dir),

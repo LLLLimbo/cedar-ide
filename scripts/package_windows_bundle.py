@@ -39,6 +39,7 @@ SOURCE_FILES = {
     "docs/MAVEN_PROJECTS.md": "MAVEN_PROJECTS.md",
     "docs/TEST_RESULTS.md": "TEST_RESULTS.md",
     "docs/JAVA_TYPE_SEARCH.md": "JAVA_TYPE_SEARCH.md",
+    "docs/IDLE_DISCONNECT.md": "IDLE_DISCONNECT.md",
 }
 # Exact notice names currently collected by collect_licenses.py. Adding a new
 # upstream notice deliberately requires reviewing this allowlist.

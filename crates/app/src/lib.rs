@@ -11,6 +11,10 @@ mod connection_cancel_tests;
 mod disk_review;
 mod editor_state;
 mod git_ui;
+#[cfg(test)]
+mod idle_disconnect_process_tests;
+#[cfg(test)]
+mod idle_transport_tests;
 mod interrupted_save;
 #[cfg(test)]
 mod interrupted_save_process_tests;
@@ -54,7 +58,7 @@ use std::{
     path::PathBuf,
     sync::mpsc::{self, Receiver, Sender},
 };
-use worker::{Command, Event, Worker};
+use worker::{Command, Event, Worker, WorkerEvent};
 
 const BG: Color32 = Color32::from_rgb(17, 21, 29);
 const PANEL: Color32 = Color32::from_rgb(22, 28, 38);
@@ -245,8 +249,8 @@ pub struct CedarApp {
     next_document: u64,
     navigation_epoch: u64,
     worker: Option<Worker>,
-    result_tx: Sender<Event>,
-    result_rx: Receiver<Event>,
+    result_tx: Sender<WorkerEvent>,
+    result_rx: Receiver<WorkerEvent>,
     pending: HashMap<u64, Job>,
     documents: Vec<Document>,
     active_document: Option<u64>,
@@ -526,7 +530,7 @@ impl CedarApp {
         self.state = ConnectionState::Disconnected;
         self.connecting_form = None;
         self.agent_info = None;
-        self.language.reset();
+        self.language.disconnected();
         self.worker = None;
         self.pending.clear();
         self.disk_review.outstanding = None;
@@ -676,7 +680,25 @@ impl CedarApp {
 
     fn poll(&mut self) {
         while let Ok(event) = self.result_rx.try_recv() {
-            self.apply_event(event);
+            self.apply_worker_event(event);
+        }
+    }
+
+    fn apply_worker_event(&mut self, event: WorkerEvent) {
+        match event {
+            WorkerEvent::Response(event) => self.apply_event(event),
+            WorkerEvent::TransportLost {
+                generation,
+                message,
+            } if generation == self.generation
+                && matches!(
+                    self.state,
+                    ConnectionState::Connecting | ConnectionState::Ready
+                ) =>
+            {
+                self.disconnected(message);
+            }
+            WorkerEvent::TransportLost { .. } => {}
         }
     }
 

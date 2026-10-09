@@ -222,6 +222,46 @@ impl Client {
     pub fn handshake(&self) -> &Payload {
         &self.handshake
     }
+    /// Wake the connection owner when the existing process reader or writer
+    /// publishes transport activity. This performs no I/O and starts no thread.
+    /// Registration also wakes for activity published before registration.
+    ///
+    /// The callback must be brief and nonblocking: enqueue work for the owner,
+    /// then call `observe_idle_transport` there after publishing any in-flight
+    /// request result. Use a weak reference to the owner's mailbox to avoid
+    /// retaining the worker. Wakes are coalesced until idle observation; a wake
+    /// for a response already consumed by a request is harmless.
+    pub fn set_transport_waker(&mut self, wake: impl Fn() + Send + Sync + 'static) {
+        match &mut self.backend {
+            #[cfg(not(windows))]
+            Backend::Local(_) => {}
+            Backend::Process(process) => {
+                if process.connected {
+                    process.observation.register(Arc::new(wake));
+                }
+            }
+        }
+    }
+    /// Unregister the process observer without closing the connection.
+    pub fn clear_transport_waker(&mut self) {
+        match &mut self.backend {
+            #[cfg(not(windows))]
+            Backend::Local(_) => {}
+            Backend::Process(process) => process.observation.unregister(),
+        }
+    }
+    /// Consume passive transport failure while no request is in flight.
+    /// Queued unsolicited replies fail closed instead of becoming a later
+    /// request's answer. A terminal error is returned once and closes the
+    /// connection; a stale wake or embedded workspace needs no action.
+    /// This never sends a request, waits on a pipe, or changes request limits.
+    pub fn observe_idle_transport(&mut self) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(not(windows))]
+            Backend::Local(_) => Ok(()),
+            Backend::Process(process) => process.observe_idle_transport(),
+        }
+    }
     pub fn request(&mut self, op: Operation) -> Result<Payload, String> {
         if cancellation_requested(&self.cancellation) {
             return Err(match &mut self.backend {
@@ -235,6 +275,7 @@ impl Client {
                 "disconnected: reconnect before retrying; unsaved buffers remain local".into(),
             );
         }
+        self.observe_idle_transport()?;
         if matches!(op, Operation::Hello) {
             return Ok(self.handshake.clone());
         }
@@ -500,6 +541,7 @@ struct ProcessClient {
     cancellation: Option<ConnectionCancellation>,
     requests: Option<mpsc::SyncSender<Request>>,
     responses: Option<mpsc::Receiver<Result<Response, String>>>,
+    observation: Arc<TransportObservation>,
     shutdown: Option<mpsc::Sender<()>>,
     reaped: mpsc::Receiver<ReapResult>,
     stderr: Arc<Mutex<Vec<u8>>>,
@@ -507,6 +549,75 @@ struct ProcessClient {
     connected: bool,
     java_language_session: bool,
     java_startup: JavaStartupMode,
+}
+
+type TransportWaker = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Default)]
+struct TransportObservation {
+    state: Mutex<TransportObservationState>,
+}
+
+#[derive(Default)]
+struct TransportObservationState {
+    wake: Option<TransportWaker>,
+    pending: bool,
+    // Remember terminal state before its bounded queue send can block behind
+    // a valid reply. The in-flight request still consumes that reply first;
+    // idle observation prevents any later request from being sent.
+    terminal: Option<String>,
+}
+
+impl TransportObservation {
+    fn register(&self, wake: TransportWaker) {
+        let (notify, previous) = {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            let previous = state.wake.replace(wake.clone());
+            (state.pending, previous)
+        };
+        drop(previous);
+        if notify {
+            wake();
+        }
+    }
+
+    fn unregister(&self) {
+        let previous = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .wake
+            .take();
+        drop(previous);
+    }
+
+    fn publish(&self, terminal: Option<&str>) {
+        let wake = {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if state.terminal.is_none() {
+                state.terminal = terminal.map(str::to_owned);
+            }
+            if state.pending {
+                None
+            } else {
+                state.pending = true;
+                state.wake.clone()
+            }
+        };
+        // Never run owner code under the observation mutex. It only enqueues a
+        // wake; the sequential owner decides when the transport may be drained.
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+
+    fn begin_idle_observation(&self) -> Option<String> {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        // Clear before checking the queue: a publication racing an empty read
+        // then owns a fresh wake. Clearing afterward could lose that wake.
+        state.pending = false;
+        state.terminal.clone()
+    }
 }
 
 #[derive(Default)]
@@ -694,15 +805,20 @@ impl ProcessClient {
             })
             .map_err(|e| format!("spawn_failed: transport reaper: {e}"))?;
         let (response_tx, response_rx) = mpsc::sync_channel(1);
+        let observation = Arc::new(TransportObservation::default());
+        let writer_observation = observation.clone();
         let writer_errors = response_tx.clone();
         thread::spawn(move || {
             while let Ok(request) = request_rx.recv() {
                 if let Err(e) = write_frame(&mut stdin, &request) {
-                    let _ = writer_errors.send(Err(format!("transport_write: {e}")));
+                    let error = format!("transport_write: {e}");
+                    writer_observation.publish(Some(&error));
+                    let _ = writer_errors.send(Err(error));
                     break;
                 }
             }
         });
+        let reader_observation = observation.clone();
         thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
@@ -711,13 +827,18 @@ impl ProcessClient {
                         if response_tx.send(Ok(response)).is_err() {
                             break;
                         }
+                        reader_observation.publish(None);
                     }
                     Ok(None) => {
-                        let _ = response_tx.send(Err("transport_eof: agent disconnected".into()));
+                        let error = "transport_eof: agent disconnected";
+                        reader_observation.publish(Some(error));
+                        let _ = response_tx.send(Err(error.into()));
                         break;
                     }
                     Err(e) => {
-                        let _ = response_tx.send(Err(format!("transport_read: {e}")));
+                        let error = format!("transport_read: {e}");
+                        reader_observation.publish(Some(&error));
+                        let _ = response_tx.send(Err(error));
                         break;
                     }
                 }
@@ -743,6 +864,7 @@ impl ProcessClient {
             cancellation,
             requests: Some(request_tx),
             responses: Some(response_rx),
+            observation,
             shutdown: Some(shutdown_tx),
             reaped: reaped_rx,
             stderr,
@@ -753,13 +875,39 @@ impl ProcessClient {
         })
     }
     fn fail(&mut self, message: String) -> String {
-        self.close();
         let message = format!("{message}; outcome may be unknown, reload before retrying a write; commands are never automatically replayed");
+        self.close_with_message(message)
+    }
+    fn close_with_message(&mut self, message: String) -> String {
+        self.close();
         let detail = self.stderr.lock().unwrap_or_else(|p| p.into_inner());
         if detail.is_empty() {
             message
         } else {
             format!("{message}\n{}", String::from_utf8_lossy(&detail).trim())
+        }
+    }
+    fn observe_idle_transport(&mut self) -> Result<(), String> {
+        if !self.connected {
+            return Ok(());
+        }
+        let terminal = self.observation.begin_idle_observation();
+        let error = match self.responses.as_ref().map(mpsc::Receiver::try_recv) {
+            Some(Ok(Ok(response))) => Some(format!(
+                "protocol_error: unsolicited response id {} while no request is in flight",
+                response.id
+            )),
+            Some(Ok(Err(error))) => Some(error),
+            Some(Err(mpsc::TryRecvError::Empty)) => terminal,
+            Some(Err(mpsc::TryRecvError::Disconnected)) | None => {
+                Some(terminal.unwrap_or_else(|| "transport_eof: transport readers stopped".into()))
+            }
+        };
+        match error {
+            Some(error) => Err(self.close_with_message(format!(
+                "{error}; reconnect before retrying; commands are never automatically replayed"
+            ))),
+            None => Ok(()),
         }
     }
     fn request(&mut self, op: Operation) -> Result<Payload, String> {
@@ -794,6 +942,7 @@ impl ProcessClient {
                 "disconnected: reconnect before retrying; unsaved buffers remain local".into(),
             );
         }
+        self.observe_idle_transport()?;
         let starts_java = matches!(op, Operation::LanguageStartJava { .. });
         let starts_generic = matches!(op, Operation::LanguageStart { .. });
         let stops_language = matches!(op, Operation::LanguageStop);
@@ -899,6 +1048,7 @@ impl ProcessClient {
         response.result.map_err(|e| e.to_string())
     }
     fn close(&mut self) {
+        self.observation.unregister();
         self.connected = false;
         self.java_language_session = false;
         self.java_startup = JavaStartupMode::default();

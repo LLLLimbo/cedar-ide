@@ -489,12 +489,12 @@ fn complete_native_frame_applies_input_after_read_event_before_reload_commit() {
         app.reload_from_disk();
         let command = rx.try_recv().unwrap();
         app.result_tx
-            .send(Event {
+            .send(crate::worker::WorkerEvent::Response(Event {
                 generation: app.generation,
                 id: command.id,
                 connected: true,
                 result: Ok(file("disk", 'b')),
-            })
+            }))
             .unwrap();
         ctx.memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", 1u64))));
         let events = match input {

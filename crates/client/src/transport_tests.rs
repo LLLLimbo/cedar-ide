@@ -75,6 +75,297 @@ fn cancellable_peer(
 }
 
 #[test]
+fn transport_observation_registration_catches_both_publication_orders() {
+    for publish_first in [false, true] {
+        let observation = TransportObservation::default();
+        let (wake, received) = mpsc::channel();
+        if publish_first {
+            observation.publish(Some("transport_eof: fixture"));
+        }
+        observation.register(Arc::new(move || wake.send(()).unwrap()));
+        if !publish_first {
+            observation.publish(Some("transport_eof: fixture"));
+        }
+        received.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(received.try_recv().is_err());
+        assert_eq!(
+            observation.begin_idle_observation().as_deref(),
+            Some("transport_eof: fixture")
+        );
+    }
+}
+
+#[test]
+fn transport_observation_coalesces_until_drained_and_retains_first_terminal() {
+    let observation = TransportObservation::default();
+    let (wake, received) = mpsc::channel();
+    observation.register(Arc::new(move || wake.send(()).unwrap()));
+    observation.publish(None);
+    observation.publish(None);
+    observation.publish(Some("transport_eof: first"));
+    observation.publish(Some("transport_write: later"));
+    received.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(received.try_recv().is_err());
+    assert_eq!(
+        observation.begin_idle_observation().as_deref(),
+        Some("transport_eof: first")
+    );
+    // An event racing the owner's upcoming empty queue read must own a new
+    // wake; there is no flag clear after that read that could erase it.
+    observation.publish(None);
+    received.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(received.try_recv().is_err());
+}
+
+#[test]
+fn transport_observation_callbacks_run_outside_the_state_lock() {
+    for publication_before_register in [false, true] {
+        let observation = Arc::new(TransportObservation::default());
+        let callback_owner = Arc::downgrade(&observation);
+        let (wake, received) = mpsc::channel();
+        if publication_before_register {
+            observation.publish(Some("transport_eof: fixture"));
+        }
+        let register = thread::spawn(move || {
+            observation.register(Arc::new(move || {
+                let owner = callback_owner.upgrade().unwrap();
+                owner.unregister();
+                let _ = wake.send(owner.begin_idle_observation());
+            }));
+            if !publication_before_register {
+                observation.publish(Some("transport_eof: fixture"));
+            }
+        });
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Some("transport_eof: fixture".into())
+        );
+        register.join().unwrap();
+    }
+}
+
+#[test]
+fn transport_observation_unregister_releases_callback_and_preserves_pending_event() {
+    let observation = TransportObservation::default();
+    let capture = Arc::new(());
+    let retained = capture.clone();
+    observation.register(Arc::new(move || {
+        let _ = &retained;
+    }));
+    assert_eq!(Arc::strong_count(&capture), 2);
+    observation.unregister();
+    assert_eq!(Arc::strong_count(&capture), 1);
+    observation.publish(Some("transport_eof: fixture"));
+    let (wake, received) = mpsc::channel();
+    observation.register(Arc::new(move || wake.send(()).unwrap()));
+    received.recv_timeout(Duration::from_secs(1)).unwrap();
+}
+
+fn register_idle_wake(client: &mut Client) -> mpsc::Receiver<()> {
+    // Hello may have been consumed before its producer publishes readiness.
+    // Wait for that single known event, then consume its harmless stale wake.
+    wait_until(|| process(client).observation.state.lock().unwrap().pending);
+    let (wake, received) = mpsc::channel();
+    client.set_transport_waker(move || {
+        let _ = wake.send(());
+    });
+    received.recv_timeout(Duration::from_secs(2)).unwrap();
+    client.observe_idle_transport().unwrap();
+    assert!(received.try_recv().is_err());
+    received
+}
+
+#[test]
+fn idle_process_eof_and_read_error_wake_without_any_followup_request() {
+    for (mode, expected) in [
+        ("idle_eof", "transport_eof:"),
+        ("idle_bad_frame", "transport_read:"),
+        (
+            "idle_unsolicited",
+            "protocol_error: unsolicited response id 2",
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = Client::from_process(spawn(mode, directory.path())).unwrap();
+        let wake = register_idle_wake(&mut client);
+        fs::write(directory.path().join("release-1"), b"release idle event").unwrap();
+        wake.recv_timeout(Duration::from_secs(2)).unwrap();
+        let error = client.observe_idle_transport().unwrap_err();
+        assert!(error.starts_with(expected), "{mode}: {error}");
+        assert!(!error.contains("outcome may be unknown"), "{error}");
+        assert!(!client.is_connected());
+        // Duplicate or already queued wake delivery cannot emit a second loss.
+        client.observe_idle_transport().unwrap();
+        assert!(client
+            .request(Operation::Read {
+                path: "fixture.txt".into()
+            })
+            .unwrap_err()
+            .starts_with("disconnected:"));
+        client.close_and_wait(Duration::from_secs(5)).unwrap();
+        assert_eq!(recorded_requests(directory.path()).len(), 1, "{mode}");
+    }
+}
+
+#[test]
+fn idle_terminal_before_registration_is_observed_and_blocks_the_next_write() {
+    for register in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = Client::from_process(spawn("idle_eof", directory.path())).unwrap();
+        fs::write(directory.path().join("release-1"), b"release EOF").unwrap();
+        wait_until(|| {
+            process(&mut client)
+                .observation
+                .state
+                .lock()
+                .unwrap()
+                .terminal
+                .is_some()
+        });
+        if register {
+            let (wake, received) = mpsc::channel();
+            client.set_transport_waker(move || {
+                let _ = wake.send(());
+            });
+            received.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        let error = client
+            .request(Operation::Write {
+                path: "must-not-be-written.txt".into(),
+                text: "not sent".into(),
+                expected_revision: None,
+            })
+            .unwrap_err();
+        assert!(error.starts_with("transport_eof:"), "{error}");
+        assert!(!error.contains("outcome may be unknown"), "{error}");
+        client.close_and_wait(Duration::from_secs(5)).unwrap();
+        assert_eq!(recorded_requests(directory.path()).len(), 1);
+    }
+}
+
+#[test]
+fn idle_future_id_reply_cannot_be_consumed_by_a_new_request() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::from_process(spawn("idle_unsolicited", directory.path())).unwrap();
+    let wake = register_idle_wake(&mut client);
+    fs::write(directory.path().join("release-1"), b"release future id").unwrap();
+    wake.recv_timeout(Duration::from_secs(2)).unwrap();
+    // This matches the queued response's id and operation. The pre-send idle
+    // check still rejects it instead of using it as this Read's response.
+    let error = client
+        .request(Operation::Read {
+            path: "fixture.txt".into(),
+        })
+        .unwrap_err();
+    assert!(
+        error.starts_with("protocol_error: unsolicited response id 2"),
+        "{error}"
+    );
+    client.close_and_wait(Duration::from_secs(5)).unwrap();
+    assert_eq!(recorded_requests(directory.path()).len(), 1);
+}
+
+#[test]
+fn healthy_idle_observation_sends_nothing_and_close_releases_its_callback() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::from_process(spawn("normal", directory.path())).unwrap();
+    let wake = register_idle_wake(&mut client);
+    assert_eq!(
+        wake.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    );
+    client.observe_idle_transport().unwrap();
+    assert!(client.is_connected());
+    assert_eq!(recorded_requests(directory.path()).len(), 1);
+    let capture = Arc::new(());
+    let retained = capture.clone();
+    client.set_transport_waker(move || {
+        let _ = &retained;
+    });
+    assert_eq!(Arc::strong_count(&capture), 2);
+    // Producers may still hold the observation Arc after close. They must not
+    // retain the owner's callback while pipe cleanup finishes.
+    let observation = process(&mut client).observation.clone();
+    drop(client);
+    assert_eq!(Arc::strong_count(&capture), 1);
+    assert!(observation.state.lock().unwrap().wake.is_none());
+    wait_until(|| directory.path().join("eof").exists());
+}
+
+#[test]
+fn authoritative_read_and_write_replies_precede_later_idle_eof() {
+    for operation in [
+        Operation::Read {
+            path: "fixture.txt".into(),
+        },
+        Operation::Write {
+            path: "fixture.txt".into(),
+            text: "saved".into(),
+            expected_revision: None,
+        },
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = Client::from_process(spawn("held_reply_eof", directory.path())).unwrap();
+        let wake = register_idle_wake(&mut client);
+        let is_write = matches!(operation, Operation::Write { .. });
+        let caller = thread::spawn(move || {
+            let result = client.request(operation);
+            (client, result)
+        });
+        wait_until(|| directory.path().join("ready-2").exists());
+        fs::write(directory.path().join("release-2"), b"reply then EOF").unwrap();
+        let (mut client, response) = caller.join().unwrap();
+        let response = response.unwrap();
+        assert!(if is_write {
+            matches!(response, Payload::Written { .. })
+        } else {
+            matches!(response, Payload::File { .. })
+        });
+        wake.recv_timeout(Duration::from_secs(2)).unwrap();
+        wait_until(|| {
+            process(&mut client)
+                .observation
+                .state
+                .lock()
+                .unwrap()
+                .terminal
+                .is_some()
+        });
+        // The worker can publish this authoritative result as connected=true
+        // before the separately ordered transport-loss event.
+        assert!(client.is_connected());
+        assert!(client
+            .observe_idle_transport()
+            .unwrap_err()
+            .starts_with("transport_eof:"));
+        assert!(!client.is_connected());
+        client.close_and_wait(Duration::from_secs(5)).unwrap();
+        assert_eq!(recorded_requests(directory.path()).len(), 2);
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn embedded_workspace_has_no_transport_activity_or_observer_retention() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::connect(ConnectionSpec::Local {
+        root: directory.path().into(),
+        allow_run: false,
+    })
+    .unwrap();
+    let capture = Arc::new(());
+    let retained = capture.clone();
+    client.set_transport_waker(move || {
+        let _ = &retained;
+        panic!("embedded transport wake");
+    });
+    assert_eq!(Arc::strong_count(&capture), 1);
+    client.observe_idle_transport().unwrap();
+    client.clear_transport_waker();
+    assert!(client.is_connected());
+}
+
+#[test]
 fn cancellation_before_spawn_never_creates_a_child() {
     let directory = tempfile::tempdir().unwrap();
     let token = ConnectionCancellation::new();
@@ -271,7 +562,10 @@ fn eof_before_hello_and_after_request_disconnect_without_replay() {
             error.starts_with("transport_eof:") || error.starts_with("transport_write:"),
             "{error}"
         );
-        assert!(error.contains("outcome may be unknown"));
+        assert!(error.contains("commands are never automatically replayed"));
+        if mode == "eof_after_request" {
+            assert!(error.contains("outcome may be unknown"));
+        }
         assert!(!peer.connected);
         assert!(peer
             .request(Operation::Hello)

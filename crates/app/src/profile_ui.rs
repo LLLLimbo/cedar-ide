@@ -1654,14 +1654,14 @@ mod tests {
         app.documents[0].jump_to = Some(submitted.chars().count());
         frame(&mut app, &ctx, 1.2, vec![]);
         app.result_tx
-            .send(Event {
+            .send(crate::worker::WorkerEvent::Response(Event {
                 generation: app.generation,
                 id: command.id,
                 connected: true,
                 result: Ok(Payload::Written {
                     revision: "sha1".into(),
                 }),
-            })
+            }))
             .unwrap();
         frame(&mut app, &ctx, 1.3, vec![egui::Event::Text("Y".into())]);
         assert_eq!(app.documents[0].saved_text, submitted);

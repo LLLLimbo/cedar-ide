@@ -47,6 +47,18 @@ jobs:
         run: |
           $env:CEDAR_TEST_REPORT_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
           cargo test -p cedar-app --lib test_report_process_tests --locked -- --ignored --test-threads=1 --nocapture
+      - name: Passive idle disconnect (Unix, normal agent)
+        timeout-minutes: 3
+        if: runner.os != 'Windows'
+        run: CEDAR_IDLE_DISCONNECT_AGENT_BIN="$PWD/target/release/cedar-agent" CEDAR_IDLE_DISCONNECT_PEER_BIN="$PWD/target/release/cedar-client-transport-peer" cargo test -p cedar-app --lib idle_disconnect_process_tests --locked -- --ignored --test-threads=1 --nocapture
+      - name: Passive idle disconnect (Windows, normal agent)
+        timeout-minutes: 3
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:CEDAR_IDLE_DISCONNECT_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
+          $env:CEDAR_IDLE_DISCONNECT_PEER_BIN = "$PWD/target/release/cedar-client-transport-peer.exe"
+          cargo test -p cedar-app --lib idle_disconnect_process_tests --locked -- --ignored --test-threads=1 --nocapture
       - name: Connection cancellation (Unix)
         timeout-minutes: 3
         if: runner.os != 'Windows'

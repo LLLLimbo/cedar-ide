@@ -267,9 +267,18 @@ fn assert_operations(root: &Path, expected: &[&str]) {
 }
 
 fn next_event(app: &CedarApp) -> Event {
-    app.result_rx
-        .recv_timeout(WAIT)
-        .expect("worker did not return an event")
+    response(
+        app.result_rx
+            .recv_timeout(WAIT)
+            .expect("worker did not return an event"),
+    )
+}
+
+fn response(event: WorkerEvent) -> Event {
+    match event {
+        WorkerEvent::Response(event) => event,
+        WorkerEvent::TransportLost { message, .. } => panic!("unexpected idle loss: {message}"),
+    }
 }
 
 fn start_fixture(app: &mut CedarApp, root: &Path) {
@@ -314,10 +323,11 @@ fn stalled_hello_cancel_is_bounded_and_retains_drafts() {
         assert!(matches!(ready_request(root.path(), 1).op, Operation::Hello));
         let start = Instant::now();
         app.cancel_connection();
-        let event = app
-            .result_rx
-            .recv_timeout(CANCEL_BOUND)
-            .expect("cancelled Hello exceeded the cancellation bound");
+        let event = response(
+            app.result_rx
+                .recv_timeout(CANCEL_BOUND)
+                .expect("cancelled Hello exceeded the cancellation bound"),
+        );
         assert!(start.elapsed() < CANCEL_BOUND);
         assert_eq!(event.generation, old_generation);
         assert_eq!(event.id, 0);
@@ -357,10 +367,11 @@ fn stalled_read_cancels_queued_list_and_replacement_stays_connected() {
 
     let start = Instant::now();
     app.worker = None;
-    let cancelled = app
-        .result_rx
-        .recv_timeout(CANCEL_BOUND)
-        .expect("cancelled Read exceeded the cancellation bound");
+    let cancelled = response(
+        app.result_rx
+            .recv_timeout(CANCEL_BOUND)
+            .expect("cancelled Read exceeded the cancellation bound"),
+    );
     assert!(start.elapsed() < CANCEL_BOUND);
     assert_eq!(cancelled.generation, old_generation);
     assert_eq!(cancelled.id, read_id);
@@ -406,7 +417,7 @@ fn dropped_worker_drains_sent_write_reply_and_suppresses_queued_list() {
         tx,
         egui::Context::default(),
     );
-    let hello = rx.recv_timeout(WAIT).unwrap();
+    let hello = response(rx.recv_timeout(WAIT).unwrap());
     assert!(hello.connected);
     worker
         .tx
@@ -438,7 +449,7 @@ fn dropped_worker_drains_sent_write_reply_and_suppresses_queued_list() {
         Err(mpsc::RecvTimeoutError::Timeout)
     ));
     fs::write(root.path().join("release-2"), b"release generated reply\n").unwrap();
-    let event = rx.recv_timeout(WAIT).unwrap();
+    let event = response(rx.recv_timeout(WAIT).unwrap());
     assert_eq!(event.generation, 17);
     assert_eq!(event.id, 41);
     assert!(event.connected);
@@ -451,4 +462,133 @@ fn dropped_worker_drains_sent_write_reply_and_suppresses_queued_list() {
         rx.recv_timeout(WAIT),
         Err(mpsc::RecvTimeoutError::Disconnected)
     ));
+}
+
+#[test]
+#[ignore = "requires CEDAR_CONNECTION_CANCEL_PEER_BIN; explicit process acceptance"]
+fn idle_worker_observes_terminal_reader_events_without_sending_requests() {
+    for mode in ["idle_eof", "idle_bad_frame", "idle_unsolicited"] {
+        let root = fixture(mode);
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let (repaint_tx, repaint_rx) = mpsc::channel();
+        ctx.set_request_repaint_callback(move |_| {
+            let _ = repaint_tx.send(());
+        });
+        let worker = Worker::spawn_agent(peer_binary(), root.path().into(), 23, tx, ctx.clone());
+        let hello = response(rx.recv_timeout(WAIT).unwrap());
+        assert!(hello.connected);
+        repaint_rx
+            .recv_timeout(WAIT)
+            .expect("Hello did not request repaint");
+        // Settle Hello's requested frames before requiring a new idle-loss
+        // repaint. No wall-clock polling or user action wakes the worker.
+        for _ in 0..4 {
+            let _ = ctx.run(egui::RawInput::default(), |_| {});
+            if !ctx.has_requested_repaint() {
+                break;
+            }
+        }
+        assert!(!ctx.has_requested_repaint());
+        while repaint_rx.try_recv().is_ok() {}
+        wait_marker(root.path(), "ready-1");
+        assert_operations(root.path(), &["hello"]);
+        fs::write(root.path().join("release-1"), b"release idle loss\n").unwrap();
+        let terminal = rx
+            .recv_timeout(WAIT)
+            .expect("idle reader did not wake worker");
+        let WorkerEvent::TransportLost {
+            generation,
+            message,
+        } = terminal
+        else {
+            panic!("passive loss must have a dedicated event");
+        };
+        assert_eq!(generation, 23);
+        repaint_rx
+            .recv_timeout(WAIT)
+            .expect("idle loss did not request repaint");
+        let prefix = if mode == "idle_unsolicited" {
+            "protocol_error:"
+        } else {
+            "transport_"
+        };
+        assert!(message.starts_with(prefix), "{message}");
+        assert_operations(root.path(), &["hello"]);
+        assert!(matches!(
+            rx.recv_timeout(WAIT),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+        drop(worker);
+    }
+}
+
+#[test]
+#[ignore = "requires CEDAR_CONNECTION_CANCEL_PEER_BIN; explicit process acceptance"]
+fn worker_publishes_completed_write_ack_before_immediate_eof() {
+    let root = fixture("held_reply_eof");
+    let (tx, rx) = mpsc::channel();
+    let worker = Worker::spawn_agent(
+        peer_binary(),
+        root.path().into(),
+        29,
+        tx,
+        egui::Context::default(),
+    );
+    assert!(response(rx.recv_timeout(WAIT).unwrap()).connected);
+    worker
+        .tx
+        .send(Command {
+            id: 61,
+            op: Operation::Write {
+                path: "fixture.txt".into(),
+                text: "acknowledged submission".into(),
+                expected_revision: Some("fixture-revision".into()),
+            },
+        })
+        .unwrap();
+    assert!(matches!(
+        ready_request(root.path(), 2).op,
+        Operation::Write { .. }
+    ));
+    fs::write(root.path().join("release-2"), b"acknowledge then close\n").unwrap();
+    let acknowledgement = response(rx.recv_timeout(WAIT).unwrap());
+    assert_eq!(acknowledgement.generation, 29);
+    assert_eq!(acknowledgement.id, 61);
+    assert!(acknowledgement.connected);
+    assert!(matches!(
+        acknowledgement.result,
+        Ok(Payload::Written { revision }) if revision == "written-revision"
+    ));
+    assert!(matches!(
+        rx.recv_timeout(WAIT).unwrap(),
+        WorkerEvent::TransportLost { generation: 29, .. }
+    ));
+    assert_operations(root.path(), &["hello", "write"]);
+    assert!(matches!(
+        rx.recv_timeout(WAIT),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ));
+}
+
+#[test]
+#[ignore = "requires CEDAR_CONNECTION_CANCEL_PEER_BIN; explicit process acceptance"]
+fn dropping_healthy_idle_worker_closes_mailbox_and_process() {
+    let root = fixture("capability_peer");
+    let (tx, rx) = mpsc::channel();
+    let worker = Worker::spawn_agent(
+        peer_binary(),
+        root.path().into(),
+        31,
+        tx,
+        egui::Context::default(),
+    );
+    assert!(response(rx.recv_timeout(WAIT).unwrap()).connected);
+    drop(worker);
+    assert!(matches!(
+        rx.recv_timeout(CANCEL_BOUND),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ));
+    wait_marker(root.path(), "eof");
+    assert_operations(root.path(), &["hello"]);
 }
