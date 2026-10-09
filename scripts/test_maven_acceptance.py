@@ -22,6 +22,7 @@ def good_receipt():
     def case(name):
         value = {key: True for key, kind in collector.MAVEN_CASE_FIELDS.items() if kind == 'bool'}
         value.update(PROBE_SUCCESS)
+        value['owned_project_missing_library_diagnostic'] = name == 'missing'
         value.update(case=name, failure_stage='none', model_status='imported' if name == 'present' else 'unresolved',
                      model_queries=1, unexpected_dependency_references=0, generated_metadata_files=8,
                      lifecycle_metadata_files=6, lifecycle_metadata_mask=63,
@@ -77,7 +78,9 @@ class MavenReceiptTests(unittest.TestCase):
 
     def test_nested_type_enum_counter_and_fixed_hash_fail_closed(self):
         for case, field, invalid in [
-            ('present', 'hover', 'SECRET_SENTINEL'), ('missing', 'model_queries', 241),
+            ('present', 'hover', 'SECRET_SENTINEL'),
+            ('missing', 'owned_project_missing_library_diagnostic', 'SECRET_SENTINEL'),
+            ('missing', 'owned_project_missing_library_diagnostic', 1), ('missing', 'model_queries', 241),
             ('missing', 'stop_reason', 'SECRET_SENTINEL'), ('present', 'root_exit_code', True),
             ('present', 'generated_data_bytes', 134217729),
             ('present', 'lifecycle_metadata_files', 7),
@@ -132,6 +135,32 @@ class MavenReceiptTests(unittest.TestCase):
         self.assertEqual(rejected['rejected_diagnostic_code_shape'], 'integer_zero')
         self.assertNotIn('SECRET_SENTINEL', json.dumps(result))
 
+    def test_project_marker_categories_and_boolean_are_sanitized_without_payload(self):
+        value = good_receipt()
+        value['missing'].update(
+            event_probe_outcome='events_rejected',
+            event_rejection='unexpected_project_diagnostic',
+            rejected_diagnostic_origin='owned_project_root',
+            rejected_diagnostic_code_shape='string_invalid_classpath',
+            rejected_diagnostic_message_class='owned_missing_maven_library',
+            rejected_diagnostic_severity='error',
+            raw_uri='SECRET_SENTINEL', raw_message='SECRET_SENTINEL')
+        result, errors, truncated = sanitize(value)
+        self.assertFalse(errors)
+        self.assertFalse(truncated)
+        case = result['records'][0]['missing']
+        self.assertIs(case['owned_project_missing_library_diagnostic'], True)
+        self.assertEqual(case['rejected_diagnostic_origin'], 'owned_project_root')
+        self.assertEqual(case['rejected_diagnostic_code_shape'], 'string_invalid_classpath')
+        self.assertEqual(case['rejected_diagnostic_message_class'], 'owned_missing_maven_library')
+        self.assertNotIn('SECRET_SENTINEL', json.dumps(result))
+        for invalid in (None, 0, 1, 'true', [], {}, [True]):
+            with self.subTest(invalid=invalid):
+                value['missing']['owned_project_missing_library_diagnostic'] = invalid
+                result, errors, _ = sanitize(value)
+                self.assertIn('invalid_field_owned_project_missing_library_diagnostic', errors)
+                self.assertNotIn('owned_project_missing_library_diagnostic', result['records'][0]['missing'])
+
     @unittest.skipUnless(shutil.which('pwsh'), 'PowerShell is required for the actual Maven release predicate')
     def test_actual_powershell_gate_rejects_missing_contradictory_or_forged_witnesses(self):
         good = good_receipt()
@@ -166,6 +195,10 @@ class MavenReceiptTests(unittest.TestCase):
                   'root_handle_signaled', 'model_after_stop_rejected', 'client_reaped',
                   'synthetic_root_removed', 'success')
         for name in ('present', 'missing'):
+            field = 'owned_project_missing_library_diagnostic'
+            reject(name + '_missing_project_witness', [name, field], remove=True)
+            for invalid in (None, [], [True], 'true', 1, name == 'present'):
+                reject(name + '_project_witness_' + repr(invalid), [name, field], invalid)
             for field in PROBE_SUCCESS:
                 for invalid in (None, [], [PROBE_SUCCESS[field]], 'other', 'SECRET_SENTINEL'):
                     reject(name + '_probe_' + field + '_' + repr(invalid), [name, field], invalid)

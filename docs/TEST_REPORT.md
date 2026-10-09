@@ -1,182 +1,65 @@
 # Verification report · Windows Maven leaf projects / 0.22.0
 
-This checkpoint adds an explicit, trusted Windows Maven leaf profile to the normal
-release agent and Client. Ordinary Java remains a separate mode. The model request
-reports bounded source/compiler/classpath information from m2e and binds it to the
-on-disk root POM captured at startup. Unsaved editor drafts remain independent;
-a subsequent accepted POM read/save or backend disk-hash change requires restart.
-See [the supported subset and trust limitations](MAVEN_PROJECTS.md).
+The new Maven profile is implemented, but its complete native acceptance and bundle
+remain pending. The supported subset and execution/cache limitations are described
+in [Maven projects](MAVEN_PROJECTS.md). Earlier failed checkpoints and their actual
+results remain in the [phase 22 verification history](TEST_REPORT_PHASE22_PROBES.md).
 
-## Finite acceptance
+## Latest observed native result
 
-The new Windows stage prepares an exact, published-digest-checked 83-file Maven
-cache from official Maven Central before import. It then runs one generated
-present-dependency project and one missing-dependency project through the normal
-release agent and Client. The positive case requires actual Maven nature, custom
-source folder, compiler 17 settings, exact library identity and Java semantics.
-The negative case requires the exact unresolved dependency reference, a matching
-offline POM error and continued absence of its JAR/POM. Both require trust/default
-and stale-session rejection, changed-POM restart, unchanged inputs, bounded metadata,
-retained process identity, joined cleanup and a reaped Client.
+Public commit `6ff525e0e61df684ecb5d96f0436660f414f6e5d` in
+[run 37882685195](https://github.com/LLLLimbo/cedar-ide/actions/runs/37882685195)
+passed Ubuntu and the existing Windows capability, Java and Git gates. The Maven
+present case proved its actual model, exact generated dependency, semantics,
+POM-change restart, unchanged inputs and graceful root exit zero. Both cases
+classified six lifecycle markers (mask 63), eight metadata files total and zero
+foreign repository files, while preserving source/cache hashes and cleanup.
 
-Maven dependency resolution is offline. This is not a network-isolated language
-server: the stock distribution can request public Gradle version metadata and
-trusted configurators can execute code. No user project or credentials are used
-by acceptance. Cache preparation has a separate fixed manifest and no redirects;
-no artifact payload is included in the development bundle.
+The missing case failed. Its first model response was not ready; processing then
+rejected a diagnostic for a foreign document, with an error severity and an
+unclassified string code/message. The fixed receipt did not identify that URI or
+message. No particular historical marker identity is inferred from those categories.
+The missing JAR/POM remained absent and the root exited naturally with verified cleanup.
 
-The test-only cleanup allowance is 90 seconds, covering the existing 75-second
-Stop RPC plus verification. Production grace and RPC deadlines are unchanged.
-Phase admission reserves cleanup inside an unchanged absolute 360-second pair
-budget; late cleanup or inadequate remaining budget fails acceptance. This fixes
-a pre-runtime test-budget inconsistency, not a performance result. Graceful and
-forced stop outcomes remain distinct in sanitized receipts.
+Ordinary Java also exercised the explicit recovery workflow in this run: the reused
+session retained a 60,042 ms spontaneous diagnostic timeout, 595 polls and zero
+events. Exactly one fixed refresh was acknowledged and its exact unversioned witness
+arrived after 507 ms. The original spontaneous verdict remained false while the
+recovery workflow passed. This does not establish general diagnostic freshness or
+an upstream fix.
 
-## Verification status
+## Narrow classifier candidate
 
-The final local aggregate passed 922 Rust tests across 40 suites, with 23
-explicit opt-in tests retained for native/process stages. Strict host and MSVC
-all-target/all-feature Clippy passed. Cache preparation tests passed 11; Maven
-receipt tests passed three with the PowerShell execution and native Windows
-environment-presence tests skipped locally.
-The existing sanitized collector passed 75 of 78 tests with three platform/tool
-skips; bundle tests passed 28 of 29 with one skip, and export tests passed two.
-The resource observer and numeric collector suites passed 79 and 36 respectively.
-The normal default-feature release app/agent build and four actual-agent
-protocol, capability, language and task smoke suites passed. Formatting and diff
-checks passed; independent source review found no remaining blocking issue.
-No Windows Maven runtime or new ZIP is claimed before exact native CI completes. The preceding
-[0.21.1 report](TEST_REPORT_PHASE21_RECOVERY.md) preserves the diagnostic recovery
-criterion: spontaneous diagnostic timeouts remain separately reported, and an
-explicit refresh is not an upstream fix. No GUI Trust, authenticated SSH or local
-user-computer verification is included in this checkpoint.
+Pinned [JDT Core validation](https://github.com/eclipse-jdt/eclipse.jdt.core/blob/6725c16c24d94c83302346dc384bb915a0f2fe1a/org.eclipse.jdt.core/model/org/eclipse/jdt/internal/core/ClasspathEntry.java#L2548)
+and [JDT LS publication](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/08eafe6ff60c7159ef88571d47b6a9ef82fef94e/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/WorkspaceDiagnosticsHandler.java#L212)
+explain a candidate project-directory marker emitted before the POM diagnostic.
+This test-only follow-up recognizes it only in the missing case: exact captured
+owned directory URI, string code 964, Error severity, Java source, zero range and
+an exact reconstructed message containing the generated dependency JAR path.
+Both generated dependency artifacts must actually be absent. Wrong paths, codes,
+source, severity, ranges, generic errors and present-case markers remain rejected.
 
-## Initial native checkout failure and bounded repair
+The original unresolved model, exact dependency reference, full-GAV offline POM
+error, absence, input integrity and cleanup requirements remain mandatory. No
+request, cadence, heap, startup, model or cleanup budget is extended. The sanitized
+receipt exports only fixed categories and a boolean witness. This checkpoint's
+release predicate requires that witness in the missing case and forbids it in the
+present case, so an unexercised candidate cannot be called verified.
 
-The first 0.22 source, public commit
-`96b6cc9c72b542e90f73139b6e8aeac0ffad80e5`, failed the early Windows
-cache-manifest identity test in [CI run 37875938163](https://github.com/LLLLimbo/cedar-ide/actions/runs/37875938163).
-No Maven cache preparation or native Maven import ran. The expected frozen SHA-256
-remains `2afceba6a8f6b648a1dbf48cc356b931233cc57bc82b52d02fefdd58e5e876ac`.
+## Recovery and verification
 
-A generated repository reproduces Git `core.autocrlf=true` converting that LF
-manifest to different CRLF bytes. The native failure log did not include the
-actual file digest, so that mechanism is consistent with the failure rather
-than directly proven on the failed runner. The follow-up pins LF checkout only
-for this exact manifest and adds a real Git regression with an unprotected CRLF
-control. All 11 cache tests pass locally. Manifest bytes, digest verification,
-production Rust and Cargo versions are unchanged; prior Rust/build results apply
-to those identical inputs. The test now exposes only the public manifest digests
-if identity fails. A fresh exact native CI run remains required.
-
-## Native unit-test environment follow-up
-
-The checkout repair, public commit `e141239185c25a75d9e2c2a1e91d2709b7dd2323`,
-passed all 11 native cache tests and four Maven predicate tests in
-[CI run 37876462383](https://github.com/LLLLimbo/cedar-ide/actions/runs/37876462383).
-Windows then failed a launch-recipe unit test because the production guard
-rejected an inherited Maven launcher variable. The error establishes that at
-least one guarded Maven name was present; the old log does not identify which
-name or value. No Maven import ran. Ubuntu completed successfully.
-
-The follow-up isolates the positive recipe test in an exact child test process
-with explicitly removed launcher variables. Separate synthetic child cases
-require rejection of each guarded variable and verify that the parent environment
-is unchanged. Production guards are unchanged. A native test receipt reports only
-fixed variable names and presence booleans; no inherited values are exported.
-The synthetic Maven acceptance setup also clears the already-rejected
-`MAVEN_EXT_CLASS_PATH`. Fresh exact native verification remains required.
-
-Final follow-up verification passed 918 Rust tests across 40 suites, strict host
-and MSVC all-target/all-feature Clippy, formatting and diff checks. The helper
-requires one actual test and one fixed completion witness, rejects late results,
-and exposes no captured child output. Its zero/missing/duplicate witness controls
-passed. The default release and four actual-agent smoke checks also passed before
-the final test-only helper tightening; shipping definitions are unchanged.
-Independent review found no remaining blocking issue. The native pair still has
-not run and no new development ZIP is claimed.
-
-## First native production Maven result and metadata audit
-
-Public commit `278646aacb0cf90a5d98f42a6d9edd75327aecbd` in
-[CI run 37877818505](https://github.com/LLLLimbo/cedar-ide/actions/runs/37877818505)
-passed the corrected native recipe unit. The bounded environment receipt reports
-only `MAVEN_OPTS` present among the 15 checked names; no value was collected.
-An older isolated-agent capability equality test omitted the two intentionally
-added Maven operations. Its exact list and existing trust/default-host negatives
-are updated together; generic language execution remains unsupported.
-
-The independent Maven stage prepared the exact 83-file cache. Its present case
-proved Maven nature, custom source, compiler 17 settings, exact dependency,
-hover/completion/type-error semantics, unsaved change acknowledgement, no autosave,
-POM-change restart, unchanged inputs and graceful root exit zero with joined
-cleanup and a reaped Client. Repository postflight counted six unexpected files
-and two accepted metadata files, so the case and pair failed. The missing case
-was not launched. The native receipt retained no identities for those six files;
-this historical result is not relabelled as success.
-
-Pinned public sources explain a candidate metadata type: m2e computes default
-lifecycle execution plans and inspects plugin mapping metadata, including plugins
-whose goals are not run. Its resolver writes `m2e-lastUpdated.properties` after
-failed resolution. See the pinned
-[m2e writer](https://github.com/eclipse-m2e/m2e-core/blob/638f58b86637d88ec518adb4a80061cec6b3e07d/org.eclipse.m2e.core/src/org/eclipse/m2e/core/internal/embedder/MavenImpl.java#L553-L704),
-[Maven 3.9.16 default bindings](https://github.com/apache/maven/blob/maven-3.9.16/maven-core/src/main/resources/META-INF/plexus/default-bindings.xml)
-and [lifecycle components](https://github.com/apache/maven/blob/maven-3.9.16/maven-core/src/main/resources/META-INF/plexus/components.xml).
-
-The follow-up classifier is limited to that one marker filename at six exact
-pinned default-plugin coordinates. It requires the locally reconstructed owned
-file-mirror key and a bounded numeric timestamp. No additional JAR/POM, other
-path, symlink/reparse point, property, or arbitrary cache/index/lock file is allowed.
-Immutable input hashes and missing-dependency absence remain separate checks.
-The new fixed coordinate mask and marker count must agree and remain within the
-existing metadata bound. Bits 0 through 5 identify clean 3.2.0, site 3.12.1,
-surefire 3.5.4, jar 3.5.0, install 3.1.4 and deploy 3.1.4 respectively. The next exact native receipt must establish the actual
-classification and complete the previously unexecuted missing case.
-
-Final metadata-follow-up checks passed 922 Rust tests across 40 suites and strict
-host/MSVC all-target/all-feature Clippy. The four portable classifier test groups
-cover exact coordinates, marker bytes/escaping, owned-mirror identity, numeric
-bounds, malformed/duplicate values, mixed newlines and extra JAR/POM rejection.
-The existing locked URL dependency moved from Windows-only to common test
-dependencies so these pure tests execute on Linux too; shipping dependencies and
-Cargo.lock are unchanged. Python collector/receipt/cache, bundle and export tests
-passed with their previously stated local platform/tool skips. Independent review
-found no blocking issue. Exact native classification and the missing case remain
-pending; no retrospective pass is assigned to the earlier failed pair.
-
-## Observed native metadata classification and missing-case diagnosis
-
-Public commit `070fe1966c2d0946b03e4fb8f88a5157d24ba212` in
-[CI run 37880050989](https://github.com/LLLLimbo/cedar-ide/actions/runs/37880050989)
-proved the new classification in the present case: six lifecycle markers, mask
-63, eight total metadata files and zero foreign files. The present case completed
-all required model, semantic, POM-change, integrity and natural-zero-exit witnesses.
-This establishes identities only for the current classified files, not those
-omitted from the earlier red receipt.
-
-The missing case now ran, retained absent dependency JAR/POM and unchanged inputs,
-and cleaned up with natural root exit zero. It failed at the model stage after
-one query; the receipt’s default/unavailable status and false model flags do not
-distinguish a rejected response from an event rejection. The model polling code
-already continues on an ordinary unavailable response. No readiness or missing-
-dependency criterion is weakened. A diagnostic-only follow-up records fixed branch,
-error-code and rejected-diagnostic categories without raw payloads, messages, paths
-or inherited values. Request order, cadence and budgets remain unchanged.
-
-A separate old fixture test compared nonshipping generic-language Hello directly
-with normal Hello. The fixture intentionally omits Maven. The corrected assertion
-filters exactly those two capabilities while preserving equality for everything
-else, and explicitly requires both Maven operations to remain unsupported there.
-The older Python smoke’s Windows expectations also now require typed Java/Maven
-while retaining generic-language and unsupported-run rejection. Five pure tests
-cover those expectations; they do not claim actual Windows process execution.
-All prior failed receipts remain unchanged and the overall native gate remains red.
-
-The diagnostic-only follow-up passed 922 host Rust tests, strict host/MSVC
-all-target/all-feature Clippy, formatting and diff checks. Three new deterministic
-Windows branch-test groups compile under MSVC and await native execution. The
-collector’s 78 tests retain the same three local skips; Maven receipt tests pass
-four with two native/tool skips. All ten Rust trace-enum sets exactly match the
-collector whitelist. The five pure capability expectations and actual Linux
-agent capability smoke passed. Independent review found no acceptance, privacy
-or production-guard relaxation. A new exact native run remains necessary.
+The cloud executor refresh removed the unpublished local checkpoint and build
+cache. Source was restored from the exact public commit above, with all 813 blobs
+verified against the GitHub tree. The unpublished candidate was reconstructed
+from its retained scope and pinned-source evidence; its old local commit bytes
+were not recovered. Fresh verification passed 922 host Rust tests across 40 suites, with 23 explicit
+opt-in tests ignored in the aggregate. Strict host and MSVC all-target/all-feature
+Clippy, formatting and diff checks passed. Four new Windows classifier tests
+compile under MSVC and await actual native execution. The Maven receipt suite
+passed five of seven tests, with PowerShell and native Windows metadata skipped
+locally; the collector passed 75 of 78 with three local platform/tool skips. Cache
+tests passed 11, export tests two, capability tests five, and bundle tests 28 of 29
+with one platform skip. Diagnostic enum sets match the collector whitelist exactly.
+Independent review found no remaining blocker. Fresh exact native CI is still
+required before acceptance.
+No new native pass or bundle is claimed here.

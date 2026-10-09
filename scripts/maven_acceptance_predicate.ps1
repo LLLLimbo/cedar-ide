@@ -97,6 +97,11 @@ function Assert-MavenReceipt([object[]] $Receipts) {
             }
         } else { throw 'Maven stop outcome was not verified.' }
         $present = $name -ceq 'present'
+        # This checkpoint must actually exercise the exact missing-project marker candidate.
+        if ($case.owned_project_missing_library_diagnostic -isnot [bool] -or
+            $case.owned_project_missing_library_diagnostic -ne (-not $present)) {
+            throw 'Maven project-marker classification was not exercised in its exact missing scope.'
+        }
         foreach ($field in @('dependency_jar_present_before', 'dependency_jar_present_after',
             'dependency_pom_present_before', 'dependency_pom_present_after')) {
             if ($case.$field -isnot [bool] -or $case.$field -ne $present) {

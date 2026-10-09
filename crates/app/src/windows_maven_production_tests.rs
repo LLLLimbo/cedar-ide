@@ -197,6 +197,7 @@ enum EventRejection {
     MissingDiagnostics,
     UnexpectedPomDiagnostic,
     UnexpectedSourceDiagnostic,
+    UnexpectedProjectDiagnostic,
     ForeignDocument,
     UriEncoding,
 }
@@ -207,6 +208,7 @@ enum DiagnosticOrigin {
     None,
     Pom,
     Source,
+    OwnedProjectRoot,
     Foreign,
     Missing,
 }
@@ -218,6 +220,7 @@ enum DiagnosticCodeShape {
     Missing,
     StringZero,
     StringTypeMismatch,
+    StringInvalidClasspath,
     OtherString,
     IntegerZero,
     IntegerTypeMismatch,
@@ -247,6 +250,7 @@ enum DiagnosticMessageClass {
     DeliberateIntToString,
     UnresolvedCedarImport,
     UnresolvedArithmetic,
+    OwnedMissingMavenLibrary,
     Other,
 }
 
@@ -284,6 +288,7 @@ struct CaseEvidence {
     exact_dependency_reference: bool,
     unexpected_dependency_references: u16,
     offline_pom_diagnostic: bool,
+    owned_project_missing_library_diagnostic: bool,
     hover: bool,
     completion: bool,
     deliberate_type_diagnostic: bool,
@@ -994,6 +999,7 @@ fn inspect_model_inner(
 #[derive(Default)]
 struct DiagnosticState {
     offline_pom: bool,
+    owned_project_missing_library_diagnostic: bool,
     type_error: bool,
     corrected: bool,
     trace: EventTrace,
@@ -1013,6 +1019,7 @@ fn diagnostic_candidate(trace: &mut EventTrace, origin: DiagnosticOrigin, item: 
         Value::Null => DiagnosticCodeShape::Missing,
         Value::String(code) if code == "0" => DiagnosticCodeShape::StringZero,
         Value::String(code) if code == "16777233" => DiagnosticCodeShape::StringTypeMismatch,
+        Value::String(code) if code == "964" => DiagnosticCodeShape::StringInvalidClasspath,
         Value::String(_) => DiagnosticCodeShape::OtherString,
         Value::Number(code) if code.as_i64() == Some(0) => DiagnosticCodeShape::IntegerZero,
         Value::Number(code) if code.as_i64() == Some(16_777_233) => {
@@ -1079,8 +1086,13 @@ fn inspect_events(
             "Maven source reported a foreign or unexpected diagnostic" => {
                 EventRejection::UnexpectedSourceDiagnostic
             }
+            "Maven project reported a foreign or unexpected diagnostic" => {
+                EventRejection::UnexpectedProjectDiagnostic
+            }
             "Maven diagnostics referenced a foreign document" => EventRejection::ForeignDocument,
-            "source URI failed" | "POM URI failed" => EventRejection::UriEncoding,
+            "source URI failed" | "POM URI failed" | "project URI failed" => {
+                EventRejection::UriEncoding
+            }
             _ => EventRejection::None,
         };
         if !matches!(
@@ -1089,6 +1101,7 @@ fn inspect_events(
                 | EventRejection::MissingDiagnostics
                 | EventRejection::UnexpectedPomDiagnostic
                 | EventRejection::UnexpectedSourceDiagnostic
+                | EventRejection::UnexpectedProjectDiagnostic
                 | EventRejection::ForeignDocument
         ) {
             diagnostics.trace = EventTrace::default();
@@ -1120,6 +1133,8 @@ fn record_events(
     record.rejected_diagnostic_code_shape = diagnostics.trace.code_shape;
     record.rejected_diagnostic_severity = diagnostics.trace.severity;
     record.rejected_diagnostic_message_class = diagnostics.trace.message_class;
+    record.owned_project_missing_library_diagnostic =
+        diagnostics.owned_project_missing_library_diagnostic;
     result
 }
 
@@ -1139,6 +1154,8 @@ fn inspect_events_inner(
         url::Url::from_file_path(paths.root.join(SOURCE_FILE)).map_err(|_| "source URI failed")?;
     let pom_uri =
         url::Url::from_file_path(paths.root.join("pom.xml")).map_err(|_| "POM URI failed")?;
+    let project_uri =
+        url::Url::from_directory_path(&paths.root).map_err(|_| "project URI failed")?;
     for event in events {
         match event["type"].as_str() {
             Some("notification" | "unsupported_server_request") => {}
@@ -1155,6 +1172,8 @@ fn inspect_events_inner(
                     DiagnosticOrigin::Pom
                 } else if same_local_uri(uri, source_uri.as_str()) {
                     DiagnosticOrigin::Source
+                } else if same_local_uri(uri, project_uri.as_str()) {
+                    DiagnosticOrigin::OwnedProjectRoot
                 } else {
                     DiagnosticOrigin::Foreign
                 };
@@ -1207,6 +1226,43 @@ fn inspect_events_inner(
                                 "Maven source reported a foreign or unexpected diagnostic",
                             )?;
                         }
+                    }
+                } else if same_local_uri(uri, project_uri.as_str()) {
+                    for item in items {
+                        diagnostic_candidate(
+                            &mut diagnostics.trace,
+                            DiagnosticOrigin::OwnedProjectRoot,
+                            item,
+                        );
+                        // Source-backed candidate, not identification of a
+                        // historical native failure: JDT Core 6725c16c uses
+                        // INVALID_CLASSPATH 964; m2e JDT 8d83cb8 retains the
+                        // missing JAR; JDT LS 08eafe6 publishes project markers
+                        // with string codes, source Java and a zero range.
+                        // JDT's Windows OS path uses backslashes, including
+                        // components joined from the fixture's slash constants.
+                        let owned_message = item["message"]
+                            == format!(
+                                "The container 'Maven Dependencies' references non existing library '{}'",
+                                text(&paths.repository.join(DEPENDENCY_JAR))?.replace('/', "\\")
+                            );
+                        if owned_message {
+                            diagnostics.trace.message_class =
+                                DiagnosticMessageClass::OwnedMissingMavenLibrary;
+                        }
+                        require(
+                            !kind.present()
+                                && item["severity"] == 1
+                                && item["code"] == "964"
+                                && item["source"] == "Java"
+                                && item["range"]
+                                    == serde_json::json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}})
+                                && owned_message
+                                && absent(&paths.repository.join(DEPENDENCY_JAR))?
+                                && absent(&paths.repository.join(DEPENDENCY_POM))?,
+                            "Maven project reported a foreign or unexpected diagnostic",
+                        )?;
+                        diagnostics.owned_project_missing_library_diagnostic = true;
                     }
                 } else {
                     if let Some(item) = items.first() {
@@ -2460,6 +2516,10 @@ fn maven_diagnostic_trace_classifies_only_fixed_codes_and_exact_messages() {
             DiagnosticCodeShape::StringTypeMismatch,
         ),
         (
+            serde_json::json!("964"),
+            DiagnosticCodeShape::StringInvalidClasspath,
+        ),
+        (
             serde_json::json!("private-code"),
             DiagnosticCodeShape::OtherString,
         ),
@@ -2469,6 +2529,7 @@ fn maven_diagnostic_trace_classifies_only_fixed_codes_and_exact_messages() {
             DiagnosticCodeShape::IntegerTypeMismatch,
         ),
         (serde_json::json!(123), DiagnosticCodeShape::OtherInteger),
+        (serde_json::json!(964), DiagnosticCodeShape::OtherInteger),
         (serde_json::json!(true), DiagnosticCodeShape::Other),
     ] {
         let mut trace = EventTrace::default();
@@ -2530,5 +2591,231 @@ fn maven_offline_error_requires_exact_owned_pom_and_full_coordinate() -> CheckRe
         false
     )
     .is_err());
+    Ok(())
+}
+
+fn missing_project_diagnostic_fixture() -> CheckResult<(tempfile::TempDir, CasePaths, Value)> {
+    let fixture = io(tempfile::Builder::new()
+        .prefix("cedar-maven-marker-")
+        .tempdir())?;
+    let base = ordinary_path(fixture.path())?;
+    let paths = CasePaths {
+        root: base.join("workspace 雪"),
+        repository: base.join("repository 雪"),
+        data: base.join("data"),
+    };
+    io(fs::create_dir(&paths.root))?;
+    io(fs::create_dir_all(
+        paths.repository.join(DEPENDENCY_DIRECTORY),
+    ))?;
+    let uri = url::Url::from_directory_path(&paths.root).map_err(|_| "test project URI failed")?;
+    // Spell the expected Windows OS path independently of the classifier's
+    // conversion from the slash-separated fixture constant.
+    let jar = paths
+        .repository
+        .join(r"dev\cedar\fixture\arithmetic\1.0.0\arithmetic-1.0.0.jar");
+    let expected = serde_json::json!({"truncated":false,"events":[{"type":"diagnostics","value":{
+    "uri":uri.as_str(),"diagnostics":[{
+        "severity":1,"code":"964","source":"Java",
+        "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},
+        "message":format!("The container 'Maven Dependencies' references non existing library '{}'", text(&jar)?)
+    }]}}]});
+    Ok((fixture, paths, expected))
+}
+
+#[test]
+fn maven_project_missing_library_requires_exact_owned_marker() -> CheckResult<()> {
+    let (_fixture, paths, expected) = missing_project_diagnostic_fixture()?;
+    let mut record = CaseEvidence {
+        case: CaseKind::Missing,
+        ..CaseEvidence::default()
+    };
+    let mut state = DiagnosticState::default();
+    record_events(&expected, &paths, &mut record, &mut state, false)?;
+    assert!(record.owned_project_missing_library_diagnostic);
+    assert!(state.owned_project_missing_library_diagnostic);
+    assert!(!state.offline_pom);
+    assert_eq!(record.event_rejection, EventRejection::None);
+    assert_eq!(record.rejected_diagnostic_origin, DiagnosticOrigin::None);
+    let encoded = serde_json::to_string(&record).unwrap();
+    assert!(encoded.contains("\"owned_project_missing_library_diagnostic\":true"));
+    assert!(!encoded.contains("file:"));
+    assert!(!encoded.contains("non existing library"));
+    assert!(!encoded.contains("workspace 雪"));
+    assert!(!encoded.contains("repository 雪"));
+
+    for (pointer, replacement) in [
+        ("/code", serde_json::json!(964)),
+        ("/code", serde_json::json!("963")),
+        ("/code", Value::Null),
+        ("/severity", serde_json::json!(2)),
+        ("/severity", Value::Null),
+        ("/source", serde_json::json!("java")),
+        ("/source", Value::Null),
+        ("/range/start/line", serde_json::json!(1)),
+        ("/range/start/character", serde_json::json!(1)),
+        ("/range/end/line", serde_json::json!(1)),
+        ("/range/end/character", serde_json::json!(1)),
+        ("/range", Value::Null),
+        (
+            "/message",
+            serde_json::json!("The project was not built since its build path is incomplete"),
+        ),
+        (
+            "/message",
+            serde_json::json!("The container 'Maven Dependencies' references non existing library 'C:\\foreign\\repository 雪\\dev\\cedar\\fixture\\arithmetic\\1.0.0\\arithmetic-1.0.0.jar'"),
+        ),
+    ] {
+        let mut wrong = expected.clone();
+        *wrong["events"][0]["value"]["diagnostics"][0]
+            .pointer_mut(pointer)
+            .unwrap() = replacement;
+        let mut record = CaseEvidence {
+            case: CaseKind::Missing,
+            ..CaseEvidence::default()
+        };
+        let mut state = DiagnosticState::default();
+        assert!(record_events(&wrong, &paths, &mut record, &mut state, false).is_err());
+        assert_eq!(
+            record.event_rejection,
+            EventRejection::UnexpectedProjectDiagnostic
+        );
+        assert_eq!(
+            record.rejected_diagnostic_origin,
+            DiagnosticOrigin::OwnedProjectRoot
+        );
+        assert_eq!(
+            record.rejected_diagnostic_message_class,
+            if pointer == "/message" {
+                DiagnosticMessageClass::Other
+            } else {
+                DiagnosticMessageClass::OwnedMissingMavenLibrary
+            }
+        );
+        assert!(!record.owned_project_missing_library_diagnostic);
+        assert!(!state.owned_project_missing_library_diagnostic);
+        assert!(!state.offline_pom);
+    }
+    Ok(())
+}
+
+#[test]
+fn maven_project_missing_library_rejects_foreign_uri_and_present_case() -> CheckResult<()> {
+    let (_fixture, paths, expected) = missing_project_diagnostic_fixture()?;
+    let project_uri = expected["events"][0]["value"]["uri"].as_str().unwrap();
+    let raw_uri = project_uri
+        .replacen("file:///", "file:/", 1)
+        .replace("%20", " ")
+        .replace("%E9%9B%AA", "雪");
+    let mut raw = expected.clone();
+    raw["events"][0]["value"]["uri"] = raw_uri.into();
+    let mut state = DiagnosticState::default();
+    inspect_events(&raw, &paths, CaseKind::Missing, &mut state, false)?;
+    assert!(state.owned_project_missing_library_diagnostic);
+    for uri in [
+        project_uri.replace("workspace", "foreign"),
+        project_uri.trim_end_matches('/').to_owned(),
+        format!("{project_uri}child/"),
+        format!("{project_uri}?query"),
+        format!("{project_uri}#fragment"),
+        format!("{project_uri}%00"),
+        format!("{project_uri}%GG"),
+        project_uri.replacen("file:///", "file://localhost/", 1),
+    ] {
+        let mut wrong = expected.clone();
+        wrong["events"][0]["value"]["uri"] = uri.into();
+        let mut record = CaseEvidence {
+            case: CaseKind::Missing,
+            ..CaseEvidence::default()
+        };
+        let mut state = DiagnosticState::default();
+        assert!(record_events(&wrong, &paths, &mut record, &mut state, false).is_err());
+        assert_eq!(record.event_rejection, EventRejection::ForeignDocument);
+        assert_eq!(record.rejected_diagnostic_origin, DiagnosticOrigin::Foreign);
+        assert!(!record.owned_project_missing_library_diagnostic);
+    }
+    let mut present = CaseEvidence::default();
+    assert!(record_events(
+        &expected,
+        &paths,
+        &mut present,
+        &mut DiagnosticState::default(),
+        false
+    )
+    .is_err());
+    assert!(!present.owned_project_missing_library_diagnostic);
+    assert_eq!(
+        present.event_rejection,
+        EventRejection::UnexpectedProjectDiagnostic
+    );
+    assert_eq!(
+        present.rejected_diagnostic_code_shape,
+        DiagnosticCodeShape::StringInvalidClasspath
+    );
+    Ok(())
+}
+
+#[test]
+fn maven_project_missing_library_requires_actual_jar_and_pom_absence() -> CheckResult<()> {
+    let (_fixture, paths, expected) = missing_project_diagnostic_fixture()?;
+    for relative in [DEPENDENCY_JAR, DEPENDENCY_POM] {
+        let artifact = paths.repository.join(relative);
+        for directory in [false, true] {
+            if directory {
+                io(fs::create_dir(&artifact))?;
+            } else {
+                io(fs::write(&artifact, b"owned marker test"))?;
+            }
+            let mut state = DiagnosticState::default();
+            assert!(
+                inspect_events(&expected, &paths, CaseKind::Missing, &mut state, false).is_err()
+            );
+            assert!(!state.owned_project_missing_library_diagnostic);
+            assert_eq!(
+                state.trace.rejection,
+                EventRejection::UnexpectedProjectDiagnostic
+            );
+            if directory {
+                io(fs::remove_dir(&artifact))?;
+            } else {
+                io(fs::remove_file(&artifact))?;
+            }
+        }
+    }
+    let mut state = DiagnosticState::default();
+    inspect_events(&expected, &paths, CaseKind::Missing, &mut state, false)?;
+    assert!(state.owned_project_missing_library_diagnostic);
+    Ok(())
+}
+
+#[test]
+fn maven_project_marker_does_not_replace_owned_offline_pom_witness() -> CheckResult<()> {
+    let (_fixture, paths, mut expected) = missing_project_diagnostic_fixture()?;
+    let pom_uri =
+        url::Url::from_file_path(paths.root.join("pom.xml")).map_err(|_| "test POM URI failed")?;
+    expected["events"].as_array_mut().unwrap().push(serde_json::json!({
+        "type":"diagnostics","value":{"uri":pom_uri.as_str(),"diagnostics":[{
+            "severity":1,"code":"0","message":format!("Offline / Missing artifact {DEPENDENCY_GAV}")
+        }]}
+    }));
+    let mut state = DiagnosticState::default();
+    inspect_events(&expected, &paths, CaseKind::Missing, &mut state, false)?;
+    assert!(state.owned_project_missing_library_diagnostic);
+    assert!(state.offline_pom);
+    for message in [
+        "Missing artifact dev.cedar.fixture:arithmetic:jar:1.0.0",
+        "Offline / Missing artifact dev.cedar.fixture:arithmetic:jar:2.0.0",
+    ] {
+        let mut wrong = expected.clone();
+        wrong["events"][1]["value"]["diagnostics"][0]["message"] = message.into();
+        let mut state = DiagnosticState::default();
+        assert!(inspect_events(&wrong, &paths, CaseKind::Missing, &mut state, false).is_err());
+        assert!(state.owned_project_missing_library_diagnostic);
+        assert!(!state.offline_pom);
+        assert_eq!(
+            state.trace.rejection,
+            EventRejection::UnexpectedPomDiagnostic
+        );
+    }
     Ok(())
 }
