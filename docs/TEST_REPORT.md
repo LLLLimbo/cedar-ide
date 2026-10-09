@@ -1,4 +1,4 @@
-# Verification report · Maven model after server exit / 0.33.0
+# Verification report · Maven model after server exit / 0.33.1
 
 The previous [0.32 checkpoint](TEST_REPORT_PHASE32_SAVE_ACK.md) is fully verified.
 This bounded frontend change retires Maven model evidence after an observed
@@ -29,19 +29,48 @@ retain their cleanup and restart-blocking semantics.
 State and rendered-control regressions cover closure from every model state,
 repeated events, pending transport ownership, reply/event order, late reply variants,
 later POM acknowledgements, Stop/reset/fresh startup, source and selection/history
-preservation, disabled pointer clicks and the actual disabled tooltip. The locked offline local aggregate passed 1,264 tests with zero failures and
+preservation, disabled pointer clicks and the actual disabled tooltip. The locked offline local aggregate passed 1,268 tests with zero failures and
 36 ignored opt-ins across 41 suites. All 23 Maven-model tests passed, including
 five new closure tests and expanded render/Undo cases. Strict all-target/all-feature
 Clippy passed on the host and Windows MSVC target; both all-feature and default
 shipping release builds passed. Bundle tests ran 36 cases: 35 passed and one
-platform skip. Two independent source reviews found no blocking issue.
+platform skip. The Maven lifecycle and diagnostic follow-up source reviews found no blocking issue.
 
 The existing synthetic startup helper now advances polling time relative to its
 current egui frame, allowing repeated explicit starts without moving time backward.
 No production deadline or runtime cadence changed. No new JDT process experiment
-was needed for this frontend-only state change. Exact-source dual-platform CI,
-retained native gates and regenerated package verification remain pending; earlier
-Maven pairs do not substitute for this checkpoint's required run.
+was needed for this frontend-only state change.
+
+## Preserved native failure and bounded diagnostic follow-up
+
+The exact 0.33.0 run at public b5905c4686978f82f17e92ff1ed4f96d11fd0a67
+([CI 37994716814](https://github.com/LLLLimbo/cedar-ide/actions/runs/37994716814))
+passed Ubuntu and all 23 Maven model tests on both platforms. Windows failed the
+existing synthetic javac acceptance at its first version task: one start,
+120 polls, a terminal task observation, and 32.97 seconds total. The receipt did
+not capture the terminal state or outcome details. Its unset version string does
+not prove empty output; zero frontend Reads means navigation had not begun.
+Source integrity, agent reaping and fixture removal passed. The independent
+Maven pair passed; ordinary Java and extracted-bundle acceptance were skipped.
+That run remains failed, and no package is accepted from it.
+
+The 0.33.1 follow-up changes only test evidence and version/report metadata.
+Each explicit task start resets a bounded diagnostic record. The last observed
+snapshot records the existing fixed task state, signed and Windows exit codes,
+truncation/error-presence flags, retained UTF-8 output lengths, and a fixed
+empty/JDK21/other output classification. It never exports raw output, errors,
+paths or new version strings. Retained string lengths are not raw pipe-byte counts.
+Start and poll RPC timings, maximum poll time and finish elapsed time distinguish
+slow calls from repeated live observations. The deadline flag means the existing
+nonterminal harness guard rejected a wait; terminal snapshots retain their
+original precedence over that guard.
+
+The 30-second task timeout, 45-second finish guard, polling cadence, required
+success and cleanup assertions are unchanged. This is diagnostic preparation,
+not an identified timeout cause or a runtime fix. Four pure regressions cover
+all states, unsigned exit bits, incomplete outcomes, output categories, reset,
+timing saturation and exclusion of private-text sentinels. Exact-source dual-OS
+CI and every required native/package gate must still pass before acceptance.
 
 ## Limits
 

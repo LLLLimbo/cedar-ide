@@ -74,6 +74,67 @@ fn bounded_version(version: &str) -> bool {
         && version.split(['.', '-', '+']).next() == Some("21")
 }
 
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum VersionOutput {
+    #[default]
+    NotObserved,
+    Empty,
+    Jdk21,
+    Other,
+}
+
+#[derive(Default, Serialize)]
+struct TaskEvidence {
+    state: Option<TaskState>,
+    exit_code: Option<i32>,
+    windows_exit_code: Option<u32>,
+    truncated: bool,
+    error_present: bool,
+    stdout_utf8_bytes: usize,
+    stderr_utf8_bytes: usize,
+    version_output: VersionOutput,
+    start_rpc_ms: u64,
+    last_poll_rpc_ms: u64,
+    max_poll_rpc_ms: u64,
+    finish_elapsed_ms: u64,
+    // True only when the existing nonterminal 45s guard rejects a wait.
+    // A terminal snapshot retains its existing precedence over that guard.
+    harness_deadline_expired: bool,
+}
+
+fn milliseconds(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+impl TaskEvidence {
+    fn observe(&mut self, task: &TaskSnapshot, elapsed: Duration) {
+        self.state = Some(task.state);
+        self.exit_code = task.exit_code;
+        self.windows_exit_code = task.windows_exit_code;
+        self.truncated = task.truncated;
+        self.error_present = task.error.is_some();
+        self.stdout_utf8_bytes = task.stdout.len();
+        self.stderr_utf8_bytes = task.stderr.len();
+        self.finish_elapsed_ms = milliseconds(elapsed);
+        // Classify bounded retained output without publishing text or errors.
+        let output = format!("{}{}", task.stdout, task.stderr);
+        let output = output.trim();
+        self.version_output = if output.is_empty() {
+            VersionOutput::Empty
+        } else if output.strip_prefix("javac ").is_some_and(bounded_version) {
+            VersionOutput::Jdk21
+        } else {
+            VersionOutput::Other
+        };
+    }
+
+    fn poll_completed(&mut self, elapsed: Duration) {
+        self.last_poll_rpc_ms = milliseconds(elapsed);
+        self.max_poll_rpc_ms = self.max_poll_rpc_ms.max(self.last_poll_rpc_ms);
+    }
+}
+
 #[derive(Default, Serialize)]
 struct Evidence {
     kind: &'static str,
@@ -86,6 +147,7 @@ struct Evidence {
     environment_controlled: bool,
     literal_run_start: bool,
     terminal_run_poll: bool,
+    last_task: TaskEvidence,
     failed_compile: bool,
     explicit_extraction: bool,
     exact_relative_location: bool,
@@ -250,6 +312,7 @@ impl Harness {
     }
 
     fn start(&mut self, args: Vec<String>, evidence: &mut Evidence) -> Check<()> {
+        evidence.last_task = TaskEvidence::default();
         self.app.profiles.draft.program.clone_from(&self.javac);
         self.app.profiles.draft.args = args.clone();
         self.app.profiles.draft.timeout_secs = 30;
@@ -280,7 +343,10 @@ impl Harness {
                 }),
             "submitted command identity followed the editable form",
         )?;
-        let event = self.exchange(command)?;
+        let started = Instant::now();
+        let event = self.exchange(command);
+        evidence.last_task.start_rpc_ms = milliseconds(started.elapsed());
+        let event = event?;
         self.app.apply_event(event);
         evidence.starts = evidence
             .starts
@@ -291,7 +357,8 @@ impl Harness {
     }
 
     fn finish(&mut self, evidence: &mut Evidence) -> Check<TaskSnapshot> {
-        let deadline = Instant::now() + Duration::from_secs(45);
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(45);
         loop {
             let task = self
                 .app
@@ -299,6 +366,7 @@ impl Harness {
                 .snapshot
                 .as_ref()
                 .ok_or("task snapshot missing")?;
+            evidence.last_task.observe(task, started.elapsed());
             if task.state.is_terminal() {
                 require(
                     !task.truncated && task.error.is_none(),
@@ -306,8 +374,9 @@ impl Harness {
                 )?;
                 return Ok(task.clone());
             }
+            evidence.last_task.harness_deadline_expired = Instant::now() >= deadline;
             require(
-                Instant::now() < deadline,
+                !evidence.last_task.harness_deadline_expired,
                 "compiler did not reach a terminal state",
             )?;
             let task_id = task.id;
@@ -327,7 +396,10 @@ impl Harness {
                 matches!(&command.op, Operation::RunPoll { task_id: id } if *id == task_id),
                 "task did not use its original RunPoll identity",
             )?;
-            let event = self.exchange(command)?;
+            let poll_started = Instant::now();
+            let event = self.exchange(command);
+            evidence.last_task.poll_completed(poll_started.elapsed());
+            let event = event?;
             self.app.apply_event(event);
             evidence.polls = evidence
                 .polls
@@ -761,4 +833,132 @@ fn real_javac_run_extract_read_navigation_preserves_draft_history() {
         "synthetic javac acceptance failed at {}",
         evidence.failure_stage
     );
+}
+
+#[test]
+fn task_receipt_preserves_every_state_without_claiming_empty_output() {
+    for state in [
+        TaskState::Starting,
+        TaskState::Running,
+        TaskState::Cancelling,
+        TaskState::Succeeded,
+        TaskState::Failed,
+        TaskState::Cancelled,
+        TaskState::TimedOut,
+        TaskState::OutputLimit,
+        TaskState::SpawnFailed,
+    ] {
+        let task = TaskSnapshot {
+            id: 19,
+            state,
+            stdout: "private sentinel 雪".into(),
+            stderr: "private stderr".into(),
+            exit_code: Some(-1),
+            windows_exit_code: Some(u32::MAX),
+            truncated: true,
+            error: Some("private error path C:/private".into()),
+        };
+        let mut receipt = TaskEvidence::default();
+        receipt.observe(&task, Duration::from_millis(30_001));
+        assert_eq!(receipt.state, Some(state));
+        assert_eq!(receipt.exit_code, Some(-1));
+        assert_eq!(receipt.windows_exit_code, Some(u32::MAX));
+        assert!(receipt.truncated && receipt.error_present);
+        assert_eq!(receipt.stdout_utf8_bytes, task.stdout.len());
+        assert_eq!(receipt.stderr_utf8_bytes, task.stderr.len());
+        assert_eq!(receipt.version_output, VersionOutput::Other);
+        assert_eq!(receipt.finish_elapsed_ms, 30_001);
+        assert!(!receipt.harness_deadline_expired);
+        let encoded = serde_json::to_string(&receipt).unwrap();
+        for sentinel in ["private", "sentinel", "C:/", "雪"] {
+            assert!(!encoded.contains(sentinel));
+        }
+        let decoded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.as_object().unwrap().len(), 13);
+        assert!(decoded.get("id").is_none());
+    }
+}
+
+#[test]
+fn task_receipt_version_categories_do_not_export_untrusted_text() {
+    for (stdout, stderr, expected) in [
+        ("", "", VersionOutput::Empty),
+        (" \n", "\r", VersionOutput::Empty),
+        ("javac 21.0.12.1\n", "", VersionOutput::Jdk21),
+        ("", "javac 21.0.12.1\r\n", VersionOutput::Jdk21),
+        ("javac 25.0.1", "", VersionOutput::Other),
+        ("javac 21.private/path", "", VersionOutput::Other),
+        ("javac 21\nprivate env", "", VersionOutput::Other),
+        ("javac 21", " unexpected", VersionOutput::Other),
+        ("java 21", "", VersionOutput::Other),
+        ("javac 21\u{202e}", "", VersionOutput::Other),
+    ] {
+        let task = TaskSnapshot {
+            id: 1,
+            state: TaskState::Failed,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+            exit_code: None,
+            windows_exit_code: None,
+            truncated: false,
+            error: None,
+        };
+        let mut receipt = TaskEvidence::default();
+        receipt.observe(&task, Duration::ZERO);
+        assert_eq!(receipt.version_output, expected);
+        assert_eq!(receipt.state, Some(TaskState::Failed));
+        assert_eq!(receipt.exit_code, None);
+        let encoded = serde_json::to_string(&receipt).unwrap();
+        for sentinel in ["21.0.12.1", "private", "unexpected"] {
+            assert!(!encoded.contains(sentinel));
+        }
+    }
+}
+
+#[test]
+fn task_receipt_poll_timing_reset_and_integer_saturation_are_explicit() {
+    let mut receipt = TaskEvidence {
+        start_rpc_ms: 17,
+        harness_deadline_expired: true,
+        ..Default::default()
+    };
+    receipt.poll_completed(Duration::from_millis(31));
+    receipt.poll_completed(Duration::from_millis(7));
+    assert_eq!(receipt.last_poll_rpc_ms, 7);
+    assert_eq!(receipt.max_poll_rpc_ms, 31);
+    assert_eq!(milliseconds(Duration::MAX), u64::MAX);
+    receipt = TaskEvidence::default();
+    assert_eq!(receipt.state, None);
+    assert_eq!(receipt.version_output, VersionOutput::NotObserved);
+    assert_eq!(receipt.start_rpc_ms, 0);
+    assert_eq!(receipt.max_poll_rpc_ms, 0);
+    assert_eq!(receipt.last_poll_rpc_ms, 0);
+    assert_eq!(receipt.finish_elapsed_ms, 0);
+    assert!(!receipt.harness_deadline_expired);
+    assert!(!receipt.error_present);
+    assert!(!receipt.truncated);
+    assert_eq!(receipt.exit_code, None);
+    assert_eq!(receipt.windows_exit_code, None);
+}
+
+#[test]
+fn task_receipt_retains_unsigned_exit_and_incomplete_timeout_independently() {
+    let task = TaskSnapshot {
+        id: 1,
+        state: TaskState::TimedOut,
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: None,
+        windows_exit_code: Some(0xc0000005),
+        truncated: true,
+        error: Some("private capture failure".into()),
+    };
+    let mut receipt = TaskEvidence::default();
+    receipt.observe(&task, Duration::from_secs(31));
+    assert_eq!(receipt.state, Some(TaskState::TimedOut));
+    assert_eq!(receipt.exit_code, None);
+    assert_eq!(receipt.windows_exit_code, Some(0xc0000005));
+    assert!(receipt.error_present && receipt.truncated);
+    assert_eq!(receipt.version_output, VersionOutput::Empty);
+    assert!(!receipt.harness_deadline_expired);
 }
