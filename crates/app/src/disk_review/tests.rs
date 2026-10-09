@@ -1075,3 +1075,753 @@ fn profile_revision_only_reload_invalidates_source_and_same_frame_form_input_blo
         assert!(rx.try_recv().is_err());
     }
 }
+
+const MERGE_BASE: &str = "old α\r\nanchor one\nanchor two\r\nold ω\n";
+const MERGE_DRAFT: &str = "draft 🦀\r\nanchor one\nanchor two\r\nold ω\n";
+const MERGE_DISK: &str = "old α\r\nanchor one\nanchor two\r\ndisk 🐻";
+const MERGE_RESULT: &str = "draft 🦀\r\nanchor one\nanchor two\r\ndisk 🐻";
+
+fn merge_app() -> (CedarApp, Receiver<Command>) {
+    let (mut app, rx) = connected();
+    app.open_form = false;
+    app.tools_open = false;
+    app.documents[0] = Document::new(
+        1,
+        "file.rs".into(),
+        MERGE_BASE.into(),
+        content_revision(MERGE_BASE),
+    );
+    app.documents[0].text = MERGE_DRAFT.into();
+    app.documents[0].edit_version = 1;
+    (app, rx)
+}
+
+fn merge_file(path: &str, text: &str) -> Payload {
+    Payload::File {
+        path: path.into(),
+        text: text.into(),
+        revision: content_revision(text),
+    }
+}
+
+fn merge_review(app: &mut CedarApp, rx: &Receiver<Command>, disk: &str) {
+    let path = app.active().unwrap().path.clone();
+    app.compare_with_disk();
+    reply(app, rx.try_recv().unwrap(), merge_file(&path, disk));
+}
+
+fn merge_preview(app: &mut CedarApp, rx: &Receiver<Command>) {
+    merge_review(app, rx, MERGE_DISK);
+    app.preview_disk_merge(&app.editor_ctx.clone());
+    assert!(
+        app.disk_review.slot.as_ref().unwrap().merge.is_some(),
+        "{:?}",
+        app.disk_review.slot.as_ref().unwrap().message
+    );
+    assert!(rx.try_recv().is_err(), "Preview cannot read or write");
+}
+
+fn merge_stage(app: &mut CedarApp, rx: &Receiver<Command>) {
+    merge_preview(app, rx);
+    app.apply_disk_merge(&app.editor_ctx.clone());
+    reply(
+        app,
+        rx.try_recv().unwrap(),
+        merge_file("file.rs", MERGE_DISK),
+    );
+    assert!(app.disk_review.slot.as_ref().unwrap().merge_staged);
+}
+
+fn set_merge_selection(app: &mut CedarApp, range: egui::text::CCursorRange) {
+    let mut state = editor_state::load(&app.editor_ctx, &mut app.documents[0]);
+    state.cursor.set_char_range(Some(range));
+    state.store(&app.editor_ctx, egui::Id::new(("editor", 1u64)));
+}
+
+fn merge_range() -> egui::text::CCursorRange {
+    egui::text::CCursorRange {
+        primary: egui::text::CCursor {
+            index: 2,
+            prefer_next_row: true,
+        },
+        secondary: egui::text::CCursor {
+            index: 8,
+            prefer_next_row: false,
+        },
+    }
+}
+
+fn click_merge_button(app: &mut CedarApp, time: f64, name: &str) {
+    let rect = app
+        .editor_ctx
+        .data(|data| data.get_temp::<egui::Rect>(egui::Id::new(name)))
+        .unwrap();
+    let pos = rect.center();
+    native_frame(
+        app,
+        time,
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    native_frame(
+        app,
+        time + 0.01,
+        vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+}
+
+#[test]
+fn merge_preview_cancel_is_inert_even_without_native_undo_initialization() {
+    let (mut app, rx) = merge_app();
+    let before = format!("{:?}", app.documents[0]);
+    merge_preview(&mut app, &rx);
+    assert_eq!(
+        app.disk_review
+            .slot
+            .as_ref()
+            .unwrap()
+            .merge
+            .as_ref()
+            .unwrap()
+            .text,
+        MERGE_RESULT
+    );
+    assert_eq!(format!("{:?}", app.documents[0]), before);
+    assert!(native_selection(&app.editor_ctx, 1).is_none());
+    app.cancel_disk_merge();
+    assert!(app.disk_review.slot.as_ref().unwrap().merge.is_none());
+    assert_eq!(format!("{:?}", app.documents[0]), before);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn native_merge_preview_cancel_apply_and_undo_redo_restore_full_selection() {
+    let (mut app, rx) = merge_app();
+    native_frame(&mut app, 0.0, vec![]);
+    set_merge_selection(&mut app, merge_range());
+    merge_review(&mut app, &rx, MERGE_DISK);
+    native_frame(&mut app, 1.0, vec![]);
+    native_frame(&mut app, 1.1, vec![]);
+    let before_selection = native_selection(&app.editor_ctx, 1);
+    let version = app.documents[0].edit_version;
+    click_merge_button(&mut app, 2.0, "disk_merge_preview_button");
+    assert!(app.disk_review.slot.as_ref().unwrap().merge.is_some());
+    assert_eq!(app.documents[0].text, MERGE_DRAFT);
+    assert_eq!(app.documents[0].saved_text, MERGE_BASE);
+    assert!(same_selection(
+        before_selection,
+        native_selection(&app.editor_ctx, 1)
+    ));
+    native_frame(&mut app, 2.2, vec![]);
+    click_merge_button(&mut app, 3.0, "disk_merge_cancel_button");
+    assert!(app.disk_review.slot.as_ref().unwrap().merge.is_none());
+    assert_eq!(app.documents[0].edit_version, version);
+    assert!(same_selection(
+        before_selection,
+        native_selection(&app.editor_ctx, 1)
+    ));
+    assert!(rx.try_recv().is_err());
+    native_frame(&mut app, 3.2, vec![]);
+    click_merge_button(&mut app, 4.0, "disk_merge_preview_button");
+    native_frame(&mut app, 4.2, vec![]);
+    click_merge_button(&mut app, 5.0, "disk_merge_apply_button");
+    let read = rx.try_recv().unwrap();
+    assert!(rx.try_recv().is_err());
+    reply(&mut app, read, merge_file("file.rs", MERGE_DISK));
+    assert_eq!(app.documents[0].text, MERGE_DRAFT, "response only stages");
+    native_frame(&mut app, 6.0, vec![]);
+    assert_eq!(app.documents[0].text, MERGE_RESULT);
+    assert_eq!(app.documents[0].saved_text, MERGE_DISK);
+    assert_eq!(
+        app.documents[0].revision,
+        Some(content_revision(MERGE_DISK))
+    );
+    assert_eq!(app.documents[0].edit_version, version + 1);
+    assert!(app.documents[0].dirty());
+    app.dismiss_disk_review();
+    native_frame(
+        &mut app,
+        7.0,
+        shortcut(egui::Key::Z, egui::Modifiers::COMMAND),
+    );
+    assert_eq!(app.documents[0].text, MERGE_DRAFT);
+    assert!(same_selection(
+        before_selection,
+        native_selection(&app.editor_ctx, 1)
+    ));
+    assert_eq!(app.documents[0].saved_text, MERGE_DISK);
+    assert!(app.documents[0].dirty());
+    native_frame(
+        &mut app,
+        8.0,
+        shortcut(egui::Key::Y, egui::Modifiers::COMMAND),
+    );
+    assert_eq!(app.documents[0].text, MERGE_RESULT);
+    assert!(app.documents[0].dirty());
+    assert!(rx.try_recv().is_err());
+    assert!(!app.execution_trusted());
+}
+
+#[test]
+fn merge_rechecks_exact_text_base_and_full_selection_at_apply_response_and_final_frame() {
+    for barrier in 0..3 {
+        for change in 0..7 {
+            let (mut app, rx) = merge_app();
+            set_merge_selection(&mut app, merge_range());
+            merge_preview(&mut app, &rx);
+            let read = if barrier > 0 {
+                app.apply_disk_merge(&app.editor_ctx.clone());
+                Some(rx.try_recv().unwrap())
+            } else {
+                None
+            };
+            if barrier == 2 {
+                let read = read.as_ref().unwrap();
+                reply(
+                    &mut app,
+                    Command {
+                        id: read.id,
+                        op: Operation::Read {
+                            path: "file.rs".into(),
+                        },
+                    },
+                    merge_file("file.rs", MERGE_DISK),
+                );
+            }
+            match change {
+                0 => app.documents[0].text.push_str("new input"), // even without version increment
+                1 => app.documents[0].saved_text.push_str("changed base"),
+                2 => app.documents[0].edit_version += 1,
+                3 => {
+                    let mut range = merge_range();
+                    range.secondary.index += 1;
+                    set_merge_selection(&mut app, range);
+                }
+                4 => {
+                    let mut range = merge_range();
+                    range.primary.prefer_next_row = false;
+                    set_merge_selection(&mut app, range);
+                }
+                5 => {
+                    let mut range = merge_range();
+                    range.secondary.prefer_next_row = true;
+                    set_merge_selection(&mut app, range);
+                }
+                6 => app.documents[0].jump_to = Some(1),
+                _ => unreachable!(),
+            }
+            let before = format!("{:?}", app.documents[0]);
+            if barrier == 0 {
+                app.apply_disk_merge(&app.editor_ctx.clone());
+            }
+            if barrier == 1 {
+                reply(&mut app, read.unwrap(), merge_file("file.rs", MERGE_DISK));
+            }
+            app.finish_disk_merge(&app.editor_ctx.clone());
+            assert_eq!(
+                format!("{:?}", app.documents[0]),
+                before,
+                "barrier {barrier}, change {change}"
+            );
+            assert!(app.disk_review.slot.as_ref().unwrap().merge.is_none());
+            assert!(rx.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn merge_cannot_compose_with_same_frame_typing_paste_undo_selection_or_escape() {
+    for change in 0..5 {
+        let (mut app, rx) = merge_app();
+        native_frame(&mut app, 0.0, vec![]);
+        editor_state::commit(
+            &app.editor_ctx,
+            &mut app.documents[0],
+            MERGE_DRAFT.replace("draft", "draft edited"),
+            3,
+        );
+        merge_stage(&mut app, &rx);
+        let events = match change {
+            0 => vec![egui::Event::Text("input".into())],
+            1 => vec![egui::Event::Paste("paste".into())],
+            2 => shortcut(egui::Key::Z, egui::Modifiers::COMMAND),
+            3 => shortcut(egui::Key::ArrowRight, egui::Modifiers::SHIFT),
+            4 => shortcut(egui::Key::Escape, egui::Modifiers::NONE),
+            _ => unreachable!(),
+        };
+        native_frame(&mut app, 1.0, events);
+        assert_eq!(app.documents[0].saved_text, MERGE_BASE);
+        assert_eq!(
+            app.documents[0].revision,
+            Some(content_revision(MERGE_BASE))
+        );
+        assert!(app
+            .disk_review
+            .slot
+            .as_ref()
+            .is_none_or(|review| review.merge.is_none()));
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[test]
+fn changed_or_invalid_verification_clears_merge_and_requires_explicit_new_preview() {
+    for case in 0..6 {
+        let (mut app, rx) = merge_app();
+        merge_preview(&mut app, &rx);
+        app.apply_disk_merge(&app.editor_ctx.clone());
+        let read = rx.try_recv().unwrap();
+        let result = match case {
+            0 => Ok(merge_file(
+                "file.rs",
+                &MERGE_DISK.replace("disk", "new disk"),
+            )),
+            1 => Ok(Payload::File {
+                path: "file.rs".into(),
+                text: MERGE_DISK.into(),
+                revision: revision('a'),
+            }),
+            2 => Ok(merge_file("other.rs", MERGE_DISK)),
+            3 => Err("not_found: absent".into()),
+            4 => Ok(merge_file("file.rs", "binary\0contents")),
+            5 => Ok(merge_file("file.rs", &"x".repeat(MAX_FILE_BYTES + 1))),
+            _ => unreachable!(),
+        };
+        app.apply_event(Event {
+            generation: app.generation,
+            id: read.id,
+            connected: true,
+            result,
+        });
+        app.finish_disk_merge(&app.editor_ctx.clone());
+        assert_eq!(app.documents[0].text, MERGE_DRAFT);
+        assert_eq!(app.documents[0].saved_text, MERGE_BASE);
+        assert!(app.disk_review.slot.as_ref().unwrap().merge.is_none());
+        app.apply_disk_merge(&app.editor_ctx.clone());
+        assert!(rx.try_recv().is_err());
+        if case == 0 {
+            app.preview_disk_merge(&app.editor_ctx.clone());
+            assert!(app.disk_review.slot.as_ref().unwrap().merge.is_some());
+            app.apply_disk_merge(&app.editor_ctx.clone());
+            reply(
+                &mut app,
+                rx.try_recv().unwrap(),
+                merge_file("file.rs", &MERGE_DISK.replace("disk", "new disk")),
+            );
+            app.finish_disk_merge(&app.editor_ctx.clone());
+            assert_eq!(
+                app.documents[0].text,
+                MERGE_RESULT.replace("disk", "new disk")
+            );
+        }
+    }
+}
+
+#[test]
+fn merge_preview_refuses_unknown_baseline_unchanged_disk_ambiguity_touching_and_caps() {
+    for case in 0..10 {
+        let (mut app, rx) = merge_app();
+        let mut disk = MERGE_DISK.to_owned();
+        match case {
+            0 => app.documents[0].revision = None,
+            1 => app.documents[0].revision = Some(revision('a')),
+            2 => disk = MERGE_BASE.into(),
+            3 => {
+                app.documents[0].saved_text = "a\na\ngap\nz\n".into();
+                app.documents[0].text = "a\na\na\ngap\nz\n".into();
+                disk = "a\na\ngap\nZ\n".into();
+                app.documents[0].revision = Some(content_revision(&app.documents[0].saved_text));
+            }
+            4 => {
+                app.documents[0].text = MERGE_BASE.replace("anchor one", "draft anchor");
+                disk = MERGE_BASE.replace("anchor two", "disk anchor");
+            }
+            5 => app.documents[0].text = "x".repeat(MAX_FILE_BYTES + 1),
+            6 => app.documents[0].saved_text = "x".repeat(MAX_FILE_BYTES + 1),
+            7 => app.documents[0].text = "\n".repeat(65_537),
+            8 => disk = "\n".repeat(65_537),
+            9 => {
+                app.documents[0].text = MERGE_BASE.replace("anchor one", "inserted\nanchor one");
+                disk = MERGE_BASE.replace("anchor one", "also inserted\nanchor one");
+            }
+            _ => unreachable!(),
+        }
+        merge_review(&mut app, &rx, &disk);
+        let before = format!("{:?}", app.documents[0]);
+        app.preview_disk_merge(&app.editor_ctx.clone());
+        assert!(
+            app.disk_review.slot.as_ref().unwrap().merge.is_none(),
+            "case {case}"
+        );
+        assert_eq!(format!("{:?}", app.documents[0]), before);
+        assert!(rx.try_recv().is_err());
+    }
+    assert!(bounded_merge_text(&"\n".repeat(65_536)));
+    assert!(!bounded_merge_text(&format!("{}x", "\n".repeat(65_536))));
+}
+
+#[test]
+fn merge_rechecks_saves_unknown_outcomes_close_and_dialogs_before_preview_and_commit() {
+    for barrier in 0..3 {
+        for change in 0..11 {
+            let (mut app, rx) = merge_app();
+            merge_review(&mut app, &rx, MERGE_DISK);
+            if barrier > 0 {
+                app.preview_disk_merge(&app.editor_ctx.clone());
+                app.apply_disk_merge(&app.editor_ctx.clone());
+            }
+            let read = if barrier > 0 {
+                Some(rx.try_recv().unwrap())
+            } else {
+                None
+            };
+            if barrier == 2 {
+                let read = read.as_ref().unwrap();
+                reply(
+                    &mut app,
+                    Command {
+                        id: read.id,
+                        op: Operation::Read {
+                            path: "file.rs".into(),
+                        },
+                    },
+                    merge_file("file.rs", MERGE_DISK),
+                );
+            }
+            match change {
+                0 => app.documents[0].saving = true,
+                1 => {
+                    app.pending.insert(
+                        900,
+                        Job::Save {
+                            document: 1,
+                            snapshot: MERGE_DRAFT.into(),
+                            submission: None,
+                        },
+                    );
+                }
+                2 => app.close_tab_requested = Some(1),
+                3 => app.confirm = Some(crate::Confirm::CloseWindow),
+                4 => app.close_after_language_stop = true,
+                5 => app.recovery.closing = Some(vec![(1, 1)]),
+                6 => app.allow_close = true,
+                7 => app.open_form = true,
+                8 => app.new_file = true,
+                9 => app.interrupted_save_check.outstanding = Some(900),
+                10 => {
+                    app.documents[0].interrupted_save =
+                        crate::interrupted_save::InterruptedSave::capture(&app, &app.documents[0])
+                }
+                _ => unreachable!(),
+            }
+            let before = format!("{:?}", app.documents[0]);
+            if barrier == 0 {
+                app.preview_disk_merge(&app.editor_ctx.clone());
+            }
+            if barrier == 1 {
+                reply(&mut app, read.unwrap(), merge_file("file.rs", MERGE_DISK));
+            }
+            app.finish_disk_merge(&app.editor_ctx.clone());
+            assert_eq!(
+                format!("{:?}", app.documents[0]),
+                before,
+                "barrier {barrier}, change {change}"
+            );
+            assert!(app.disk_review.slot.as_ref().unwrap().merge.is_none());
+            assert!(rx.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn stale_merge_verification_dismissal_cancel_navigation_and_generation_never_apply() {
+    for change in 0..5 {
+        let (mut app, rx) = merge_app();
+        merge_preview(&mut app, &rx);
+        app.apply_disk_merge(&app.editor_ctx.clone());
+        let read = rx.try_recv().unwrap();
+        let generation = app.generation;
+        match change {
+            0 => app.dismiss_disk_review(),
+            1 => app.cancel_disk_merge(),
+            2 => app.navigation_changed(),
+            3 => {
+                app.disconnected("connection lost".into());
+                app.generation += 1;
+            }
+            4 => app.documents[0].path = "different.rs".into(),
+            _ => unreachable!(),
+        }
+        app.apply_event(Event {
+            generation,
+            id: read.id,
+            connected: true,
+            result: Ok(merge_file("file.rs", MERGE_DISK)),
+        });
+        app.finish_disk_merge(&app.editor_ctx.clone());
+        assert_eq!(app.documents[0].text, MERGE_DRAFT);
+        assert_eq!(app.documents[0].saved_text, MERGE_BASE);
+        assert!(app
+            .disk_review
+            .slot
+            .as_ref()
+            .is_none_or(|review| review.merge.is_none()));
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[test]
+fn cancelled_merge_keeps_one_wire_read_until_drain_and_late_reply_cannot_revive_it() {
+    let (mut app, rx) = merge_app();
+    merge_preview(&mut app, &rx);
+    app.apply_disk_merge(&app.editor_ctx.clone());
+    let read = rx.try_recv().unwrap();
+    app.cancel_disk_merge();
+    for _ in 0..30 {
+        app.preview_disk_merge(&app.editor_ctx.clone());
+        app.compare_with_disk();
+    }
+    assert!(rx.try_recv().is_err());
+    assert!(app.disk_review.busy());
+    reply(&mut app, read, merge_file("file.rs", MERGE_DISK));
+    assert!(!app.disk_review.busy());
+    assert!(app.disk_review.slot.as_ref().unwrap().merge.is_none());
+    assert_eq!(app.documents[0].text, MERGE_DRAFT);
+    app.preview_disk_merge(&app.editor_ctx.clone());
+    assert!(app.disk_review.slot.as_ref().unwrap().merge.is_some());
+    assert!(rx.try_recv().is_err());
+}
+
+const PROFILE_MERGE_BASE: &str = "{\n  \"version\": 1,\n  \"profiles\": [{\n    \"name\": \"Build\",\n    \"program\": \"cargo\",\n    \"args\": [\"build\"],\n    \"timeout_secs\": 30\n  }]\n}\n";
+
+fn profile_merge_app() -> (CedarApp, Receiver<Command>, String, String) {
+    let (mut app, rx) = merge_app();
+    app.documents[0] = Document::new(
+        1,
+        crate::profile_ui::PATH.into(),
+        PROFILE_MERGE_BASE.into(),
+        content_revision(PROFILE_MERGE_BASE),
+    );
+    app.profiles.connected(app.recovery_workspace().unwrap());
+    app.load_profiles();
+    app.select_profile(Some(0));
+    app.profiles.draft.args.push("form-only".into());
+    app.profiles.changed();
+    app.documents[0].text = PROFILE_MERGE_BASE.replace("Build", "Merged name");
+    app.documents[0].edit_version += 1;
+    let disk = PROFILE_MERGE_BASE.replace("30", "60");
+    let merged = disk.replace("Build", "Merged name");
+    merge_review(&mut app, &rx, &disk);
+    app.preview_disk_merge(&app.editor_ctx.clone());
+    assert!(app.disk_review.slot.as_ref().unwrap().merge.is_some());
+    (app, rx, disk, merged)
+}
+
+#[test]
+fn profile_merge_retains_form_and_old_source_cancels_queued_actions_and_late_load() {
+    for action in [
+        crate::profile_ui::Action::Save,
+        crate::profile_ui::Action::Run,
+        crate::profile_ui::Action::Load,
+    ] {
+        let (mut app, rx, disk, merged) = profile_merge_app();
+        let draft = app.profiles.draft.clone();
+        let epoch = app.profiles.epoch;
+        app.apply_disk_merge(&app.editor_ctx.clone());
+        reply(
+            &mut app,
+            rx.try_recv().unwrap(),
+            merge_file(crate::profile_ui::PATH, &disk),
+        );
+        app.queue_profile_action(action);
+        app.finish_disk_merge(&app.editor_ctx.clone());
+        app.finish_profile_actions();
+        assert_eq!(app.documents[0].text, merged);
+        assert_eq!(app.documents[0].saved_text, disk);
+        assert!(app.documents[0].dirty());
+        assert_eq!(app.profiles.draft, draft);
+        assert!(app.profiles.dirty());
+        assert!(app.profiles.owns_document(1));
+        assert_eq!(app.profiles.epoch, epoch + 1);
+        assert!(app.profiles.message.as_ref().unwrap().contains("merged"));
+        assert!(app.profile_run_problem().is_some());
+        app.apply_profile_load(
+            epoch,
+            Some((
+                PROFILE_MERGE_BASE.into(),
+                content_revision(PROFILE_MERGE_BASE),
+            )),
+        );
+        assert_eq!(app.profiles.draft, draft);
+        assert_eq!(app.documents[0].text, merged);
+        app.save_profile();
+        assert_eq!(app.documents[0].text, merged);
+        assert!(rx.try_recv().is_err());
+        app.discard_profile_form();
+        assert_eq!(
+            app.profiles.draft.name, "Build",
+            "the old form baseline is retained"
+        );
+        assert_eq!(app.profiles.draft.args, vec!["build"]);
+    }
+}
+
+#[test]
+fn profile_form_change_during_verification_or_final_input_cancels_merge() {
+    for final_frame in [false, true] {
+        let (mut app, rx, disk, _) = profile_merge_app();
+        app.apply_disk_merge(&app.editor_ctx.clone());
+        let read = rx.try_recv().unwrap();
+        if final_frame {
+            reply(
+                &mut app,
+                Command {
+                    id: read.id,
+                    op: Operation::Read {
+                        path: crate::profile_ui::PATH.into(),
+                    },
+                },
+                merge_file(crate::profile_ui::PATH, &disk),
+            );
+        }
+        app.profiles.draft.name = "new form input".into();
+        app.profiles.changed();
+        if !final_frame {
+            reply(&mut app, read, merge_file(crate::profile_ui::PATH, &disk));
+        }
+        app.finish_disk_merge(&app.editor_ctx.clone());
+        assert_eq!(app.documents[0].saved_text, PROFILE_MERGE_BASE);
+        assert_eq!(
+            app.documents[0].text,
+            PROFILE_MERGE_BASE.replace("Build", "Merged name")
+        );
+        assert_eq!(app.profiles.draft.name, "new form input");
+        assert!(app.disk_review.slot.as_ref().unwrap().merge.is_none());
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+fn wait_merge_recovery(app: &mut CedarApp, done: impl Fn(&CedarApp) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        app.recovery.poll();
+        if done(app) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "recovery timed out: {:?}",
+            app.recovery.error
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn merge_recovery_preserves_older_unowned_records_and_persists_owned_new_tuple() {
+    use cedar_recovery::{record_id, Draft, Store};
+    for older_unowned in [false, true] {
+        let (mut app, rx) = merge_app();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private-recovery");
+        let workspace = app.recovery_workspace().unwrap();
+        let id = record_id(&workspace, "file.rs").unwrap();
+        if older_unowned {
+            Store::open(&path)
+                .unwrap()
+                .write(
+                    1,
+                    &Draft {
+                        workspace: workspace.clone(),
+                        path: "file.rs".into(),
+                        text: "older private draft".into(),
+                        base_text: "older base".into(),
+                        base_revision: Some("older revision".into()),
+                        modified_ms: 1,
+                    },
+                )
+                .unwrap();
+        }
+        app.recovery.start(Ok(path.clone()), &app.editor_ctx);
+        wait_merge_recovery(&mut app, |app| app.recovery.initialized);
+        app.recovery.observe(&workspace, &app.documents[0]);
+        app.recovery.flush();
+        if !older_unowned {
+            wait_merge_recovery(&mut app, |app| {
+                app.recovery.protected(&workspace, &app.documents[0])
+            });
+        }
+        merge_preview(&mut app, &rx);
+        assert_eq!(
+            app.recovery.protected(&workspace, &app.documents[0]),
+            !older_unowned
+        );
+        app.apply_disk_merge(&app.editor_ctx.clone());
+        reply(
+            &mut app,
+            rx.try_recv().unwrap(),
+            merge_file("file.rs", MERGE_DISK),
+        );
+        app.finish_disk_merge(&app.editor_ctx.clone());
+        assert!(
+            !app.recovery.protected(&workspace, &app.documents[0]),
+            "old acknowledgement cannot certify new edit/base tuple"
+        );
+        app.recovery.poll();
+        assert!(!app.recovery.protected(&workspace, &app.documents[0]));
+        app.recovery.observe(&workspace, &app.documents[0]);
+        app.recovery.flush();
+        if older_unowned {
+            app.recovery.discard_owned(&workspace, &app.documents[0]);
+        } else {
+            wait_merge_recovery(&mut app, |app| {
+                app.recovery.protected(&workspace, &app.documents[0])
+            });
+        }
+        assert!(rx.try_recv().is_err());
+        drop(app);
+        let persisted = Store::open(path).unwrap().read(&id).unwrap();
+        if older_unowned {
+            assert_eq!(persisted.text, "older private draft");
+            assert_eq!(persisted.base_text, "older base");
+            assert_eq!(persisted.base_revision.as_deref(), Some("older revision"));
+        } else {
+            assert_eq!(persisted.text, MERGE_RESULT);
+            assert_eq!(persisted.base_text, MERGE_DISK);
+            assert_eq!(persisted.base_revision, Some(content_revision(MERGE_DISK)));
+        }
+    }
+}
+
+#[test]
+fn current_merge_transport_loss_after_cancel_disconnects_without_applying_or_replaying() {
+    let (mut app, rx) = merge_app();
+    merge_preview(&mut app, &rx);
+    app.apply_disk_merge(&app.editor_ctx.clone());
+    let read = rx.try_recv().unwrap();
+    app.cancel_disk_merge();
+    app.apply_event(Event {
+        generation: app.generation,
+        id: read.id,
+        connected: false,
+        result: Err("transport ended".into()),
+    });
+    assert!(!app.ready());
+    assert!(app.disk_review.slot.is_none());
+    assert_eq!(app.documents[0].text, MERGE_DRAFT);
+    assert_eq!(app.documents[0].saved_text, MERGE_BASE);
+    assert!(!app.disk_review.busy());
+    assert!(rx.try_recv().is_err());
+}

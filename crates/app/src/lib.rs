@@ -8,6 +8,9 @@ mod build_problems;
 pub mod completion;
 #[cfg(test)]
 mod connection_cancel_tests;
+mod disk_merge;
+#[cfg(test)]
+mod disk_merge_process_tests;
 mod disk_review;
 mod editor_state;
 mod git_ui;
@@ -2209,6 +2212,7 @@ impl eframe::App for CedarApp {
         self.recovery_window(ctx);
         self.run_dialog(ctx);
         self.finish_disk_reload(ctx);
+        self.finish_disk_merge(ctx);
         self.finish_profile_actions();
         self.finish_interrupted_save_check();
         self.finish_tab_close();

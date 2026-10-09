@@ -110,6 +110,14 @@ impl Profiles {
     }
 }
 impl CedarApp {
+    pub(super) fn profile_disk_merged(&mut self) {
+        // Retain the form, baseline, parsed file and old source. Its raw editor
+        // version no longer matches; only an explicit Load can adopt the merge.
+        self.profiles.queued = None;
+        self.profiles.load_navigation = None;
+        self.profiles.changed();
+        self.profiles.message = Some("The configuration draft was merged. Your profile form is retained; discard form changes if needed, then explicitly Load the editor version before Save or Run".into());
+    }
     pub(super) fn profile_disk_reloaded(&mut self) {
         // Retain the form, its baseline and its old source. Changed source
         // version/revision makes Save/Run fail until the user explicitly loads.

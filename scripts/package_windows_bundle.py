@@ -40,6 +40,7 @@ SOURCE_FILES = {
     "docs/TEST_RESULTS.md": "TEST_RESULTS.md",
     "docs/JAVA_TYPE_SEARCH.md": "JAVA_TYPE_SEARCH.md",
     "docs/IDLE_DISCONNECT.md": "IDLE_DISCONNECT.md",
+    "docs/DRAFT_MERGE.md": "DRAFT_MERGE.md",
 }
 # Exact notice names currently collected by collect_licenses.py. Adding a new
 # upstream notice deliberately requires reviewing this allowlist.

@@ -1,50 +1,55 @@
-# Verification report · passive idle transport loss / 0.25.0
+# Verification report · explicit conservative draft merge / 0.26.0
 
-This checkpoint observes terminal activity already reported by the existing stdio
-reader/writer. An idle frontend can show a lost connection without another user
-request. See [scope and limits](IDLE_DISCONNECT.md).
+This checkpoint extends Compare with disk with an explicit preview and draft-only
+merge for strictly separated textual change regions. It adopts the reviewed disk
+baseline without marking the merged draft saved. See [scope](DRAFT_MERGE.md).
 
-The previous 0.24 public source `e54d77cd943173ef214dcefd0cfc10c9bd58e01a`
-passed [exact Ubuntu/Windows CI 37899453166](https://github.com/LLLLimbo/cedar-ide/actions/runs/37899453166).
-Its actual Java type-query receipt passed all 18 witnesses; the verified Windows
-ZIP contained 531 payloads and a manifest. The historical pre-publication report
-is retained [here](TEST_REPORT_PHASE24.md).
+The previous 0.25 public source `217572610a4f7122eeb7c47772ec8ff533c4b899`
+passed [exact Ubuntu/Windows CI 37903752630](https://github.com/LLLLimbo/cedar-ide/actions/runs/37903752630).
+Both platforms executed the normal-agent idle acceptance with all ten witnesses and
+all six worker process cases. Its verified Windows package contained 532 payloads
+and a manifest. The historical report remains [here](TEST_REPORT_PHASE25.md).
 
 ## Finite acceptance
 
-- No heartbeat, polling loop, new watcher thread or implicit reconnection.
-- Registration and notification races cannot lose queued terminal activity.
-- Completed responses, including Write acknowledgements, precede idle loss.
-  Unacknowledged writes retain the existing unknown-outcome safeguards.
-- Generation fences prevent old events from disconnecting a replacement session.
-  Drafts, selection, Undo and owned recovery remain intact.
-- Dropping a healthy idle worker releases its mailbox and existing process owner.
-- Both-platform normal-agent acceptance uses a controlled local pipe, trust off,
-  checks a healthy idle traffic window, explicit reconnection and unchanged source.
+- Linear bounded exact-line merge; ambiguous, touching and overlapping regions
+  are refused. Unicode, repeated lines, newline variants and zero-width edits
+  have adversarial coverage. No general or semantic merge claim.
+- Preview is inert; Apply uses one fresh Read and a final-frame identity/selection
+  barrier. Missing, changed, malformed or stale responses do not mutate drafts.
+- One Undo restores the original draft and full selection. The newly observed disk
+  text/revision remains the baseline through Undo/Redo; merge itself emits no Write.
+- Recovery ownership and unowned older drafts remain intact. Task-profile drafts
+  are retained while queued mutations and outdated profile sources are invalidated.
+- Trust-off normal-agent acceptance runs on both OS: draft merge without Write,
+  later explicit Save with the new revision, conflict after another external edit,
+  and refusal when disk changes between preview and verification.
 
 ## Current verification status
 
-The host aggregate passed 997 Rust tests across 40 suites, with 28 explicit
-opt-in tests ignored. Strict host and MSVC all-target/all-feature Clippy passed;
-cross-compilation is not Windows execution. Independent frontend state and
-concurrency/ownership reviews found no remaining production blocker. The reviews
-corrected passive unknown-write wording and callback-capture release under a lock.
+The host aggregate passed 1,022 Rust tests across 40 suites, with 29 opt-in tests
+ignored. New coverage includes 12 pure-engine tests and 13 transaction tests; the
+independent minimum-envelope oracle checked 29,791 Unicode/newline triples.
+Actual egui pointer Preview/Cancel/Apply and full-selection Undo/Redo passed, as did
+same-frame refusal, profile queued-action invalidation and recovery-store ownership.
 
-Python checks passed: export 2, capability 5, Git fixture 6, frozen Maven cache 11,
-resource observer 79 and GC collector 36. Collector passed 77 of 81 with four
-platform/tool skips; bundle passed 28 of 29 with one skip; Maven predicates passed
-5 of 7 with two skips. Native PowerShell checks remain part of Windows CI.
+Strict host and MSVC all-target/all-feature Clippy passed. Cross-compilation is not
+Windows execution. Independent algorithm and transaction/recovery reviews found no
+blocking issue; exact line-cap parity and selection-affinity assertions were refined.
+Python checks passed: export 2, capabilities 5, Git fixture 6, Maven cache 11, resource
+observer 79, GC collector 36; collector 77/81 (four platform/tool skips), bundle 28/29
+(one skip), Maven predicates 5/7 (two skips).
 
-The all-feature release built successfully. Actual Linux normal-agent controlled
-pipe acceptance passed: healthy idle had no additional requests, idle loss arrived
-without another operation, exact owned-agent reaping succeeded, and dirty draft,
-selection and Undo survived. Explicit headless worker reconnection and stale-event
-fencing passed with no Write/Run and unchanged source. All six real-worker process
-cases passed, including Write acknowledgement before EOF, repaint notification and
-dropping a healthy idle worker. The small test control marker is atomically
-published so a partial marker cannot introduce a spurious protocol failure.
+The all-feature release built successfully. Actual Linux normal-agent acceptance
+passed three generated trust-off cases: draft-only merge and later explicit Save,
+an intervening external edit rejected by the later Save revision check, and changed
+disk bytes refused during Apply verification. All 13 fixed witnesses passed, including
+no merge-generated Write, separate disk baseline, full-selection Undo/Redo, exact
+owned-agent reaping and expected final disk contents. The default-feature release
+frontend and agent also built successfully; the same three-case process acceptance
+passed against that shipping agent. All 35 disk-review tests passed on the final
+source after the last help-text correction.
 
-The default-feature release frontend and agent also built successfully, and the
-normal-agent idle acceptance passed again against that shipping agent. Fresh exact
-native CI and package verification are required. No Windows GUI, authenticated SSH, silent
-network-stall detection or remote cleanup claim follows from these local tests.
+Exact native CI and regenerated package hashes remain required before acceptance.
+This is not filesystem identity, atomic compare-and-swap, native GUI or authenticated
+SSH validation. Existing diagnostic and remote-transport limitations remain.
