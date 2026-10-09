@@ -1,66 +1,59 @@
-# Verification report · Explicit idle Disconnect / 0.34.0
+# Verification report · Linux agent development bundle / 0.35.0
 
-The previous [0.33.1 checkpoint](TEST_REPORT_PHASE33_MAVEN_EXIT.md) is fully verified.
-This change adds deliberate idle connection release while retaining open drafts.
-It introduces no protocol capability or remote cleanup claim.
+The previous [0.34 checkpoint](TEST_REPORT_PHASE34_EXPLICIT_DISCONNECT.md) is fully
+verified. This slice packages the normal default-feature Linux agent and verifies
+the extracted program through local stdio. It adds no protocol capability, Java
+platform port, SSH deployment or installation step.
 
-## Required contract
+## Required artifact and runtime contract
 
-Disconnect refuses active or unknown command outcomes, language startup/running
-or unverified cleanup, pending mutations and close/recovery transitions. Already
-completed responses retain their ordinary order; admitted Disconnect cancels
-read-only adoption and hands ownership to the existing worker. Buffers, full
-selections, Undo/Redo, recovery ownership, unknown-save identities and eligible
-offline location history remain. Reconnect is explicit and advances the connection
-generation only when the user starts a new connection.
+The build is pinned to Ubuntu 24.04 amd64. The archive contains only the normal
+agent, Chinese quick-start, manifest and existing license material. ELF target,
+interpreter, direct NEEDED libraries and required version symbols are measured
+from the packaged bytes and compared with the manifest. This is not a universal
+Linux, musl, ARM64 or old-glibc compatibility claim. Source document Git blob and
+SHA-256 identities bind documentation/license bytes to the clean source commit; the CI mapping
+records build provenance, not a cryptographic signature or reproducible-build proof.
 
-A distinct Disconnecting state ends only on the matching worker's terminal close
-receipt. EOF, cancelled Reads and mailbox removal do not certify cleanup. The
-worker consumes the existing Client close path with its unchanged three-second
-observation budget and two-second child grace. Timeout or unwind reports Cleanup
-unverified; its warning survives explicit reconnect. These budgets are not an
-unconditional bound on synchronous filesystem or operating-system operations.
+Tar/gzip verification rejects unsupported paths, duplicate or hidden entries,
+links, special files, unexpected modes, excessive expansion, malformed ABI data
+and inconsistent manifest/source identities. Extraction requires a fresh directory
+and rechecks exact file/directory inventory, contents and permissions afterward.
+
+The required runtime uses the exact extracted agent with execution trust off in
+a generated Unicode/space workspace. It checks metadata/capabilities/root, normal
+file access, conditional save/readback, search, stale-save and root-escape refusal,
+execution rejection, continued file access after errors, two consuming close
+acknowledgements and explicit reconnect. It preserves unrelated generated files
+and checks only the intended file changed. No user project is read or written.
 
 ## Verification status
 
-The locked offline local aggregate passed 1,296 tests across 41 suites, with zero
-failures and 39 ignored opt-ins. Eighteen new frontend tests cover strict admission,
-current/stale terminal outcomes, reconnect/close guards, recovery ownership,
-unknown-save identity, full selection/Undo, actual disabled tooltip and click
-behavior, and queued valid/malformed save acknowledgements before the same-frame
-Disconnect handler. Four worker terminal-notice tests cover single completion,
-failed establishment, unwind order and a dropped result receiver. Strict Clippy
-passed on the host and Windows MSVC target.
+Local verification passed 1,296 Rust tests across 42 suites (40 ignored), strict
+all-target/all-feature Clippy on the host and Windows MSVC target, formatting,
+all-feature release and default-feature shipping builds. The Linux archive suite
+passed 30 tests, its receipt suite passed nine, and the retained Windows archive
+suite passed 35 with one platform skip. An initial local link failure with the
+build volume nearly full was preserved; after narrowly scoped removal of obsolete
+generated harnesses, the complete verification pipeline passed.
 
-Three explicit Linux process cases passed using a normal agent and controlled
-stdio peers. Two normal-agent connections were reaped, drafts and recovery were
-retained, and no Write/Run/replay occurred. A stalled Read was cancelled without
-sending its queued List. A real 20-millisecond test-only close observation timed
-out before the unchanged reaper completed; the app retained Cleanup unverified
-through replacement. Its later peer-exit observation is reported separately and
-never upgrades the failed close receipt to verified cleanup. The six retained
-worker process cases, passive-loss case and disk-merge process case also passed,
-including completed-write-acknowledgement-before-EOF order.
+Exact-source CI remains pending. The current cloud development host is Debian 13;
+local parser/compile tests cannot establish Ubuntu package runtime acceptance. The actual Ubuntu build, extraction, stdio test and package hashes
+must pass the pinned native CI job. Both platforms retain all existing required
+gates, including the independently regenerated Windows package.
 
-The response probe reads actual egui state inside its current production frame;
-reading it after end_pass had selected a prior disabled Window sizing pass. This
-was a test-observation correction, not a production admission change. A test
-module was also given an unambiguous filter name so it cannot accidentally select
-the separate passive-idle suite. Earlier local failed logs remain preserved.
-
-Both all-feature and default shipping release builds passed. The three explicit
-process cases also passed using the newly built default shipping agent. Bundle
-inventory/link regressions ran 36 cases: 35 passed and one platform skip. Formatting
-and diff checks passed. Independent lifecycle and recovery/test reviews found no
-blocking issue after narrowing the ownership-error documentation.
-
-Exact-source dual-OS native acceptance and the regenerated Windows package remain
-pending; all previous required CI and extracted-package gates remain required.
+The Rust test's 30-second limit is a success ceiling checked around calls. Existing
+Client RPC deadlines remain unchanged; a failing in-flight call can exceed that
+ceiling before returning. Client-call counts include cached Hello and local
+capability refusals and are not a count of wire frames. Only successful consuming
+close acknowledgements establish local reaping. The CI step's enclosing failure
+boundary is not cleanup evidence.
 
 ## Limits
 
-A successful local owner close is not proof that SSH-side agents or tasks exited,
-that detached reader threads joined, or that a language server stopped gracefully.
-No heartbeat, automatic reconnect, command cancellation, replay or new watcher is
-introduced. Native Windows GUI, authenticated SSH and remote network-loss behavior
-remain unverified. See [usage and ownership limits](EXPLICIT_DISCONNECT.md).
+No authenticated SSH, Windows-to-Linux connection, network-loss handling, remote
+process cleanup or native GUI is exercised by this package test. Linux retains
+its current generic-LSP feature set; the Windows-specific typed Java/Maven route
+has not been ported. The archive is unsigned and does not bundle JDK, Git, language
+servers, a graphical frontend or test drivers. See the
+[Linux quick-start](LINUX_AGENT_QUICKSTART.zh-CN.md).

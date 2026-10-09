@@ -2,11 +2,12 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第三十四阶段显式空闲连接断开（**0.34.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第三十五阶段 Linux agent 独立开发包（**0.35.0**），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
 - 原生 egui/Glow 桌面界面，无 WebView、Electron 或前端 JVM
+- [Linux agent 独立开发包](docs/LINUX_AGENT_QUICKSTART.zh-CN.md)：面向 Ubuntu 24.04 amd64 的无界面后端，附源码/CI/逐文件哈希与实际 ELF 要求；不自动部署、不代表真实 SSH 验收
 - 本地目录与 SSH 工作区，共用同一文件、搜索、工具和语言服务后端
 - **远程能力发现**：缓存一次有效握手，报告后端版本/平台/操作支持；按后端实际能力启用功能，声明不授予执行信任
 - 平面目录浏览与显式展开的[有界目录树](docs/EXPLORER_TREE.md)、多标签编辑、新建文件、行号、简单 Java/Kotlin/Rust 高亮
