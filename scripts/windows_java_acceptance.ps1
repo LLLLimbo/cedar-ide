@@ -53,7 +53,7 @@ $env:JAVA_HOME = $jdkRoot
 $env:CEDAR_JAVA = $Java
 if ($MavenOnly) {
     foreach ($name in @('MAVEN_OPTS', 'MAVEN_ARGS', 'MAVEN_CONFIG', 'MAVEN_USER_HOME',
-        'M2_HOME', 'MAVEN_HOME', 'MAVEN_PROJECTBASEDIR', 'MAVEN_CMD_LINE_ARGS')) {
+        'M2_HOME', 'MAVEN_HOME', 'MAVEN_PROJECTBASEDIR', 'MAVEN_CMD_LINE_ARGS', 'MAVEN_EXT_CLASS_PATH')) {
         $environmentPath = 'Env:' + $name
         if (Test-Path -LiteralPath $environmentPath) { Remove-Item -LiteralPath $environmentPath }
         if (Test-Path -LiteralPath $environmentPath) { throw 'Maven test parent environment was not cleared.' }

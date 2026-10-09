@@ -34,10 +34,11 @@ forced stop outcomes remain distinct in sanitized receipts.
 
 ## Verification status
 
-The final local aggregate passed 916 Rust tests across 40 suites, with 23
+The final local aggregate passed 918 Rust tests across 40 suites, with 23
 explicit opt-in tests retained for native/process stages. Strict host and MSVC
-all-target/all-feature Clippy passed. Cache preparation tests passed 10; Maven
-receipt tests passed three with the PowerShell execution test skipped locally.
+all-target/all-feature Clippy passed. Cache preparation tests passed 11; Maven
+receipt tests passed three with the PowerShell execution and native Windows
+environment-presence tests skipped locally.
 The existing sanitized collector passed 75 of 78 tests with three platform/tool
 skips; bundle tests passed 28 of 29 with one skip, and export tests passed two.
 The resource observer and numeric collector suites passed 79 and 36 respectively.
@@ -67,3 +68,30 @@ control. All 11 cache tests pass locally. Manifest bytes, digest verification,
 production Rust and Cargo versions are unchanged; prior Rust/build results apply
 to those identical inputs. The test now exposes only the public manifest digests
 if identity fails. A fresh exact native CI run remains required.
+
+## Native unit-test environment follow-up
+
+The checkout repair, public commit `e141239185c25a75d9e2c2a1e91d2709b7dd2323`,
+passed all 11 native cache tests and four Maven predicate tests in
+[CI run 37876462383](https://github.com/LLLLimbo/cedar-ide/actions/runs/37876462383).
+Windows then failed a launch-recipe unit test because the production guard
+rejected an inherited Maven launcher variable. The error establishes that at
+least one guarded Maven name was present; the old log does not identify which
+name or value. No Maven import ran. Ubuntu completed successfully.
+
+The follow-up isolates the positive recipe test in an exact child test process
+with explicitly removed launcher variables. Separate synthetic child cases
+require rejection of each guarded variable and verify that the parent environment
+is unchanged. Production guards are unchanged. A native test receipt reports only
+fixed variable names and presence booleans; no inherited values are exported.
+The synthetic Maven acceptance setup also clears the already-rejected
+`MAVEN_EXT_CLASS_PATH`. Fresh exact native verification remains required.
+
+Final follow-up verification passed 918 Rust tests across 40 suites, strict host
+and MSVC all-target/all-feature Clippy, formatting and diff checks. The helper
+requires one actual test and one fixed completion witness, rejects late results,
+and exposes no captured child output. Its zero/missing/duplicate witness controls
+passed. The default release and four actual-agent smoke checks also passed before
+the final test-only helper tightening; shipping definitions are unchanged.
+Independent review found no remaining blocking issue. The native pair still has
+not run and no new development ZIP is claimed.

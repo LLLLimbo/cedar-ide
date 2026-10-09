@@ -18,6 +18,12 @@
 5. 显式 **Check Maven model** 获取一次只读快照。界面显示源码路径、编译器设置、
    类路径和未解析依赖。没有后台模型轮询或自动重导入。
 
+启动进程须具有干净的 Java/Maven 启动环境。除普通 Java 模式已拒绝的变量外，
+若继承了 `MAVEN_OPTS`、`MAVEN_ARGS`、`MAVEN_CONFIG`、`MAVEN_USER_HOME`、
+`M2_HOME`、`MAVEN_HOME`、`MAVEN_PROJECTBASEDIR`、`MAVEN_CMD_LINE_ARGS` 或
+`MAVEN_EXT_CLASS_PATH`，本模式会拒绝启动，即使变量值为空。
+这是当前保守兼容边界；Cedar 不修改机器或父进程的环境配置。
+
 普通 Java 模式仍关闭 Maven/Gradle 导入。旧 agent、通用 LSP 与非 Windows agent
 不会隐式使用这个新模式；缺少完整 Maven 能力时必须明确选择普通 Java。
 

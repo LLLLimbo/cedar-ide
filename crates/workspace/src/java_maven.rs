@@ -808,6 +808,123 @@ fn initialization_options(pom_uri: &str, paths: &ControlPaths) -> Value {
 mod tests {
     use super::*;
 
+    const LAUNCH_ENVIRONMENT: &[&str] = &[
+        "CLIENT_PORT",
+        "CLIENT_HOST",
+        "socket.stream.debug",
+        "JDK_JAVA_OPTIONS",
+        "JAVA_TOOL_OPTIONS",
+        "_JAVA_OPTIONS",
+        "MAVEN_OPTS",
+        "MAVEN_ARGS",
+        "MAVEN_CONFIG",
+        "MAVEN_USER_HOME",
+        "M2_HOME",
+        "MAVEN_HOME",
+        "MAVEN_PROJECTBASEDIR",
+        "MAVEN_CMD_LINE_ARGS",
+        "MAVEN_EXT_CLASS_PATH",
+    ];
+    const CHILD_MODE: &str = "CEDAR_MAVEN_UNIT_CHILD_MODE";
+    const CHILD_COMPLETED: &str = "CEDAR_MAVEN_UNIT_COMPLETED_V1";
+
+    fn completed_child_output(output: &[u8]) -> bool {
+        std::str::from_utf8(output).is_ok_and(|text| {
+            text.lines().filter(|line| *line == CHILD_COMPLETED).count() == 1
+                && text.contains("running 1 test")
+                && text.contains("test result: ok. 1 passed; 0 failed; 0 ignored")
+        })
+    }
+
+    fn isolated_test(test: &str, mode: &str, injected_name: Option<&str>) {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", test, "--test-threads=1", "--nocapture"])
+            .env(CHILD_MODE, mode)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for name in LAUNCH_ENVIRONMENT {
+            command.env_remove(name);
+        }
+        if let Some(name) = injected_name {
+            command.env(name, "cedar-owned-environment-test");
+        }
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("isolated Maven recipe test exceeded its deadline");
+            }
+            if child.try_wait().unwrap().is_some() {
+                let output = child.wait_with_output().unwrap();
+                assert!(
+                    Instant::now() < deadline,
+                    "isolated Maven test completed too late"
+                );
+                assert!(
+                    output.stdout.len() <= 32768 && output.stderr.len() <= 32768,
+                    "isolated Maven test output exceeded its bound"
+                );
+                assert!(output.status.success(), "isolated Maven test failed");
+                assert!(
+                    completed_child_output(&output.stdout),
+                    "isolated Maven test did not prove one completed case"
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn environment_guard_rejects_each_injection_without_parent_mutation() {
+        if let Some(mode) = std::env::var_os(CHILD_MODE) {
+            assert!(
+                mode == "clean" || mode == "injected",
+                "invalid isolated test mode"
+            );
+            assert_eq!(check_environment().is_ok(), mode == "clean");
+            println!("\n{CHILD_COMPLETED}");
+            return;
+        }
+        let before: Vec<_> = LAUNCH_ENVIRONMENT.iter().map(std::env::var_os).collect();
+        let test =
+            "java_maven::tests::environment_guard_rejects_each_injection_without_parent_mutation";
+        isolated_test(test, "clean", None);
+        for name in LAUNCH_ENVIRONMENT {
+            isolated_test(test, "injected", Some(name));
+        }
+        assert!(
+            before
+                == LAUNCH_ENVIRONMENT
+                    .iter()
+                    .map(std::env::var_os)
+                    .collect::<Vec<_>>(),
+            "parent launcher environment changed"
+        );
+    }
+
+    #[test]
+    fn child_completion_requires_one_actual_test_and_one_witness() {
+        let good = format!(
+            "running 1 test\n{CHILD_COMPLETED}\ntest result: ok. 1 passed; 0 failed; 0 ignored\n"
+        );
+        assert!(completed_child_output(good.as_bytes()));
+        for invalid in [
+            good.replace(CHILD_COMPLETED, ""),
+            good.replace("running 1 test", "running 0 tests"),
+            good.replace("1 passed", "0 passed"),
+            format!("{good}{CHILD_COMPLETED}\n"),
+        ] {
+            assert!(!completed_child_output(invalid.as_bytes()));
+        }
+        assert!(!completed_child_output(&[255]));
+    }
+
     fn pom(body: &str) -> Vec<u8> {
         format!("<project><modelVersion>4.0.0</modelVersion><groupId>org.example</groupId><artifactId>leaf</artifactId><version>1.0</version>{body}</project>").into_bytes()
     }
@@ -940,6 +1057,14 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn production_keeps_unicode_locations_and_fresh_ascii_controls() {
+        if std::env::var_os(CHILD_MODE).as_deref() != Some(std::ffi::OsStr::new("recipe")) {
+            isolated_test(
+                "java_maven::tests::production_keeps_unicode_locations_and_fresh_ascii_controls",
+                "recipe",
+                None,
+            );
+            return;
+        }
         fn argument(launch: &java_launch::JavaLaunch, flag: &str) -> String {
             let index = launch
                 .config
@@ -962,9 +1087,10 @@ mod tests {
         let base = java_launch::ordinary_local_path(fixture.path()).unwrap();
         // This launch profile explicitly requires an ASCII JDK/control parent.
         // A machine with a Unicode-only temporary location cannot supply it.
-        if !base.to_str().is_some_and(str::is_ascii) {
-            return;
-        }
+        assert!(
+            base.to_str().is_some_and(str::is_ascii),
+            "Maven recipe fixture requires an ASCII temporary parent"
+        );
         let root = base.join("project 雪");
         let cache = base.join("cache 雪 & jars");
         let distribution = base.join("distribution 雪");
@@ -1086,6 +1212,7 @@ mod tests {
         assert!(!unicode_data.exists());
         assert_eq!(fs::read_dir(&data).unwrap().count(), before);
         assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        println!("\n{CHILD_COMPLETED}");
     }
 
     #[cfg(unix)]

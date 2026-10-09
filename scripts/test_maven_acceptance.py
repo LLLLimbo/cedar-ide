@@ -1,6 +1,7 @@
 """Synthetic-only privacy and exact PowerShell Maven release-gate tests."""
 import copy
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -42,6 +43,17 @@ def sanitize(value):
 
 
 class MavenReceiptTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'native Windows launcher metadata')
+    def test_native_launcher_environment_presence_is_names_and_booleans_only(self):
+        names = ('CLIENT_PORT', 'CLIENT_HOST', 'socket.stream.debug', 'JDK_JAVA_OPTIONS',
+                 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'MAVEN_OPTS', 'MAVEN_ARGS',
+                 'MAVEN_CONFIG', 'MAVEN_USER_HOME', 'M2_HOME', 'MAVEN_HOME',
+                 'MAVEN_PROJECTBASEDIR', 'MAVEN_CMD_LINE_ARGS', 'MAVEN_EXT_CLASS_PATH')
+        present = {name: name in os.environ for name in names}
+        self.assertTrue(all(type(value) is bool for value in present.values()))
+        print(json.dumps({'kind': 'maven_ci_launcher_environment_presence',
+                          'present': present}, sort_keys=True))
+
     def test_complete_pair_survives_fixed_schema_without_raw_nested_data(self):
         value = good_receipt()
         expected = copy.deepcopy(value)
