@@ -15,6 +15,8 @@ cargo test --workspace --all-targets --all-features --locked
 cargo build --workspace --all-features --locked
 target_dir="$(cargo metadata --no-deps --format-version 1 --offline --locked | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 export CEDAR_AGENT_BIN="$target_dir/debug/cedar-agent"
+export CEDAR_TEST_REPORT_AGENT_BIN="$CEDAR_AGENT_BIN"
+cargo test -p cedar-app --lib test_report_process_tests --locked -- --ignored --test-threads=1 --nocapture
 export CEDAR_INTERRUPTED_SAVE_AGENT_BIN="$target_dir/debug/cedar-agent-interrupted-save-validation"
 export CEDAR_CONNECTION_CANCEL_PEER_BIN="$target_dir/debug/cedar-client-transport-peer"
 cargo test -p cedar-app --lib connection_cancel_tests --locked -- --ignored --test-threads=1

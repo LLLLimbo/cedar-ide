@@ -36,6 +36,12 @@ mod system_fonts;
 #[cfg(test)]
 mod tab_focus_tests;
 pub mod task_profiles;
+#[cfg(test)]
+mod test_report_process_tests;
+mod test_report_ui;
+#[cfg(test)]
+mod test_report_ui_tests;
+mod test_reports;
 pub mod text_edits;
 mod worker;
 
@@ -72,6 +78,7 @@ enum Tool {
     Git,
     Run,
     Language,
+    Tests,
 }
 #[derive(Clone)]
 struct ConnectForm {
@@ -199,6 +206,7 @@ enum Job {
     ProfilesLoad {
         epoch: u64,
     },
+    TestReportRead(test_report_ui::Load),
     Run(run_ui::Action),
     DiskReview {
         ticket: u64,
@@ -258,6 +266,7 @@ pub struct CedarApp {
     git_state: git_ui::GitPanel,
     profiles: profile_ui::Profiles,
     run_state: run_ui::RunPanel,
+    test_report: test_report_ui::TestReportPanel,
     language: language_ui::LanguagePanel,
     navigation: navigation::Navigation,
     new_file: bool,
@@ -354,6 +363,7 @@ impl CedarApp {
             git_state: git_ui::GitPanel::default(),
             profiles: profile_ui::Profiles::default(),
             run_state: run_ui::RunPanel::default(),
+            test_report: test_report_ui::TestReportPanel::default(),
             language: language_ui::LanguagePanel::default(),
             navigation: navigation::Navigation::default(),
             new_file: false,
@@ -424,6 +434,7 @@ impl CedarApp {
         self.reset_git(self.workspace_key.as_ref() != Some(&form.key()));
         self.dismiss_disk_review();
         self.run_state.reset();
+        self.test_report.clear();
         self.profiles.disconnected();
         self.worker = None;
         self.language.reset();
@@ -453,6 +464,7 @@ impl CedarApp {
         }
         self.dismiss_disk_review();
         self.reset_git(false);
+        self.test_report.clear();
         self.worker = None;
         self.disk_review.outstanding = None;
         self.agent_info = None;
@@ -503,6 +515,7 @@ impl CedarApp {
         self.reset_git(false);
         self.dismiss_disk_review();
         self.run_state.disconnected();
+        self.test_report.disconnected();
         self.profiles.disconnected();
         self.recovery.restoring_generation = None;
         self.state = ConnectionState::Disconnected;
@@ -773,6 +786,18 @@ impl CedarApp {
         let Some(job) = self.pending.remove(&event.id) else {
             return;
         };
+        if let Job::TestReportRead(load) = job {
+            // A stale view cannot hide a failure of the current transport.
+            if !event.connected {
+                self.disconnected(
+                    "The connection closed while reading the test report. Your drafts are retained"
+                        .into(),
+                );
+            } else {
+                self.apply_test_report_read(load, event.result);
+            }
+            return;
+        }
         // A build location is historical output from one completed command.
         // Late reads must not open tabs after a new task/session/navigation.
         let job = if let Job::BuildProblemOpen {
@@ -1433,11 +1458,12 @@ impl CedarApp {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.label(RichText::new("Ctrl/Cmd+P  Choose a file\nCtrl/Cmd+G  Go to line\nCtrl/Cmd+F  Find in file\nCtrl/Cmd+S  Save changes").size(11.0).color(MUTED));
                     ui.separator();
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if ui.selectable_label(self.tools_open && self.tool == Tool::Search, "Search").clicked() { self.tool = Tool::Search; self.tools_open = true; }
                         if ui.selectable_label(self.tools_open && self.tool == Tool::Git, "Git").clicked() { self.tool = Tool::Git; self.tools_open = true; }
                         if ui.selectable_label(self.tools_open && self.tool == Tool::Run, "Run").clicked() { self.tool = Tool::Run; self.tools_open = true; }
                         if ui.selectable_label(self.tools_open && self.tool == Tool::Language, "LSP").clicked() { self.tool = Tool::Language; self.tools_open = true; }
+                        if ui.selectable_label(self.tools_open && self.tool == Tool::Tests, "Tests").clicked() { self.tool = Tool::Tests; self.tools_open = true; }
                     });
                 });
             });
@@ -1449,11 +1475,12 @@ impl CedarApp {
         }
         egui::TopBottomPanel::bottom("tools").default_height(245.0).height_range(150.0..=500.0).resizable(true)
             .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0)).show(ctx, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.selectable_label(self.tool == Tool::Search, "PROJECT SEARCH").clicked() { self.tool = Tool::Search; }
                     if ui.selectable_label(self.tool == Tool::Git, "GIT CHANGES").clicked() { self.tool = Tool::Git; }
                     if ui.selectable_label(self.tool == Tool::Run, "COMMANDS").clicked() { self.tool = Tool::Run; }
                     if ui.selectable_label(self.tool == Tool::Language, "LANGUAGE").clicked() { self.tool = Tool::Language; }
+                    if ui.selectable_label(self.tool == Tool::Tests, "TEST RESULTS").clicked() { self.tool = Tool::Tests; }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("x").on_hover_text("Hide tools").clicked() { self.tools_open = false; }
                     });
@@ -1484,6 +1511,7 @@ impl CedarApp {
                     }
                     Tool::Git => self.git_panel(ui),
                     Tool::Run => self.run_panel(ui),
+                    Tool::Tests => self.test_report_panel(ui),
                 }
             });
     }

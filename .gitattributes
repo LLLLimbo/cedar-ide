@@ -1,2 +1,5 @@
 # This CI manifest is verified as exact bytes before any artifact request.
 /scripts/maven_cache_manifest.json text eol=lf
+
+# Preserve the exact upstream producer-fixture bytes on Windows checkout.
+crates/app/tests/fixtures/surefire-3.5.4/enclosed-error.xml -text

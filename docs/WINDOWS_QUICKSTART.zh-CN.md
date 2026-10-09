@@ -131,3 +131,9 @@ LSP 和完整调试界面仍未提供。异步命令使用明确的原生 `.exe`
 **Extract javac locations**。初版只解析英文 javac 格式，只有安全的工作区相对路径
 可跳转。已打开的未保存草稿保留，编译行号仅为历史提示。提取不保存或重跑；
 详见随包的 `BUILD_PROBLEMS.md`。
+
+## 已有测试报告
+
+在 Tests 面板输入工作区相对 XML 路径并显式 Load，可阅读历史测试结果。
+执行信任关闭也可使用；不会运行测试、扫描目录或写入文件。报告不证明当前草稿通过测试。
+支持的 Surefire/JUnit 子集和限制见 [TEST_RESULTS.md](TEST_RESULTS.md)。

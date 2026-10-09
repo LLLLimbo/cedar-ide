@@ -347,3 +347,10 @@ Generated from the exact Cargo.lock dependency graph. Includes target-specific a
 | zmij | 1.0.23 | MIT | https://github.com/dtolnay/zmij |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg |
+
+## Apache Maven Surefire report fixture
+
+The unchanged Surefire 3.5.4 XML regression fixture under
+`crates/app/tests/fixtures/surefire-3.5.4/` is licensed under Apache-2.0.
+See its provenance README and `third-party-licenses/apache-maven-surefire-3.5.4/LICENSE`.
+Only text fixture data is included; no Surefire/JUnit executable is redistributed.

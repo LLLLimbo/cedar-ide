@@ -22,6 +22,7 @@ eframe = { version = "=0.31.1", default-features = false, features = ["default_f
 serde_json.workspace = true
 serde.workspace = true
 sha2.workspace = true
+quick-xml = "=0.41.0"
 ab_glyph = "=0.2.32"
 ttf-parser = "=0.25.1"
 
