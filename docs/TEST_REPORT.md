@@ -49,3 +49,21 @@ No Windows Maven runtime or new ZIP is claimed before exact native CI completes.
 criterion: spontaneous diagnostic timeouts remain separately reported, and an
 explicit refresh is not an upstream fix. No GUI Trust, authenticated SSH or local
 user-computer verification is included in this checkpoint.
+
+## Initial native checkout failure and bounded repair
+
+The first 0.22 source, public commit
+`96b6cc9c72b542e90f73139b6e8aeac0ffad80e5`, failed the early Windows
+cache-manifest identity test in [CI run 37875938163](https://github.com/LLLLimbo/cedar-ide/actions/runs/37875938163).
+No Maven cache preparation or native Maven import ran. The expected frozen SHA-256
+remains `2afceba6a8f6b648a1dbf48cc356b931233cc57bc82b52d02fefdd58e5e876ac`.
+
+A generated repository reproduces Git `core.autocrlf=true` converting that LF
+manifest to different CRLF bytes. The native failure log did not include the
+actual file digest, so that mechanism is consistent with the failure rather
+than directly proven on the failed runner. The follow-up pins LF checkout only
+for this exact manifest and adds a real Git regression with an unprotected CRLF
+control. All 11 cache tests pass locally. Manifest bytes, digest verification,
+production Rust and Cargo versions are unchanged; prior Rust/build results apply
+to those identical inputs. The test now exposes only the public manifest digests
+if identity fails. A fresh exact native CI run remains required.

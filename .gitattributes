@@ -1,0 +1,2 @@
+# This CI manifest is verified as exact bytes before any artifact request.
+/scripts/maven_cache_manifest.json text eol=lf

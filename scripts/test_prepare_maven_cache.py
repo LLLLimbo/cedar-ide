@@ -1,6 +1,9 @@
 import copy
 import hashlib
 import io
+import os
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 import time
@@ -32,11 +35,47 @@ class Response(io.BytesIO):
 
 class CacheTests(unittest.TestCase):
     def test_frozen_manifest_has_exact_public_inventory_and_no_local_inputs(self):
+        manifest = Path(cache.__file__).with_name('maven_cache_manifest.json').read_bytes()
+        self.assertEqual(hashlib.sha256(manifest).hexdigest(), cache.MANIFEST_SHA256)
         entries = cache.load_manifest()
         self.assertEqual(len(entries), 83)
         self.assertEqual(sum(item['bytes'] for item in entries), 4_065_288)
         self.assertEqual(max(item['bytes'] for item in entries), 713_862)
         self.assertTrue(all(not item['path'].startswith('/') for item in entries))
+
+    @unittest.skipUnless(shutil.which('git'), 'requires Git checkout regression')
+    def test_frozen_manifest_checkout_preserves_hash_with_autocrlf_enabled(self):
+        repository = Path(cache.__file__).resolve().parent.parent
+        manifest = (repository / 'scripts/maven_cache_manifest.json').read_bytes()
+        attributes = (repository / '.gitattributes').read_bytes()
+        with tempfile.TemporaryDirectory(prefix='cedar-manifest-checkout-') as temporary:
+            root = Path(temporary)
+            environment = {key: value for key, value in os.environ.items()
+                           if not key.upper().startswith('GIT_')}
+            environment['GIT_CONFIG_NOSYSTEM'] = '1'
+            environment['GIT_CONFIG_GLOBAL'] = os.devnull
+
+            def git(*arguments):
+                subprocess.run([shutil.which('git'), '-c', 'core.autocrlf=true',
+                                '-c', 'core.safecrlf=false', *arguments], cwd=root,
+                               env=environment, check=True, capture_output=True, timeout=10)
+
+            git('init', '--quiet')
+            (root / 'scripts').mkdir()
+            target = root / 'scripts/maven_cache_manifest.json'
+            target.write_bytes(manifest)
+            # A control proves the checkout conversion is exercised on this OS.
+            control = root / 'unprotected.txt'
+            control.write_bytes(b'first\nsecond\n')
+            (root / '.gitattributes').write_bytes(attributes)
+            git('add', '.gitattributes', 'scripts/maven_cache_manifest.json', 'unprotected.txt')
+            target.unlink()
+            control.unlink()
+            git('checkout-index', '--all')
+            self.assertEqual(control.read_bytes(), b'first\r\nsecond\r\n')
+            self.assertEqual(target.read_bytes(), manifest)
+            self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(),
+                             cache.MANIFEST_SHA256)
 
     def test_manifest_rejects_path_coordinate_size_and_hash_changes(self):
         import json
