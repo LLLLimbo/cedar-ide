@@ -167,6 +167,8 @@ struct CaseEvidence {
     dependency_pom_present_after: bool,
     generated_metadata_files: u16,
     foreign_repository_files: u16,
+    lifecycle_metadata_files: u8,
+    lifecycle_metadata_mask: u8,
     generated_data_files: u32,
     generated_data_bytes: u64,
     generated_project_files: u16,
@@ -582,8 +584,18 @@ fn source_unchanged(paths: &CasePaths) -> bool {
     fs::read(paths.root.join(SOURCE_FILE))
         .is_ok_and(|bytes| hash(&bytes) == hash(FIXTURE_SOURCE.as_bytes()))
 }
-fn verify_control(paths: &CasePaths) -> CheckResult<()> {
+fn fresh_control_directory(paths: &CasePaths) -> CheckResult<PathBuf> {
+    let data_metadata = io(fs::symlink_metadata(&paths.data))?;
+    require(
+        data_metadata.is_dir()
+            && !data_metadata.file_type().is_symlink()
+            && data_metadata.file_attributes() & 0x400 == 0
+            && text(&paths.data)?.is_ascii()
+            && ordinary_path(&paths.data)? == paths.data,
+        "Maven selected data directory identity changed",
+    )?;
     let entries = io(fs::read_dir(&paths.data))?
+        .take(2)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| "control directory read failed")?;
     require(
@@ -592,19 +604,51 @@ fn verify_control(paths: &CasePaths) -> CheckResult<()> {
     )?;
     let entry = &entries[0];
     let control = entry.path();
+    let metadata = io(fs::symlink_metadata(&control))?;
     require(
-        entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with("cedar-maven-"))
+        metadata.is_dir()
+            && !metadata.file_type().is_symlink()
+            && metadata.file_attributes() & 0x400 == 0
+            && entry.file_name().to_str().is_some_and(|name| {
+                name.strip_prefix("cedar-maven-").is_some_and(|suffix| {
+                    !suffix.is_empty()
+                        && suffix.len() <= 64
+                        && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                })
+            })
             && text(&control)?.is_ascii()
-            && control.join("home").is_dir()
+            && ordinary_path(&control)? == control,
+        "Maven control must be the one fresh ordinary Cedar-owned child",
+    )?;
+    Ok(control)
+}
+
+fn verify_control(paths: &CasePaths) -> CheckResult<()> {
+    let control = fresh_control_directory(paths)?;
+    require(
+        control.join("home").is_dir()
             && control.join("tmp").is_dir()
             && control.join("jdt-data/.metadata").is_dir()
             && control.join("user-settings.xml").is_file()
             && control.join("global-settings.xml").is_file(),
         "Maven data, controls or isolated home layout mismatch",
     )
+}
+
+fn owned_mirror_uri(paths: &CasePaths) -> CheckResult<String> {
+    // Derive authority from the fixture's sole fresh control subtree, never
+    // from a URL or filename supplied by a generated cache file.
+    let mirror = fresh_control_directory(paths)?.join("empty-mirror");
+    let metadata = io(fs::symlink_metadata(&mirror))?;
+    require(
+        metadata.is_dir()
+            && !metadata.file_type().is_symlink()
+            && metadata.file_attributes() & 0x400 == 0
+            && ordinary_path(&mirror)? == mirror
+            && io(fs::read_dir(&mirror))?.next().is_none(),
+        "Maven owned file mirror must remain an empty ordinary directory",
+    )?;
+    directory_url(&mirror)
 }
 
 fn same_path(actual: &str, expected: &Path) -> bool {
@@ -994,6 +1038,7 @@ fn check_repository(
                 && fs::read(&path).is_ok_and(|bytes| hash(&bytes) == seal.sha256)
         })
     });
+    let mirror_uri = owned_mirror_uri(paths)?;
     let after = snapshot(&paths.repository)?;
     for (path, seal) in &after {
         if before.contains_key(path) {
@@ -1017,13 +1062,52 @@ fn check_repository(
         if allowed_parent && allowed_name && seal.bytes <= 32 * 1024 {
             record.generated_metadata_files += 1;
         } else {
-            record.foreign_repository_files += 1;
+            let lifecycle_bit = checked(|| {
+                use crate::java_maven_metadata_tests::{
+                    lifecycle_metadata_bit, MAX_METADATA_BYTES,
+                };
+                require(
+                    seal.bytes <= MAX_METADATA_BYTES as u64,
+                    "generated lifecycle metadata exceeds its existing file bound",
+                )?;
+                let full = paths.repository.join(path);
+                let metadata = io(fs::symlink_metadata(&full))?;
+                require(
+                    metadata.is_file()
+                        && !metadata.file_type().is_symlink()
+                        && metadata.file_attributes() & 0x400 == 0
+                        && metadata.len() == seal.bytes,
+                    "generated lifecycle metadata is not the inspected ordinary file",
+                )?;
+                let mut contents = Vec::new();
+                io(io(fs::File::open(full))?
+                    .take(MAX_METADATA_BYTES as u64 + 1)
+                    .read_to_end(&mut contents))?;
+                require(
+                    contents.len() as u64 == seal.bytes && hash(&contents) == seal.sha256,
+                    "generated lifecycle metadata changed during inspection",
+                )?;
+                lifecycle_metadata_bit(path, &contents, &mirror_uri)
+                    .ok_or_else(|| "generated file is not exact owned lifecycle metadata".into())
+            });
+            match lifecycle_bit {
+                Ok(bit) if record.lifecycle_metadata_mask & bit == 0 => {
+                    record.lifecycle_metadata_mask |= bit;
+                    record.lifecycle_metadata_files += 1;
+                    record.generated_metadata_files += 1;
+                }
+                _ => record.foreign_repository_files += 1,
+            }
         }
     }
     require(
         record.repository_inputs_unchanged
             && record.foreign_repository_files == 0
             && record.generated_metadata_files <= 128
+            && record.lifecycle_metadata_files <= 6
+            && record.lifecycle_metadata_mask <= 63
+            && u32::from(record.lifecycle_metadata_files)
+                == record.lifecycle_metadata_mask.count_ones()
             && record.dependency_jar_present_after == record.case.present()
             && record.dependency_pom_present_after == record.case.present(),
         "Maven changed sealed repository inputs or materialized an unapproved artifact",
@@ -1115,6 +1199,9 @@ fn case_passed(record: &CaseEvidence) -> bool {
         && record.repository_inputs_unchanged
         && record.foreign_repository_files == 0
         && record.generated_metadata_files <= 128
+        && record.lifecycle_metadata_files <= 6
+        && record.lifecycle_metadata_mask <= 63
+        && u32::from(record.lifecycle_metadata_files) == record.lifecycle_metadata_mask.count_ones()
         && record.generated_data_files > 0
         && record.generated_data_files <= 4096
         && record.generated_data_bytes > 0

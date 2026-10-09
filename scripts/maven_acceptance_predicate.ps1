@@ -49,7 +49,8 @@ function Assert-MavenReceipt([object[]] $Receipts) {
             if ($case.$field -isnot [bool]) { throw 'Maven shutdown witness type is invalid.' }
         }
         foreach ($field in @('model_queries', 'unexpected_dependency_references', 'foreign_repository_files',
-            'generated_metadata_files', 'generated_data_files', 'generated_data_bytes',
+            'generated_metadata_files', 'lifecycle_metadata_files', 'lifecycle_metadata_mask',
+            'generated_data_files', 'generated_data_bytes',
             'generated_project_files', 'generated_project_bytes', 'root_exit_code')) {
             if ($case.$field -isnot [int] -and $case.$field -isnot [long]) { throw 'Maven case counter type is invalid.' }
             if ($case.$field -lt 0) { throw 'Maven case counter is negative.' }
@@ -61,6 +62,17 @@ function Assert-MavenReceipt([object[]] $Receipts) {
             $case.generated_data_bytes -gt 134217728 -or $case.generated_project_files -gt 256 -or
             $case.generated_project_bytes -gt 16777216 -or $case.root_exit_code -gt 4294967295) {
             throw 'Maven case bounds or dependency identity failed.'
+        }
+        if ($case.lifecycle_metadata_files -gt 6 -or $case.lifecycle_metadata_mask -gt 63 -or
+            $case.lifecycle_metadata_files -gt $case.generated_metadata_files) {
+            throw 'Maven lifecycle marker count exceeds its exact scope.'
+        }
+        $markerCount = 0
+        for ($bit = 0; $bit -lt 6; $bit++) {
+            if (($case.lifecycle_metadata_mask -band (1 -shl $bit)) -ne 0) { $markerCount++ }
+        }
+        if ($markerCount -ne $case.lifecycle_metadata_files) {
+            throw 'Maven lifecycle marker count does not match its coordinate mask.'
         }
         if ($case.stop_status -ceq 'graceful') {
             if ($case.stop_reason -cne 'root_exited' -or $case.root_exit_code -ne 0 -or

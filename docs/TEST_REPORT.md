@@ -34,7 +34,7 @@ forced stop outcomes remain distinct in sanitized receipts.
 
 ## Verification status
 
-The final local aggregate passed 918 Rust tests across 40 suites, with 23
+The final local aggregate passed 922 Rust tests across 40 suites, with 23
 explicit opt-in tests retained for native/process stages. Strict host and MSVC
 all-target/all-feature Clippy passed. Cache preparation tests passed 11; Maven
 receipt tests passed three with the PowerShell execution and native Windows
@@ -95,3 +95,51 @@ passed. The default release and four actual-agent smoke checks also passed befor
 the final test-only helper tightening; shipping definitions are unchanged.
 Independent review found no remaining blocking issue. The native pair still has
 not run and no new development ZIP is claimed.
+
+## First native production Maven result and metadata audit
+
+Public commit `278646aacb0cf90a5d98f42a6d9edd75327aecbd` in
+[CI run 37877818505](https://github.com/LLLLimbo/cedar-ide/actions/runs/37877818505)
+passed the corrected native recipe unit. The bounded environment receipt reports
+only `MAVEN_OPTS` present among the 15 checked names; no value was collected.
+An older isolated-agent capability equality test omitted the two intentionally
+added Maven operations. Its exact list and existing trust/default-host negatives
+are updated together; generic language execution remains unsupported.
+
+The independent Maven stage prepared the exact 83-file cache. Its present case
+proved Maven nature, custom source, compiler 17 settings, exact dependency,
+hover/completion/type-error semantics, unsaved change acknowledgement, no autosave,
+POM-change restart, unchanged inputs and graceful root exit zero with joined
+cleanup and a reaped Client. Repository postflight counted six unexpected files
+and two accepted metadata files, so the case and pair failed. The missing case
+was not launched. The native receipt retained no identities for those six files;
+this historical result is not relabelled as success.
+
+Pinned public sources explain a candidate metadata type: m2e computes default
+lifecycle execution plans and inspects plugin mapping metadata, including plugins
+whose goals are not run. Its resolver writes `m2e-lastUpdated.properties` after
+failed resolution. See the pinned
+[m2e writer](https://github.com/eclipse-m2e/m2e-core/blob/638f58b86637d88ec518adb4a80061cec6b3e07d/org.eclipse.m2e.core/src/org/eclipse/m2e/core/internal/embedder/MavenImpl.java#L553-L704),
+[Maven 3.9.16 default bindings](https://github.com/apache/maven/blob/maven-3.9.16/maven-core/src/main/resources/META-INF/plexus/default-bindings.xml)
+and [lifecycle components](https://github.com/apache/maven/blob/maven-3.9.16/maven-core/src/main/resources/META-INF/plexus/components.xml).
+
+The follow-up classifier is limited to that one marker filename at six exact
+pinned default-plugin coordinates. It requires the locally reconstructed owned
+file-mirror key and a bounded numeric timestamp. No additional JAR/POM, other
+path, symlink/reparse point, property, or arbitrary cache/index/lock file is allowed.
+Immutable input hashes and missing-dependency absence remain separate checks.
+The new fixed coordinate mask and marker count must agree and remain within the
+existing metadata bound. Bits 0 through 5 identify clean 3.2.0, site 3.12.1,
+surefire 3.5.4, jar 3.5.0, install 3.1.4 and deploy 3.1.4 respectively. The next exact native receipt must establish the actual
+classification and complete the previously unexecuted missing case.
+
+Final metadata-follow-up checks passed 922 Rust tests across 40 suites and strict
+host/MSVC all-target/all-feature Clippy. The four portable classifier test groups
+cover exact coordinates, marker bytes/escaping, owned-mirror identity, numeric
+bounds, malformed/duplicate values, mixed newlines and extra JAR/POM rejection.
+The existing locked URL dependency moved from Windows-only to common test
+dependencies so these pure tests execute on Linux too; shipping dependencies and
+Cargo.lock are unchanged. Python collector/receipt/cache, bundle and export tests
+passed with their previously stated local platform/tool skips. Independent review
+found no blocking issue. Exact native classification and the missing case remain
+pending; no retrospective pass is assigned to the earlier failed pair.

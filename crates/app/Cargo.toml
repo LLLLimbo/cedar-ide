@@ -28,7 +28,7 @@ ttf-parser = "=0.25.1"
 [dev-dependencies]
 cedar-workspace = { path = "../workspace" }
 tempfile.workspace = true
+url = "2.5"
 
 [target.'cfg(windows)'.dev-dependencies]
-url = "2.5"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }

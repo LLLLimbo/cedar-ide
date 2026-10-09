@@ -239,6 +239,8 @@ MAVEN_CASE_FIELDS = dict.fromkeys((
         'model_queries': ('integer_range', 0, 240),
         'unexpected_dependency_references': ('integer_range', 0, 65535),
         'generated_metadata_files': ('integer_range', 0, 65535),
+        'lifecycle_metadata_files': ('integer_range', 0, 6),
+        'lifecycle_metadata_mask': ('integer_range', 0, 63),
         'generated_data_files': ('integer_range', 0, 4096),
         'generated_data_bytes': ('integer_range', 0, 134217728),
         'generated_project_files': ('integer_range', 0, 256),

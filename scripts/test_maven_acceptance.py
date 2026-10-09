@@ -16,6 +16,7 @@ def good_receipt():
         value = {key: True for key, kind in collector.MAVEN_CASE_FIELDS.items() if kind == 'bool'}
         value.update(case=name, failure_stage='none', model_status='imported' if name == 'present' else 'unresolved',
                      model_queries=1, unexpected_dependency_references=0, generated_metadata_files=8,
+                     lifecycle_metadata_files=6, lifecycle_metadata_mask=63,
                      generated_data_files=45, generated_data_bytes=45_000_000,
                      generated_project_files=0, generated_project_bytes=0, foreign_repository_files=0,
                      stop_status='graceful', stop_reason='root_exited', root_exit_code=0,
@@ -71,6 +72,9 @@ class MavenReceiptTests(unittest.TestCase):
             ('present', 'hover', 'SECRET_SENTINEL'), ('missing', 'model_queries', 241),
             ('missing', 'stop_reason', 'SECRET_SENTINEL'), ('present', 'root_exit_code', True),
             ('present', 'generated_data_bytes', 134217729),
+            ('present', 'lifecycle_metadata_files', 7),
+            ('missing', 'lifecycle_metadata_mask', 64),
+            ('missing', 'lifecycle_metadata_mask', True),
             ('missing', 'generated_project_files', 257)]:
             with self.subTest(case=case, field=field):
                 value = good_receipt()
@@ -107,6 +111,10 @@ class MavenReceiptTests(unittest.TestCase):
         forced['present'].update(stop_status='forced', stop_reason='grace_expired', root_exit_code=1067)
         forced['present'].update(shutdown_response_received=False, exit_frame_completed=False)
         cases.append({'name': 'honest_forced_cleanup', 'records': [forced], 'accept': True})
+        subset = copy.deepcopy(good)
+        subset['present'].update(lifecycle_metadata_files=2, lifecycle_metadata_mask=33)
+        subset['missing'].update(lifecycle_metadata_files=0, lifecycle_metadata_mask=0)
+        cases.append({'name': 'exact_marker_subsets', 'records': [subset], 'accept': True})
 
         def reject(name, path, value=None, remove=False):
             item = copy.deepcopy(good)
@@ -137,12 +145,18 @@ class MavenReceiptTests(unittest.TestCase):
                                  ('model_queries', 241), ('model_queries', '1'),
                                  ('unexpected_dependency_references', 1), ('foreign_repository_files', 1),
                                  ('generated_metadata_files', 129), ('generated_data_bytes', 0),
+                                 ('generated_metadata_files', 5), ('lifecycle_metadata_files', 7),
+                                 ('lifecycle_metadata_files', 5), ('lifecycle_metadata_files', True),
+                                 ('lifecycle_metadata_mask', 64), ('lifecycle_metadata_mask', 62),
+                                 ('lifecycle_metadata_mask', '63'), ('lifecycle_metadata_mask', True),
                                  ('generated_data_bytes', 134217729), ('generated_data_files', 0),
                                  ('generated_data_files', 4097), ('generated_project_bytes', 16777217),
                                  ('generated_project_files', 257), ('root_exit_code', None),
                                  ('root_exit_code', 1067), ('stop_status', None), ('stop_status', 'error'),
                                  ('stop_reason', 'grace_expired'), ('failure_stage', 'model')]:
                 reject(f'{name}_{field}_{value}', [name, field], value)
+            reject(name + '_missing_marker_count', [name, 'lifecycle_metadata_files'], remove=True)
+            reject(name + '_missing_marker_mask', [name, 'lifecycle_metadata_mask'], remove=True)
         for field in ('hover', 'completion', 'deliberate_type_diagnostic', 'dirty_change_acknowledged',
                       'no_autosave', 'changed_pom_restart_required'):
             reject('present_' + field, ['present', field], False)

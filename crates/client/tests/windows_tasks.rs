@@ -13,7 +13,8 @@ mod harness;
 
 use cedar_client::Client;
 use cedar_protocol::{
-    Operation, Payload, JAVA_LANGUAGE_SESSION_CAPABILITIES, RUN_TASK_CAPABILITIES,
+    Operation, Payload, JAVA_LANGUAGE_SESSION_CAPABILITIES, JAVA_MAVEN_CAPABILITIES,
+    RUN_TASK_CAPABILITIES,
 };
 use cedar_tasks::{TaskState, MAX_COMPLETED_TASKS, MAX_OUTPUT_BYTES_PER_STREAM};
 use cedar_workspace::Workspace;
@@ -46,6 +47,7 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
             "language_document_symbols",
             "language_events",
             "language_format",
+            "language_maven_model",
             "language_open",
             "language_organize_java_imports",
             "language_query",
@@ -55,6 +57,7 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
             "language_start_java",
             "language_start_java_begin",
             "language_start_java_cancel",
+            "language_start_java_maven_begin",
             "language_start_java_poll",
             "language_stop",
             "list",
@@ -70,6 +73,7 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
         .iter()
         .chain(RUN_TASK_CAPABILITIES)
         .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
+        .chain(JAVA_MAVEN_CAPABILITIES)
     {
         assert!(info.supports(cap), "missing isolated capability {cap}");
     }
@@ -86,6 +90,13 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
             distribution: String::new(),
             data_directory: String::new(),
         },
+        Operation::LanguageStartJavaMavenBegin {
+            java_executable: String::new(),
+            distribution: String::new(),
+            data_directory: String::new(),
+            local_repository: String::new(),
+        },
+        Operation::LanguageMavenModel,
         Operation::LanguageOrganizeJavaImports {
             path: "must-not-be-opened.java".into(),
             version: 1,
@@ -151,6 +162,7 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
     for cap in RUN_TASK_CAPABILITIES
         .iter()
         .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
+        .chain(JAVA_MAVEN_CAPABILITIES)
     {
         assert!(
             !local.supports(cap),

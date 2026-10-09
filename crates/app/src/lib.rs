@@ -15,6 +15,8 @@ mod interrupted_save;
 #[cfg(test)]
 mod interrupted_save_process_tests;
 mod java_language;
+#[cfg(test)]
+mod java_maven_metadata_tests;
 mod language_navigation_results;
 mod language_results;
 mod language_sync;
