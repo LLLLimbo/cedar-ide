@@ -54,7 +54,7 @@ fn main() {
                 "\"list_verified\":true,\"read_verified\":true,",
                 "\"write_verified\":true,\"readback_verified\":true,",
                 "\"search_verified\":true,\"stale_write_rejected\":true,",
-                "\"execution_rejected\":true,\"java_rejected\":true,",
+                "\"execution_rejected\":true,\"java_rejected\":true,\"maven_rejected\":true,",
                 "\"client_reaped\":true}"
             )
         );
@@ -268,6 +268,8 @@ mod portable {
             "run_cancel",
             "language_start_java",
             "language_start_java_begin",
+            "language_start_java_maven_begin",
+            "language_maven_model",
             "language_start_java_poll",
             "language_start_java_cancel",
             "java_diagnostics_refresh",
@@ -388,6 +390,20 @@ mod portable {
         });
         if !matches!(java, Err(error) if error.starts_with("run_disabled:")) {
             return Err("java_rejected");
+        }
+        for operation in [
+            Operation::LanguageStartJavaMavenBegin {
+                java_executable: String::new(),
+                distribution: String::new(),
+                data_directory: String::new(),
+                local_repository: String::new(),
+            },
+            Operation::LanguageMavenModel,
+        ] {
+            if !matches!(client.request(operation), Err(error) if error.starts_with("run_disabled:"))
+            {
+                return Err("maven_rejected");
+            }
         }
         if !client.is_connected() {
             return Err("connected");

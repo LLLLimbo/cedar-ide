@@ -1,7 +1,8 @@
 # Verification report · Windows Maven leaf projects / 0.22.0
 
-The new Maven profile is implemented, but its complete native acceptance and bundle
-remain pending. The supported subset and execution/cache limitations are described
+The new Maven profile passed its complete native present/missing acceptance pair.
+The overall Windows checkpoint remains red because the final bundle metadata test
+failed; the corrected bundle still requires fresh exact verification. The supported subset and execution/cache limitations are described
 in [Maven projects](MAVEN_PROJECTS.md). Earlier failed checkpoints and their actual
 results remain in the [phase 22 verification history](TEST_REPORT_PHASE22_PROBES.md).
 
@@ -63,3 +64,40 @@ with one platform skip. Diagnostic enum sets match the collector whitelist exact
 Independent review found no remaining blocker. Fresh exact native CI is still
 required before acceptance.
 No new native pass or bundle is claimed here.
+
+## Observed native Maven acceptance and bundle follow-up
+
+Public commit `af8ef4c28826ff681f8e192f8c06f5c675c6b5c4` in
+[run 37889046361](https://github.com/LLLLimbo/cedar-ide/actions/runs/37889046361)
+passed the complete normal-agent Maven pair in 25,279 ms. The present model was
+imported and the missing model unresolved, each after two queries. The new exact
+project-marker witness was false for present and true for missing; the required
+full-GAV offline POM witness was also present only in the missing case. Artifact
+presence/absence, model and semantic requirements, POM-change restart, immutable
+inputs and cleanup all passed. Both roots exited naturally with code zero.
+Both repositories had six lifecycle markers, mask 63, eight metadata files and
+zero foreign files. This establishes the candidate in this run, without assigning
+an identity to the earlier rejected marker.
+
+The existing Java gates passed with three spontaneous correction matches and no
+recovery attempts in this run. Default shipping compilation and the Windows Git
+smoke (1,402 assertions) passed. The overall Windows job nevertheless failed at
+the extracted portable-bundle metadata probe, so no Windows development ZIP was
+uploaded or accepted.
+
+That test's exact capability inventory omitted the two intentionally added Maven
+capabilities. The narrow follow-up adds those two names while preserving exact
+capability equality and protocol/root/OS/architecture/version checks. It also
+requires both typed Maven operations to reject with trust off before examining
+any supplied path, with a fixed `maven_rejected` receipt checked by the packaging
+script. Remaining exact capability inventories were audited: the normal host and
+Windows task tests already include Maven; the nonshipping generic-language fixture
+intentionally excludes it. No production route, extraction path, trust setting or
+ownership behavior changes. Fresh full CI and extracted-bundle verification remain
+required before package acceptance.
+
+The bundle follow-up passed 922 host Rust tests across 40 suites (23 explicit
+opt-in tests ignored), strict host/MSVC all-target/all-feature Clippy, formatting
+and diff checks. Bundle tests passed 28 of 29 with one platform skip and export
+tests passed two. Independent review found no blocker. These local checks do not
+replace the actual extracted Windows probe.
