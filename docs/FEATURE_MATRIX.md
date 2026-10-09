@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 26 / 0.26.2
+# 功能矩阵与后续验收 · checkpoint 26 / 0.26.3
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -27,7 +27,7 @@
 | 插件 | Rust crate 扩展边界 | 稳定插件 ABI/协议、权限、生命周期、市场；无 IDEA 插件兼容承诺 |
 | 企业功能 | 无 | 数据库、Spring、Web、容器、应用服务器、Profiler、协作等需分别设计 |
 | 性能 | 懒加载、按需重绘、有界读取/输出/传输/恢复存储 | 无本阶段新内存基准；历史短时前端读数与 JVM 分开；同项目可复现基线、远程延迟、长会话泄漏、生产项目回归、完整进程树核算 |
-| 分发 | Cargo 工程、锁文件、许可清单、公开分阶段源码；0.26.1 已通过精确双平台 CI 和带逐文件哈希的 Windows 开发包验收 | 当前 0.26.2 的精确提交 CI/包待完成；未签名，需 VC++ x64 运行库；Windows/macOS 原生 GUI、已签名安装包与自动升级仍未验收 |
+| 分发 | Cargo 工程、锁文件、许可清单、公开分阶段源码；0.26.2 已通过精确双平台 CI 和带逐文件哈希的 Windows 开发包验收 | 当前 0.26.3 的精确提交 CI/包待完成；未签名，需 VC++ x64 运行库；Windows/macOS 原生 GUI、已签名安装包与自动升级仍未验收 |
 
 ## 验收边界
 

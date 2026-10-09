@@ -1515,75 +1515,192 @@ impl CedarApp {
     fn sidebar(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("explorer").default_width(246.0).width_range(180.0..=460.0).resizable(true)
             .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0)).show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("EXPLORER").size(11.0).strong().color(MUTED));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add_enabled(self.ready(), egui::Button::new("R").small()).on_hover_text("Refresh directory").clicked() { self.list(self.directory.clone()); }
-                        if ui.add_enabled(self.ready(), egui::Button::new("+").small()).on_hover_text("New UTF-8 file").clicked() {
-                            self.new_file = true; self.new_path = if self.directory.is_empty() { String::new() } else { format!("{}/", self.directory) };
-                        }
-                    });
+                let size_id = ui.make_persistent_id("sidebar_viewport_size");
+                let size = ui.available_size();
+                let resized = ctx.data_mut(|data| {
+                    let previous = data.get_temp::<egui::Vec2>(size_id);
+                    data.insert_temp(size_id, size);
+                    previous.is_some_and(|previous| previous != size)
                 });
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(self.ready() && !self.directory.is_empty(), egui::Button::new("Up").small()).on_hover_text("Parent directory").clicked() { self.list(parent_path(&self.directory)); }
-                    ui.add(egui::Label::new(RichText::new(if self.directory.is_empty() { "/" } else { &self.directory }).monospace().size(12.0)).truncate()).on_hover_text(&self.directory);
-                });
-                ui.separator();
-                let shortcut_help = egui::WidgetText::from(RichText::new("Ctrl/Cmd+P  Choose a file\nCtrl/Cmd+G  Go to line\nCtrl/Cmd+F  Find in file\nCtrl/Cmd+S  Save changes").size(11.0).color(MUTED))
-                    .into_galley(ui, Some(egui::TextWrapMode::Wrap), ui.available_width(), egui::TextStyle::Body);
-                let tool_labels = [(Tool::Search, "Search"), (Tool::Git, "Git"), (Tool::Run, "Run"), (Tool::Language, "LSP"), (Tool::Tests, "Tests")];
-                let tool_row_height = (ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y);
-                let tool_widths = tool_labels.map(|(_, label)| {
-                    egui::WidgetText::from(label).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button).size().x + 2.0 * ui.spacing().button_padding.x
-                });
-                let first_row_width: f32 = tool_widths[..3].iter().sum();
-                let second_row_width: f32 = tool_widths[3..].iter().sum();
-                let stacked_tools = first_row_width.max(second_row_width) > ui.available_width();
-                let tool_gap = ui.spacing().item_spacing.x.min(9.0).min(((ui.available_width() - first_row_width) / 2.0).min(ui.available_width() - second_row_width).floor()).max(0.0);
-                let tool_rows_height = if stacked_tools {
-                    // Larger fonts may need one selector per row, with text wrapping.
-                    tool_labels.iter().map(|(_, label)| {
-                        let galley = egui::WidgetText::from(*label).into_galley(ui, Some(egui::TextWrapMode::Wrap), (ui.available_width() - 2.0 * ui.spacing().button_padding.x).max(0.0), egui::TextStyle::Button);
-                        (galley.size().y + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y)
-                    }).sum::<f32>() + 4.0 * ui.spacing().item_spacing.y
-                } else {
-                    2.0 * tool_row_height + ui.spacing().item_spacing.y
-                };
-                let separator_height = 6.0;
-                // Reserve the actual controls, help, separator, and intervening gaps.
-                let footer_height = tool_rows_height + shortcut_help.size().y + separator_height + 3.0 * ui.spacing().item_spacing.y;
-                let mut open = None;
-                egui::ScrollArea::vertical().id_salt("explorer_scroll").max_height((ui.available_height() - footer_height).max(40.0)).show(ui, |ui| {
-                    if self.entries.is_empty() { ui.label(RichText::new(if self.ready() { "This directory is empty" } else { "Connect a workspace to browse files" }).small().color(MUTED)); }
-                    for entry in &self.entries {
-                        let selected = self.active().is_some_and(|doc| doc.path == entry.path);
-                        let color = if entry.is_dir { AMBER } else if syntax::supports(&entry.path) { GREEN } else { TEXT };
-                        let icon = if entry.is_dir { "+" } else { "·" };
-                        let response = ui.add_enabled(self.ready(), egui::Button::new(RichText::new(format!("{icon}  {}", entry.name)).color(color)).selected(selected).frame(selected).min_size(egui::vec2(ui.available_width(), 27.0)));
-                        if response.on_hover_text(&entry.path).clicked() { open = Some(entry.clone()); }
+                let activation_id = ui.make_persistent_id("sidebar_activation_reveal");
+                let mut activation = ctx.data(|data| data.get_temp::<(egui::Id, bool, Tool)>(activation_id));
+                if let Some((id, _, tool)) = activation {
+                    // A new intent cancels even while the sidebar has no space.
+                    // Read raw events because earlier widgets may consume keys.
+                    let new_intent = ctx.input(|input| input.raw.events.iter().any(|event| matches!(event,
+                        egui::Event::Key { pressed: true, .. }
+                        | egui::Event::PointerButton { pressed: true, .. }
+                        | egui::Event::MouseWheel { .. }
+                        | egui::Event::Zoom(_)
+                        | egui::Event::Ime(egui::ImeEvent::Commit(_))
+                        | egui::Event::Text(_)
+                        | egui::Event::Paste(_)
+                        | egui::Event::Touch { phase: egui::TouchPhase::Start, .. }
+                    )));
+                    if !self.tools_open || self.tool != tool || new_intent || ctx.memory(|memory| memory.focused().is_some_and(|focused| focused != id)) {
+                        activation = None;
+                        ctx.data_mut(|data| data.remove::<(egui::Id, bool, Tool)>(activation_id));
                     }
-                });
-                if let Some(entry) = open { if entry.is_dir { self.list(entry.path); } else { self.open(entry.path, None); } }
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.label(shortcut_help);
-                    ui.add(egui::Separator::default().spacing(separator_height));
-                    // A wrapped horizontal child grows downward even in bottom-up layout.
-                    // Give the deliberate rows their full height before placing them.
-                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), tool_rows_height), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        ui.spacing_mut().item_spacing.x = tool_gap;
-                        let mut selector = |ui: &mut egui::Ui, tool: Tool, label: &str| {
-                            if ui.selectable_label(self.tools_open && self.tool == tool, label).clicked() { self.tool = tool; self.tools_open = true; }
-                        };
-                        if stacked_tools {
-                            for (tool, label) in tool_labels { selector(ui, tool, label); }
+                }
+                // Keep both gutters allocated even without overflow. Animated gutter
+                // widths would otherwise change wrapping and the height budget itself.
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                #[cfg(test)]
+                sidebar_layout_tests::begin(ctx);
+                // A held egui scrollbar drag cannot remap a zero-length track.
+                // Keep its stored state intact until positive space returns.
+                if size.y <= 0.0 { return; }
+                ctx.data_mut(|data| data.remove::<(egui::Id, bool, Tool)>(activation_id));
+                let reveal = |response: &egui::Response| {
+                    let activated = activation.filter(|(id, _, _)| *id == response.id);
+                    if activated.is_some_and(|(_, had_focus, _)| had_focus)
+                        && ctx.memory(|memory| memory.focused().is_none()) {
+                        response.request_focus();
+                    }
+                    if activated.is_some() || response.gained_focus() || (resized && response.has_focus()) {
+                        response.scroll_to_me(None);
+                    }
+                };
+                let outer = egui::ScrollArea::vertical().id_salt("sidebar_scroll")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .min_scrolled_height(0.0).auto_shrink([false, false]).animated(false)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("EXPLORER").size(11.0).strong().color(MUTED));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let refresh = ui.add_enabled(self.ready(), egui::Button::new("R").small()).on_hover_text("Refresh directory");
+                                reveal(&refresh);
+                                #[cfg(test)]
+                                sidebar_layout_tests::record(ui, "R", &refresh);
+                                if refresh.clicked() { self.list(self.directory.clone()); }
+                                let new_file = ui.add_enabled(self.ready(), egui::Button::new("+").small()).on_hover_text("New UTF-8 file");
+                                reveal(&new_file);
+                                #[cfg(test)]
+                                sidebar_layout_tests::record(ui, "+", &new_file);
+                                if new_file.clicked() {
+                                    self.new_file = true; self.new_path = if self.directory.is_empty() { String::new() } else { format!("{}/", self.directory) };
+                                }
+                            });
+                        });
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            let up = ui.add_enabled(self.ready() && !self.directory.is_empty(), egui::Button::new("Up").small()).on_hover_text("Parent directory");
+                            reveal(&up);
+                            #[cfg(test)]
+                            sidebar_layout_tests::record(ui, "Up", &up);
+                            if up.clicked() { self.list(parent_path(&self.directory)); }
+                            ui.add(egui::Label::new(RichText::new(if self.directory.is_empty() { "/" } else { &self.directory }).monospace().size(12.0)).truncate()).on_hover_text(&self.directory);
+                        });
+                        ui.separator();
+                        let shortcut_help = egui::WidgetText::from(RichText::new("Ctrl/Cmd+P  Choose a file\nCtrl/Cmd+G  Go to line\nCtrl/Cmd+F  Find in file\nCtrl/Cmd+S  Save changes").size(11.0).color(MUTED))
+                            .into_galley(ui, Some(egui::TextWrapMode::Wrap), ui.available_width(), egui::TextStyle::Body);
+                        let tool_labels = [(Tool::Search, "Search"), (Tool::Git, "Git"), (Tool::Run, "Run"), (Tool::Language, "LSP"), (Tool::Tests, "Tests")];
+                        let tool_row_height = (ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y);
+                        let tool_widths = tool_labels.map(|(_, label)| {
+                            egui::WidgetText::from(label).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button).size().x + 2.0 * ui.spacing().button_padding.x
+                        });
+                        let first_row_width: f32 = tool_widths[..3].iter().sum();
+                        let second_row_width: f32 = tool_widths[3..].iter().sum();
+                        let stacked_tools = first_row_width.max(second_row_width) > ui.available_width();
+                        let tool_gap = ui.spacing().item_spacing.x.min(9.0).min(((ui.available_width() - first_row_width) / 2.0).min(ui.available_width() - second_row_width).floor()).max(0.0);
+                        let tool_rows_height = if stacked_tools {
+                            tool_labels.iter().map(|(_, label)| {
+                                let galley = egui::WidgetText::from(*label).into_galley(ui, Some(egui::TextWrapMode::Wrap), (ui.available_width() - 2.0 * ui.spacing().button_padding.x).max(0.0), egui::TextStyle::Button);
+                                (galley.size().y + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y)
+                            }).sum::<f32>() + 4.0 * ui.spacing().item_spacing.y
                         } else {
-                            for row in [&tool_labels[..3], &tool_labels[3..]] {
-                                ui.horizontal(|ui| { for &(tool, label) in row { selector(ui, tool, label); } });
+                            2.0 * tool_row_height + ui.spacing().item_spacing.y
+                        };
+                        let separator_height = 6.0;
+                        let footer_height = (tool_rows_height + shortcut_help.size().y + separator_height + 3.0 * ui.spacing().item_spacing.y).ceil();
+                        let file_text_width = (ui.available_width() - ui.spacing().scroll.allocated_width() - 2.0 * ui.spacing().button_padding.x).max(0.0);
+                        let file_galleys: Vec<_> = self.entries.iter().map(|entry| {
+                            let icon = if entry.is_dir { "+" } else { "·" };
+                            let color = if entry.is_dir { AMBER } else if syntax::supports(&entry.path) { GREEN } else { TEXT };
+                            egui::WidgetText::from(RichText::new(format!("{icon}  {}", entry.name)).color(color))
+                                .into_galley(ui, Some(egui::TextWrapMode::Wrap), file_text_width, egui::TextStyle::Button)
+                        }).collect();
+                        let explorer_min_height = file_galleys.iter().fold(64.0_f32, |height, galley| {
+                            height.max(galley.size().y + 2.0 * ui.spacing().button_padding.y + 2.0 * ui.spacing().item_spacing.y).max(ui.spacing().interact_size.y)
+                        });
+                        let explorer_height = (ui.available_height() - footer_height).max(explorer_min_height);
+                        let pending_id = ui.make_persistent_id("explorer_focus_reveal");
+                        let pending_focus = ctx.data_mut(|data| {
+                            let pending = data.get_temp::<egui::Id>(pending_id);
+                            data.remove::<egui::Id>(pending_id);
+                            pending
+                        });
+                        let mut focused_entry = None;
+                        let mut open = None;
+                        let explorer = egui::ScrollArea::vertical().id_salt("explorer_scroll")
+                            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                            .min_scrolled_height(explorer_min_height).max_height(explorer_height)
+                            .auto_shrink([false, false]).animated(false).show_viewport(ui, |ui, viewport| {
+                                if self.entries.is_empty() { ui.label(RichText::new(if self.ready() { "This directory is empty" } else { "Connect a workspace to browse files" }).small().color(MUTED)); }
+                                for (entry, galley) in self.entries.iter().zip(&file_galleys) {
+                                    let selected = self.active().is_some_and(|doc| doc.path == entry.path);
+                                    let response = ui.add_enabled(self.ready(), egui::Button::new(galley.clone()).selected(selected).frame(selected).min_size(egui::vec2(ui.available_width(), 27.0))).on_hover_text(&entry.path);
+                                    let newly_revealed = response.gained_focus() || (resized && response.has_focus());
+                                    if newly_revealed || (pending_focus == Some(response.id) && response.has_focus()) {
+                                        response.scroll_to_me(None);
+                                        focused_entry = Some((response.id, newly_revealed, response.rect, viewport.min.y));
+                                    }
+                                    #[cfg(test)]
+                                    sidebar_layout_tests::record(ui, &entry.name, &response);
+                                    if response.clicked() { open = Some(entry.clone()); }
+                                }
+                            });
+                        if let Some((id, newly_revealed, row_rect, old_offset)) = focused_entry {
+                            // The inner area consumes its own target. Reveal its viewport
+                            // through the outer area afterwards, then correct the inner
+                            // target once if its previous clip was hidden by the outer area.
+                            if newly_revealed && !ui.clip_rect().contains_rect(explorer.inner_rect) {
+                                ctx.data_mut(|data| data.insert_temp(pending_id, id));
                             }
+                            let target = if explorer.inner_rect.height() <= size.y {
+                                explorer.inner_rect
+                            } else {
+                                // A small remaining viewport can still reveal one row.
+                                // Convert the rendered row from the old inner offset to
+                                // the offset that will be used by the next frame.
+                                row_rect.translate(egui::vec2(0.0, old_offset - explorer.state.offset.y))
+                            };
+                            ui.scroll_to_rect(target, None);
                         }
+                        #[cfg(test)]
+                        sidebar_layout_tests::record_scroll(ctx, false, &explorer);
+                        if let Some(entry) = open { if entry.is_dir { self.list(entry.path); } else { self.open(entry.path, None); } }
+                        // One persistent child emits the same five auto IDs at every
+                        // width; row breaks change geometry without changing focus.
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = tool_gap;
+                            ui.set_row_height(tool_row_height);
+                            for (index, (tool, label)) in tool_labels.into_iter().enumerate() {
+                                let response = ui.selectable_label(self.tools_open && self.tool == tool, label);
+                                reveal(&response);
+                                #[cfg(test)]
+                                sidebar_layout_tests::record(ui, label, &response);
+                                if response.clicked() {
+                                    self.tool = tool; self.tools_open = true;
+                                    // Opening a tool can temporarily consume all space
+                                    // before its content height settles on the next frame.
+                                    let had_focus = response.has_focus();
+                                    ctx.data_mut(|data| data.insert_temp(activation_id, (response.id, had_focus, tool)));
+                                }
+                                if index < 4 && (stacked_tools || index == 2) { ui.end_row(); }
+                            }
+                        });
+                        ui.add(egui::Separator::default().spacing(separator_height));
+                        let help = ui.label(shortcut_help);
+                        #[cfg(test)]
+                        sidebar_layout_tests::record(ui, "help", &help);
+                        #[cfg(not(test))]
+                        let _ = help;
                     });
-                });
+                #[cfg(test)]
+                sidebar_layout_tests::record_scroll(ctx, true, &outer);
+                #[cfg(not(test))]
+                let _ = outer;
             });
     }
 

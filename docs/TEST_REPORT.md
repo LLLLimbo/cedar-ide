@@ -1,69 +1,62 @@
-# Verification report · coherent workflow guidance / 0.26.2
+# Verification report · compact sidebar access / 0.26.3
 
-This bounded polish corrects disabled explanations for **Find Java type** and
-**Check Maven model**, and reconciles current setup/navigation/report/merge guidance.
-The two controls use the pinned egui disabled-hover API. A native-observed sidebar
-overlap is corrected with two measured tool rows, retaining all five selectors and
-four keyboard-help lines. Larger fonts use measured stacked rows when necessary.
-Execution permission,
-capability checks and operation dispatch rules are unchanged.
+This bounded follow-up makes the sidebar scroll when a 780×540 window and the
+tools pane requesting its default 245-point height leave insufficient height for the explorer, selectors
+and help. It retains all controls and help text, the existing action order and
+ordinary-height footer placement. A constant solid outer scrollbar gutter makes
+width allocation deterministic; narrow sidebars may stack the selectors.
 
-The preceding [0.26.1 exact acceptance](TEST_REPORT_PHASE26_IDLE.md) passed both
-platforms on public `4c22638b35f6ad1abdede1576994080c3793a617`. Its required idle Java
-workflow matched spontaneously; recovery was not exercised. Earlier failed trials
-and the strict opt-in resource experiment retain their original verdicts.
+The scope is the sidebar. Maximizing tools until they consume all remaining space,
+and center-editor overflow from tabs or Find/Replace, are separate responsive
+layout limitations. This change does not resize the tools pane, alter execution
+trust, start services, write files, or promise simultaneous visibility of all
+content in compact space. Compact success means each control and help line can
+be reached and read through ordinary scrolling and keyboard focus.
 
-## Finite checks
+## Finite acceptance
 
-- Actual egui pointer hovering must display each disabled reason without dispatch.
-  Active controls retain their existing behavior and do not display a stale reason.
-- Sidebar rectangle/nonoverlap/click checks cover 180, 246 and 460 point widths,
-  including a long explorer and larger-font fallback. Full production order with
-  Tests open is checked at 1178×814 and 1320×880; 780×540 covers the isolated
-  sidebar only. A targeted native recheck follows the observed overlap
-  at the default-width sidebar and a narrow sidebar.
-- Current English/Chinese guidance distinguishes Windows typed Java/Maven from
-  generic POSIX language sessions, index queries from synchronized editor actions,
-  on-disk models and historical reports from unsaved drafts, and manual draft merge
-  from automatic watching or saving. Report button labels match the interface.
-- One owned cloud Linux native Local session stays trust-off. It exercises keyboard
-  navigation, existing report loading/filtering/details and malformed input, and
-  draft merge Preview/Cancel/Apply/Undo/Redo. File hashes check that no Save occurs;
-  one separately recorded external fixture edit supplies the merge input.
-- Linux Local GUI evidence is separate from synthetic headless Windows capability
-  fixtures. It cannot verify actual Windows-only forms, trusted Java GUI usage,
-  authenticated SSH or the user's computer.
-
-A preexisting vertical-fit limitation remains: a 780×540 window with a 245-point
-tools pane open cannot fit the complete sidebar header, controls, help and explorer.
-That combination is not a passing full-layout claim; increase window height or
-reduce/close the tools pane. Windows GUI behavior is not established by Linux checks.
+- Production panel order at 780×540 with the default requested tools height (actual content-derived bounds recorded), and ordinary
+  1178×814/1320×880 sizes, across 180/246/460-point sidebar widths.
+- Empty and long Unicode file lists; ordinary and larger fonts; stable gutter,
+  no overlapping click targets, and every selector/help line reachable.
+- Pointer selection, keyboard focus reveal through both scroll levels, first/last
+  file access and resize transitions preserve selected tool, dirty draft and Undo.
+- One owned cloud Linux native trust-off pass at compact and ordinary sizes.
+  No Save or execution; fixture hashes and owned-window cleanup are checked.
+- Exact source host/MSVC checks, full dual-platform CI and regenerated package.
 
 ## Current status
 
-The final host checks passed 1,045 Rust tests across 40 unit/integration/example
-suites; ten documentation-test suites also passed with no tests. Thirty opt-in or
-diagnostic tests were ignored. The separate minimum-height diagnostic was run to
-confirm the documented overlap; it is not counted as passing full-layout coverage. All four new disabled/active pointer-hover regressions and five sidebar bounds,
-scaling, pointer, keyboard and production-order regressions passed. They compare
-an unhovered frame with actual pointer-hover frames and verify painted explanations,
-inert disabled clicks and usable active controls. Synthetic pointer appearance does
-not establish a particular native hover-delay timing.
+Fourteen focused renderer/state regressions passed, including nested keyboard
+reveal, wheel handoff, scrollbar dragging, resize/draft/Undo preservation, and
+finite recovery from zero available height. A held-thumb zero-height assertion
+and a temporary-layout focus loss were reproduced and repaired before release.
+The clicked-selector recovery is one-shot and yields to newer input/focus; ten
+cancellation cases passed. Independent source and Context-lock review is clear.
 
-Strict host and MSVC all-target/all-feature Clippy passed. Python suites passed:
-export 2, capabilities 5, Git fixture 6, Maven cache 11, resource observer 79 and
-GC collector 36; bundle 28/29 with one skip, collector 80/85 with five skips, Maven
-predicates 5/7 with two skips. Independent source/guidance review found no remaining
-blocker. Both the all-feature workspace release and default-feature frontend/agent
-release built successfully.
+Final host aggregate checks passed 1,054 Rust tests across 40 suites, with 29
+opt-in tests ignored. Strict host and MSVC all-target/all-feature Clippy passed,
+and both all-feature workspace and default-feature frontend/agent release builds
+succeeded. The exact default-feature Linux binary passed the owned native trust-off
+check at 780×540 with a populated report producing an approximately 253-point tools
+pane, at 246- and 180-point sidebar widths. All five selectors were activated through
+Tab/Enter, Shift/Tab revealed the preceding selector, inner wheel and outer
+scrollbar navigation worked, and first/last Unicode files opened through pointer
+and scrolling. Native keyboard reveal of the final file was not established after
+Language content expanded the tools pane to approximately 357 points; that is not
+counted as a passing case. Nested last-file keyboard reveal remains covered by the
+headless regressions. Resizing back to
+1178×814 retained the selected dirty text; focused-editor Undo/Redo restored the
+expected original/draft text. All 80 initial files and the separately generated
+report retained their expected hashes. No Save occurred; owned recovery and
+application/terminal cleanup completed. Private screenshots are excluded.
 
-The first cloud Linux trust-off pass completed the planned navigation/report/merge
-flows and exposed a sidebar Tests/help overlap. Its owned cleanup and file-hash verification passed: only the separately recorded
-external fixture edit changed disk contents. The rebuilt default-feature candidate passed the targeted native recheck at
-1178×814: default and 180-point sidebars kept all five selectors and four help
-lines separate, each selector opened its panel, and Tests explicitly loaded the
-expected report and retained it across panel switches. The fixture hashes stayed
-unchanged, no Save occurred, and owned application/terminal windows were closed.
-Final-source aggregate checks and both release builds include the repair.
-Exact final-source CI and a regenerated package remain required. Private screenshots
-and generated fixture evidence are not included in the public source.
+The native 180-point case fit two rows with its actual font metrics; larger-font
+stacking is covered by headless tests, not claimed as a native observation. Linux
+Local uses the embedded Workspace backend. These checks do not establish Windows
+GUI, trusted execution or authenticated SSH behavior.
+
+Exact final-source dual-platform CI and a regenerated package remain required. The preceding
+[0.26.2 acceptance](TEST_REPORT_PHASE26_USABILITY.md) remains the latest verified
+checkpoint. Its known minimum-height limitation is preserved in that historical
+report. No native Windows GUI or authenticated SSH claim is added.
