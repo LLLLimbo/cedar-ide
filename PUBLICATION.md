@@ -1,6 +1,6 @@
 # Public source checkpoint
 
-This is the source-only public export of tested development stage `phase43-recovery-descriptor-probe-0.43.0`.
+This is the source-only public export of tested development stage `phase431-recovery-descriptor-diagnostics-0.43.1`.
 It is an independent Rust IDE project, not a complete IntelliJ IDEA replacement.
 Public commits preserve the phase-by-phase development sequence, but their hashes
 differ from the private build checkpoints because generated evidence is omitted.

@@ -35,6 +35,27 @@ bounded to 64 KiB and 128 ACEs. Oversize is rejected before buffer allocation;
 a descriptor-growth race fails without a retry. Receipts use fixed categories, counts and
 booleans, never raw SIDs, descriptors, account names or profile paths.
 
+The 0.43 observation failed during the empty rename in both generated roots.
+Eight completed descriptor observations rejected the candidate because their
+owners differed from the effective token user. The receipt did not identify
+those owners or independently report the DACL verdict. It also did not capture
+the native rename error, so its historical cause is unconfirmed. Cleanup
+completed and no recovery payload bytes were written.
+
+The 0.43.1 diagnostic correction allows write sharing only on the held generated
+destination-root handle, while still denying delete sharing. Empty file handles
+still deny write sharing; ancestor handling is unchanged. Windows can reopen
+the destination directory with write access during rename, which supplies a
+source-supported reason for this narrowly scoped correction. This is a handle
+sharing change in the test, not an ACL or production storage-policy change.
+The corrected receipt separately classifies owners as effective user, System,
+Administrators or other, preserves an independent DACL verdict, and uses fixed
+rename error categories. The identity observation describes the reopened renamed
+alias compared with the captured original file, independently of earlier chain
+checks. It and source verification distinguish checks that did not run from
+completed checks. A failed native invocation remains
+failed even when its subsequent source verification succeeds.
+
 There are no ACL setters, custom on-disk security descriptors, ownership or
 privilege changes, account lookups, installs, remote operations or explicit network
 requests in this probe. Roots must report a fixed local drive; this is not a
@@ -79,3 +100,5 @@ introduced by this checkpoint.
 - [ACE inheritance rules](https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-inheritance-rules)
 - [File security and access rights](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights)
 - [128-bit file identity](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)
+- [Rename target-directory access](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information)
+- [CreateFile sharing rules](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)

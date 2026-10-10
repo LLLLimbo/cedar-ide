@@ -11,6 +11,125 @@ const SYSTEM: &[u8] = &[1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0];
 const ADMINISTRATORS: &[u8] = &[1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerCategory {
+    EffectiveUser,
+    System,
+    Administrators,
+    Other,
+}
+
+impl OwnerCategory {
+    fn classify(owner: &[u8], effective_user: &[u8]) -> Self {
+        if owner == effective_user {
+            Self::EffectiveUser
+        } else if owner == SYSTEM {
+            Self::System
+        } else if owner == ADMINISTRATORS {
+            Self::Administrators
+        } else {
+            Self::Other
+        }
+    }
+
+    pub fn category(self) -> &'static str {
+        match self {
+            Self::EffectiveUser => "effective_user",
+            Self::System => "system",
+            Self::Administrators => "administrators",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Explicit probe roles keep the rename workaround off ancestors and other
+/// generated objects. No role gains content-write access or DELETE sharing on
+/// a directory. Only the freshly generated destination root shares WRITE.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeOpenKind {
+    Ancestor,
+    RenameDestinationRoot,
+    ChildDirectory,
+    EmptyFile,
+    RenamedAlias,
+}
+
+impl ProbeOpenKind {
+    pub fn directory(self) -> bool {
+        matches!(
+            self,
+            Self::Ancestor | Self::RenameDestinationRoot | Self::ChildDirectory
+        )
+    }
+
+    pub fn create(self) -> bool {
+        self == Self::EmptyFile
+    }
+
+    pub fn delete(self) -> bool {
+        matches!(
+            self,
+            Self::RenameDestinationRoot | Self::ChildDirectory | Self::EmptyFile
+        )
+    }
+
+    pub fn share_write(self) -> bool {
+        self == Self::RenameDestinationRoot
+    }
+
+    pub fn share_delete(self) -> bool {
+        !self.directory()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    // Deliberately no Debug or Serialize: identifiers stay in memory only.
+    pub volume: u64,
+    pub file: [u8; 16],
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IdentityCheck {
+    #[default]
+    NotRun,
+    Stable,
+    Changed,
+}
+
+impl IdentityCheck {
+    pub fn compare(expected: Identity, observed: Identity) -> Self {
+        if expected == observed {
+            Self::Stable
+        } else {
+            Self::Changed
+        }
+    }
+
+    pub fn category(self) -> &'static str {
+        match self {
+            Self::NotRun => "not_run",
+            Self::Stable => "stable",
+            Self::Changed => "changed",
+        }
+    }
+}
+
+/// Documented Win32 error values, reduced to a closed vocabulary before they
+/// reach a receipt. Unknown codes, including zero after failure, stay opaque.
+pub fn rename_error_category(error: u32) -> &'static str {
+    match error {
+        5 => "rename_access_denied",         // ERROR_ACCESS_DENIED
+        32 => "rename_sharing_violation",    // ERROR_SHARING_VIOLATION
+        33 => "rename_lock_violation",       // ERROR_LOCK_VIOLATION
+        1 | 50 => "rename_not_supported",    // ERROR_INVALID_FUNCTION / NOT_SUPPORTED
+        87 => "rename_invalid_parameter",    // ERROR_INVALID_PARAMETER
+        80 | 183 => "rename_name_collision", // ERROR_FILE_EXISTS / ALREADY_EXISTS
+        2 | 3 => "rename_path_missing",      // ERROR_FILE_NOT_FOUND / PATH_NOT_FOUND
+        _ => "rename_other",
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParseError {
     DescriptorLimit,
     MalformedDescriptor,
@@ -81,12 +200,18 @@ pub struct Counts {
 pub struct Verdict {
     pub rejection: Option<Rejection>,
     pub owner_matches: bool,
+    pub owner_category: OwnerCategory,
+    pub dacl_rejection: Option<Rejection>,
     pub counts: Counts,
 }
 
 impl Verdict {
     pub fn category(self) -> &'static str {
         self.rejection.map_or("accepted", Rejection::category)
+    }
+
+    pub fn dacl_category(self) -> &'static str {
+        self.dacl_rejection.map_or("accepted", Rejection::category)
     }
 }
 
@@ -169,6 +294,8 @@ pub fn assess(
     let mut result = Verdict {
         rejection: None,
         owner_matches: owner == effective_user,
+        owner_category: OwnerCategory::classify(owner, effective_user),
+        dacl_rejection: None,
         counts: Counts::default(),
     };
     if control & DACL_PRESENT == 0 {
@@ -248,7 +375,10 @@ pub fn assess(
             None
         };
     }
-    if owner != effective_user {
+    // Preserve the DACL observation independently before overall admission
+    // applies the unchanged owner and structural rejection priorities.
+    result.dacl_rejection = result.rejection;
+    if !result.owner_matches {
         result.rejection = Some(Rejection::OwnerMismatch);
     }
     // Directory link counts are filesystem-specific; files must be single-link.
@@ -351,6 +481,187 @@ mod tests {
                 .rejection,
             Some(Rejection::ForeignAllow)
         );
+    }
+
+    #[test]
+    fn owner_categories_are_exact_and_effective_user_takes_precedence() {
+        for (owner, category) in [
+            (USER, OwnerCategory::EffectiveUser),
+            (SYSTEM, OwnerCategory::System),
+            (ADMINISTRATORS, OwnerCategory::Administrators),
+            (FOREIGN, OwnerCategory::Other),
+        ] {
+            let result = evaluate(&descriptor(owner, &[ace(0, 0, USER)])).unwrap();
+            assert_eq!(result.owner_category, category);
+            assert_eq!(
+                result.owner_matches,
+                category == OwnerCategory::EffectiveUser
+            );
+            assert_eq!(result.dacl_category(), "accepted");
+            assert_eq!(
+                result.rejection,
+                (!result.owner_matches).then_some(Rejection::OwnerMismatch)
+            );
+        }
+        for user in [SYSTEM, ADMINISTRATORS] {
+            let result =
+                assess(&descriptor(user, &[ace(0, 0, user)]), user, facts(), false).unwrap();
+            assert_eq!(result.owner_category.category(), "effective_user");
+            assert!(result.owner_matches);
+            assert_eq!(result.category(), "accepted");
+            let mut similar = user.to_vec();
+            *similar.last_mut().unwrap() ^= 1;
+            let result = assess(
+                &descriptor(&similar, &[ace(0, 0, user)]),
+                user,
+                facts(),
+                false,
+            )
+            .unwrap();
+            assert_eq!(result.owner_category.category(), "other");
+            assert_eq!(result.category(), "owner_mismatch");
+        }
+    }
+
+    #[test]
+    fn owner_and_structural_rejections_never_hide_the_independent_dacl_verdict() {
+        for owner in [SYSTEM, ADMINISTRATORS, FOREIGN] {
+            let mut null = descriptor(owner, &[]);
+            null[16..20].fill(0);
+            let mut absent = null.clone();
+            absent[2] = 0;
+            for (bytes, dacl_rejection) in [
+                (absent, Rejection::AbsentDacl),
+                (null, Rejection::NullDacl),
+                (descriptor(owner, &[]), Rejection::EmptyDacl),
+                (
+                    descriptor(owner, &[ace(5, 0, USER)]),
+                    Rejection::UnsupportedAce,
+                ),
+                (
+                    descriptor(owner, &[ace(1, 0, FOREIGN), ace(0, 0x18, FOREIGN)]),
+                    Rejection::ForeignAllow,
+                ),
+                (descriptor(owner, &[ace(1, 0, USER)]), Rejection::NoAllow),
+            ] {
+                let verdict = evaluate(&bytes).unwrap();
+                assert!(!verdict.owner_matches);
+                assert_eq!(verdict.category(), "owner_mismatch");
+                assert_eq!(verdict.dacl_rejection, Some(dacl_rejection));
+                assert_eq!(verdict.dacl_category(), dacl_rejection.category());
+                let structurally_rejected = assess(
+                    &bytes,
+                    USER,
+                    ObjectFacts {
+                        reparse: true,
+                        ..facts()
+                    },
+                    false,
+                )
+                .unwrap();
+                assert_eq!(structurally_rejected.category(), "reparse");
+                assert_eq!(structurally_rejected.owner_category, verdict.owner_category);
+                assert_eq!(structurally_rejected.dacl_rejection, verdict.dacl_rejection);
+                assert_eq!(structurally_rejected.counts, verdict.counts);
+            }
+        }
+    }
+
+    #[test]
+    fn only_generated_destination_root_shares_write_and_no_directory_shares_delete() {
+        for (kind, directory, create, delete, share_write, share_delete) in [
+            (ProbeOpenKind::Ancestor, true, false, false, false, false),
+            (
+                ProbeOpenKind::RenameDestinationRoot,
+                true,
+                false,
+                true,
+                true,
+                false,
+            ),
+            (
+                ProbeOpenKind::ChildDirectory,
+                true,
+                false,
+                true,
+                false,
+                false,
+            ),
+            (ProbeOpenKind::EmptyFile, false, true, true, false, true),
+            (
+                ProbeOpenKind::RenamedAlias,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+        ] {
+            assert_eq!(kind.directory(), directory);
+            assert_eq!(kind.create(), create);
+            assert_eq!(kind.delete(), delete);
+            assert_eq!(kind.share_write(), share_write);
+            assert_eq!(kind.share_delete(), share_delete);
+            assert!(!kind.directory() || !kind.share_delete());
+        }
+    }
+
+    #[test]
+    fn rename_failures_have_closed_categories_including_unknown_native_errors() {
+        let known = [
+            (5, "rename_access_denied"),
+            (32, "rename_sharing_violation"),
+            (33, "rename_lock_violation"),
+            (1, "rename_not_supported"),
+            (50, "rename_not_supported"),
+            (87, "rename_invalid_parameter"),
+            (80, "rename_name_collision"),
+            (183, "rename_name_collision"),
+            (2, "rename_path_missing"),
+            (3, "rename_path_missing"),
+        ];
+        for (error, category) in known {
+            assert_eq!(rename_error_category(error), category);
+        }
+        for error in (0..=65535).chain([u32::MAX]) {
+            let expected = known
+                .iter()
+                .find(|(code, _)| *code == error)
+                .map_or("rename_other", |(_, category)| *category);
+            assert_eq!(rename_error_category(error), expected);
+        }
+    }
+
+    #[test]
+    fn identity_not_run_is_distinct_from_observed_stability_or_any_identifier_change() {
+        assert_eq!(IdentityCheck::default().category(), "not_run");
+        let expected = Identity {
+            volume: 17,
+            file: [23; 16],
+        };
+        assert_eq!(
+            IdentityCheck::compare(expected, expected).category(),
+            "stable"
+        );
+        assert_eq!(
+            IdentityCheck::compare(
+                expected,
+                Identity {
+                    volume: 18,
+                    ..expected
+                }
+            )
+            .category(),
+            "changed"
+        );
+        for index in 0..16 {
+            let mut changed = expected;
+            changed.file[index] ^= 1;
+            assert_eq!(
+                IdentityCheck::compare(expected, changed).category(),
+                "changed"
+            );
+        }
     }
 
     #[test]
@@ -549,6 +860,12 @@ mod tests {
                 Ok(Verdict {
                     rejection: Some(rejection),
                     owner_matches: rejection != Rejection::OwnerMismatch,
+                    owner_category: if rejection == Rejection::OwnerMismatch {
+                        OwnerCategory::Other
+                    } else {
+                        OwnerCategory::EffectiveUser
+                    },
+                    dacl_rejection: None,
                     counts: Counts::default(),
                 }),
                 &mut sink,

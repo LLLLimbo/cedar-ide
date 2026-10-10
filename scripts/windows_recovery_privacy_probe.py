@@ -30,7 +30,8 @@ MAX_COMPILE_BYTES = 4 * 1024 * 1024
 MAX_LIST_BYTES = 16 * 1024
 MAX_PROBE_BYTES = 64 * 1024
 COMMIT = re.compile(r"[0-9a-f]{40}")
-ROOT_BOOLS = ("rename_attempted", "rename_completed", "identity_stable", "cleanup_complete")
+ROOT_BOOLS = ("rename_attempted", "rename_completed", "cleanup_complete")
+ROOT_STATES = ("identity_check", "rename_error_category")
 ROOT_COUNTS = {
     "objects_observed": 5, "descriptor_reads": 5, "candidate_accepts": 5,
     "candidate_rejections": 5, "ace_count": 640, "allow_ace_count": 640,
@@ -44,18 +45,43 @@ REJECTIONS = {
     "foreign_allow", "no_allow", "not_disk", "wrong_type", "reparse", "link_count",
     "persistent_acl_unavailable", "nonempty_file",
 }
+OWNER_CATEGORIES = {"effective_user", "system", "administrators", "other"}
+DACL_REJECTIONS = {"absent_dacl", "null_dacl", "empty_dacl", "unsupported_ace",
+                   "foreign_allow", "no_allow"}
+OBJECT_REJECTIONS = REJECTIONS - DACL_REJECTIONS - {"owner_mismatch"}
+RENAME_ERRORS = {
+    "rename_access_denied", "rename_sharing_violation", "rename_lock_violation",
+    "rename_not_supported", "rename_invalid_parameter", "rename_name_collision",
+    "rename_path_missing", "rename_other",
+}
 # The native test supplies only fixed categories; this list is deliberately
 # explicit so adding a raw native error string cannot silently publish it.
 NATIVE_ERRORS = {
     "descriptor_limit", "malformed_descriptor", "malformed_sid", "malformed_acl", "ace_limit",
     "cleanup_failed", "admission_timeout", "root_environment", "object_open", "object_metadata",
     "identity_changed", "token_open", "token_query", "token_bounds", "descriptor_read",
-    "rename_failed", "unsafe_object", "root_create",
+    "unsafe_object", "root_create",
+} | RENAME_ERRORS
+DRIVER_ERRORS = {
+    "duplicate_json_key", "nonfinite_json", "invalid_output_file", "output_identity_changed",
+    "output_size_changed", "output_pipe_missing", "subprocess_timeout", "subprocess_output_limit",
+    "subprocess_nonzero", "child_cleanup_unverified", "invalid_test_listing",
+    "exact_one_test_missing", "native_receipt_invalid", "native_probe_error",
+    "native_cleanup_or_identity_unverified", "native_observation_incomplete",
+    "native_observation_inconsistent", "invalid_compiler_output", "invalid_compiler_event",
+    "invalid_test_artifact", "exact_one_binary_missing", "unexpected_test_binary",
+    "invalid_source_commit", "source_commit_mismatch", "source_checkout_dirty",
+    "native_windows_required", "driver_cleanup_failed", "driver_error",
 }
 
 
 class ProbeError(ValueError):
     """Messages are fixed categories, never external text."""
+
+
+def error_category(error):
+    category = str(error) if isinstance(error, ProbeError) else "driver_error"
+    return category if category in DRIVER_ERRORS else "driver_error"
 
 
 def require(condition, category):
@@ -149,20 +175,42 @@ def decode_objects(root):
     decoded = []
     for item, role in zip(objects, OBJECT_ROLES):
         require(type(item) is dict and set(item) == set(ACE_COUNTS)
-                | {"role", "outcome", "category", "owner_matches"}, "native_receipt_invalid")
+                | {"role", "outcome", "category", "owner_matches", "owner_category", "dacl_category"},
+                "native_receipt_invalid")
         require(item["role"] == role and type(item["owner_matches"]) is bool,
                 "native_receipt_invalid")
+        require(type(item["owner_category"]) is str and item["owner_category"] in OWNER_CATEGORIES
+                and item["owner_matches"] == (item["owner_category"] == "effective_user")
+                and type(item["dacl_category"]) is str
+                and item["dacl_category"] in DACL_REJECTIONS | {"accepted"}, "native_receipt_invalid")
         accepted = item["outcome"] == "candidate_accepted"
-        require((accepted and item["category"] == "accepted" and item["owner_matches"])
+        require((accepted and item["category"] == "accepted" and item["owner_matches"]
+                 and item["dacl_category"] == "accepted")
                 or (item["outcome"] == "candidate_rejected" and type(item["category"]) is str
-                    and item["category"] in REJECTIONS), "native_receipt_invalid")
+                    and (item["category"] in OBJECT_REJECTIONS
+                         or (item["category"] == "owner_mismatch" and not item["owner_matches"])
+                         or (item["category"] in DACL_REJECTIONS and item["owner_matches"]
+                             and item["category"] == item["dacl_category"]))), "native_receipt_invalid")
         for key in ACE_COUNTS:
             require(type(item[key]) is int and 0 <= item[key] <= 128, "native_receipt_invalid")
         require(item["allow_ace_count"] + item["deny_ace_count"] <= item["ace_count"]
                 and item["inherited_ace_count"] <= item["ace_count"]
                 and item["inherit_only_ace_count"] <= item["ace_count"], "native_receipt_invalid")
+        dacl = item["dacl_category"]
+        if dacl in {"absent_dacl", "null_dacl", "empty_dacl"}:
+            require(all(item[key] == 0 for key in ACE_COUNTS), "native_receipt_invalid")
+        elif dacl in {"accepted", "foreign_allow"}:
+            require(item["allow_ace_count"] > 0, "native_receipt_invalid")
+        else:
+            require(item["ace_count"] > 0, "native_receipt_invalid")
+        if dacl in {"accepted", "no_allow"}:
+            require(item["allow_ace_count"] + item["deny_ace_count"] == item["ace_count"],
+                    "native_receipt_invalid")
+        if dacl == "no_allow":
+            require(item["allow_ace_count"] == 0, "native_receipt_invalid")
         decoded.append({key: item[key] for key in (*ACE_COUNTS, "role", "outcome",
-                                                 "category", "owner_matches")})
+                                                 "category", "owner_matches", "owner_category",
+                                                 "dacl_category")})
     require(len(decoded) == root["objects_observed"]
             and sum(item["outcome"] == "candidate_accepted" for item in decoded) == root["candidate_accepts"]
             and sum(item["outcome"] == "candidate_rejected" for item in decoded) == root["candidate_rejections"],
@@ -187,7 +235,7 @@ def decode_probe(data):
             "schema_version", "probe", "shipping_unchanged", "metadata_bytes_written",
             "body_bytes_written", "descriptor_query", "roots",
         }, "native_receipt_invalid")
-        require(type(value["schema_version"]) is int and value["schema_version"] == 1
+        require(type(value["schema_version"]) is int and value["schema_version"] == 2
                 and value["probe"] == TEST_NAME and value["shipping_unchanged"] is True
                 and value["descriptor_query"] == "GetKernelObjectSecurity",
                 "native_receipt_invalid")
@@ -196,7 +244,7 @@ def decode_probe(data):
         require(type(value["roots"]) is list and len(value["roots"]) == 2, "native_receipt_invalid")
         roots = []
         for root, label in zip(value["roots"], ("runner_temp", "local_app_data")):
-            require(type(root) is dict and set(root) == set(ROOT_BOOLS) | set(ROOT_COUNTS)
+            require(type(root) is dict and set(root) == set(ROOT_BOOLS) | set(ROOT_COUNTS) | set(ROOT_STATES)
                     | {"root", "outcome", "stage", "category", "objects"}, "native_receipt_invalid")
             require(root["root"] == label and root["outcome"] in (
                 "candidate_accepted", "candidate_rejected", "error")
@@ -206,6 +254,28 @@ def decode_probe(data):
                     REJECTIONS | NATIVE_ERRORS | {"accepted"}, "native_receipt_invalid")
             for key in ROOT_BOOLS:
                 require(type(root[key]) is bool, "native_receipt_invalid")
+            require(type(root["identity_check"]) is str
+                    and root["identity_check"] in {"not_run", "stable", "changed"}
+                    and type(root["rename_error_category"]) is str
+                    and root["rename_error_category"] in RENAME_ERRORS | {"not_run", "none"},
+                    "native_receipt_invalid")
+            if not root["rename_attempted"]:
+                require(not root["rename_completed"] and root["rename_error_category"] == "not_run"
+                        and root["identity_check"] == "not_run", "native_receipt_invalid")
+            elif root["rename_completed"]:
+                require(root["rename_error_category"] == "none", "native_receipt_invalid")
+            else:
+                require(root["rename_error_category"] in RENAME_ERRORS
+                        and root["identity_check"] == "not_run", "native_receipt_invalid")
+            if root["identity_check"] == "changed":
+                require(root["outcome"] == "error"
+                        and root["category"] in {"identity_changed", "cleanup_failed"}, "native_receipt_invalid")
+            if root["rename_error_category"] in RENAME_ERRORS:
+                require(root["outcome"] == "error"
+                        and root["category"] in {root["rename_error_category"], "cleanup_failed"},
+                        "native_receipt_invalid")
+            if root["category"] in RENAME_ERRORS:
+                require(root["rename_error_category"] == root["category"], "native_receipt_invalid")
             for key, bound in ROOT_COUNTS.items():
                 require(type(root[key]) is int and 0 <= root[key] <= bound, "native_receipt_invalid")
             require(root["candidate_accepts"] + root["candidate_rejections"] == root["objects_observed"]
@@ -213,11 +283,17 @@ def decode_probe(data):
             require(root["allow_ace_count"] + root["deny_ace_count"] <= root["ace_count"]
                     and root["inherited_ace_count"] <= root["ace_count"]
                     and root["inherit_only_ace_count"] <= root["ace_count"], "native_receipt_invalid")
-            decoded = {key: root[key] for key in (*ROOT_BOOLS, *ROOT_COUNTS,
+            decoded = {key: root[key] for key in (*ROOT_BOOLS, *ROOT_STATES, *ROOT_COUNTS,
                                                 "root", "outcome", "stage", "category")}
             decoded["objects"] = decode_objects(root)
+            require(not root["rename_attempted"] or len(decoded["objects"]) >= 4,
+                    "native_receipt_invalid")
+            require(len(decoded["objects"]) < 5 or root["identity_check"] == "stable",
+                    "native_receipt_invalid")
+            require(root["outcome"] != "error" or root["category"] in NATIVE_ERRORS,
+                    "native_receipt_invalid")
             roots.append(decoded)
-        return {"schema_version": 1, "probe": TEST_NAME, "shipping_unchanged": True,
+        return {"schema_version": 2, "probe": TEST_NAME, "shipping_unchanged": True,
                 "metadata_bytes_written": 0, "body_bytes_written": 0,
                 "descriptor_query": "GetKernelObjectSecurity", "roots": roots}
     except (ValueError, TypeError, KeyError, IndexError, RecursionError):
@@ -227,7 +303,8 @@ def decode_probe(data):
 def validate_observation(receipt):
     for root in receipt["roots"]:
         require(root["outcome"] != "error", "native_probe_error")
-        require(root["stage"] == "complete" and all(root[key] for key in ROOT_BOOLS),
+        require(root["stage"] == "complete" and all(root[key] for key in ROOT_BOOLS)
+                and root["identity_check"] == "stable" and root["rename_error_category"] == "none",
                 "native_cleanup_or_identity_unverified")
         require(root["objects_observed"] == root["descriptor_reads"] == 5
                 and root["candidate_accepts"] + root["candidate_rejections"] == 5,
@@ -275,6 +352,21 @@ def verify_source(root, scratch, environment, source_commit, suffix):
     require(not read_regular(status, MAX_PROBE_BYTES), "source_checkout_dirty")
 
 
+def record_source_check(receipt, root, scratch, environment, source_commit, suffix):
+    """Keep a check that did not run distinct from mismatch and command errors."""
+    try:
+        verify_source(root, scratch, environment, source_commit, suffix)
+    except Exception as error:
+        category = error_category(error)
+        receipt["source_check_" + suffix] = (
+            "mismatch" if category in {"source_commit_mismatch", "source_checkout_dirty"} else "error")
+        receipt["source_check_" + suffix + "_category"] = category
+        raise
+    receipt["source_verified_" + suffix] = True
+    receipt["source_check_" + suffix] = "matched"
+    receipt["source_check_" + suffix + "_category"] = "none"
+
+
 def publish(path, result):
     # This fixed artifact contains only fields reconstructed by this driver.
     # No exception string, command, path, SID, descriptor, or subprocess log.
@@ -292,14 +384,17 @@ def run(root, scratch_root, source_commit):
     evidence = scratch_root / EVIDENCE_NAME
     require(not evidence.exists(), "receipt_already_exists")
     receipt = {
-        "schema_version": 1, "kind": "windows_recovery_descriptor_feasibility",
+        "schema_version": 2, "kind": "windows_recovery_descriptor_feasibility",
         "status": "failed", "stage": "setup", "category": "driver_error",
         "source_commit": source_commit if type(source_commit) is str and COMMIT.fullmatch(source_commit) else None,
         "source_verified_before": False, "source_verified_after": False,
+        "source_check_before": "not_run", "source_check_after": "not_run",
+        "source_check_before_category": "not_run", "source_check_after_category": "not_run",
         "compile_timeout_s": COMPILE_TIMEOUT, "selection_timeout_s": SELECTION_TIMEOUT,
         "runtime_watchdog_s": RUNTIME_TIMEOUT, "child_reap_timeout_s": REAP_TIMEOUT,
         "exact_one_test_selected": False, "runtime_invocations": 0,
-        "raw_logs_published": False, "driver_scratch_removed": False, "probe": None,
+        "raw_logs_published": False, "driver_scratch_removed": False,
+        "driver_cleanup_category": "not_run", "probe": None,
     }
     scratch = None
     runtime_log = None
@@ -311,8 +406,7 @@ def run(root, scratch_root, source_commit):
         environment["CARGO_TERM_COLOR"] = "never"
         environment.pop("RUST_TEST_THREADS", None)
         receipt["stage"] = "source_before"
-        verify_source(root, scratch, environment, source_commit, "before")
-        receipt["source_verified_before"] = True
+        record_source_check(receipt, root, scratch, environment, source_commit, "before")
         receipt["stage"] = "compile"
         compile_log = scratch / "compile.log"
         bounded_process(test_compile_command(), root, environment, compile_log,
@@ -333,9 +427,6 @@ def run(root, scratch_root, source_commit):
         receipt["stage"] = "receipt"
         receipt["probe"] = decode_probe(read_regular(runtime_log, MAX_PROBE_BYTES))
         validate_observation(receipt["probe"])
-        receipt["stage"] = "source_after"
-        verify_source(root, scratch, environment, source_commit, "after")
-        receipt["source_verified_after"] = True
         receipt.update(status="observed", stage="complete", category="none")
     except Exception as error:
         # A failed native process can still supply useful sanitized evidence.
@@ -345,15 +436,26 @@ def run(root, scratch_root, source_commit):
                 receipt["probe"] = decode_probe(read_regular(runtime_log, MAX_PROBE_BYTES))
             except (OSError, ValueError, TypeError):
                 pass
-        receipt["category"] = str(error) if isinstance(error, ProbeError) else "driver_error"
+        receipt["category"] = error_category(error)
     finally:
         if scratch is not None:
+            # This independently bounded check runs after every attempted native
+            # invocation, including timeout/nonzero/receipt failure. A later
+            # source or cleanup failure must not erase the primary failure.
+            if receipt["runtime_invocations"] == 1:
+                try:
+                    record_source_check(receipt, root, scratch, environment, source_commit, "after")
+                except Exception as error:
+                    if receipt["status"] == "observed":
+                        receipt.update(status="failed", stage="source_after", category=error_category(error))
             try:
                 shutil.rmtree(scratch)
                 receipt["driver_scratch_removed"] = not scratch.exists()
             except OSError:
                 pass
-            if not receipt["driver_scratch_removed"]:
+            receipt["driver_cleanup_category"] = (
+                "none" if receipt["driver_scratch_removed"] else "driver_cleanup_failed")
+            if not receipt["driver_scratch_removed"] and receipt["status"] == "observed":
                 receipt.update(status="failed", stage="cleanup", category="driver_cleanup_failed")
         publish(evidence, receipt)
     return receipt

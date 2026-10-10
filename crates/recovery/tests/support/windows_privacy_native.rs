@@ -3,7 +3,9 @@
 //! The parent driver enforces the hard 60-second process budget. These shared
 //! 55-second admission checks cannot interrupt a blocking filesystem call.
 
-use super::policy::{self, ObjectFacts, Verdict, MAX_DESCRIPTOR_BYTES};
+use super::policy::{
+    self, Identity, IdentityCheck, ObjectFacts, ProbeOpenKind, Verdict, MAX_DESCRIPTOR_BYTES,
+};
 use serde::Serialize;
 use std::mem::{offset_of, size_of};
 use std::os::windows::ffi::OsStrExt;
@@ -63,7 +65,8 @@ struct RootReport {
     inherit_only_ace_count: usize,
     rename_attempted: bool,
     rename_completed: bool,
-    identity_stable: bool,
+    rename_error_category: &'static str,
+    identity_check: &'static str,
     cleanup_complete: bool,
     objects: Vec<ObjectReport>,
 }
@@ -74,6 +77,8 @@ struct ObjectReport {
     outcome: &'static str,
     category: &'static str,
     owner_matches: bool,
+    owner_category: &'static str,
+    dacl_category: &'static str,
     ace_count: usize,
     allow_ace_count: usize,
     deny_ace_count: usize,
@@ -99,7 +104,8 @@ impl RootReport {
             inherit_only_ace_count: 0,
             rename_attempted: false,
             rename_completed: false,
-            identity_stable: false,
+            rename_error_category: "not_run",
+            identity_check: IdentityCheck::NotRun.category(),
             cleanup_complete: true,
             objects: Vec::new(),
         }
@@ -115,6 +121,8 @@ impl RootReport {
             },
             category: verdict.category(),
             owner_matches: verdict.owner_matches,
+            owner_category: verdict.owner_category.category(),
+            dacl_category: verdict.dacl_category(),
             ace_count: verdict.counts.aces,
             allow_ace_count: verdict.counts.allow,
             deny_ace_count: verdict.counts.deny,
@@ -142,13 +150,6 @@ impl RootReport {
         self.outcome = "error";
         self.category = category;
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Identity {
-    // Deliberately no Debug or Serialize: neither identifier may leave memory.
-    volume: u64,
-    file: [u8; 16],
 }
 
 struct Object {
@@ -196,27 +197,37 @@ fn wide(path: &Path) -> Result<Vec<u16>> {
     Ok(value)
 }
 
-fn open(
-    path: &Path,
-    directory: bool,
-    create: bool,
-    delete: bool,
-    deadline: Instant,
-) -> Result<Object> {
+fn open(path: &Path, kind: ProbeOpenKind, deadline: Instant) -> Result<Object> {
     let path = wide(path)?;
     admit(deadline)?;
     // READ_CONTROL is explicit. No content write access or security attributes
-    // are supplied. Every handle denies WRITE sharing. A held directory also
-    // denies DELETE sharing; files allow DELETE for the one empty rename.
+    // are supplied. Only the generated rename-destination root shares WRITE,
+    // allowing the rename API's destination-directory access. Ancestors and
+    // the child directory still deny WRITE. Every directory denies DELETE
+    // sharing; files allow DELETE for the one empty rename.
     let handle = unsafe {
         CreateFileW(
             path.as_ptr(),
-            READ_CONTROL | FILE_READ_ATTRIBUTES | if delete { DELETE } else { 0 },
-            FILE_SHARE_READ | if directory { 0 } else { FILE_SHARE_DELETE },
+            READ_CONTROL | FILE_READ_ATTRIBUTES | if kind.delete() { DELETE } else { 0 },
+            FILE_SHARE_READ
+                | if kind.share_write() {
+                    FILE_SHARE_WRITE
+                } else {
+                    0
+                }
+                | if kind.share_delete() {
+                    FILE_SHARE_DELETE
+                } else {
+                    0
+                },
             null(),
-            if create { CREATE_NEW } else { OPEN_EXISTING },
+            if kind.create() {
+                CREATE_NEW
+            } else {
+                OPEN_EXISTING
+            },
             FILE_FLAG_OPEN_REPARSE_POINT
-                | if directory {
+                | if kind.directory() {
                     FILE_FLAG_BACKUP_SEMANTICS
                 } else {
                     FILE_ATTRIBUTE_NORMAL
@@ -230,8 +241,8 @@ fn open(
     Ok(Object {
         handle,
         identity: None,
-        directory,
-        delete,
+        directory: kind.directory(),
+        delete: kind.delete(),
     })
 }
 
@@ -478,7 +489,7 @@ fn pin_ancestors(base: &Path, objects: &mut Vec<Object>, deadline: Instant) -> R
             }
             path.push(component.as_os_str());
         }
-        objects.push(open(&path, true, false, false, deadline)?);
+        objects.push(open(&path, ProbeOpenKind::Ancestor, deadline)?);
         let object = objects.last_mut().ok_or("object_open")?;
         let (identity, facts) = metadata(object.handle, Some(deadline))?;
         object.identity = Some(identity);
@@ -505,8 +516,15 @@ fn observe(
 ) -> Result<()> {
     admit(deadline)?;
     let (identity, facts) = metadata(object.handle, Some(deadline))?;
-    if object.identity.is_some_and(|old| old != identity) {
-        return Err("identity_changed");
+    if let Some(expected) = object.identity {
+        // Only the reopened renamed alias enters observe with an expected
+        // identity. Record the actual comparison before descriptor inspection,
+        // so a later inspection error cannot turn stable into not_run.
+        let check = IdentityCheck::compare(expected, identity);
+        report.identity_check = check.category();
+        if check == IdentityCheck::Changed {
+            return Err("identity_changed");
+        }
     }
     object.identity = Some(identity);
     let verdict = descriptor(
@@ -526,7 +544,12 @@ fn observe(
     Ok(())
 }
 
-fn rename_empty(handle: HANDLE, target: &Path, deadline: Instant) -> Result<()> {
+fn rename_empty(
+    handle: HANDLE,
+    target: &Path,
+    deadline: Instant,
+    report: &mut RootReport,
+) -> Result<()> {
     let name = wide(target)?;
     let bytes = offset_of!(FILE_RENAME_INFO, FileName) + name.len() * 2;
     let size = bytes.max(size_of::<FILE_RENAME_INFO>());
@@ -543,10 +566,18 @@ fn rename_empty(handle: HANDLE, target: &Path, deadline: Instant) -> Result<()> 
         );
     }
     admit(deadline)?;
+    report.rename_attempted = true;
     if unsafe { SetFileInformationByHandle(handle, FileRenameInfo, info.cast(), size as u32) } == 0
     {
-        return Err("rename_failed");
+        // Capture immediately, before calling the mapper or changing the
+        // receipt. Only the fixed category leaves this function.
+        let error = unsafe { GetLastError() };
+        let category = policy::rename_error_category(error);
+        report.rename_error_category = category;
+        return Err(category);
     }
+    report.rename_error_category = "none";
+    report.rename_completed = true;
     Ok(())
 }
 
@@ -629,7 +660,7 @@ fn root_case(label: &'static str, variable: &str, user: &[u8], deadline: Instant
         report.cleanup_complete = false;
         report.stage = "root";
         let root_index = objects.len();
-        objects.push(open(&root, true, false, true, deadline)?);
+        objects.push(open(&root, ProbeOpenKind::RenameDestinationRoot, deadline)?);
         captured_root = true;
         observe(
             &mut objects[root_index],
@@ -645,7 +676,7 @@ fn root_case(label: &'static str, variable: &str, user: &[u8], deadline: Instant
         // std uses the ordinary inherited descriptor; no explicit security
         // descriptor or ACL is supplied for this additional empty directory.
         std::fs::create_dir(&child).map_err(|_| "root_create")?;
-        objects.push(open(&child, true, false, true, deadline)?);
+        objects.push(open(&child, ProbeOpenKind::ChildDirectory, deadline)?);
         observe(
             &mut objects[root_index + 1],
             "child_directory",
@@ -655,7 +686,11 @@ fn root_case(label: &'static str, variable: &str, user: &[u8], deadline: Instant
         )?;
         report.stage = "lock";
         verify_chain(&objects, deadline)?;
-        objects.push(open(&root.join("probe.lock"), false, true, true, deadline)?);
+        objects.push(open(
+            &root.join("probe.lock"),
+            ProbeOpenKind::EmptyFile,
+            deadline,
+        )?);
         observe(
             &mut objects[root_index + 2],
             "lock",
@@ -665,7 +700,11 @@ fn root_case(label: &'static str, variable: &str, user: &[u8], deadline: Instant
         )?;
         report.stage = "temporary";
         verify_chain(&objects, deadline)?;
-        objects.push(open(&root.join("probe.tmp"), false, true, true, deadline)?);
+        objects.push(open(
+            &root.join("probe.tmp"),
+            ProbeOpenKind::EmptyFile,
+            deadline,
+        )?);
         observe(
             &mut objects[root_index + 3],
             "temporary",
@@ -675,13 +714,16 @@ fn root_case(label: &'static str, variable: &str, user: &[u8], deadline: Instant
         )?;
         report.stage = "rename";
         verify_chain(&objects, deadline)?;
-        report.rename_attempted = true;
         let target = root.join("probe.renamed");
-        rename_empty(objects[root_index + 3].handle, &target, deadline)?;
-        report.rename_completed = true;
+        rename_empty(
+            objects[root_index + 3].handle,
+            &target,
+            deadline,
+            &mut report,
+        )?;
         report.stage = "renamed";
         verify_chain(&objects, deadline)?;
-        objects.push(open(&target, false, false, false, deadline)?);
+        objects.push(open(&target, ProbeOpenKind::RenamedAlias, deadline)?);
         // Reopened aliases do not own deletion; only the CREATE_NEW handle does.
         objects[root_index + 4].identity = objects[root_index + 3].identity;
         observe(
@@ -691,7 +733,6 @@ fn root_case(label: &'static str, variable: &str, user: &[u8], deadline: Instant
             deadline,
             &mut report,
         )?;
-        report.identity_stable = true;
         report.stage = "complete";
         Ok(())
     })();
@@ -731,7 +772,7 @@ pub fn run() -> Receipt {
         }),
     };
     Receipt {
-        schema_version: 1,
+        schema_version: 2,
         probe: "windows_default_inherited_descriptor_probe",
         descriptor_query: "GetKernelObjectSecurity",
         shipping_unchanged: true,

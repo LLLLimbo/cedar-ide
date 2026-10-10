@@ -24,7 +24,7 @@ def artifact(executable):
 
 def valid():
     return {
-        "schema_version": 1, "probe": probe.TEST_NAME, "shipping_unchanged": True,
+        "schema_version": 2, "probe": probe.TEST_NAME, "shipping_unchanged": True,
         "metadata_bytes_written": 0, "body_bytes_written": 0,
         "descriptor_query": "GetKernelObjectSecurity",
         "roots": [{
@@ -33,8 +33,10 @@ def valid():
             "candidate_rejections": 0, "ace_count": 15, "allow_ace_count": 15, "deny_ace_count": 0,
             "inherited_ace_count": 15, "inherit_only_ace_count": 0,
             **{key: True for key in probe.ROOT_BOOLS},
+            "identity_check": "stable", "rename_error_category": "none",
             "objects": [{"role": role, "outcome": "candidate_accepted", "category": "accepted",
-                         "owner_matches": True, "ace_count": 3, "allow_ace_count": 3,
+                         "owner_matches": True, "owner_category": "effective_user", "dacl_category": "accepted",
+                         "ace_count": 3, "allow_ace_count": 3,
                          "deny_ace_count": 0, "inherited_ace_count": 3,
                          "inherit_only_ace_count": 0} for role in probe.OBJECT_ROLES],
         } for label in ("runner_temp", "local_app_data")],
@@ -50,7 +52,25 @@ def reject(root, count):
     root.update(outcome="candidate_rejected", category="foreign_allow",
                 candidate_rejections=count, candidate_accepts=5 - count)
     for item in root["objects"][:count]:
-        item.update(outcome="candidate_rejected", category="foreign_allow")
+        item.update(outcome="candidate_rejected", category="foreign_allow", dacl_category="foreign_allow")
+
+
+def object_prefix(root, count):
+    root["objects"] = root["objects"][:count]
+    root["objects_observed"] = root["descriptor_reads"] = count
+    root["candidate_accepts"] = sum(item["outcome"] == "candidate_accepted" for item in root["objects"])
+    root["candidate_rejections"] = count - root["candidate_accepts"]
+    for key in probe.ACE_COUNTS:
+        root[key] = sum(item[key] for item in root["objects"])
+
+
+def rename_failure(category="rename_sharing_violation"):
+    receipt = valid()
+    root = receipt["roots"][0]
+    object_prefix(root, 4)
+    root.update(outcome="error", stage="rename", category=category, rename_completed=False,
+                rename_error_category=category, identity_check="not_run")
+    return receipt
 
 
 class ReceiptTests(unittest.TestCase):
@@ -79,7 +99,8 @@ class ReceiptTests(unittest.TestCase):
             objects_observed=0, descriptor_reads=1, candidate_accepts=0,
             candidate_rejections=0, ace_count=0, allow_ace_count=0, deny_ace_count=0,
             inherited_ace_count=0, inherit_only_ace_count=0,
-            rename_attempted=False, rename_completed=False, identity_stable=False,
+            rename_attempted=False, rename_completed=False, identity_check="not_run",
+            rename_error_category="not_run",
             objects=[],
         )
         self.assertEqual(probe.decode_probe(payload(receipt)), receipt)
@@ -90,7 +111,7 @@ class ReceiptTests(unittest.TestCase):
         data = payload(valid())
         malformed = [b"", b"running 0 tests\n", b"\xff", data + data,
                      probe.PREFIX.encode() + b"{invalid}", b"x" * (probe.MAX_PROBE_BYTES + 1),
-                     data.replace(b'"schema_version": 1', b'"schema_version": 1, "schema_version": 1')]
+                     data.replace(b'"schema_version": 2', b'"schema_version": 2, "schema_version": 2')]
         for value in malformed:
             with self.subTest(size=len(value)), self.assertRaisesRegex(ValueError, "native_receipt_invalid"):
                 probe.decode_probe(value)
@@ -142,9 +163,8 @@ class ReceiptTests(unittest.TestCase):
                 root["objects"].pop()
                 for key in probe.ACE_COUNTS:
                     root[key] = sum(item[key] for item in root["objects"])
-            decoded = probe.decode_probe(payload(receipt))
             with self.subTest(fields=fields), self.assertRaises(ValueError):
-                probe.validate_observation(decoded)
+                probe.validate_observation(probe.decode_probe(payload(receipt)))
         receipt = valid()
         receipt["roots"].reverse()
         with self.assertRaises(ValueError):
@@ -187,7 +207,8 @@ class ReceiptTests(unittest.TestCase):
     def test_first_rejected_object_must_match_root_summary(self):
         receipt = valid()
         reject(receipt["roots"][0], 2)
-        receipt["roots"][0]["objects"][0].update(category="owner_mismatch", owner_matches=False)
+        receipt["roots"][0]["objects"][0].update(
+            category="owner_mismatch", owner_matches=False, owner_category="administrators")
         with self.assertRaises(ValueError):
             probe.decode_probe(payload(receipt))
         receipt["roots"][0]["category"] = "owner_mismatch"
@@ -200,6 +221,134 @@ class ReceiptTests(unittest.TestCase):
             receipt["descriptor_query"] = value
             with self.subTest(value=value), self.assertRaises(ValueError):
                 probe.decode_probe(payload(receipt))
+
+    def test_owner_category_and_dacl_verdict_are_independent(self):
+        for owner in ("system", "administrators", "other"):
+            for dacl in ("accepted", "foreign_allow"):
+                receipt = valid()
+                root = receipt["roots"][0]
+                root.update(outcome="candidate_rejected", category="owner_mismatch",
+                            candidate_accepts=4, candidate_rejections=1)
+                root["objects"][0].update(
+                    outcome="candidate_rejected", category="owner_mismatch",
+                    owner_matches=False, owner_category=owner, dacl_category=dacl)
+                with self.subTest(owner=owner, dacl=dacl):
+                    self.assertEqual(probe.decode_probe(payload(receipt)), receipt)
+                    probe.validate_observation(receipt)
+
+    def test_object_facts_can_take_priority_without_erasing_descriptor_verdicts(self):
+        receipt = valid()
+        root = receipt["roots"][0]
+        root.update(outcome="candidate_rejected", category="wrong_type",
+                    candidate_accepts=4, candidate_rejections=1)
+        root["objects"][0].update(outcome="candidate_rejected", category="wrong_type",
+                                  owner_matches=False, owner_category="other", dacl_category="foreign_allow")
+        self.assertEqual(probe.decode_probe(payload(receipt)), receipt)
+        probe.validate_observation(receipt)
+
+    def test_new_object_categories_are_fixed_and_consistent(self):
+        changes = [
+            {"owner_category": value} for value in (None, True, 1, [], "private account", "SYSTEM")
+        ] + [
+            {"dacl_category": value} for value in (None, True, 1, [], "private descriptor", "owner_mismatch")
+        ] + [
+            {"owner_category": "administrators"},
+            {"owner_category": "effective_user", "owner_matches": False},
+            {"dacl_category": "foreign_allow"},
+            {"outcome": "candidate_rejected", "category": "owner_mismatch"},
+            {"outcome": "candidate_rejected", "category": "foreign_allow"},
+            {"outcome": "candidate_rejected", "category": "no_allow", "dacl_category": "no_allow"},
+            {"outcome": "candidate_rejected", "category": "absent_dacl", "dacl_category": "absent_dacl"},
+            {"outcome": "candidate_rejected", "category": "null_dacl", "dacl_category": "null_dacl"},
+            {"outcome": "candidate_rejected", "category": "empty_dacl", "dacl_category": "empty_dacl"},
+        ]
+        for fields in changes:
+            receipt = valid()
+            receipt["roots"][0]["objects"][0].update(fields)
+            with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, "native_receipt_invalid"):
+                probe.decode_probe(payload(receipt))
+
+    def test_dacl_categories_keep_their_count_meanings(self):
+        for dacl in probe.DACL_REJECTIONS:
+            receipt = valid()
+            root = receipt["roots"][0]
+            root.update(outcome="candidate_rejected", category=dacl,
+                        candidate_accepts=4, candidate_rejections=1)
+            item = root["objects"][0]
+            item.update(outcome="candidate_rejected", category=dacl, dacl_category=dacl)
+            if dacl in {"absent_dacl", "null_dacl", "empty_dacl"}:
+                item.update({key: 0 for key in probe.ACE_COUNTS})
+            elif dacl == "no_allow":
+                item.update(allow_ace_count=0, deny_ace_count=3)
+            elif dacl == "unsupported_ace":
+                item.update(allow_ace_count=0, deny_ace_count=0)
+            object_prefix(root, 5)
+            with self.subTest(dacl=dacl):
+                self.assertEqual(probe.decode_probe(payload(receipt)), receipt)
+                probe.validate_observation(receipt)
+
+    def test_each_fixed_rename_error_preserves_not_run_identity(self):
+        for category in probe.RENAME_ERRORS:
+            receipt = rename_failure(category)
+            with self.subTest(category=category):
+                self.assertEqual(probe.decode_probe(payload(receipt)), receipt)
+                with self.assertRaisesRegex(ValueError, "native_probe_error"):
+                    probe.validate_observation(receipt)
+                receipt["roots"][0].update(stage="cleanup", category="cleanup_failed", cleanup_complete=False)
+                self.assertEqual(probe.decode_probe(payload(receipt)), receipt)
+
+    def test_post_rename_identity_can_be_unrun_changed_or_stable_before_descriptor_failure(self):
+        for identity, category in (("not_run", "object_open"), ("changed", "identity_changed"),
+                                   ("stable", "descriptor_read")):
+            receipt = valid()
+            root = receipt["roots"][0]
+            object_prefix(root, 4)
+            root.update(outcome="error", stage="renamed", category=category, identity_check=identity)
+            with self.subTest(identity=identity):
+                self.assertEqual(probe.decode_probe(payload(receipt)), receipt)
+                with self.assertRaisesRegex(ValueError, "native_probe_error"):
+                    probe.validate_observation(receipt)
+
+    def test_missing_unknown_and_inconsistent_native_states_are_rejected(self):
+        changes = [
+            {"identity_check": value} for value in (None, False, 0, [], "private identity", "failed", "not_run", "changed")
+        ] + [
+            {"rename_error_category": value} for value in (None, False, 0, [], "private error", "rename_failed", "not_run")
+        ] + [
+            {"rename_error_category": "rename_access_denied"},
+            {"rename_attempted": False}, {"rename_completed": False},
+            {"identity_stable": True},
+        ]
+        for fields in changes:
+            receipt = valid()
+            receipt["roots"][0].update(fields)
+            with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, "native_receipt_invalid"):
+                probe.decode_probe(payload(receipt))
+        for key in probe.ROOT_STATES:
+            receipt = valid()
+            del receipt["roots"][0][key]
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                probe.decode_probe(payload(receipt))
+        for fields in ({"rename_error_category": "none"}, {"identity_check": "stable"},
+                       {"rename_attempted": False}, {"category": "rename_other"}):
+            receipt = rename_failure()
+            receipt["roots"][0].update(fields)
+            with self.subTest(failed_rename=fields), self.assertRaises(ValueError):
+                probe.decode_probe(payload(receipt))
+        receipt = rename_failure()
+        object_prefix(receipt["roots"][0], 3)
+        with self.assertRaises(ValueError):
+            probe.decode_probe(payload(receipt))
+        receipt = rename_failure()
+        receipt["roots"][0].update(rename_attempted=False, rename_error_category="not_run")
+        with self.assertRaises(ValueError):
+            probe.decode_probe(payload(receipt))
+
+    def test_prior_native_schema_is_not_silently_reinterpreted(self):
+        receipt = valid()
+        receipt["schema_version"] = 1
+        with self.assertRaisesRegex(ValueError, "native_receipt_invalid"):
+            probe.decode_probe(payload(receipt))
 
 
 class SelectionTests(unittest.TestCase):
@@ -308,7 +457,8 @@ class SupervisorTests(unittest.TestCase):
 
 class DriverTests(unittest.TestCase):
     def exercise(self, *, fail_stage=None, native=None, selection=None, source_change=False,
-                 dirty=False, cleanup_failure=False):
+                 dirty=False, dirty_after=False, cleanup_failure=False, after_check_error=None,
+                 failure_category="subprocess_timeout", native_data=None):
         native = valid() if native is None else native
         with tempfile.TemporaryDirectory(prefix="cedar-probe-driver-") as directory:
             # Resolve the owned root before deriving every path. In particular,
@@ -331,7 +481,7 @@ class DriverTests(unittest.TestCase):
                     seen_heads += 1
                     data = (("b" if source_change and seen_heads == 2 else "a") * 40 + "\n").encode()
                 elif command[:2] == ["git", "status"]:
-                    data = b" M private-path-never-published\n" if dirty else b""
+                    data = b" M private-path-never-published\n" if dirty or (dirty_after and seen_heads == 2) else b""
                 elif command[0] == "cargo":
                     self.assertEqual(environment["CARGO_TARGET_DIR"], str(root / "target"))
                     data = json.dumps(artifact(executable)).encode() + b"\n"
@@ -340,12 +490,15 @@ class DriverTests(unittest.TestCase):
                 else:
                     self.assertEqual(command, [str(executable), "--ignored", "--exact", probe.TEST_NAME,
                                                "--nocapture", "--test-threads=1"])
-                    data = payload(native)
+                    data = payload(native) if native_data is None else native_data
                 log.write_bytes(data)
                 stage = "compile" if command[0] == "cargo" else (
-                    "selection" if "--list" in command else "runtime" if command[0] == str(executable) else "source")
+                    "selection" if "--list" in command else "runtime" if command[0] == str(executable)
+                    else "source_after" if seen_heads == 2 else "source_before")
                 if stage == fail_stage:
-                    raise probe.ProbeError("subprocess_timeout")
+                    raise probe.ProbeError(failure_category)
+                if stage == "source_after" and after_check_error is not None:
+                    raise after_check_error
 
             capture = io.StringIO()
             remove = probe.shutil.rmtree
@@ -365,13 +518,20 @@ class DriverTests(unittest.TestCase):
             if not cleanup_failure:
                 self.assertEqual(set(path.name for path in scratch_root.iterdir()), {probe.EVIDENCE_NAME})
             self.assertEqual(receipt["driver_scratch_removed"], not cleanup_failure)
+            self.assertEqual(receipt["driver_cleanup_category"], "driver_cleanup_failed" if cleanup_failure else "none")
             self.assertNotIn(str(owned), capture.getvalue())
+            self.assertNotIn("private-path", capture.getvalue())
             return receipt, calls
 
     def test_one_runtime_after_compile_and_exact_selection(self):
         receipt, calls = self.exercise()
         self.assertEqual(receipt["status"], "observed")
+        self.assertEqual(receipt["schema_version"], 2)
         self.assertTrue(receipt["source_verified_before"] and receipt["source_verified_after"])
+        self.assertEqual(receipt["source_check_before"], "matched")
+        self.assertEqual(receipt["source_check_after"], "matched")
+        self.assertEqual(receipt["source_check_before_category"], "none")
+        self.assertEqual(receipt["source_check_after_category"], "none")
         self.assertTrue(receipt["exact_one_test_selected"])
         self.assertEqual(receipt["runtime_invocations"], 1)
         self.assertEqual([timeout for _, timeout, _ in calls], [10, 10, 120, 15, 60, 10, 10])
@@ -390,27 +550,42 @@ class DriverTests(unittest.TestCase):
                 self.assertEqual(receipt["status"], "failed")
                 self.assertEqual(receipt["stage"], fail_stage)
                 self.assertEqual(receipt["runtime_invocations"], 0)
+                self.assertEqual(receipt["source_check_after"], "not_run")
+                self.assertEqual(receipt["source_check_after_category"], "not_run")
+                self.assertFalse(receipt["source_verified_after"])
         receipt, _ = self.exercise(selection=b"0 tests, 0 benchmarks\n")
         self.assertEqual(receipt["category"], "exact_one_test_missing")
         self.assertEqual(receipt["runtime_invocations"], 0)
 
     def test_failed_runtime_is_not_retried_even_with_complete_receipt(self):
-        receipt, calls = self.exercise(fail_stage="runtime")
-        self.assertEqual(receipt["status"], "failed")
-        self.assertEqual(receipt["category"], "subprocess_timeout")
-        self.assertEqual(receipt["probe"], valid())
-        self.assertEqual(sum(timeout == 60 for _, timeout, _ in calls), 1)
+        for category in ("subprocess_timeout", "subprocess_nonzero", "subprocess_output_limit",
+                         "child_cleanup_unverified"):
+            receipt, calls = self.exercise(fail_stage="runtime", failure_category=category)
+            with self.subTest(category=category):
+                self.assertEqual(receipt["status"], "failed")
+                self.assertEqual(receipt["stage"], "runtime")
+                self.assertEqual(receipt["category"], category)
+                self.assertEqual(receipt["probe"], valid())
+                self.assertEqual(receipt["source_check_after"], "matched")
+                self.assertTrue(receipt["source_verified_after"])
+                self.assertEqual(sum(timeout == 60 for _, timeout, _ in calls), 1)
+                self.assertEqual([timeout for _, timeout, _ in calls], [10, 10, 120, 15, 60, 10, 10])
 
     def test_changed_source_cannot_observe_success(self):
         receipt, _ = self.exercise(source_change=True)
         self.assertEqual(receipt["status"], "failed")
         self.assertEqual(receipt["category"], "source_commit_mismatch")
         self.assertFalse(receipt["source_verified_after"])
+        self.assertEqual(receipt["source_check_after"], "mismatch")
+        self.assertEqual(receipt["source_check_after_category"], "source_commit_mismatch")
 
     def test_dirty_source_blocks_compilation_and_native_runtime(self):
         receipt, calls = self.exercise(dirty=True)
         self.assertEqual(receipt["status"], "failed")
         self.assertEqual(receipt["category"], "source_checkout_dirty")
+        self.assertEqual(receipt["source_check_before"], "mismatch")
+        self.assertEqual(receipt["source_check_before_category"], "source_checkout_dirty")
+        self.assertEqual(receipt["source_check_after"], "not_run")
         self.assertEqual(receipt["runtime_invocations"], 0)
         self.assertEqual(len(calls), 2)
         self.assertNotIn("private-path", json.dumps(receipt))
@@ -429,6 +604,7 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "failed")
         self.assertEqual(receipt["category"], "native_probe_error")
         self.assertEqual(receipt["probe"], native)
+        self.assertEqual(receipt["source_check_after"], "matched")
         native = valid()
         native["roots"][0]["cleanup_complete"] = False
         receipt, _ = self.exercise(native=native)
@@ -441,7 +617,83 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "failed")
         self.assertEqual(receipt["category"], "native_receipt_invalid")
         self.assertIsNone(receipt["probe"])
+        self.assertEqual(receipt["source_check_after"], "matched")
         self.assertNotIn("NEVER_PUBLISH_THIS_SENTINEL", json.dumps(receipt))
+
+    def test_source_verification_errors_are_distinct_from_mismatch(self):
+        for stage in ("source_before", "source_after"):
+            receipt, calls = self.exercise(fail_stage=stage)
+            suffix = stage.removeprefix("source_")
+            with self.subTest(stage=stage):
+                self.assertEqual(receipt["status"], "failed")
+                self.assertEqual(receipt["stage"], stage)
+                self.assertEqual(receipt["category"], "subprocess_timeout")
+                self.assertEqual(receipt["source_check_" + suffix], "error")
+                self.assertEqual(receipt["source_check_" + suffix + "_category"], "subprocess_timeout")
+                self.assertFalse(receipt["source_verified_" + suffix])
+                self.assertEqual(receipt["runtime_invocations"], int(stage == "source_after"))
+                self.assertEqual(sum(timeout == 60 for _, timeout, _ in calls), int(stage == "source_after"))
+
+    def test_runtime_failure_survives_independent_source_mismatch_or_error(self):
+        for changes, state, category in (
+                ({"source_change": True}, "mismatch", "source_commit_mismatch"),
+                ({"dirty_after": True}, "mismatch", "source_checkout_dirty"),
+                ({"after_check_error": probe.ProbeError("subprocess_timeout")}, "error", "subprocess_timeout"),
+                ({"after_check_error": OSError("private error sentinel")}, "error", "driver_error")):
+            receipt, calls = self.exercise(fail_stage="runtime", failure_category="subprocess_nonzero", **changes)
+            with self.subTest(state=state, category=category):
+                self.assertEqual(receipt["status"], "failed")
+                self.assertEqual(receipt["stage"], "runtime")
+                self.assertEqual(receipt["category"], "subprocess_nonzero")
+                self.assertEqual(receipt["source_check_after"], state)
+                self.assertEqual(receipt["source_check_after_category"], category)
+                self.assertFalse(receipt["source_verified_after"])
+                self.assertEqual(sum(timeout == 60 for _, timeout, _ in calls), 1)
+                self.assertNotIn("private error sentinel", json.dumps(receipt))
+
+    def test_invalid_failed_native_output_does_not_skip_source_check(self):
+        for data in (b"", b"private path and SID error sentinel", b"x" * (probe.MAX_PROBE_BYTES + 1)):
+            receipt, calls = self.exercise(fail_stage="runtime", native_data=data)
+            with self.subTest(size=len(data)):
+                self.assertEqual(receipt["category"], "subprocess_timeout")
+                self.assertEqual(receipt["source_check_after"], "matched")
+                self.assertIsNone(receipt["probe"])
+                self.assertEqual(sum(timeout == 60 for _, timeout, _ in calls), 1)
+                self.assertNotIn("sentinel", json.dumps(receipt))
+
+    def test_cleanup_failure_does_not_erase_runtime_or_source_failure(self):
+        for changes, stage, category in (({"fail_stage": "runtime"}, "runtime", "subprocess_timeout"),
+                                          ({"source_change": True}, "source_after", "source_commit_mismatch")):
+            receipt, _ = self.exercise(cleanup_failure=True, **changes)
+            with self.subTest(stage=stage):
+                self.assertEqual(receipt["status"], "failed")
+                self.assertEqual(receipt["stage"], stage)
+                self.assertEqual(receipt["category"], category)
+                self.assertEqual(receipt["driver_cleanup_category"], "driver_cleanup_failed")
+                self.assertFalse(receipt["driver_scratch_removed"])
+
+    def test_unrecognized_driver_error_text_is_never_published(self):
+        receipt, _ = self.exercise(fail_stage="runtime", failure_category="private raw exception sentinel",
+                                   after_check_error=probe.ProbeError("private raw source sentinel"))
+        self.assertEqual(receipt["category"], "driver_error")
+        self.assertEqual(receipt["source_check_after_category"], "driver_error")
+        self.assertNotIn("sentinel", json.dumps(receipt))
+
+    def test_fixed_budgets_and_output_caps_remain_unchanged(self):
+        self.assertEqual((probe.COMPILE_TIMEOUT, probe.SELECTION_TIMEOUT, probe.RUNTIME_TIMEOUT, probe.REAP_TIMEOUT),
+                         (120, 15, 60, 5))
+        self.assertEqual((probe.MAX_COMPILE_BYTES, probe.MAX_LIST_BYTES, probe.MAX_PROBE_BYTES),
+                         (4 * 1024 * 1024, 16 * 1024, 64 * 1024))
+        self.assertEqual(probe.ROOT_COUNTS, {
+            "objects_observed": 5, "descriptor_reads": 5, "candidate_accepts": 5,
+            "candidate_rejections": 5, "ace_count": 640, "allow_ace_count": 640,
+            "deny_ace_count": 640, "inherited_ace_count": 640, "inherit_only_ace_count": 640,
+        })
+        receipt, calls = self.exercise(fail_stage="runtime")
+        self.assertEqual([limit for _, _, limit in calls],
+                         [128, 64 * 1024, 4 * 1024 * 1024, 16 * 1024, 64 * 1024, 128, 64 * 1024])
+        self.assertEqual((receipt["compile_timeout_s"], receipt["selection_timeout_s"],
+                          receipt["runtime_watchdog_s"], receipt["child_reap_timeout_s"]), (120, 15, 60, 5))
 
 
 if __name__ == "__main__":
