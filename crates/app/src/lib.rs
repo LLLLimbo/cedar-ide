@@ -1808,7 +1808,7 @@ impl CedarApp {
                         {
                             self.save();
                         }
-                        ui.menu_button("▾", |ui| {
+                        ui.menu_button("...", |ui| {
                             if ui
                                 .add_enabled(
                                     !self.save_all_busy() && self.backend_supports("write"),
@@ -1835,7 +1835,7 @@ impl CedarApp {
                             ui.label("Saves editor buffers sequentially. Earlier saves remain on disk if a later save stops. Profile form changes are saved separately.");
                         })
                         .response
-                        .on_hover_text("Save All and cancel remaining saves");
+                        .on_hover_text("Save actions");
                         if ui.button("Recovery").clicked() {
                             self.recovery.visible = true;
                         }

@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 
 const ROOT: &str = "/project";
 const BASE: &str = "saved text\n";
+const MENU_TRIGGER: &str = "...";
 const MENU_SAVE_ALL: &str = "Save all editor buffers · Ctrl/Cmd+Shift+S";
 const MENU_CANCEL: &str = "Cancel remaining saves";
 
@@ -169,6 +170,12 @@ fn label_rect(output: &egui::FullOutput, label: &str) -> egui::Rect {
         .visual_bounding_rect()
 }
 
+fn has_label(output: &egui::FullOutput, label: &str) -> bool {
+    labels(output)
+        .into_iter()
+        .any(|(text, _)| text.galley.job.text == label)
+}
+
 fn pointer(at: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
     vec![
         egui::Event::PointerMoved(at),
@@ -188,7 +195,7 @@ fn click(app: &mut CedarApp, time: f64, at: egui::Pos2) -> egui::FullOutput {
 
 fn open_save_menu(app: &mut CedarApp, time: f64) -> egui::FullOutput {
     let output = frame(app, time, vec![]);
-    let at = label_rect(&output, "▾").center();
+    let at = label_rect(&output, MENU_TRIGGER).center();
     click(app, time + 0.01, at);
     frame(app, time + 0.03, vec![])
 }
@@ -718,7 +725,7 @@ fn save_controls_and_menu_are_visible_and_clickable_at_supported_minimum_width()
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(780.0, 540.0));
     for label in [
         "Save",
-        "▾",
+        MENU_TRIGGER,
         "Recovery",
         "Open workspace",
         "Reconnect",
@@ -745,6 +752,66 @@ fn save_controls_and_menu_are_visible_and_clickable_at_supported_minimum_width()
     click(&mut app, 1.1, at);
     assert!(app.save_all_busy());
     write(&commands, "file-1.txt");
+}
+
+#[test]
+fn save_menu_trigger_shows_save_actions_only_on_pointer_hover() {
+    let (mut app, commands) = app();
+    frame(&mut app, 0.0, vec![]);
+    let output = frame(&mut app, 0.01, vec![]);
+    let at = label_rect(&output, MENU_TRIGGER).center();
+    assert!(!has_label(&output, "Save actions"));
+    let delay = f64::from(app.editor_ctx.style().interaction.tooltip_delay);
+    frame(&mut app, 0.1, vec![egui::Event::PointerMoved(at)]);
+    // Allow egui's real hover delay and tooltip sizing pass to settle.
+    frame(&mut app, 1.1 + delay, vec![]);
+    let hovered = frame(&mut app, 1.2 + delay, vec![]);
+    assert!(has_label(&hovered, "Save actions"));
+    assert!(!has_label(&hovered, MENU_SAVE_ALL));
+    assert!(!has_label(&hovered, MENU_CANCEL));
+    assert!(!app.save_all_busy());
+    assert!(app.documents.iter().all(|doc| !doc.saving));
+    idle(&commands);
+}
+
+#[test]
+fn save_menu_keeps_pointer_identity_across_frames_and_repeated_open_dismiss() {
+    let (mut app, commands) = app();
+    frame(&mut app, 0.0, vec![]);
+    let output = frame(&mut app, 0.01, vec![]);
+    let at = label_rect(&output, MENU_TRIGGER).center();
+    frame(&mut app, 1.0, pointer(at, true));
+    frame(&mut app, 1.1, vec![]);
+    frame(&mut app, 1.2, pointer(at, false));
+    let trigger_id = app
+        .editor_ctx
+        .interaction_snapshot(|interaction| interaction.clicked)
+        .expect("the menu trigger retains the pointer press until release");
+    let opened = frame(&mut app, 1.3, vec![]);
+    assert!(has_label(&opened, MENU_SAVE_ALL));
+    assert!(has_label(&opened, MENU_CANCEL));
+    let settled = frame(&mut app, 2.0, vec![]);
+    assert!(has_label(&settled, MENU_SAVE_ALL));
+
+    for (time, open) in [(3.0, false), (4.0, true)] {
+        click(&mut app, time, at);
+        assert_eq!(
+            app.editor_ctx
+                .interaction_snapshot(|interaction| interaction.clicked),
+            Some(trigger_id),
+            "opening or closing the popup must not change the trigger identity"
+        );
+        let output = frame(&mut app, time + 0.02, vec![]);
+        assert_eq!(has_label(&output, MENU_SAVE_ALL), open);
+        assert_eq!(has_label(&output, MENU_CANCEL), open);
+    }
+    click(&mut app, 5.0, egui::pos2(2.0, 2.0));
+    let dismissed = frame(&mut app, 5.02, vec![]);
+    assert!(!has_label(&dismissed, MENU_SAVE_ALL));
+    assert!(!has_label(&dismissed, MENU_CANCEL));
+    assert!(!app.save_all_busy());
+    assert!(app.documents.iter().all(|doc| !doc.saving));
+    idle(&commands);
 }
 
 #[test]
