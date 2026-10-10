@@ -232,23 +232,57 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(list(self.environment_file.iterdir()), [])
 
-    def test_environment_file_cannot_alias_either_executable(self):
+    def test_direct_environment_executable_paths_fail_at_the_exact_first_guard(self):
+        # CPython Windows pathname stat adds execute bits for .exe; fstat
+        # does not. Keep the full-mode check and assert its earlier refusal.
+        # https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c#L1777
+        for executable in (self.rustup, self.compiler):
+            with self.subTest(executable=executable.name):
+                before = executable.read_bytes()
+                self.calls.clear()
+                self.environment["GITHUB_ENV"] = str(executable)
+                early_mode_guard = executable == self.compiler and os.name == "nt"
+                expected = "environment_identity_changed" if early_mode_guard else "environment_alias"
+                expected_calls = 0 if executable == self.rustup or early_mode_guard else 2
+                with self.assertRaises(preflight.PreflightError) as raised:
+                    self.execute()
+                self.assertEqual(str(raised.exception), expected)
+                self.assertEqual(len(self.calls), expected_calls)
+                self.assertEqual(executable.read_bytes(), before)
+                self.assertEqual(self.environment_file.read_bytes(), self.original)
+
+    def test_extensionless_environment_hardlinks_reach_both_alias_guards(self):
         for executable, expected_calls in ((self.rustup, 0), (self.compiler, 2)):
             with self.subTest(executable=executable.name):
-                for hardlink in (False, True):
-                    before = executable.read_bytes()
-                    self.calls.clear()
-                    alias = executable
-                    if hardlink:
-                        alias = self.root / "aliased-env"
-                        os.link(executable, alias)
+                before = executable.read_bytes()
+                self.calls.clear()
+                alias = self.root / "aliased-env"
+                # Creation failure is a test failure, never a coverage skip.
+                os.link(executable, alias)
+                try:
                     self.environment["GITHUB_ENV"] = str(alias)
-                    with self.assertRaisesRegex(preflight.PreflightError, "environment_alias"):
+                    with self.assertRaises(preflight.PreflightError) as raised:
                         self.execute()
+                    self.assertEqual(str(raised.exception), "environment_alias")
                     self.assertEqual(len(self.calls), expected_calls)
+                    self.assertEqual(alias.read_bytes(), before)
                     self.assertEqual(executable.read_bytes(), before)
-                    if hardlink:
-                        alias.unlink()
+                    self.assertEqual(self.environment_file.read_bytes(), self.original)
+                finally:
+                    alias.unlink()
+
+    def test_initial_open_mode_only_mismatch_rejects_before_any_tool_or_append(self):
+        identity = preflight.FileIdentity.inspect(str(self.environment_file))
+        facts = identity.facts
+        changed = SimpleNamespace(st_dev=facts[0], st_ino=facts[1],
+                                  st_mode=facts[2] ^ 0o111, st_size=facts[3],
+                                  st_mtime_ns=facts[4], st_ctime_ns=facts[5],
+                                  st_birthtime_ns=facts[5])
+        with mock.patch.object(preflight.os, "fstat", return_value=changed):
+            self.assert_rejected("environment_identity_changed")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.rustup.read_bytes(), b"owned fake executable; never executed")
+        self.assertEqual(self.compiler.read_bytes(), b"owned fake executable; never executed")
 
     def test_symlink_environment_file_is_rejected_without_touching_target(self):
         target = self.root / "target"
