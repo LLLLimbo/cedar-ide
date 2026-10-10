@@ -31,7 +31,8 @@
 
 - data/control 父目录必须是已有、位于项目外的 **ASCII 绝对路径**。这是初期的
   JDK 启动器 `user.home` 参数限制。工作区、JDT distribution 和 Maven cache
-  可以使用 Unicode 路径；Java 可执行文件仍遵循专用 Java 模式的 ASCII 路径要求。
+  可以使用 Unicode 路径。Windows Java 可执行文件仍要求 ASCII 本地盘绝对路径；
+  Linux 则使用原生绝对 java 路径，可以包含 Unicode，仍须是普通可执行文件。
 - 每次启动都在选定的 data 目录下新建一个 Cedar 子目录，放置干净的用户/全局
   Maven settings、隔离的 home/tmp 和新的 JDT 数据。不会覆盖用户原有配置。
 - 这些新建的数据和索引目录会保留，因此重新启动会产生额外磁盘占用并重新建立索引。

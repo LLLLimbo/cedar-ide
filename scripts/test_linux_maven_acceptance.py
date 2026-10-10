@@ -442,14 +442,16 @@ class DriverTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        # The real driver resolves owned paths. Keep exact mock expectations
+        # canonical too when Windows spells the temporary parent as RUNNER~1.
+        self.root = Path(self.temporary.name).resolve(strict=True)
         self.scratch = self.root / "scratch"
         self.scratch.mkdir()
         self.java = self.root / "jdk" / "bin" / "java"
         self.java.parent.mkdir(parents=True)
         self.java.write_bytes(b"synthetic JDK, never executed")
         self.java.chmod(0o700)
-        (self.java.parent.parent / "release").write_text('JAVA_VERSION="21.0.9"\n')
+        (self.java.parent.parent / "release").write_bytes(b'JAVA_VERSION="21.0.9"\n')
         self.agent = self.root / "target" / "release" / "cedar-agent"
         self.agent.parent.mkdir(parents=True)
         self.agent.write_bytes(b"synthetic prebuilt normal agent, never executed")
@@ -464,6 +466,23 @@ class DriverTests(unittest.TestCase):
         self.runtime_data = json.dumps(valid()).encode()
         self.fail_stage = None
         self.mutate_stage = None
+
+    def test_linux_jdk_release_fixture_has_exact_lf_bytes_on_every_host(self):
+        self.assertEqual((self.java.parent.parent / "release").read_bytes(),
+                         b'JAVA_VERSION="21.0.9"\n')
+
+    def test_invalid_or_crlf_jdk_release_fails_before_any_mocked_process(self):
+        for data in (b'JAVA_VERSION="21.0.9"\r\n', b'JAVA_VERSION="17.0.9"\n',
+                     b'JAVA_VERSION="22.0.1"\n', b'JAVA_VERSION=21.0.9\n', b''):
+            (self.java.parent.parent / "release").write_bytes(data)
+            with self.subTest(release=data), \
+                    mock.patch.object(acceptance.sys, "platform", "linux"), \
+                    mock.patch.object(acceptance.platform, "machine", return_value="x86_64"), \
+                    mock.patch.object(acceptance, "bounded_process") as launch:
+                with self.assertRaisesRegex(ValueError, "Existing JDK 21"):
+                    acceptance.run(self.root, self.scratch, self.java, self.agent, self.archive, self.cache)
+                launch.assert_not_called()
+                self.assertEqual(list(self.scratch.iterdir()), [])
 
     def process(self, command, cwd, environment, log, timeout):
         self.commands.append((command, cwd, environment.copy(), log, timeout))
@@ -538,6 +557,21 @@ class DriverTests(unittest.TestCase):
         self.assertFalse(result["archive_acquisition_performed"])
         self.assertEqual(result["launcher_environment_keys_checked"], 11)
         self.assertEqual(list(self.scratch.iterdir()), [self.scratch / acceptance.EVIDENCE_NAME])
+
+    def test_owned_root_alias_preserves_exact_canonical_driver_paths(self):
+        # Both link and target belong to this fresh TemporaryDirectory; never
+        # resolve a caller-controlled link into another workspace for writes.
+        original = self.root
+        alias = original / "owned-root-alias"
+        alias.symlink_to(original, target_is_directory=True)
+        self.root = alias.resolve(strict=True)
+        self.assertTrue(self.root.samefile(original))
+        self.assertEqual(self.root, original)
+        result, error, _ = self.run_driver()
+        self.assertIsNone(error)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(self.commands[6][0][0], str(self.executable))
+        self.assertEqual(self.commands[-1][2]["CEDAR_AGENT_BIN"], str(self.agent))
 
     def test_archive_acquisition_stays_in_180_second_preparation_and_reports_no_exact_http_count(self):
         self.archive = None

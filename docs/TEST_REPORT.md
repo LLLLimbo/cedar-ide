@@ -1,4 +1,4 @@
-# Verification report · Linux isolated-agent Maven leaf profile / 0.39.0
+# Verification report · Linux isolated-agent Maven leaf profile / 0.39.1
 
 The [0.38 compatibility checkpoint](TEST_REPORT_PHASE38_CAPABILITY_GROUPS.md) is fully verified. This slice implements the existing strict Maven leaf subset on Linux isolated agents. The local generated pair passes; fresh Ubuntu/Windows CI and package verification remain pending.
 
@@ -22,4 +22,8 @@ The second, diagnostic-only run also remains failed. Its finite receipt identifi
 
 The repaired local pair passed in 28,322 ms on the cloud Debian host with the normal release agent and existing pinned JDK/JDT/cache. Present and missing cases each used one model query and established imported/present versus unresolved/absent observations, actual frontend binding and POM-restart guards. Both retained sealed inputs, six lifecycle metadata markers with mask 63 and zero foreign repository files, then completed graceful exit code 0, joined cleanup, client reaping and fixture removal. The agent hash stayed unchanged. The receipt explicitly records a dirty checkout and caller-supplied prebuilt agent; it does not claim final-source or Ubuntu package equivalence. CI must independently establish that linkage.
 
-Final local checks passed: 1,414 Rust tests across 45 suites (49 opt-ins ignored), strict host and Windows MSVC checks, and 373 Python tests (nine platform/tool skips). The focused native fixture ran separately as described above. Fresh Ubuntu/Windows CI and both package audits remain pending. No SSH deployment, user-device operation, Linux Local Maven, network isolation, native Windows GUI or resource improvement claim is added.
+Final local checks passed: 1,414 Rust tests across 45 suites (49 opt-ins ignored), strict host and Windows MSVC checks, and 376 Python tests (nine platform/tool skips). The focused native fixture ran separately as described above. Fresh Ubuntu/Windows CI and both package audits remain pending. No SSH deployment, user-device operation, Linux Local Maven, network isolation, native Windows GUI or resource improvement claim is added.
+
+## Cross-platform fixture correction / 0.39.1
+
+The first 0.39 CI checkpoint failed its Windows Python driver tests before Windows Rust/native acceptance. The mocked Linux JDK release file used host text newline translation, producing CRLF on Windows and failing the Linux-only byte preflight before the intended test branch. The fixture now writes exact LF bytes; malformed/CRLF negative coverage retains the production preflight. Its newly owned temporary root is canonicalized before creating files, preserving exact path assertions across Windows short-name spellings. An alias regression keeps both link and target inside that owned directory. All 38 driver tests pass locally; native Windows execution remains required. No runtime recipe, timeout, trust or acceptance criterion changes. The prior failed run remains evidence; fresh full CI and both package audits are required.
