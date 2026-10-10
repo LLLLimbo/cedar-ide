@@ -1028,7 +1028,18 @@ mod tests {
     }
     #[cfg(target_os = "linux")]
     #[test]
-    fn actual_native_worker_streams_saves_while_running_and_cancels() {
+    fn actual_embedded_worker_streams_saves_while_running_and_cancels() {
+        native_worker_run_fixture(false);
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires the copied harness beside the exact normal shipping agent"]
+    fn actual_bundled_worker_streams_saves_while_running_and_cancels() {
+        native_worker_run_fixture(true);
+        println!("\n{{\"kind\":\"bundled_run_save_cancel\",\"cases\":1,\"success\":true,\"cleanup_verified\":true}}");
+    }
+    #[cfg(target_os = "linux")]
+    fn native_worker_run_fixture(bundled: bool) {
         let temp = tempfile::tempdir().unwrap();
         let mut app = CedarApp::empty();
         let form = ConnectForm {
@@ -1036,7 +1047,24 @@ mod tests {
             allow_run: true,
             ..Default::default()
         };
-        app.connect(&egui::Context::default(), form);
+        let ctx = egui::Context::default();
+        if bundled {
+            app.connect(&ctx, form);
+        } else {
+            // Explicitly cover the public embedded Client API; GUI Local now
+            // requires the fixed sibling and is exercised by the bundled case.
+            app.state = ConnectionState::Connecting;
+            app.connecting_form = Some(form);
+            app.worker = Some(crate::Worker::spawn(
+                cedar_client::ConnectionSpec::Local {
+                    root: temp.path().to_path_buf(),
+                    allow_run: true,
+                },
+                app.generation,
+                app.result_tx.clone(),
+                ctx,
+            ));
+        }
         wait(&mut app, |app| {
             app.state == ConnectionState::Ready && app.pending.is_empty()
         });
@@ -1099,6 +1127,9 @@ mod tests {
         );
         assert!(app.guard_run_transition(Transition::Reconnect));
         assert!(app.run_state.output.starts_with("firstsecond"));
+        app.disconnect_idle();
+        wait(&mut app, |app| app.state == ConnectionState::Disconnected);
+        assert!(!app.unverified_local_close);
     }
     #[test]
     fn command_panel_and_transition_dialog_layout() {

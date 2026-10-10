@@ -172,7 +172,22 @@ fn connect(
 ) -> CheckResult<()> {
     clock.run(STARTUP_REQUEST, || {
         *slot = Some(AcceptanceClient {
-            inner: Client::spawn_agent(binary, root, trust)?,
+            inner: {
+                let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+                let sibling = executable
+                    .parent()
+                    .ok_or("test executable has no parent")?
+                    .join("cedar-agent");
+                require(
+                    sibling.canonicalize().map_err(|e| e.to_string())?
+                        == binary.canonicalize().map_err(|e| e.to_string())?,
+                    "selected acceptance agent is not the exact test executable sibling",
+                )?;
+                Client::connect(cedar_client::ConnectionSpec::BundledLinux {
+                    root: root.to_owned(),
+                    allow_run: trust,
+                })?
+            },
             clock: clock.clone(),
             restart: None,
         });

@@ -348,6 +348,8 @@ def run(root, scratch_root, java, agent, existing_archive, cache):
         executable = compiled_test(read_regular(compile_log, MAX_LOG_BYTES))
         require(executable.is_relative_to(root / "target") and executable.is_file()
                 and os.access(executable, os.X_OK), "Compiler returned an unexpected test executable")
+        executable, sibling = linux_java.prepare_sibling_harness(scratch, executable, agent, agent_digest)
+        environment["CEDAR_AGENT_BIN"] = str(sibling)
         stage = "selection"
         selection_log = scratch / "selection-private.log"
         bounded_process([str(executable), "--list", "--ignored", "--exact", TEST_NAME],
@@ -360,6 +362,8 @@ def run(root, scratch_root, java, agent, existing_archive, cache):
         probe = parse_probe(read_regular(runtime_log, MAX_LOG_BYTES))
         require(hashlib.sha256(read_regular(agent, linux_java.MAX_AGENT_BYTES)).digest() == agent_digest,
                 "Acceptance changed the prebuilt normal agent")
+        require(hashlib.sha256(read_regular(sibling, linux_java.MAX_AGENT_BYTES)).digest() == agent_digest,
+                "Acceptance changed the sibling normal agent")
         stage = "cleanup"
         shutil.rmtree(scratch)
         require(not scratch.exists(), "Private acceptance scratch cleanup failed")
@@ -392,6 +396,7 @@ def run(root, scratch_root, java, agent, existing_archive, cache):
         "existing_archive_reused": existing_archive is not None,
         "archive_acquisition_performed": existing_archive is None,
         "normal_agent_normal_client": True,
+        "connection_route": "bundled_linux_sibling", "copied_agent_hash_verified": True,
         "normal_agent_unchanged": True, "source_commit": source_commit,
         "checkout_dirty": checkout_dirty, "source_snapshot": "before_preparation",
         "agent_sha256": agent_digest.hex(), "agent_build_provenance": "caller_supplied_prebuilt",

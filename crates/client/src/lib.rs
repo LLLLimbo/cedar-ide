@@ -61,9 +61,21 @@ fn cancellation_error() -> String {
     "transport_cancelled: connection cancelled; reconnect with a fresh token".into()
 }
 
+#[cfg(target_os = "linux")]
+mod bundled_linux;
+#[cfg(target_os = "linux")]
+pub use bundled_linux::{ConnectionFailure, ConnectionOwnership};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionSpec {
     Local {
+        root: PathBuf,
+        allow_run: bool,
+    },
+    /// Linux's opt-in process route uses only the native cedar-agent beside
+    /// this executable. Local retains its embedded workspace implementation.
+    #[cfg(target_os = "linux")]
+    BundledLinux {
         root: PathBuf,
         allow_run: bool,
     },
@@ -107,6 +119,11 @@ impl Client {
             return Err(cancellation_error());
         }
         match spec {
+            #[cfg(target_os = "linux")]
+            ConnectionSpec::BundledLinux { root, allow_run } => {
+                Self::connect_bundled_linux_inner(root, allow_run, cancellation)
+                    .map_err(|failure| failure.to_string())
+            }
             ConnectionSpec::Local { root, allow_run } => {
                 #[cfg(windows)]
                 {
@@ -775,23 +792,60 @@ impl ProcessClient {
         )
     }
     fn spawn_with_grace_and_error(
-        mut cmd: Command,
+        cmd: Command,
         grace: Duration,
         cancellation: Option<ConnectionCancellation>,
         spawn_error: impl FnOnce(io::Error) -> String,
     ) -> Result<Self, String> {
+        Self::spawn_with_grace_and_setup_error(
+            cmd,
+            grace,
+            cancellation,
+            cancellation_error,
+            spawn_error,
+            |error| error,
+        )
+    }
+    // Keep the historical String errors for existing routes. The fixed Linux
+    // route additionally distinguishes pre-spawn errors from setup failures
+    // after a child was created; that provenance never comes from peer output.
+    fn spawn_with_grace_and_setup_error<E>(
+        mut cmd: Command,
+        grace: Duration,
+        cancellation: Option<ConnectionCancellation>,
+        cancelled: impl FnOnce() -> E,
+        spawn_error: impl FnOnce(io::Error) -> E,
+        setup_error: impl Fn(String) -> E,
+    ) -> Result<Self, E> {
         if cancellation_requested(&cancellation) {
-            return Err(cancellation_error());
+            return Err(cancelled());
         }
-        let mut child = cmd
+        let child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(spawn_error)?;
-        let mut stdin = child.stdin.take().ok_or("missing stdin")?;
-        let stdout = child.stdout.take().ok_or("missing stdout")?;
-        let mut err = child.stderr.take().ok_or("missing stderr")?;
+        // Own the child before any fallible setup, including pipe extraction.
+        let mut owned = OwnedProcess {
+            child,
+            completion: None,
+        };
+        let mut stdin = owned
+            .child
+            .stdin
+            .take()
+            .ok_or_else(|| setup_error("missing stdin".into()))?;
+        let stdout = owned
+            .child
+            .stdout
+            .take()
+            .ok_or_else(|| setup_error("missing stdout".into()))?;
+        let mut err = owned
+            .child
+            .stderr
+            .take()
+            .ok_or_else(|| setup_error("missing stderr".into()))?;
         // Keep a single outstanding request. The public API is sequential, and
         // a stopped writer must never accumulate work or block the caller.
         let (request_tx, request_rx) = mpsc::sync_channel::<Request>(1);
@@ -799,17 +853,13 @@ impl ProcessClient {
         let (reaped_tx, reaped_rx) = mpsc::channel();
         // Create the owner now, not from Drop. Neither normal close nor a
         // transport failure waits for process exit on the caller/UI thread.
-        let owned = OwnedProcess {
-            child,
-            completion: None,
-        };
         thread::Builder::new()
             .name("cedar-transport-reaper".into())
             .spawn(move || {
                 let result = reap_after_close(owned, shutdown_rx, grace);
                 let _ = reaped_tx.send(result);
             })
-            .map_err(|e| format!("spawn_failed: transport reaper: {e}"))?;
+            .map_err(|e| setup_error(format!("spawn_failed: transport reaper: {e}")))?;
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         let observation = Arc::new(TransportObservation::default());
         let writer_observation = observation.clone();

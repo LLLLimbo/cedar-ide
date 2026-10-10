@@ -170,6 +170,37 @@ class ProbeTests(unittest.TestCase):
             log.write_text(json.dumps(receipt))
             self.assertEqual(acceptance.failure_probe(log), ("available", receipt))
 
+class BundledWorkflowTests(unittest.TestCase):
+    def exercise(self, records):
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            calls = []
+            def run(command, cwd, environment, log, timeout):
+                calls.append((command, timeout))
+                if "--list" in command:
+                    log.write_bytes((acceptance.BUNDLED_RUN_TEST + ": test\n\n1 test, 0 benchmarks\n").encode())
+                else:
+                    log.write_bytes(("\n".join(json.dumps(record) for record in records) + "\n").encode())
+            with mock.patch.object(acceptance, "bounded_process", side_effect=run):
+                result = acceptance.run_bundled_workflow(Path("harness"), scratch, {})
+            self.assertEqual([call[1] for call in calls], [15, 60])
+            self.assertIn("--exact", calls[1][0])
+            return result
+
+    def test_one_executed_case_with_verified_cleanup(self):
+        record = {"kind": "bundled_run_save_cancel", "cases": 1, "success": True, "cleanup_verified": True}
+        self.assertEqual(self.exercise([record]), record)
+
+    def test_missing_duplicate_forged_and_unverified_cases_fail(self):
+        valid = {"kind": "bundled_run_save_cancel", "cases": 1, "success": True, "cleanup_verified": True}
+        bad = [[], [valid, valid], [{**valid, "cases": True}], [{**valid, "cases": 0}],
+               [{**valid, "success": 1}], [{**valid, "cleanup_verified": False}],
+               [{**valid, "extra": True}], [[valid]]]
+        for records in bad:
+            with self.subTest(records=records), self.assertRaises(ValueError):
+                self.exercise(records)
+
+
 class TestSelectionTests(unittest.TestCase):
     def test_actual_aggregate_test_path_is_uniquely_listed(self):
         self.assertEqual(acceptance.TEST_NAME,
@@ -435,6 +466,43 @@ class SupervisorTests(unittest.TestCase):
         self.assertIsNotNone(signals[0])
         self.assertEqual(signals[0].si_code, os.CLD_EXITED)
         self.assertEqual(signals[0].si_status, 0)
+
+
+class SiblingHarnessTests(unittest.TestCase):
+    def test_owned_copies_keep_exact_agent_and_harness_bytes(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(strict=True)
+            source = root / "source"
+            source.mkdir()
+            harness = source / "test-harness"
+            agent = source / "normal-agent"
+            harness.write_bytes(b"synthetic test input, never executed")
+            agent.write_bytes(b"synthetic agent input, never executed")
+            harness.chmod(0o700)
+            agent.chmod(0o700)
+            scratch = root / "owned scratch"
+            scratch.mkdir()
+            copied, sibling = acceptance.prepare_sibling_harness(scratch, harness, agent, hashlib.sha256(agent.read_bytes()).digest())
+            self.assertEqual(copied.parent, scratch / "Local bundle 雪")
+            self.assertEqual(sibling, copied.parent / "cedar-agent")
+            self.assertEqual(copied.read_bytes(), harness.read_bytes())
+            self.assertEqual(sibling.read_bytes(), agent.read_bytes())
+            self.assertTrue(os.access(copied, os.X_OK))
+            self.assertTrue(os.access(sibling, os.X_OK))
+            with self.assertRaises(FileExistsError):
+                acceptance.prepare_sibling_harness(scratch, harness, agent, hashlib.sha256(agent.read_bytes()).digest())
+
+    def test_wrong_agent_identity_is_rejected_before_execution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(strict=True)
+            executable = root / "synthetic-input"
+            executable.write_bytes(b"never executed")
+            executable.chmod(0o700)
+            scratch = root / "scratch"
+            scratch.mkdir()
+            with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                acceptance.prepare_sibling_harness(scratch, executable, executable, bytes(32))
 
 
 if __name__ == "__main__":

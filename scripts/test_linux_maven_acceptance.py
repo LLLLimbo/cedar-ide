@@ -537,15 +537,15 @@ class DriverTests(unittest.TestCase):
         self.assertTrue(result["checkout_dirty"])
         self.assertEqual([call[4] for call in self.commands], [10, 10, 180, 240, 15, 600, 15, 1020])
         self.assertEqual(self.commands[5][0], acceptance.linux_java.test_compile_command())
-        self.assertEqual(self.commands[6][0], [str(self.executable), "--list", "--ignored", "--exact", acceptance.TEST_NAME])
-        self.assertEqual(self.commands[7][0], [str(self.executable), "--ignored", "--exact", acceptance.TEST_NAME,
+        self.assertEqual(self.commands[6][0], [str(Path(self.commands[6][2]["TMPDIR"]) / "Local bundle 雪" / "cedar-native-acceptance"), "--list", "--ignored", "--exact", acceptance.TEST_NAME])
+        self.assertEqual(self.commands[7][0], [str(Path(self.commands[7][2]["TMPDIR"]) / "Local bundle 雪" / "cedar-native-acceptance"), "--ignored", "--exact", acceptance.TEST_NAME,
                                               "--nocapture", "--test-threads=1"])
         self.assertIn(str(self.archive), self.commands[2][0])
         self.assertEqual(self.commands[3][0][-2:], ["--verify-cache", str(self.cache)])
         for _, _, environment, _, _ in self.commands:
             self.assertTrue(all(key not in environment for key in acceptance.LAUNCHER_ENVIRONMENT_KEYS))
         environment = self.commands[-1][2]
-        self.assertEqual(environment["CEDAR_AGENT_BIN"], str(self.agent))
+        self.assertEqual(environment["CEDAR_AGENT_BIN"], str(Path(environment["TMPDIR"]) / "Local bundle 雪" / "cedar-agent"))
         self.assertEqual(environment["CEDAR_MAVEN_CACHE_INPUT"], str(self.cache))
         self.assertFalse(Path(environment["TMPDIR"]).exists())
         for key in ("network_isolation_verified", "maven_goals_exercised", "dependency_source_navigation_exercised",
@@ -570,8 +570,8 @@ class DriverTests(unittest.TestCase):
         result, error, _ = self.run_driver()
         self.assertIsNone(error)
         self.assertEqual(result["status"], "success")
-        self.assertEqual(self.commands[6][0][0], str(self.executable))
-        self.assertEqual(self.commands[-1][2]["CEDAR_AGENT_BIN"], str(self.agent))
+        self.assertEqual(self.commands[6][0][0], str(Path(self.commands[6][2]["TMPDIR"]) / "Local bundle 雪" / "cedar-native-acceptance"))
+        self.assertEqual(self.commands[-1][2]["CEDAR_AGENT_BIN"], str(Path(self.commands[-1][2]["TMPDIR"]) / "Local bundle 雪" / "cedar-agent"))
 
     def test_archive_acquisition_stays_in_180_second_preparation_and_reports_no_exact_http_count(self):
         self.archive = None

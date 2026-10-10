@@ -493,3 +493,5 @@ it does not claim every feature of this or later revisions. Primary references:
 [LSP 3.17 specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/),
 [canonical protocol source](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/specification.md),
 [DAP specification](https://microsoft.github.io/debug-adapter-protocol/specification).
+
+The 0.41 Linux GUI Local route uses its fixed matching sibling agent; embedded Client::Local remains generic. This desktop route is pending current-checkpoint acceptance.

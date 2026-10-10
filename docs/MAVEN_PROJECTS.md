@@ -93,4 +93,4 @@ Maven 设置为离线解析，并使用指向新建空目录的 file-only mirror
 生产 JVM 仍为 512 MiB 最大堆，总进程树工作集可显著高于堆上限。本阶段不声称资源优化、
 大型项目兼容、原生 Windows GUI 或真实 SSH 验证已经完成。
 
-Linux 需要支持能力分组的匹配前端（0.38+）和已启用该配置的独立 agent。31 个直接能力名之外，两个有界分组分别声明核心 Maven 操作和可选依赖快照；Windows 保留直接能力名。Linux Local 内嵌工作区不支持此配置，没有自动回退。Linux 使用 config_linux 和原生绝对 java 路径；ASCII 数据/控制目录限制仍保留，工作区、JDT 分发及缓存可以使用 Unicode。Stop 会区分正常退出码和信号；强制清理不是优雅退出，未确认清理会阻止同会话重启。
+Linux 需要支持能力分组的匹配前端（0.38+）和已启用该配置的独立 agent。31 个直接能力名之外，两个有界分组分别声明核心 Maven 操作和可选依赖快照；Windows 保留直接能力名。内嵌 Client Local 不支持此配置；0.41 GUI Local 改用匹配的同目录独立 agent（本阶段待验收），没有自动回退。Linux 使用 config_linux 和原生绝对 java 路径；ASCII 数据/控制目录限制仍保留，工作区、JDT 分发及缓存可以使用 Unicode。Stop 会区分正常退出码和信号；强制清理不是优雅退出，未确认清理会阻止同会话重启。

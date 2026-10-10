@@ -30,6 +30,8 @@ jobs:
       - run: python scripts/test_windows_bundle.py
       - run: python scripts/test_linux_agent_bundle.py
       - run: python scripts/test_linux_agent_acceptance.py
+      - run: python scripts/test_linux_desktop_bundle.py
+      - run: python scripts/test_linux_desktop_acceptance.py
       - run: python scripts/test_git_views_smoke.py
       - run: python scripts/test_java_crash_collection.py
       - run: python scripts/test_prepare_maven_cache.py
@@ -267,16 +269,18 @@ jobs:
         timeout-minutes: 3
         if: runner.os != 'Windows'
         run: python3 scripts/git_views_smoke.py --agent "$PWD/target/release/cedar-agent" --git "$(command -v git)"
-      - name: Default-feature Linux shipping agent
+      - name: Default-feature Linux shipping desktop and agent
         id: linux_agent_shipping
         if: runner.os == 'Linux'
-        run: cargo build --release -p cedar-agent --bin cedar-agent --locked
+        run: |
+          cargo build --release -p cedar-app -p cedar-agent --bin cedar --bin cedar-agent --locked
+          sha256sum target/release/cedar target/release/cedar-agent > "$RUNNER_TEMP/cedar-linux-default-pair.sha256"
       - name: Linux generic language ownership (normal shipping agent)
         timeout-minutes: 3
         if: runner.os == 'Linux'
         run: CEDAR_AGENT_BIN="$PWD/target/release/cedar-agent" CEDAR_MOCK_LSP_BIN="$PWD/target/release/cedar-mock-lsp" cargo test -p cedar-client --test linux_agent_language --locked -- --ignored --test-threads=1 --nocapture
       - name: Real Linux typed Java (normal shipping agent)
-        timeout-minutes: 26
+        timeout-minutes: 28
         if: runner.os == 'Linux'
         run: python3 scripts/linux_java_acceptance.py --scratch-root "$RUNNER_TEMP" --java "$JAVA_HOME_21_X64/bin/java" --agent "$PWD/target/release/cedar-agent"
       - name: Linux typed Java sanitized acceptance receipt
@@ -317,6 +321,25 @@ jobs:
           path: |
             ${{ runner.temp }}/cedar-linux-agent-development/*.tar.gz
             ${{ runner.temp }}/cedar-linux-agent-development/BUNDLE_VERIFICATION.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Build nonshipping Linux sibling-route probe
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release -p cedar-client --features fixtures --bin cedar-client-bundle-probe --locked
+          sha256sum --check "$RUNNER_TEMP/cedar-linux-default-pair.sha256"
+      - name: Verify extracted Ubuntu 24.04 amd64 desktop bundle
+        timeout-minutes: 7
+        if: runner.os == 'Linux'
+        run: python3 scripts/linux_desktop_bundle_acceptance.py
+      - name: Linux desktop development archive and verification receipt
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cedar-linux-desktop-development
+          path: |
+            ${{ runner.temp }}/cedar-linux-desktop-development/*.tar.gz
+            ${{ runner.temp }}/cedar-linux-desktop-development/BUNDLE_VERIFICATION.json
           if-no-files-found: error
           retention-days: 30
       - name: Default-feature Windows shipping binaries

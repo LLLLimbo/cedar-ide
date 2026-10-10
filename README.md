@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第四十阶段 SSH 连接表单预检查（**0.40.0**，待精确提交验收），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的第四十一阶段 Linux 本地隔离 agent 与桌面开发包（**0.41.0**，待精确提交验收），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -50,10 +50,10 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 
 ```sh
 cargo build --release --workspace --locked
-cargo run -p cedar-app --bin cedar -- examples/demo
+cargo run --release -p cedar-app --bin cedar -- examples/demo
 ```
 
-Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`，本地连接还要求同目录的 `cedar-agent.exe`；不要只复制前端。缺失或损坏的 agent 会报错，不搜索 PATH 或回退到进程内执行。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
+Windows 使用 Visual Studio C++ Build Tools / MSVC Rust 工具链；本机完成构建后，可执行文件位于 `target\release\cedar.exe`，本地连接还要求同目录的 `cedar-agent.exe`；不要只复制前端。缺失或损坏的 agent 会报错，不搜索 PATH 或回退到进程内执行。Linux 也要求 `target/release/cedar` 与同目录的匹配 `cedar-agent` 一起使用；上述命令使用同一 release 构建目录。Linux 需要桌面会话及 OpenGL、X11 或 Wayland 运行时。首次构建需要下载 crates.io 依赖。
 
 公开仓库 [LLLLimbo/cedar-ide](https://github.com/LLLLimbo/cedar-ide) 的 0.9.0 提交 [`270119b45eea1d37581a497e1bbe9a2d4ba3764a`](https://github.com/LLLLimbo/cedar-ide/commit/270119b45eea1d37581a497e1bbe9a2d4ba3764a) 已通过[同提交 Ubuntu/Windows CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37727806345)：正常 Windows 隔离 agent 的专用 Java/JDT 路径与真实编辑器事务通过；Stop 如实报告超时后的强制清理，不冒充自然退出。0.10.0 显式、只读的[断线保存核对](docs/INTERRUPTED_SAVES.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37736569381)，两端九项实际进程故障用例全部执行通过；保留后续输入和 Undo，不自动重放写入。0.11.0 的有界[连接与读取取消](docs/CONNECTION_CANCELLATION.md)已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/37741303276)。0.11.1 的 CPU 计时窗口修正也已通过[精确提交验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37744067995)。0.12.0 的[两次长观察基线](docs/LONG_JAVA_BASELINE.md)已通过[原生双平台验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37749233834)。0.13.0 一次固定、非发布版的[GC 数值诊断](docs/GC_DIAGNOSTIC_CONTROL.md)已通过[同提交原生验证](https://github.com/LLLLimbo/cedar-ide/actions/runs/37758115385)：实际 G1，末次 GC 后堆占用 378 MiB、容量 512 MiB；它不是最终空闲存活对象量，生产堆和收集器设置不变。0.15.4 的有界、显式[Git 状态与单文件差异](docs/GIT_VIEWS.md)已通过[同提交双平台验收](https://github.com/LLLLimbo/cedar-ide/actions/runs/37787319950)，Windows 真实 Git 1,421 项断言通过；旧 `git_status` 仍不在 Windows 开放。**同步 Run 和通用 Windows LSP 仍不启用**。0.16.0 的受限显式 Java 诊断刷新和时效提示已通过[精确提交双平台验收](https://github.com/LLLLimbo/cedar-ide/actions/runs/37795611035)；之前偶发的 Java 诊断缺失仍未证明根因已修复。0.17.0 可取消的后台 Java 启动已通过[精确提交双平台验收](https://github.com/LLLLimbo/cedar-ide/actions/runs/37811229491)，包含启动期间读取和独立清理验证。Java 配置见[使用说明](docs/WINDOWS_JAVA_SETUP.md)；原生 GUI 与真实 SSH 仍待独立验收，当前证据见[测试报告](docs/TEST_REPORT.md)。
 
@@ -182,3 +182,5 @@ python3 scripts/package_checkpoint.py --output /absolute/path/cedar-checkpoint.z
 本项目代码按 MIT 或 Apache-2.0 双许可提供。依赖保留各自许可；参见 `THIRD_PARTY_NOTICES.md`。没有打包 JDK、JDT LS、Kotlin 服务器或 JetBrains 组件。源码包不含下载缓存、临时凭据、用户项目或大型构建目录。
 
 Public source history and omitted machine-specific evidence are described in [PUBLICATION.md](PUBLICATION.md).
+
+Linux GUI 的 Local folder 在 0.41 使用与前端同目录、同版本的独立 agent；缺失或不匹配会报错，没有内嵌回退。面向库调用者的 Client Local 仍保留内嵌模式。新的 Ubuntu 24.04 amd64 桌面包范围与运行依赖见 [Linux 桌面指南](docs/LINUX_DESKTOP_QUICKSTART.zh-CN.md)，当前待本阶段验收。

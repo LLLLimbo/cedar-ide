@@ -38,6 +38,8 @@ mod language_navigation_results;
 mod language_results;
 mod language_sync;
 mod language_ui;
+#[cfg(test)]
+mod linux_local_tests;
 mod location_history;
 #[cfg(test)]
 mod location_history_process_tests;
@@ -206,6 +208,12 @@ impl ConnectForm {
             if self.local_root.trim().is_empty() {
                 return Err("Choose a local workspace directory".into());
             }
+            #[cfg(target_os = "linux")]
+            return Ok(ConnectionSpec::BundledLinux {
+                root: PathBuf::from(self.local_root.trim()),
+                allow_run: self.allow_run,
+            });
+            #[cfg(not(target_os = "linux"))]
             Ok(ConnectionSpec::Local {
                 root: PathBuf::from(self.local_root.trim()),
                 allow_run: self.allow_run,
@@ -291,6 +299,8 @@ pub struct CedarApp {
     cjk_seen: bool,
     state: ConnectionState,
     unverified_local_close: bool,
+    // One bounded warning lineage; retired attempts cannot adopt workspace state.
+    unverified_attempt_generation: Option<u64>,
     form: ConnectForm,
     active_form: Option<ConnectForm>,
     workspace_key: Option<WorkspaceKey>,
@@ -393,6 +403,7 @@ impl CedarApp {
             cjk_seen: false,
             state: ConnectionState::Idle,
             unverified_local_close: false,
+            unverified_attempt_generation: None,
             form: ConnectForm::default(),
             active_form: None,
             workspace_key: None,
@@ -839,6 +850,16 @@ impl CedarApp {
 
     fn apply_worker_event(&mut self, event: WorkerEvent) {
         match event {
+            WorkerEvent::AttemptCleanupUnverified { generation } => {
+                if generation <= self.generation
+                    && self
+                        .unverified_attempt_generation
+                        .is_none_or(|old| generation > old)
+                {
+                    self.unverified_attempt_generation = Some(generation);
+                    self.unverified_local_close = true;
+                }
+            }
             WorkerEvent::Response(event) => self.apply_event(event),
             WorkerEvent::Closed { generation, result } => {
                 self.connection_closed(generation, result)
@@ -2206,6 +2227,8 @@ impl CedarApp {
             ui.label(RichText::new("Uses your system OpenSSH and existing key/config. The remote agent must be installed on a POSIX host. Authenticate and verify its host key in your terminal first.").small().color(MUTED));
             ui.label(RichText::new("The explicit port overrides an SSH alias's configured port. Enter literal remote paths: ~ and $variables are not expanded. Prefer an absolute agent path; a bare name uses the remote command environment.").small().color(MUTED));
         } else {
+            #[cfg(target_os = "linux")]
+            ui.label(RichText::new("Local folders use the matching cedar-agent beside this application. Missing or incompatible bundles cannot fall back to an embedded workspace.").small().color(MUTED));
             field(
                 ui,
                 "Workspace directory",

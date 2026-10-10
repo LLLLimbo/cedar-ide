@@ -279,6 +279,9 @@ fn response(event: WorkerEvent) -> Event {
         WorkerEvent::Response(event) => event,
         WorkerEvent::TransportLost { message, .. } => panic!("unexpected idle loss: {message}"),
         WorkerEvent::Closed { .. } => panic!("unexpected cleanup receipt before response"),
+        WorkerEvent::AttemptCleanupUnverified { .. } => {
+            panic!("unexpected bundled attempt cleanup warning")
+        }
     }
 }
 

@@ -43,6 +43,8 @@ PREPARE_TIMEOUT = 180
 COMPILE_TIMEOUT = 600
 TEST_TIMEOUT = 720
 SELECTION_TIMEOUT = 15
+BUNDLED_RUN_TIMEOUT = 60
+BUNDLED_RUN_TEST = "run_ui::tests::actual_bundled_worker_streams_saves_while_running_and_cancels"
 MAX_LIST_BYTES = 16 * 1024
 TEST_NAME = "language_ui::real_java_tests::acceptance::linux::real_linux_normal_agent_java_editor_acceptance"
 BOOLS = (
@@ -433,11 +435,51 @@ def bounded_process(command, cwd, env, log, timeout):
                 process.stdout.close()
 
 
-def validate_test_listing(data):
+def validate_test_listing(data, test_name=TEST_NAME):
     require(type(data) is bytes and len(data) <= MAX_LIST_BYTES, "Test listing exceeds bound")
     lines = [line for line in data.decode("utf-8", errors="strict").splitlines() if line]
-    require(lines == [TEST_NAME + ": test", "1 test, 0 benchmarks"],
+    require(lines == [test_name + ": test", "1 test, 0 benchmarks"],
             "Exact ignored Linux acceptance test was not uniquely listed")
+
+
+def run_bundled_workflow(executable, scratch, environment):
+    selection = scratch / "bundled-run-selection-private.log"
+    bounded_process([str(executable), "--list", "--ignored", "--exact", BUNDLED_RUN_TEST],
+                    scratch, environment, selection, SELECTION_TIMEOUT)
+    validate_test_listing(read_regular(selection, MAX_LIST_BYTES), BUNDLED_RUN_TEST)
+    log = scratch / "bundled-run-private.log"
+    bounded_process([str(executable), "--ignored", "--exact", BUNDLED_RUN_TEST,
+                     "--nocapture", "--test-threads=1"], scratch, environment, log, BUNDLED_RUN_TIMEOUT)
+    records = [strict_json(line) for line in read_regular(log, MAX_LOG_BYTES).decode("utf-8").splitlines()
+               if line.startswith("{")]
+    require(len(records) == 1 and type(records[0]) is dict, "Expected one bundled workflow receipt")
+    record = records[0]
+    require(set(record) == {"kind", "cases", "success", "cleanup_verified"}
+            and record["kind"] == "bundled_run_save_cancel"
+            and type(record["cases"]) is int and record["cases"] == 1
+            and record["success"] is True and record["cleanup_verified"] is True,
+            "Incomplete bundled workflow receipt")
+    return record
+
+
+def prepare_sibling_harness(scratch, executable, agent, agent_digest):
+    """Copy test-only harness and exact normal agent; shipping selects no override."""
+    directory = scratch / "Local bundle 雪"
+    directory.mkdir()
+    harness = directory / "cedar-native-acceptance"
+    sibling = directory / "cedar-agent"
+    for source, target, limit in ((executable, harness, 512 * 1024 * 1024),
+                                  (agent, sibling, MAX_AGENT_BYTES)):
+        data = read_regular(source, limit)
+        require(data and os.access(source, os.X_OK), "Expected executable acceptance input")
+        with target.open("xb") as stream:
+            stream.write(data)
+        shutil.copymode(source, target)
+        require(hashlib.sha256(read_regular(target, limit)).digest() == hashlib.sha256(data).digest(),
+                "Copied acceptance input changed")
+    require(hashlib.sha256(read_regular(sibling, MAX_AGENT_BYTES)).digest() == agent_digest,
+            "Sibling agent identity mismatch")
+    return harness, sibling
 
 
 def compiled_test(data):
@@ -519,6 +561,10 @@ def run(root, scratch_root, java, agent, existing_archive=None):
         executable = compiled_test(read_regular(compile_log, MAX_LOG_BYTES))
         require(executable.is_relative_to(root / "target") and executable.is_file(),
                 "Compiler returned an unexpected test executable")
+        executable, sibling = prepare_sibling_harness(scratch, executable, agent, agent_digest)
+        environment["CEDAR_AGENT_BIN"] = str(sibling)
+        stage = "bundled_run_save_cancel"
+        bundled_run = run_bundled_workflow(executable, scratch, environment)
         stage = "selection"
         selection_log = scratch / "selection-private.log"
         bounded_process([str(executable), "--list", "--ignored", "--exact", TEST_NAME],
@@ -531,6 +577,8 @@ def run(root, scratch_root, java, agent, existing_archive=None):
         probe = parse_probe(read_regular(runtime_log, MAX_LOG_BYTES))
         require(hashlib.sha256(read_regular(agent, MAX_AGENT_BYTES)).digest() == agent_digest,
                 "Acceptance changed the prebuilt normal agent")
+        require(hashlib.sha256(read_regular(sibling, MAX_AGENT_BYTES)).digest() == agent_digest,
+                "Acceptance changed the sibling normal agent")
         stage = "cleanup"
         shutil.rmtree(scratch)
         require(not scratch.exists(), "Private acceptance scratch cleanup failed")
@@ -557,6 +605,8 @@ def run(root, scratch_root, java, agent, existing_archive=None):
               "jdt_version": "1.61.0", "jdt_archive_sha256": ARCHIVE_SHA256,
               "pinned_archive_verified": True, "existing_jdk21_verified": True,
               "normal_agent_normal_client": True, "normal_agent_unchanged": True,
+              "connection_route": "bundled_linux_sibling", "copied_agent_hash_verified": True,
+              "bundled_run_save_cancel": bundled_run, "bundled_run_timeout_s": BUNDLED_RUN_TIMEOUT,
               "source_commit": source_commit, "checkout_dirty": checkout_dirty,
               "source_snapshot": "before_preparation",
               "agent_sha256": agent_digest.hex(), "agent_build_provenance": "caller_supplied_prebuilt",
