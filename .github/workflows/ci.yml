@@ -22,6 +22,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - run: python scripts/test_windows_fixture_compiler.py
+      - name: Bind Windows fixtures to the installed Rust toolchain
+        if: runner.os == 'Windows'
+        timeout-minutes: 2
+        run: python scripts/windows_fixture_compiler.py
       - run: cargo fmt --all -- --check
       - run: python scripts/test_public_export.py
       - run: python scripts/test_capability_smoke.py
