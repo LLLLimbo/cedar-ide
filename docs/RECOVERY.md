@@ -1,4 +1,4 @@
-# Private draft recovery (phase 3)
+# Private draft recovery
 
 `cedar-recovery` stores unsaved normal UTF-8 buffers on the **frontend computer**,
 including buffers from SSH workspaces. It does not open a workspace file, connect
@@ -58,6 +58,43 @@ this crate does **not** inspect or repair ACLs or promise Unix-equivalent
 owner-only permissions. The normal per-user Local AppData location is preferable to
 an arbitrary shared override. Stable `std` metadata does not provide the Unix
 inode-identity checks used here on Windows.
+
+## Unavailable storage and quitting
+
+Recovery storage and workspace Save are separate operations. A failed recovery
+open or write must not mark the current draft backed up, reverse a successful
+workspace Save, or remove its selection and Undo history. Save and Save All
+retain their ordinary conditional-write and unknown-result protections.
+
+The frontend distinguishes recovery startup, ready storage, unavailable storage,
+and a stopped worker. A rejected request that never reached storage is different
+from a write or removal that failed after it may already have changed storage.
+Older acknowledged or uncertain copy evidence survives a rejected newer request.
+“No owned copy” describes this session's evidence; it does not assert that the
+recovery directory contains no older records.
+
+The ordinary Discard and quit action still requests removal of owned copies. A terminal
+recovery failure offers a decision instead of claiming deletion succeeded.
+“Quit without deleting remaining recovery copies” is a separate explicit choice:
+current unsaved editor text may be lost, remaining copies may be older, and a
+removal already in progress may have completed. Existing records are not silently
+moved, repaired, or deleted to make this path work.
+
+Before the final confirmation, the worker freezes new recovery mutations,
+cancels queued removals, and drains writes already accepted plus any operation
+already running. Only an actual settlement acknowledgement can permit quitting.
+The UI observes each discard or settlement wait for at most five seconds; this
+does not interrupt a filesystem call. A timeout or uncertain worker state keeps
+quitting blocked and offers Keep editing. A late acknowledgement cannot approve
+an expired close attempt. Keep editing invalidates that attempt, and recovery
+admission resumes only after the worker has settled. Retry is unavailable while
+a close or resume transaction is unresolved.
+
+The final close checks the same document versions and workspace/session state,
+as well as pending saves, Save All and tool cleanup. New edits or work require a
+new decision. Retaining copies never automatically schedules their removal on
+Retry. These lifecycle rules do not add Windows ACL enforcement or a new privacy
+guarantee; the platform limitations above still apply.
 
 ## Format and integrity
 

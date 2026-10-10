@@ -1,4 +1,4 @@
-//! Private recovery I/O. The UI never waits for a filesystem operation.
+//! Private recovery I/O. Admission and the close fence share one mailbox lock.
 use cedar_recovery::{
     record_id, Draft, Listing, MutationOutcome, RecordId, Store, WorkspaceIdentity,
 };
@@ -14,7 +14,38 @@ use std::{
 pub const DEBOUNCE: Duration = Duration::from_secs(1);
 const MAX_PENDING: usize = 64;
 const MAX_PENDING_BYTES: usize = 128 * 1024 * 1024;
+const MAX_UNOBSERVED: usize = 256;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Availability {
+    #[default]
+    Starting,
+    Ready,
+    Unavailable(String),
+    Stopped,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationKind {
+    Write,
+    Remove,
+}
+/// An I/O error may follow rename/unlink. It cannot prove presence or absence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Effect {
+    NotInvoked(String),
+    Applied,
+    PossiblyApplied(String),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ticket {
+    pub generation: u64,
+    pub serial: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settlement {
+    Quiescent(Ticket),
+    Resumed(Ticket),
+}
 pub enum Mutation {
     Write(Draft),
     Remove {
@@ -29,6 +60,12 @@ impl Mutation {
             Self::Remove { .. } => 0,
         }
     }
+    fn kind(&self) -> OperationKind {
+        match self {
+            Self::Write(_) => OperationKind::Write,
+            Self::Remove { .. } => OperationKind::Remove,
+        }
+    }
 }
 pub struct Pending {
     pub sequence: u64,
@@ -41,13 +78,13 @@ struct Queue {
     bytes: usize,
 }
 impl Queue {
-    fn put(&mut self, id: RecordId, pending: Pending) -> Result<(), String> {
+    fn put(&mut self, id: RecordId, pending: Pending) -> Result<Option<Pending>, String> {
         if self
             .items
             .get(&id)
             .is_some_and(|old| old.sequence >= pending.sequence)
         {
-            return Ok(());
+            return Err("Recovery rejected an outdated submission".into());
         }
         let old_bytes = self.items.get(&id).map_or(0, |item| item.mutation.bytes());
         let bytes = self.bytes - old_bytes + pending.mutation.bytes();
@@ -56,9 +93,9 @@ impl Queue {
         {
             return Err("Recovery queue is full. Your editor text is retained; retry recovery or save/copy the draft".into());
         }
-        self.items.insert(id, pending);
+        let previous = self.items.insert(id, pending);
         self.bytes = bytes;
-        Ok(())
+        Ok(previous)
     }
     fn take_ready(&mut self, now: Duration, flush: bool) -> Option<(RecordId, Pending)> {
         let id = self
@@ -79,45 +116,139 @@ impl Queue {
             .unwrap_or(Duration::from_secs(60))
     }
 }
-
 pub struct Ack {
+    pub generation: u64,
     pub sequence: u64,
-    pub result: Result<(), String>,
+    pub kind: OperationKind,
+    pub effect: Effect,
 }
 #[derive(Default)]
 pub struct Results {
-    pub acks: HashMap<RecordId, Ack>,
-    pub listing: Option<Result<Listing, String>>,
+    // Keep every effect, including an older write followed by a rejected intent.
+    pub acks: Vec<(RecordId, Ack)>,
+    pub listing: Option<(u64, Result<Listing, String>)>,
     pub read: Option<(RecordId, Result<Draft, String>)>,
+    pub settlement: Option<Settlement>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Fence {
+    #[default]
+    Running,
+    Draining(Ticket),
+    Paused(Ticket),
 }
 #[derive(Default)]
 struct Mailbox {
     queue: Queue,
     results: Results,
+    availability: Availability,
+    fence: Fence,
+    resume: bool,
     refresh: bool,
+    listing_epoch: u64,
     retry: bool,
     read: Option<RecordId>,
     stopping: bool,
     flush: bool,
 }
+impl Mailbox {
+    fn acknowledge(&mut self, generation: u64, id: RecordId, item: Pending, effect: Effect) {
+        self.results.acks.push((
+            id,
+            Ack {
+                generation,
+                sequence: item.sequence,
+                kind: item.mutation.kind(),
+                effect,
+            },
+        ));
+    }
+    fn cancel(&mut self, generation: u64, kind: OperationKind, message: &str) {
+        let ids: Vec<_> = self
+            .queue
+            .items
+            .iter()
+            .filter(|(_, item)| item.mutation.kind() == kind)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            let item = self.queue.items.remove(&id).unwrap();
+            self.queue.bytes -= item.mutation.bytes();
+            self.acknowledge(generation, id, item, Effect::NotInvoked(message.into()));
+        }
+    }
+    fn freeze(&mut self, ticket: Ticket) -> Result<(), String> {
+        if self.fence != Fence::Running {
+            return Err("Recovery is still settling an earlier close request. Keep editing and wait for it to resume".into());
+        }
+        self.fence = Fence::Draining(ticket);
+        self.refresh = false;
+        self.retry = false;
+        self.read = None;
+        self.cancel(
+            ticket.generation,
+            OperationKind::Remove,
+            "Removal was not started; remaining recovery copies were retained",
+        );
+        self.flush = true;
+        Ok(())
+    }
+    // Called by the sole worker only between operations, never by the UI.
+    fn settle(&mut self) -> bool {
+        if let Fence::Draining(ticket) = self.fence {
+            if !self.queue.items.is_empty() {
+                return false;
+            }
+            self.fence = Fence::Paused(ticket);
+            if !self.resume {
+                self.results.settlement = Some(Settlement::Quiescent(ticket));
+            }
+        }
+        if let Fence::Paused(ticket) = self.fence {
+            if self.resume {
+                self.resume = false;
+                self.fence = Fence::Running;
+                self.results.settlement = Some(Settlement::Resumed(ticket));
+            }
+        }
+        true
+    }
+}
 struct Shared {
     mailbox: Mutex<Mailbox>,
     wake: Condvar,
     start: Instant,
+    generation: u64,
+    #[cfg(test)]
+    before_mutation: Mutex<Option<TestPause>>,
+    #[cfg(test)]
+    before_read: Mutex<Option<TestPause>>,
+}
+#[cfg(test)]
+struct TestPause {
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+    panic_after: bool,
 }
 pub struct Actor {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
 }
 impl Actor {
-    pub fn spawn(path: PathBuf, ctx: egui::Context) -> Self {
+    pub fn spawn(path: PathBuf, ctx: egui::Context, generation: u64) -> Self {
         let shared = Arc::new(Shared {
             mailbox: Mutex::new(Mailbox {
                 refresh: true,
+                listing_epoch: 1,
                 ..Default::default()
             }),
             wake: Condvar::new(),
             start: Instant::now(),
+            generation,
+            #[cfg(test)]
+            before_mutation: Mutex::new(None),
+            #[cfg(test)]
+            before_read: Mutex::new(None),
         });
         let worker = Arc::clone(&shared);
         let thread = std::thread::spawn(move || run(worker, path, ctx));
@@ -126,13 +257,19 @@ impl Actor {
             thread: Some(thread),
         }
     }
-    pub fn submit(&self, sequence: u64, mutation: Mutation) -> Result<RecordId, String> {
-        if self.thread.as_ref().is_none_or(JoinHandle::is_finished) {
-            return Err(
-                "Recovery worker stopped. Retry to restart it; your current text is still editable"
-                    .into(),
-            );
+    pub fn availability(&self) -> Availability {
+        if self.finished() {
+            return Availability::Stopped;
         }
+        self.shared
+            .mailbox
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .availability
+            .clone()
+    }
+    /// Every submission error is NotInvoked, even when a prior operation is in flight.
+    pub fn submit(&self, sequence: u64, mutation: Mutation) -> Result<RecordId, String> {
         let (workspace, path) = match &mutation {
             Mutation::Write(draft) => (&draft.workspace, draft.path.as_str()),
             Mutation::Remove { workspace, path } => (workspace, path.as_str()),
@@ -149,16 +286,70 @@ impl Actor {
             .mailbox
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        mailbox.queue.put(
+        if self.finished() || mailbox.stopping {
+            return Err(
+                "Recovery worker stopped. Retry recovery; current text remains editable".into(),
+            );
+        }
+        if mailbox.fence != Fence::Running {
+            return Err(
+                "Recovery is paused while a close request settles. Current text remains editable"
+                    .into(),
+            );
+        }
+        match &mailbox.availability {
+            Availability::Ready => {}
+            Availability::Unavailable(error) => return Err(error.clone()),
+            Availability::Starting => {
+                return Err("Recovery is starting. Current text remains editable".into())
+            }
+            Availability::Stopped => return Err("Recovery worker stopped. Retry recovery".into()),
+        }
+        // Reserve room for every queued completion and the one in-flight operation.
+        if mailbox.results.acks.len() + mailbox.queue.items.len() + 1 >= MAX_UNOBSERVED {
+            return Err("Recovery results are waiting to be observed. Retry recovery".into());
+        }
+        if let Some(previous) = mailbox.queue.put(
             id.clone(),
             Pending {
                 sequence,
                 mutation,
                 due,
             },
-        )?;
+        )? {
+            mailbox.acknowledge(
+                self.shared.generation,
+                id.clone(),
+                previous,
+                Effect::NotInvoked("Replaced before recovery I/O by a newer submission".into()),
+            );
+        }
         self.shared.wake.notify_one();
         Ok(id)
+    }
+    pub fn quiesce(&self, ticket: Ticket) -> Result<(), String> {
+        if ticket.generation != self.shared.generation || self.finished() {
+            return Err("Recovery worker stopped without a quiescence proof. Keep editing and retry recovery".into());
+        }
+        self.shared
+            .mailbox
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .freeze(ticket)?;
+        self.shared.wake.notify_one();
+        Ok(())
+    }
+    pub fn resume(&self, ticket: Ticket) {
+        let mut mailbox = self
+            .shared
+            .mailbox
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if matches!(mailbox.fence, Fence::Draining(current) | Fence::Paused(current) if current == ticket)
+        {
+            mailbox.resume = true;
+            self.shared.wake.notify_one();
+        }
     }
     pub fn cancel_writes(&self) {
         let mut mailbox = self
@@ -166,29 +357,43 @@ impl Actor {
             .mailbox
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        mailbox
-            .queue
-            .items
-            .retain(|_, item| matches!(item.mutation, Mutation::Remove { .. }));
-        mailbox.queue.bytes = 0;
+        // A close fence always drains the writes it already accepted.
+        if mailbox.fence == Fence::Running {
+            mailbox.cancel(
+                self.shared.generation,
+                OperationKind::Write,
+                "Recovery was turned off before this write started",
+            );
+        }
     }
-    pub fn refresh(&self, retry: bool) {
+    pub fn refresh(&self, retry: bool) -> Option<u64> {
         let mut mailbox = self
             .shared
             .mailbox
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        mailbox.refresh = true;
-        mailbox.retry |= retry;
-        self.shared.wake.notify_one();
+        if mailbox.fence == Fence::Running {
+            mailbox.refresh = true;
+            mailbox.listing_epoch += 1;
+            mailbox.retry |= retry;
+            if retry {
+                mailbox.availability = Availability::Starting;
+            }
+            self.shared.wake.notify_one();
+            return Some(mailbox.listing_epoch);
+        }
+        None
     }
     pub fn read(&self, id: RecordId) {
-        self.shared
+        let mut mailbox = self
+            .shared
             .mailbox
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .read = Some(id);
-        self.shared.wake.notify_one();
+            .unwrap_or_else(|error| error.into_inner());
+        if mailbox.fence == Fence::Running {
+            mailbox.read = Some(id);
+            self.shared.wake.notify_one();
+        }
     }
     pub fn poll(&self) -> Results {
         std::mem::take(
@@ -208,6 +413,49 @@ impl Actor {
             .flush = true;
         self.shared.wake.notify_one();
     }
+    #[cfg(test)]
+    pub fn hold_next_operation(
+        &self,
+        panic_after: bool,
+    ) -> (
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered, observed) = std::sync::mpsc::sync_channel(1);
+        let (release, wait) = std::sync::mpsc::sync_channel(1);
+        *self.shared.before_mutation.lock().unwrap() = Some(TestPause {
+            entered,
+            release: wait,
+            panic_after,
+        });
+        (observed, release)
+    }
+    #[cfg(test)]
+    pub fn hold_next_read(
+        &self,
+    ) -> (
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered, observed) = std::sync::mpsc::sync_channel(1);
+        let (release, wait) = std::sync::mpsc::sync_channel(1);
+        *self.shared.before_read.lock().unwrap() = Some(TestPause {
+            entered,
+            release: wait,
+            panic_after: false,
+        });
+        (observed, release)
+    }
+    #[cfg(test)]
+    pub fn queued(&self) -> usize {
+        self.shared
+            .mailbox
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .queue
+            .items
+            .len()
+    }
     pub fn finished(&self) -> bool {
         self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
@@ -225,9 +473,8 @@ impl Drop for Actor {
         }
     }
 }
-
 enum Work {
-    Refresh(bool),
+    Refresh { retry: bool, epoch: u64 },
     Read(RecordId),
     Mutate(RecordId, Box<Pending>),
 }
@@ -240,15 +487,37 @@ fn run(shared: Arc<Shared>, path: PathBuf, ctx: egui::Context) {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             loop {
-                if mailbox.refresh {
-                    mailbox.refresh = false;
-                    let retry = std::mem::take(&mut mailbox.retry);
-                    break Work::Refresh(retry);
+                mailbox.settle();
+                if mailbox.results.settlement.is_some() {
+                    ctx.request_repaint();
                 }
-                if let Some(id) = mailbox.read.take() {
-                    break Work::Read(id);
+                if matches!(mailbox.fence, Fence::Paused(_)) {
+                    // Once proof is published, even Drop cannot run another operation.
+                    if mailbox.stopping {
+                        return;
+                    }
+                    mailbox = shared
+                        .wake
+                        .wait(mailbox)
+                        .unwrap_or_else(|error| error.into_inner());
+                    continue;
                 }
-                let flush = mailbox.stopping || mailbox.flush;
+                if mailbox.fence == Fence::Running {
+                    if mailbox.refresh {
+                        mailbox.refresh = false;
+                        let retry = std::mem::take(&mut mailbox.retry);
+                        break Work::Refresh {
+                            retry,
+                            epoch: mailbox.listing_epoch,
+                        };
+                    }
+                    if let Some(id) = mailbox.read.take() {
+                        break Work::Read(id);
+                    }
+                }
+                let flush = mailbox.stopping
+                    || mailbox.flush
+                    || matches!(mailbox.fence, Fence::Draining(_));
                 if let Some((id, item)) = mailbox.queue.take_ready(shared.start.elapsed(), flush) {
                     break Work::Mutate(id, Box::new(item));
                 }
@@ -265,7 +534,7 @@ fn run(shared: Arc<Shared>, path: PathBuf, ctx: egui::Context) {
             }
         };
         match work {
-            Work::Refresh(retry) => {
+            Work::Refresh { retry, epoch } => {
                 if retry && store.is_err() {
                     store = Store::open(&path).map_err(|error| error.to_string());
                 }
@@ -273,14 +542,30 @@ fn run(shared: Arc<Shared>, path: PathBuf, ctx: egui::Context) {
                     .as_mut()
                     .map_err(|error| error.clone())
                     .and_then(|store| store.list().map_err(|error| error.to_string()));
-                shared
+                let mut mailbox = shared
                     .mailbox
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .results
-                    .listing = Some(result);
+                    .unwrap_or_else(|error| error.into_inner());
+                if mailbox.listing_epoch == epoch {
+                    mailbox.availability = match &result {
+                        Ok(_) if retry || mailbox.availability == Availability::Starting => {
+                            Availability::Ready
+                        }
+                        Ok(_) => mailbox.availability.clone(),
+                        Err(error) => Availability::Unavailable(error.clone()),
+                    };
+                }
+                mailbox.results.listing = Some((epoch, result));
             }
             Work::Read(id) => {
+                #[cfg(test)]
+                {
+                    let pause = shared.before_read.lock().unwrap().take();
+                    if let Some(pause) = pause {
+                        let _ = pause.entered.send(());
+                        let _ = pause.release.recv();
+                    }
+                }
                 let result = store
                     .as_mut()
                     .map_err(|error| error.clone())
@@ -293,38 +578,42 @@ fn run(shared: Arc<Shared>, path: PathBuf, ctx: egui::Context) {
                     .read = Some((id, result));
             }
             Work::Mutate(id, item) => {
-                let result = store
-                    .as_mut()
-                    .map_err(|error| error.clone())
-                    .and_then(|store| {
-                        match &item.mutation {
-                            Mutation::Write(draft) => store.write(item.sequence, draft),
-                            Mutation::Remove { workspace, path } => {
-                                store.remove(item.sequence, workspace, path)
-                            }
+                #[cfg(test)]
+                {
+                    let pause = shared.before_mutation.lock().unwrap().take();
+                    if let Some(pause) = pause {
+                        let _ = pause.entered.send(());
+                        let _ = pause.release.recv();
+                        assert!(
+                            !pause.panic_after,
+                            "synthetic recovery worker failure before acknowledgement"
+                        );
+                    }
+                }
+                let effect = match store.as_mut() {
+                    Err(error) => Effect::NotInvoked(error.clone()),
+                    Ok(store) => match match &item.mutation {
+                        Mutation::Write(draft) => store.write(item.sequence, draft),
+                        Mutation::Remove { workspace, path } => {
+                            store.remove(item.sequence, workspace, path)
                         }
-                        .map_err(|error| error.to_string())
-                        .and_then(|outcome| match outcome {
-                            MutationOutcome::Applied => Ok(()),
-                            MutationOutcome::IgnoredStale => Err(
-                                "Recovery rejected an outdated operation. Retry the latest draft"
-                                    .into(),
-                            ),
-                        })
-                    });
-                shared
+                    } {
+                        Ok(MutationOutcome::Applied) => Effect::Applied,
+                        Ok(MutationOutcome::IgnoredStale) => Effect::NotInvoked(
+                            "Recovery rejected an outdated operation. Retry the latest draft"
+                                .into(),
+                        ),
+                        Err(error) => Effect::PossiblyApplied(error.to_string()),
+                    },
+                };
+                let mut mailbox = shared
                     .mailbox
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .results
-                    .acks
-                    .insert(
-                        id,
-                        Ack {
-                            sequence: item.sequence,
-                            result,
-                        },
-                    );
+                    .unwrap_or_else(|error| error.into_inner());
+                if let Effect::PossiblyApplied(error) = &effect {
+                    mailbox.availability = Availability::Unavailable(error.clone());
+                }
+                mailbox.acknowledge(shared.generation, id, *item, effect);
             }
         }
         ctx.request_repaint();
@@ -332,80 +621,5 @@ fn run(shared: Arc<Shared>, path: PathBuf, ctx: egui::Context) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn draft(text: &str) -> Draft {
-        Draft {
-            workspace: WorkspaceIdentity::Local {
-                root: "/synthetic".into(),
-            },
-            path: "main.rs".into(),
-            text: text.into(),
-            base_text: "base".into(),
-            base_revision: Some("r0".into()),
-            modified_ms: 1,
-        }
-    }
-    fn pending(sequence: u64, text: &str, due: u64) -> Pending {
-        Pending {
-            sequence,
-            mutation: Mutation::Write(draft(text)),
-            due: Duration::from_secs(due),
-        }
-    }
-    #[test]
-    fn fake_clock_coalesces_latest_snapshot_and_debounces() {
-        let mut queue = Queue::default();
-        let id = record_id(&draft("").workspace, "main.rs").unwrap();
-        queue.put(id.clone(), pending(1, "first", 1)).unwrap();
-        queue.put(id.clone(), pending(2, "newer", 2)).unwrap();
-        queue.put(id.clone(), pending(1, "stale", 0)).unwrap();
-        assert_eq!(queue.items.len(), 1);
-        assert!(queue
-            .take_ready(Duration::from_millis(1999), false)
-            .is_none());
-        let (_, item) = queue.take_ready(Duration::from_secs(2), false).unwrap();
-        assert_eq!(item.sequence, 2);
-        assert!(matches!(item.mutation, Mutation::Write(d) if d.text == "newer"));
-        assert_eq!(queue.bytes, 0);
-    }
-    #[test]
-    fn removal_supersedes_delayed_write_and_flush_ignores_debounce() {
-        let mut queue = Queue::default();
-        let draft = draft("draft");
-        let id = record_id(&draft.workspace, &draft.path).unwrap();
-        queue.put(id.clone(), pending(1, "stale", 100)).unwrap();
-        queue
-            .put(
-                id,
-                Pending {
-                    sequence: 2,
-                    mutation: Mutation::Remove {
-                        workspace: draft.workspace,
-                        path: draft.path,
-                    },
-                    due: Duration::ZERO,
-                },
-            )
-            .unwrap();
-        assert!(matches!(
-            queue.take_ready(Duration::ZERO, false).unwrap().1.mutation,
-            Mutation::Remove { .. }
-        ));
-        let id = record_id(&self::draft("").workspace, "other.rs").unwrap();
-        queue.put(id, pending(3, "new draft", 100)).unwrap();
-        assert!(queue.take_ready(Duration::ZERO, true).is_some());
-    }
-    #[test]
-    fn shutdown_flushes_pending_actual_store_write() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("recovery");
-        let actor = Actor::spawn(path.clone(), egui::Context::default());
-        let draft = draft("pending shutdown text");
-        actor.submit(1, Mutation::Write(draft.clone())).unwrap();
-        drop(actor);
-        let store = Store::open(&path).unwrap();
-        let id = record_id(&draft.workspace, &draft.path).unwrap();
-        assert_eq!(store.read(&id).unwrap().text, "pending shutdown text");
-    }
-}
+#[path = "recovery_actor_tests.rs"]
+mod tests;

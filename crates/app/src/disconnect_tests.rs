@@ -299,7 +299,7 @@ fn explicit_disconnect_refuses_active_unknown_tasks_language_and_close_transitio
             "confirm" => app.confirm = Some(Confirm::CloseWindow),
             "language_close" => app.close_after_language_stop = true,
             "snapshot" => app.close_snapshot = Some(app.draft_versions()),
-            "recovery_close" => app.recovery.closing = Some(app.draft_versions()),
+            "recovery_close" => app.recovery.begin_close(app.recovery_close_guard()),
             "restore" => app.recovery.restoring_generation = Some(app.generation),
             _ => unreachable!(),
         }

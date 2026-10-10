@@ -49,6 +49,8 @@ mod profile_ui;
 mod recovery;
 mod recovery_actor;
 #[cfg(test)]
+mod recovery_lifecycle_tests;
+#[cfg(test)]
 mod recovery_tests;
 mod recovery_ui;
 mod replace;
@@ -78,6 +80,8 @@ mod test_report_ui;
 mod test_report_ui_tests;
 mod test_reports;
 pub mod text_edits;
+#[cfg(test)]
+mod unavailable_recovery_process_tests;
 mod worker;
 mod workspace_access;
 #[cfg(test)]
@@ -609,6 +613,7 @@ impl CedarApp {
         // when an ordinary file/task request reports the loss first.
         self.close_after_language_stop = false;
         self.close_snapshot = None;
+        self.recovery.language_close_guard = None;
         self.retain_interrupted_saves();
         self.save_all_transport_lost();
         self.reset_git(false);
@@ -1369,6 +1374,7 @@ impl CedarApp {
                 if matches!(&job, Job::Language(action) if action.is_stop()) {
                     self.close_after_language_stop = false;
                     self.close_snapshot = None;
+                    self.recovery.language_close_guard = None;
                 }
                 if let Job::Language(action) = &job {
                     self.language_error(action, &error);
@@ -1580,7 +1586,13 @@ impl CedarApp {
         {
             self.close_after_language_stop = false;
             let current = self.draft_versions();
-            if self.close_snapshot.take().as_ref() != Some(&current) && self.dirty() {
+            let guard_matches = self
+                .recovery
+                .language_close_guard
+                .take()
+                .is_none_or(|guard| guard == self.recovery_close_guard());
+            let versions_match = self.close_snapshot.take().as_ref() == Some(&current);
+            if !guard_matches || (!versions_match && self.dirty()) {
                 self.confirm = Some(Confirm::CloseWindow);
                 self.notice = "A draft changed while the language server was stopping; confirm before quitting".into();
             } else {
@@ -1604,6 +1616,11 @@ impl CedarApp {
             // dialog while the original approval waits for verified cleanup.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.notice = "Waiting for language cleanup before closing".into();
+        } else if self.recovery.resuming() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.notice =
+                "Recovery is still resuming. Keep editing and wait before trying to quit again"
+                    .into();
         } else if self.recovery.closing.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.recovery.visible = true;
@@ -1628,6 +1645,13 @@ impl CedarApp {
     }
 
     fn begin_close(&mut self, ctx: &egui::Context) {
+        if self.recovery.resuming() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.notice =
+                "Recovery is still resuming. Keep editing and wait before trying to quit again"
+                    .into();
+            return;
+        }
         if self.save_all_busy() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.error = Some(
@@ -1650,6 +1674,7 @@ impl CedarApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_after_language_stop = true;
             self.close_snapshot = Some(self.draft_versions());
+            self.recovery.language_close_guard = Some(self.recovery_close_guard());
             self.stop_language();
             self.notice = "Stopping language server before closing".into();
         } else {
@@ -2872,7 +2897,7 @@ impl CedarApp {
                 ui.label(format!("Your changes to {target} and recovery copies owned by these tabs will be discarded. Save or copy the draft first if you need to keep it."));
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Keep editing").clicked() { self.confirm = None; }
+                    if ui.button("Keep editing").clicked() { self.keep_editing_recovery(ctx); }
                     if ui.button(RichText::new(if close_window { "Discard and quit" } else { "Discard and close" }).color(RED)).clicked() {
                         match self.confirm.take() {
                             Some(Confirm::CloseTab(id)) => self.remove_tab(id),

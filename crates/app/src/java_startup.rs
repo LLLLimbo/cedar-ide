@@ -184,6 +184,7 @@ impl CedarApp {
         if !connected {
             self.close_after_language_stop = false;
             self.close_snapshot = None;
+            self.recovery.language_close_guard = None;
             self.disconnected(UNKNOWN.into());
             return;
         }
@@ -207,6 +208,7 @@ impl CedarApp {
         self.language.restart_blocked = true;
         self.close_after_language_stop = false;
         self.close_snapshot = None;
+        self.recovery.language_close_guard = None;
         self.language.output = UNKNOWN.into();
         self.error = Some(UNKNOWN.into());
     }
@@ -408,6 +410,7 @@ impl CedarApp {
                 self.error = Some(self.language.output.clone());
                 self.close_after_language_stop = false;
                 self.close_snapshot = None;
+                self.recovery.language_close_guard = None;
                 return;
             }
         }

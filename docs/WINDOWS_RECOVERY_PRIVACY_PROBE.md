@@ -82,6 +82,17 @@ lacks access. File identity detects substitutions at observation points; it
 does not prevent later ancestor renames or concurrent descriptor changes.
 Protection against hostile same-account or administrator actors is not claimed.
 
+## Completed observation and routine CI
+
+The single corrected 0.43.1 observation is recorded in the
+[exact-source report](TEST_REPORT_PHASE431_DESCRIPTOR.md). Both roots completed
+inspection and cleanup, while the strict owner policy rejected every object.
+This did not enable production enforcement. Starting with 0.44, ordinary CI
+keeps the memory-only parser and fixed driver tests but does not invoke the
+native descriptor investigation again. Its ignored native test and driver remain
+available for a separately reviewed investigation; no automatic retry or ACL
+repair is introduced.
+
 ## Decision after evidence
 
 Native results inform a separate compatibility and production-policy review.

@@ -2,7 +2,11 @@
 #[cfg(test)]
 #[path = "ssh_preflight_tests.rs"]
 mod ssh_preflight_tests;
-use crate::{model::Document, CedarApp, ConnectForm, ConnectionState, AMBER, GREEN, MUTED, RED};
+use crate::{
+    model::Document,
+    recovery::{CloseGuard, ClosePhase},
+    CedarApp, ConnectForm, ConnectionState, AMBER, GREEN, MUTED, RED,
+};
 use cedar_recovery::{Draft, WorkspaceIdentity};
 use eframe::egui::{self, RichText};
 
@@ -81,21 +85,37 @@ impl CedarApp {
             .filter(|_| !self.root.is_empty())
             .map(|form| identity(form, &self.root))
     }
+    pub(crate) fn recovery_close_guard(&self) -> CloseGuard {
+        CloseGuard::new(
+            &self.documents,
+            self.recovery_workspace(),
+            self.generation,
+            self.profiles.epoch,
+        )
+    }
+    pub(crate) fn keep_editing_recovery(&mut self, ctx: &egui::Context) {
+        self.recovery.keep_editing();
+        self.allow_close = false;
+        self.confirm = None;
+        self.close_after_language_stop = false;
+        self.close_snapshot = None;
+        self.recovery.language_close_guard = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    }
     pub(crate) fn recovery_tick(&mut self, ctx: &egui::Context) {
         if let Some(draft) = self.recovery.poll() {
             self.recovery.pending_restore = Some(draft);
             self.recovery.visible = true;
         }
-        if let Some(snapshot) = &self.recovery.closing {
-            let current = self.draft_versions();
-            if *snapshot != current {
-                self.recovery.closing = None;
-                self.allow_close = false;
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.confirm = Some(crate::Confirm::CloseWindow);
-                self.notice =
-                    "A draft changed while recovery was finishing; confirm before quitting".into();
-            }
+        if self
+            .recovery
+            .closing
+            .as_ref()
+            .is_some_and(|close| close.guard != self.recovery_close_guard())
+        {
+            self.keep_editing_recovery(ctx);
+            self.confirm = Some(crate::Confirm::CloseWindow);
+            self.notice = "A draft or workspace changed while recovery was finishing; confirm before quitting".into();
         }
         if let Some(workspace) = self.recovery_workspace() {
             for doc in &self.documents {
@@ -104,36 +124,78 @@ impl CedarApp {
         }
         let live: Vec<_> = self.documents.iter().map(|doc| doc.id).collect();
         self.recovery.forget_completed(&live);
+        if self.recovery.closing.is_some() || self.recovery.resuming() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
     }
     pub(crate) fn finish_recovery_close(&mut self, ctx: &egui::Context) {
-        if self.recovery.has_store() {
-            if let Some(workspace) = self.recovery_workspace() {
-                for doc in &self.documents {
-                    self.recovery.discard_owned(&workspace, doc);
-                }
-            }
-            self.recovery.flush();
+        if self.recovery.closing.is_some() {
+            return;
         }
-        self.recovery.closing = Some(self.draft_versions());
+        if self.recovery.resuming() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.notice =
+                "Recovery is still resuming. Keep editing and wait before trying to quit again"
+                    .into();
+            return;
+        }
+        if let Some(workspace) = self.recovery_workspace() {
+            for doc in &self.documents {
+                self.recovery.discard_owned(&workspace, doc);
+            }
+        }
+        self.recovery.flush();
+        self.recovery.begin_close(self.recovery_close_guard());
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         self.notice = "Finishing explicit recovery discards before quitting".into();
     }
-    /// Commit Close only after every UI input handler and final draft observation.
-    pub(crate) fn finish_recovery_close_frame(&mut self, ctx: &egui::Context) {
-        if self.recovery.closing.is_none() {
-            return;
+    pub(crate) fn retain_recovery_and_quit(&mut self) {
+        if self
+            .recovery
+            .closing
+            .as_ref()
+            .is_some_and(|close| matches!(close.phase, ClosePhase::NeedsDecision))
+        {
+            self.recovery.begin_quiescence(true);
         }
-        if self.mutation_pending()
+    }
+    pub(crate) fn confirm_retained_recovery_close(&mut self) {
+        let current = self.recovery_close_guard();
+        if let Some(close) = &mut self.recovery.closing {
+            if close.guard == current {
+                if let ClosePhase::AwaitingConfirmation { ticket } = close.phase {
+                    close.phase = ClosePhase::Confirmed { ticket };
+                }
+            }
+        }
+    }
+    /// Commit only after every input handler; a proof does not authorize new text.
+    pub(crate) fn finish_recovery_close_frame(&mut self, ctx: &egui::Context) {
+        let Some(close) = &self.recovery.closing else {
+            return;
+        };
+        if close.guard != self.recovery_close_guard()
+            || self.mutation_pending()
             || self.language.running
+            || self.state == ConnectionState::Disconnecting
             || !self.guard_run_transition(crate::run_ui::Transition::Close)
         {
-            self.recovery.closing = None;
-            self.allow_close = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.notice = "A save or tool request started while closing. Finish it and retry close; your drafts remain open".into();
+            self.keep_editing_recovery(ctx);
+            self.notice = "A draft, save, workspace or tool request changed while closing. Finish it and retry close; your drafts remain open".into();
             return;
         }
-        if self.recovery.removals_finished() {
+        self.recovery.observe_close_deadline();
+        if matches!(
+            self.recovery.closing.as_ref().map(|close| close.phase),
+            Some(ClosePhase::Discarding { .. })
+        ) && self.recovery.removals_finished()
+        {
+            self.recovery.begin_quiescence(false);
+        }
+        if matches!(
+            self.recovery.closing.as_ref().map(|close| close.phase),
+            Some(ClosePhase::Confirmed { .. })
+        ) {
             self.allow_close = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -234,15 +296,27 @@ impl CedarApp {
             ui.label(RichText::new(format!("Location: {}", self.recovery.location())).small().color(MUTED));
             ui.horizontal(|ui| {
                 if ui.button("Refresh").clicked() { self.recovery.refresh(false); }
-                if ui.button("Retry recovery").clicked() { self.recovery.retry(ctx); }
+                if ui.add_enabled(self.recovery.can_retry(), egui::Button::new("Retry recovery")).clicked() { self.recovery.retry(ctx); }
                 if self.recovery.loading || self.recovery.reading.is_some() { ui.spinner(); }
             });
             if let Some(error) = &self.recovery.error { ui.colored_label(RED, error); }
             for (path, error) in self.recovery.failures() { ui.colored_label(RED, format!("{path}: {error}")); }
             for (name, issue) in &self.recovery.issues { ui.colored_label(AMBER, format!("Unreadable copy {name}: {issue}. The file was retained; inspect the recovery folder.")); }
-            if self.recovery.closing.is_some() {
-                ui.colored_label(AMBER, "Waiting for recovery discards. Retry errors or keep editing.");
-                if ui.button("Keep editing").clicked() { self.recovery.closing = None; }
+            if let Some(phase) = self.recovery.closing.as_ref().map(|close| close.phase) {
+                match phase {
+                    ClosePhase::Discarding { .. } => { ui.colored_label(AMBER, "Waiting for recovery discards (up to 5 seconds before review)."); }
+                    ClosePhase::NeedsDecision => {
+                        ui.colored_label(AMBER, "Recovery could not finish the requested discards. Your editor text remains open.");
+                        if ui.button("Quit without deleting remaining recovery copies").clicked() { self.retain_recovery_and_quit(); }
+                    }
+                    ClosePhase::Draining { .. } => { ui.colored_label(AMBER, "Waiting up to 5 seconds for accepted recovery writes and any operation already running. Queued removals were canceled."); }
+                    ClosePhase::AwaitingConfirmation { .. } => { ui.colored_label(AMBER, "Recovery has stopped making changes. Confirm quitting below."); }
+                    ClosePhase::Blocked { .. } => { ui.colored_label(RED, "Recovery settlement is unverified. Quitting is blocked. Keep editing; Retry becomes available after the worker settles or has stopped."); }
+                    ClosePhase::Confirmed { .. } => {},
+                }
+                if ui.button("Keep editing").clicked() { self.keep_editing_recovery(ctx); }
+            } else if self.recovery.resuming() {
+                ui.colored_label(AMBER, "You can keep editing and Save. Recovery admission will resume after the operation already running finishes.");
             }
             ui.separator();
             ui.label(RichText::new("AVAILABLE COPIES").strong().color(GREEN));
@@ -257,8 +331,8 @@ impl CedarApp {
                         ui.label(project(&draft.workspace));
                         ui.label(RichText::new(format!("{} · {} bytes", time_label(draft.modified_ms), draft.text_bytes)).small().color(MUTED));
                         ui.horizontal(|ui| {
-                            if ui.add_enabled(self.recovery.reading.is_none() && self.recovery.restoring_generation.is_none(), egui::Button::new("Review restore")).clicked() { restore = Some(draft.id.clone()); }
-                            if ui.button("Remove copy").clicked() { remove = Some(draft.id.clone()); }
+                            if ui.add_enabled(self.recovery.can_retry() && self.recovery.reading.is_none() && self.recovery.restoring_generation.is_none(), egui::Button::new("Review restore")).clicked() { restore = Some(draft.id.clone()); }
+                            if ui.add_enabled(self.recovery.can_retry(), egui::Button::new("Remove copy")).clicked() { remove = Some(draft.id.clone()); }
                         });
                     });
                 }
@@ -283,7 +357,26 @@ impl CedarApp {
                 });
             }
         });
+        if !visible && self.recovery.closing.is_some() {
+            self.keep_editing_recovery(ctx);
+        }
         self.recovery.visible = visible;
+        if matches!(
+            self.recovery.closing.as_ref().map(|close| close.phase),
+            Some(ClosePhase::AwaitingConfirmation { .. })
+        ) {
+            egui::Modal::new(egui::Id::new("retain_recovery_quit_confirmation")).show(ctx, |ui| {
+                ui.set_max_width(480.0);
+                ui.heading("Quit and discard current unsaved changes?");
+                ui.label("Current unsaved editor text and profile form edits may be lost. Remaining recovery copies may be older or incomplete and are not proof that your current text is recoverable. Save or copy your draft before quitting if you need it.");
+                ui.horizontal(|ui| {
+                    if ui.button("Keep editing").clicked() { self.keep_editing_recovery(ctx); }
+                    if ui.button(RichText::new("Quit without deleting remaining recovery copies").color(RED)).clicked() {
+                        self.confirm_retained_recovery_close();
+                    }
+                });
+            });
+        }
         if let Some(id) = self.recovery.remove_confirmation.clone() {
             egui::Modal::new(egui::Id::new("remove_recovery_copy")).show(ctx, |ui| {
                 ui.heading("Remove this recovery copy?");
@@ -292,7 +385,7 @@ impl CedarApp {
                 ui.label("This deletes only the private recovery copy. If an open draft is still dirty, a new copy may be created while recovery is on.");
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() { self.recovery.remove_confirmation = None; }
-                    if ui.button(RichText::new("Remove recovery copy").color(RED)).clicked() {
+                    if ui.add_enabled(self.recovery.can_retry(), egui::Button::new(RichText::new("Remove recovery copy").color(RED))).clicked() {
                         if let Some(draft) = self.recovery.drafts.iter().find(|draft| draft.id == id) {
                             let (workspace, path) = (draft.workspace.clone(), draft.path.clone());
                             self.recovery.remove(workspace, path);

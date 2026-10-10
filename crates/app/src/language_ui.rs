@@ -645,6 +645,7 @@ impl CedarApp {
                 self.language.restart_blocked = true;
                 self.close_after_language_stop = false;
                 self.close_snapshot = None;
+                self.recovery.language_close_guard = None;
                 self.language.output = error.into();
             }
             _ => {}
@@ -845,6 +846,7 @@ impl CedarApp {
                         if outcome.status == StopStatus::Error {
                             self.close_after_language_stop = false;
                             self.close_snapshot = None;
+                            self.recovery.language_close_guard = None;
                             self.error = Some(message);
                         }
                     }
@@ -853,6 +855,7 @@ impl CedarApp {
                         self.language.restart_blocked = true;
                         self.close_after_language_stop = false;
                         self.close_snapshot = None;
+                        self.recovery.language_close_guard = None;
                         self.language.output = message.clone();
                         self.error = Some(message);
                     }

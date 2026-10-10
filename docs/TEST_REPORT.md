@@ -1,13 +1,29 @@
-# Verification report · Windows recovery descriptor diagnostics / 0.43.1
+# Verification report · Recovery-unavailable lifecycle / 0.44.0
 
-The latest fully accepted checkpoint is [0.42.1](TEST_REPORT_PHASE421_SAVE_MENU.md). This increment changes only nonshipping inspection and diagnostic tests. Recovery storage behavior and its existing Windows ACL limitations remain unchanged.
+The latest accepted checkpoint is [0.43.1](TEST_REPORT_PHASE431_DESCRIPTOR.md). This increment lets the editor handle unavailable recovery storage without losing unsaved text or falsely certifying a recovery copy. Full exact-source CI and all three package audits remain required before this checkpoint is accepted.
 
-## Preserved 0.43 result
+## Changed behavior and safety boundaries
 
-[Exact 0.43 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38071120608), source `d54e06ab01d7441f6daad0bb54a2b9ef8e7948a5`, attempted the native Windows probe once. Both fresh roots yielded four of five descriptor observations, all eight with owner mismatch, then failed at empty-file rename. Both roots were cleaned up; metadata and draft payload bytes remained zero. The missing native error code leaves the rename cause unconfirmed. The final identity and source-after checks were not reached; their old false fields do not establish observed changes. This failed verdict is preserved.
+Typed actor availability and operation effects distinguish never-invoked requests from acknowledged or possibly applied writes and removals. Older copy evidence survives rejected newer submissions. Retry cannot adopt an unreviewed record, replay a canceled removal, or reopen storage after a canceled retry without a fresh explicit request.
 
-## Narrow correction
+The separate retained-copy quit path freezes recovery admission, cancels queued removals and drains accepted writes plus any in-flight operation. Final confirmation requires an actual matching settlement and unchanged document/workspace/session/profile state. Each UI observation has a fixed five-second bound; expiry refuses quit rather than interrupting storage or claiming settlement. Keep editing invalidates the close and resumes admission only after settlement. The warning states that current unsaved text may be lost and remaining copies may be older. See [recovery behavior and platform limits](RECOVERY.md).
 
-See [the bounded probe contract](WINDOWS_RECOVERY_PRIVACY_PROBE.md). The corrected probe permits write sharing only on the generated rename-destination root handle and preserves its delete-sharing denial. It independently reports owner class and DACL verdict, fixed rename error categories, and explicit identity observation state. The driver checks source independently after a native failure and distinguishes an unperformed check from a mismatch or inspection error. None of these observations authorize plaintext recovery writes or change ACLs.
+Independent lifecycle and recovery review covered shutdown drain, remove errors after possible unlink, stale acknowledgements, mixed known/unknown copies, canceled Retry/read state, newer edits, reopened document ownership and the language-Stop confirmation bridge. The shipping Store implementation, storage schema and non-Cedar locked dependency data are unchanged. This slice adds no Windows ACL enforcement or privacy guarantee.
 
-Focused local checks passed: 48 recovery tests across three suites, including 11 portable descriptor/diagnostic cases; all 40 driver tests; all 491 Python cases (482 passed, nine existing platform/tool skips); strict recovery-crate host and Windows MSVC-target Clippy; formatting and diff checks. Independent handle/policy/receipt review found no blocking issue. Shipping recovery bytes and non-Cedar locked package data are unchanged. The local host does not execute the Windows probe. Full new-version workspace tests, release builds, retained CI gates and all three packages remain CI requirements. One corrected source-bound Windows observation is authorized; there is no automatic retry. Its evidence must receive a separate compatibility and policy decision before any shipping enforcement.
+## Local verification
+
+The restored official stable toolchain resolved to Rust 1.99.0 (2026-10-01 distribution). Host verification ran in the cloud Linux executor; Windows-target compilation is not native Windows execution.
+
+- Strict workspace Clippy for all targets and features passed on the host and the Windows MSVC target.
+- Workspace tests passed: 1,519 passed, zero failed, 56 ignored across 47 completed suites. Required opt-in process checks are accounted for separately.
+- Default release workspace compilation passed. The normal-agent acceptance below used the built release agent, not a mock peer.
+- All 491 Python cases completed: 482 passed and nine existing platform/tool skips. Formatting and whitespace checks passed.
+- The normal-agent unavailable-recovery acceptance passed two generated cases: a regular file at the configured store path and a child beneath a regular file. Each case exercised one explicit Save and a two-file Save All, exact conditional revisions and source bytes, full selections and Undo/Redo, 128 recovery-refresh checks, and owner cleanup.
+
+The acceptance ledger totals two connections, 20 requests, six Writes, four Reads, eight Lists and two reaped agents. Each case writes its files `[2, 1]` times. There are no Run or language operations, no invented recovery-copy/protection claims, no queued recovery mutations and no acknowledged recovery removals. The first local fixture attempt incorrectly asserted that asynchronous Refresh had already completed; that failed receipt is retained. The corrected fixture waits for the matching response within the existing shared five-second cohort deadline while continuously checking unchanged editor and recovery state. No production timing or acceptance criterion was relaxed.
+
+## Required native CI and limits
+
+Both OS jobs retain the existing build, ownership, save, Java, Maven, Git and package gates, and add the same two-case normal shipping-agent acceptance with agent-hash preservation. Local headless and process tests do not establish native GUI behavior.
+
+The [completed Windows descriptor investigation](TEST_REPORT_PHASE431_DESCRIPTOR.md#exact-source-ci-result) is not repeated in routine CI. Its pure parser and driver tests remain. Its inherited-owner/DACL findings and earlier failed receipt remain historical evidence requiring a separate policy decision; no additional native descriptor observation, ACL mutation or recovery plaintext probe is part of this increment.

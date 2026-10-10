@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 43 / 0.43.1
+# 功能矩阵与后续验收 · checkpoint 44 / 0.44.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -60,3 +60,5 @@
 0.40 在替换当前连接前复用传输层的纯 SSH 字段校验，并明确端口覆盖与字面量路径语义；此修正已通过 0.40 精确提交双平台验收，不代表真实 SSH 联机已验证。
 
 0.42 增加显式、有界的 [Save All](SAVE_ALL.md)：仅编辑器缓冲区，逐个条件写入，冲突、未知结果或候选变化停止后续提交；不是多文件原子事务，不自动 Run 或序列化配置表单。本阶段验收结果见当前测试报告。
+
+0.44 正在验收恢复存储不可用时的生命周期保护：编辑及显式 Save/Save All 独立于恢复存储状态，退出时区分未执行、已确认和不明结果，保留剩余副本须明确选择。此阶段不启用 Windows ACL 强制检查，不自动修复权限或切换恢复目录。

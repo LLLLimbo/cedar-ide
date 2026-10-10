@@ -361,7 +361,7 @@ fn assert_retained(
     assert!(app.recovery.reading.is_none());
     assert!(app.recovery.restoring_generation.is_none());
     assert!(app.recovery.closing.is_none());
-    assert!(!app.recovery.has_store());
+    assert!(!app.recovery.has_actor());
     assert_eq!(snapshot(app), before);
     assert!(location_history::same_selection(cursor, selection(app)));
     // Empty (rather than Disconnected) proves the original recording worker

@@ -779,7 +779,7 @@ fn reload_rechecks_save_and_every_close_transition_at_both_barriers() {
                 2 => app.close_tab_requested = Some(1),
                 3 => app.confirm = Some(crate::Confirm::CloseWindow),
                 4 => app.close_after_language_stop = true,
-                5 => app.recovery.closing = Some(vec![(1, 0)]),
+                5 => app.recovery.begin_close(app.recovery_close_guard()),
                 6 => app.allow_close = true,
                 _ => unreachable!(),
             }
@@ -1519,7 +1519,7 @@ fn merge_rechecks_saves_unknown_outcomes_close_and_dialogs_before_preview_and_co
                 2 => app.close_tab_requested = Some(1),
                 3 => app.confirm = Some(crate::Confirm::CloseWindow),
                 4 => app.close_after_language_stop = true,
-                5 => app.recovery.closing = Some(vec![(1, 1)]),
+                5 => app.recovery.begin_close(app.recovery_close_guard()),
                 6 => app.allow_close = true,
                 7 => app.open_form = true,
                 8 => app.new_file = true,
