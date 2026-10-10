@@ -272,11 +272,16 @@ class ProcessBoundaryTests(unittest.TestCase):
 
 class AcceptanceLifecycleTests(unittest.TestCase):
     def run_fixture(self, directory, fail=False):
-        base = Path(directory)
+        # This is a newly owned TemporaryDirectory. Resolve its existing root
+        # before creating children so Windows short aliases cannot diverge from
+        # the production driver's canonical inputs; exact assertions stay exact.
+        base = Path(directory).resolve(strict=True)
         root = base / "repository"
         scratch_root = base / "scratch"
         (root / "target/release").mkdir(parents=True)
         scratch_root.mkdir()
+        self.assertEqual(root, root.resolve(strict=True))
+        self.assertEqual(scratch_root, scratch_root.resolve(strict=True))
         (root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.41.0"\n')
         (root / "target/release" / acceptance.PROBE_NAME).write_bytes(b"\x7fELF\x02\x01\x01probe")
         payload = {"cedar": b"desktop", "cedar-agent": b"agent", "BUNDLE_MANIFEST.json": b"{}"}
@@ -344,6 +349,35 @@ class AcceptanceLifecycleTests(unittest.TestCase):
         self.assertEqual(receipt.exists(), not fail)
         self.assertEqual(next(remaining[0].glob("*.tar.gz")).read_bytes(), b"controlled archive")
         return result
+
+    def test_owned_alias_resolves_before_fixture_writes_for_success_and_failure(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory:
+                owner = Path(directory).resolve(strict=True)
+                canonical = owner / "canonical-owned-root"
+                canonical.mkdir()
+                alias = owner / "SHORT~1"
+                untouched = owner / "outside-fixture.txt"
+                untouched.write_bytes(b"preserved")
+                original_resolve = Path.resolve
+                resolved_aliases = []
+
+                def resolve_owned_alias(path, *args, **kwargs):
+                    if path == alias:
+                        self.assertIs(kwargs.get("strict"), True)
+                        self.assertTrue(canonical.is_relative_to(owner))
+                        resolved_aliases.append(path)
+                        return canonical
+                    return original_resolve(path, *args, **kwargs)
+
+                # Model an OS alias without symlinks, privileges, or writes
+                # outside this owned directory on either test platform.
+                with mock.patch.object(Path, "resolve", new=resolve_owned_alias):
+                    self.run_fixture(alias, fail=fail)
+                self.assertEqual(resolved_aliases, [alias])
+                self.assertFalse(alias.exists())
+                self.assertTrue((canonical / "repository").is_dir())
+                self.assertEqual(untouched.read_bytes(), b"preserved")
 
     def test_success_removes_probe_before_package_rechecks_and_records_no_gui(self):
         with tempfile.TemporaryDirectory() as directory:

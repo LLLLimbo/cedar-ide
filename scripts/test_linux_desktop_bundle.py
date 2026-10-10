@@ -97,7 +97,7 @@ class LinuxDesktopBundleTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="cedar-linux-desktop-test-")
         self.addCleanup(self.temporary.cleanup)
-        self.base = Path(self.temporary.name)
+        self.base = Path(self.temporary.name).resolve(strict=True)
         self.payload = payload_fixture()
         self.manifest = bundle.make_manifest("0.41.0", COMMIT, RUN_URL, self.payload)
         self.archive = bundle.archive_bytes(self.payload, self.manifest)
