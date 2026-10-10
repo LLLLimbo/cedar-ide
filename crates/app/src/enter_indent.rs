@@ -79,16 +79,27 @@ pub fn plan(text: &str, selection: CCursorRange) -> Option<Plan> {
             && text.as_bytes().get(byte - 1) == Some(&b'\r')
             && text.as_bytes().get(byte) == Some(&b'\n')
     };
-    if inside_crlf(low_byte) || inside_crlf(high_byte) {
-        if low != high {
-            return None;
-        }
+    if low == high && inside_crlf(low_byte) {
         // Native End can put a collapsed caret between CR and LF. For this
         // insertion only, use the logical end before CR; the original cursor
         // (including both affinities) remains the transaction's Undo state.
         low = low.checked_sub(1)?;
         low_byte = low_byte.checked_sub(1)?;
         high_byte = low_byte;
+    } else if low != high {
+        if inside_crlf(low_byte) {
+            return None;
+        }
+        if inside_crlf(high_byte) {
+            // Shift+End can include the CR while visually selecting line
+            // content. Keep that complete CRLF in the suffix. A CR-only range
+            // would contract to empty, so it remains refused.
+            let before_cr = high_byte.checked_sub(1)?;
+            if low_byte >= before_cr {
+                return None;
+            }
+            high_byte = before_cr;
+        }
     }
     let line_start = text[..low_byte].rfind('\n').map_or(0, |byte| byte + 1);
     let prefix_len = text.as_bytes()[line_start..low_byte]
@@ -320,8 +331,8 @@ mod tests {
         for range in [
             selection(usize::MAX, 0),
             selection(0, 5),
-            selection(2, 0),
-            selection(0, 2),
+            selection(2, 3),
+            selection(3, 2),
         ] {
             assert!(plan("é\r\n😀", range).is_none(), "range {range:?}");
         }
@@ -347,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn only_collapsed_crlf_interior_planning_uses_logical_line_end() {
+    fn collapsed_crlf_interior_planning_still_uses_logical_line_end() {
         for (source, index, expected, after) in [
             ("\r\n", 1, "\r\n\r\n", 2),
             ("é\r\n😀", 2, "é\r\n\r\n😀", 3),
@@ -392,6 +403,109 @@ mod tests {
         assert!(plan(&exact, caret(exact.len() - 1)).is_none());
         let over_prefix = format!("{}\r\n", " ".repeat(MAX_PREFIX_BYTES + 1));
         assert!(plan(&over_prefix, caret(over_prefix.len() - 1)).is_none());
+    }
+
+    #[test]
+    fn upper_crlf_contraction_preserves_suffix_lower_prefix_and_newline_style() {
+        for (source, low, high, expected, after) in [
+            (
+                "    café λ\r\n    tail\r\n",
+                0,
+                11,
+                "\r\n\r\n    tail\r\n",
+                2,
+            ),
+            (
+                "    café λ\r\n    tail\r\n",
+                2,
+                11,
+                "  \r\n  \r\n    tail\r\n",
+                6,
+            ),
+            (
+                "    café λ\r\n    tail\r\n",
+                4,
+                11,
+                "    \r\n    \r\n    tail\r\n",
+                10,
+            ),
+            (" \té😀\r\nz", 3, 5, " \té\r\n \t\r\nz", 7),
+            ("  one\n \t二😀\r\nend", 4, 11, "  on\n  \r\nend", 7),
+            (
+                " \tone\r\n  二😀\r\nlast\n",
+                4,
+                12,
+                " \ton\r\n \t\r\nlast\n",
+                8,
+            ),
+            ("  é😀\r\n", 2, 5, "  \r\n  \r\n", 6),
+            (" \t\r\n", 1, 3, " \r\n \r\n", 4),
+            ("  x\n  \r\nz", 3, 7, "  x\n  \r\nz", 6),
+            ("  x\r", 2, 4, "  \n  ", 5),
+        ] {
+            for (primary, secondary) in [(low, high), (high, low)] {
+                for primary_affinity in [false, true] {
+                    for secondary_affinity in [false, true] {
+                        let mut selected = selection(primary, secondary);
+                        selected.primary.prefer_next_row = primary_affinity;
+                        selected.secondary.prefer_next_row = secondary_affinity;
+                        let planned = plan(source, selected).unwrap();
+                        assert_eq!(
+                            planned.text, expected,
+                            "source {source:?}, range {selected:?}"
+                        );
+                        assert_selection(planned.selection, caret(after));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn upper_crlf_contraction_keeps_strict_endpoint_and_size_bounds() {
+        for (source, low, high) in [
+            ("é\r\n😀", 1, 2),    // CR half only.
+            ("é\r\n😀", 2, 3),    // LF half only.
+            ("é\r\n😀", 2, 4),    // Lower endpoint inside CRLF.
+            ("a\r\nb\r\n", 2, 5), // Both endpoints inside separate CRLFs.
+            ("é\r\n😀", 0, 5),    // Outside the scalar range.
+        ] {
+            for selected in [selection(low, high), selection(high, low)] {
+                assert!(
+                    plan(source, selected).is_none(),
+                    "source {source:?}, range {selected:?}"
+                );
+            }
+        }
+        // Contraction preserves the upper CR: account for that retained byte
+        // before checking the output cap, rather than sizing raw deletion.
+        let fits = format!("  xy\r\n{}", "z".repeat(MAX_BYTES - 9));
+        assert_eq!(plan(&fits, selection(3, 5)).unwrap().text.len(), MAX_BYTES);
+        let over_result = format!("  xy\r\n{}", "z".repeat(MAX_BYTES - 8));
+        assert!(plan(&over_result, selection(5, 3)).is_none());
+        let exact_input = format!("{}\r\n", "x".repeat(MAX_BYTES - 2));
+        assert_eq!(
+            plan(&exact_input, selection(0, MAX_BYTES - 1))
+                .unwrap()
+                .text,
+            "\r\n\r\n"
+        );
+        let over_input = format!("{exact_input}x");
+        assert!(plan(&over_input, selection(0, MAX_BYTES - 1)).is_none());
+        let prefix = format!("{}xy\r\n", " ".repeat(MAX_PREFIX_BYTES));
+        assert!(plan(&prefix, selection(MAX_PREFIX_BYTES, MAX_PREFIX_BYTES + 3)).is_some());
+        let over_prefix = format!(" {prefix}");
+        assert!(plan(
+            &over_prefix,
+            selection(MAX_PREFIX_BYTES + 1, MAX_PREFIX_BYTES + 4)
+        )
+        .is_none());
+        assert_eq!(
+            plan(&over_prefix, selection(2, MAX_PREFIX_BYTES + 4))
+                .unwrap()
+                .text,
+            "  \r\n  \r\n"
+        );
     }
 
     fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
@@ -518,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn actual_shift_end_crlf_selection_still_refuses_enter() {
+    fn actual_shift_end_crlf_selection_contracts_upper_endpoint() {
         let source = "    café λ\r\n    tail\r\n";
         let mut app = app(source, caret(0));
         frame(&mut app, vec![key(egui::Key::End, egui::Modifiers::SHIFT)]);
@@ -526,12 +640,89 @@ mod tests {
         assert_eq!(before.primary.index, 11);
         assert_eq!(before.secondary.index, 0);
         frame(&mut app, vec![enter()]);
-        assert_eq!(app.documents[0].text, source);
-        assert_eq!(app.documents[0].edit_version, 0);
-        assert_selection(range(&app), before);
+        assert_eq!(app.documents[0].text, "\r\n\r\n    tail\r\n");
+        assert_eq!(app.documents[0].edit_version, 1);
+        assert_selection(range(&app), caret(2));
         frame(&mut app, vec![key(egui::Key::Z, egui::Modifiers::COMMAND)]);
         assert_eq!(app.documents[0].text, source);
-        assert_eq!(app.documents[0].edit_version, 0);
+        assert_eq!(app.documents[0].edit_version, 2);
+        assert_selection(range(&app), before);
+        frame(&mut app, vec![key(egui::Key::Y, egui::Modifiers::COMMAND)]);
+        assert_eq!(app.documents[0].text, "\r\n\r\n    tail\r\n");
+        assert_eq!(app.documents[0].edit_version, 3);
+        assert_selection(range(&app), caret(2));
+    }
+
+    #[test]
+    fn actual_end_shift_home_reversed_crlf_selection_contracts_upper_endpoint() {
+        let source = "    café λ\r\n    tail\r\n";
+        let mut app = app(source, caret(0));
+        frame(&mut app, vec![key(egui::Key::End, egui::Modifiers::NONE)]);
+        assert_eq!(range(&app).primary.index, 11);
+        frame(&mut app, vec![key(egui::Key::Home, egui::Modifiers::SHIFT)]);
+        let before = range(&app);
+        assert_eq!(before.primary.index, 0);
+        assert_eq!(before.secondary.index, 11);
+        frame(&mut app, vec![enter()]);
+        assert_eq!(app.documents[0].text, "\r\n\r\n    tail\r\n");
+        assert_eq!(app.documents[0].edit_version, 1);
+        assert_selection(range(&app), caret(2));
+        frame(&mut app, vec![key(egui::Key::Z, egui::Modifiers::COMMAND)]);
+        assert_eq!(app.documents[0].text, source);
+        assert_eq!(app.documents[0].edit_version, 2);
+        assert_selection(range(&app), before);
+        frame(&mut app, vec![key(egui::Key::Y, egui::Modifiers::COMMAND)]);
+        assert_eq!(app.documents[0].text, "\r\n\r\n    tail\r\n");
+        assert_eq!(app.documents[0].edit_version, 3);
+        assert_selection(range(&app), caret(2));
+    }
+
+    #[test]
+    fn upper_crlf_contraction_restores_original_direction_and_both_affinities() {
+        let source = " \té😀\r\nlast";
+        for (primary, secondary) in [(3, 5), (5, 3)] {
+            for primary_affinity in [false, true] {
+                for secondary_affinity in [false, true] {
+                    let mut before = selection(primary, secondary);
+                    before.primary.prefer_next_row = primary_affinity;
+                    before.secondary.prefer_next_row = secondary_affinity;
+                    let mut app = app(source, before);
+                    frame(&mut app, vec![enter()]);
+                    assert_eq!(app.documents[0].text, " \té\r\n \t\r\nlast");
+                    assert_eq!(app.documents[0].edit_version, 1);
+                    assert_selection(range(&app), caret(7));
+                    frame(&mut app, vec![key(egui::Key::Z, egui::Modifiers::COMMAND)]);
+                    assert_eq!(app.documents[0].text, source);
+                    assert_eq!(app.documents[0].edit_version, 2);
+                    assert_selection(range(&app), before);
+                    frame(&mut app, vec![key(egui::Key::Y, egui::Modifiers::COMMAND)]);
+                    assert_eq!(app.documents[0].text, " \té\r\n \t\r\nlast");
+                    assert_eq!(app.documents[0].edit_version, 3);
+                    assert_selection(range(&app), caret(7));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn upper_crlf_contraction_identical_text_keeps_complete_redo() {
+        let source = "  x\n  \r\nz";
+        let mut app = app(source, caret(source.chars().count()));
+        frame(&mut app, vec![enter()]);
+        let edited = app.documents[0].text.clone();
+        frame(&mut app, vec![key(egui::Key::Z, egui::Modifiers::COMMAND)]);
+        select(&mut app, selection(3, 7));
+        frame(&mut app, vec![enter()]);
+        assert_eq!(app.documents[0].text, source);
+        assert_eq!(app.documents[0].edit_version, 2);
+        assert_selection(range(&app), caret(6));
+        frame(&mut app, vec![key(egui::Key::Y, egui::Modifiers::COMMAND)]);
+        assert_eq!(app.documents[0].text, edited);
+        assert_eq!(app.documents[0].edit_version, 3);
+        frame(&mut app, vec![key(egui::Key::Z, egui::Modifiers::COMMAND)]);
+        assert_eq!(app.documents[0].text, source);
+        assert_eq!(app.documents[0].edit_version, 4);
+        assert_selection(range(&app), caret(6));
     }
 
     #[test]
@@ -724,8 +915,12 @@ mod tests {
     #[test]
     fn handler_refuses_owned_invalid_ranges_limits_and_saturated_version() {
         for (text, selected, saturated) in [
-            ("é\r\n😀".into(), selection(2, 0), false),
-            ("é\r\n😀".into(), selection(0, 2), false),
+            ("é\r\n😀".into(), selection(2, 3), false),
+            ("é\r\n😀".into(), selection(3, 2), false),
+            ("é\r\n😀".into(), selection(1, 2), false),
+            ("é\r\n😀".into(), selection(2, 1), false),
+            ("a\r\nb\r\n".into(), selection(2, 5), false),
+            ("a\r\nb\r\n".into(), selection(5, 2), false),
             ("abc".into(), selection(usize::MAX, 0), false),
             ("x".repeat(MAX_BYTES), caret(MAX_BYTES), false),
             ("x".repeat(MAX_BYTES + 1), selection(1, 0), false),

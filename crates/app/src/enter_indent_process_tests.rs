@@ -692,18 +692,69 @@ fn normal_agent_enter_continuation_is_local_and_preserves_history() -> Check<()>
         true,
     )?;
 
-    // Nonempty selections with an endpoint inside CRLF still refuse, including
-    // the native Shift+End boundary. Do not silently expand a selected range.
-    let interior_selection = range(first_end + 1, 1);
-    h.select(id, interior_selection)?;
-    h.action(
-        FIRST,
-        egui::Key::Enter,
-        egui::Modifiers::NONE,
-        FIRST_BASE,
-        interior_selection,
-        false,
-    )?;
+    // Contract only a valid selection's upper interior boundary. The original
+    // orientation and both affinities remain the Undo checkpoint.
+    let contracted = " \r\n \r\n \tsecond Ω\r\nthird line\r\n";
+    for before in [range(first_end + 1, 1), range(1, first_end + 1)] {
+        h.select(id, before)?;
+        h.action(
+            FIRST,
+            egui::Key::Enter,
+            egui::Modifiers::NONE,
+            contracted,
+            caret(4),
+            true,
+        )?;
+        h.action(
+            FIRST,
+            egui::Key::Z,
+            egui::Modifiers::COMMAND,
+            FIRST_BASE,
+            before,
+            true,
+        )?;
+        h.action(
+            FIRST,
+            egui::Key::Z,
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            contracted,
+            caret(4),
+            true,
+        )?;
+        h.action(
+            FIRST,
+            egui::Key::Z,
+            egui::Modifiers::COMMAND,
+            FIRST_BASE,
+            before,
+            true,
+        )?;
+    }
+    // Never expand a lower boundary, split either CRLF, or turn a CR-only
+    // selection into an insertion. All refusals preserve exact selection.
+    let second_cr = FIRST_BASE
+        .chars()
+        .enumerate()
+        .filter(|(_, ch)| *ch == '\r')
+        .nth(1)
+        .ok_or("second CR absent")?
+        .0;
+    for before in [
+        range(first_end + 3, first_end + 1),
+        range(first_end + 1, first_end),
+        range(first_end + 2, first_end + 1),
+        range(second_cr + 1, first_end + 1),
+    ] {
+        h.select(id, before)?;
+        h.action(
+            FIRST,
+            egui::Key::Enter,
+            egui::Modifiers::NONE,
+            FIRST_BASE,
+            before,
+            false,
+        )?;
+    }
 
     // Prefix planning has a finite 4096-byte limit. This synthetic dirty buffer
     // exists only in the already explicitly opened in-memory document.
@@ -755,7 +806,7 @@ fn normal_agent_enter_continuation_is_local_and_preserves_history() -> Check<()>
         "exact setup operation targets differed",
     )?;
     require(
-        h.cases == 31 && h.transactions == 24,
+        h.cases == 42 && h.transactions == 32,
         "acceptance counters differed",
     )?;
     require(
@@ -794,6 +845,8 @@ fn normal_agent_enter_continuation_is_local_and_preserves_history() -> Check<()>
             "identical_text_keeps_version_and_redo": true,
             "crlf_prefix_version_refusals_preserved": true,
             "collapsed_crlf_logical_end_and_original_undo": true,
+            "upper_crlf_selection_contraction_and_exact_undo": true,
+            "lower_both_and_newline_only_refusals": true,
             "exact_operation_ledger_verified": true, "fixture_removed": true,
             "watchdog_joined": true, "cleanup_verified": true,
             "optional_font_probe_untriggered": true
