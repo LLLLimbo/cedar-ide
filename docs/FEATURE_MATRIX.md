@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 45 / 0.45.0
+# 功能矩阵与后续验收 · checkpoint 46 / 0.46.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -66,3 +66,5 @@
 0.44.2 仅修订退出原因提示，区分未能检查恢复存储与未确认的已请求删除；保守退出门槛和副本不确定性保持不变，已通过双平台 CI 与限定 Linux 原生退出提示验证。
 
 0.45.0 仅增加非分发的 Windows 恢复存储句柄准入适配器与故障模型，尚不接入生产 Store，不增加原生权限探测。严格所有者与 DACL 候选规则仍可能使恢复不可用；真实允许路径兼容性尚未验证。
+
+0.46.0 拟对新适配器执行一次源版本绑定的 Windows 拒绝路径观察；即使通过，也不代表生产恢复权限检查或真实允许路径已验收。

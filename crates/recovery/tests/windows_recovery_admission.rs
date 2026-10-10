@@ -1,5 +1,5 @@
 //! NONSHIPPING: portable admission/model tests and Windows synthetic buffers.
-//! No native disk-object test exists here; the completed probe stays ignored.
+//! One separately opted-in native rejection witness remains ignored.
 #![allow(dead_code)]
 #[path = "support/windows_recovery_admission.rs"]
 mod admission;
@@ -8,6 +8,26 @@ mod policy;
 #[cfg(windows)]
 #[path = "support/windows_recovery_queries.rs"]
 mod queries;
+#[path = "support/windows_recovery_witness.rs"]
+mod witness;
+#[cfg(windows)]
+#[path = "support/windows_recovery_witness_native.rs"]
+mod witness_native;
+
+#[cfg(windows)]
+#[test]
+#[ignore = "NONSHIPPING single explicit owner rejection witness; fixed 60-second driver only"]
+fn windows_local_app_data_owner_rejection_witness() {
+    let receipt = witness_native::run();
+    println!(
+        "CEDAR_RECOVERY_ADMISSION_WITNESS={}",
+        serde_json::to_string(&receipt).expect("fixed receipt serialization")
+    );
+    assert!(
+        receipt.succeeded(),
+        "native admission witness did not establish the intended rejection"
+    );
+}
 
 #[cfg(test)]
 mod tests {
@@ -183,6 +203,59 @@ mod tests {
             assert!(Admitted::admit(handle, Role::Temporary, &mut fake).is_err());
             assert_eq!(drops.get(), 1);
             assert_eq!(fake.call, 1);
+        }
+    }
+    #[test]
+    fn single_witness_requires_exact_owner_rejection_and_releases_handle() {
+        for (fault, category, observations, successes, reads) in [
+            (Fault::Owner, "owner_mismatch", 1, 1, 0),
+            (Fault::Query, "query_error", 1, 0, 0),
+            (Fault::Dacl, "unexpected_rejection", 1, 1, 0),
+            (
+                Fault::None,
+                "intended_negative_fixture_unavailable",
+                3,
+                3,
+                1,
+            ),
+        ] {
+            let (handle, mut fake, drops) = setup(true);
+            fake.fault = fault;
+            fake.fault_at = 1;
+            let mut receipt = super::witness::Receipt::default();
+            super::witness::reject_before_read(handle, &mut fake, &mut receipt);
+            assert_eq!(receipt.category, category);
+            assert_eq!(receipt.observation_attempts, observations);
+            assert_eq!(receipt.observations_succeeded, successes);
+            assert_eq!(receipt.admission_attempts, 1);
+            assert_eq!(
+                (
+                    receipt.fake_read_calls,
+                    receipt.fake_payload_calls,
+                    receipt.fake_remove_calls
+                ),
+                (reads, 0, 0)
+            );
+            assert_eq!(drops.get(), 1);
+            assert!(!receipt.succeeded()); // Cleanup evidence cannot be invented.
+        }
+    }
+    #[test]
+    fn late_owner_rejection_or_query_error_cannot_masquerade_as_initial_rejection() {
+        for (fault, successes) in [(Fault::Owner, 3), (Fault::Query, 2)] {
+            let (handle, mut fake, drops) = setup(true);
+            fake.fault = fault;
+            fake.fault_at = 3;
+            let mut receipt = super::witness::Receipt::default();
+            super::witness::reject_before_read(handle, &mut fake, &mut receipt);
+            assert_eq!(receipt.category, "intended_negative_fixture_unavailable");
+            assert_eq!(receipt.observation_attempts, 3);
+            assert_eq!(receipt.observations_succeeded, successes);
+            assert_eq!(receipt.fake_read_calls, 0);
+            assert_eq!(receipt.fake_payload_calls, 0);
+            assert_eq!(receipt.fake_remove_calls, 0);
+            assert_eq!(drops.get(), 1);
+            assert!(!receipt.succeeded());
         }
     }
     #[test]

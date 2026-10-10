@@ -12,6 +12,8 @@ jobs:
     timeout-minutes: ${{ matrix.os == 'ubuntu-24.04' && 90 || 45 }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -29,6 +31,7 @@ jobs:
       - run: python scripts/test_linux_maven_acceptance.py
       - run: python scripts/test_windows_bundle.py
       - run: python scripts/test_windows_recovery_privacy_probe.py
+      - run: python scripts/test_windows_recovery_admission_witness.py
       - run: python scripts/test_linux_agent_bundle.py
       - run: python scripts/test_linux_agent_acceptance.py
       - run: python scripts/test_linux_desktop_bundle.py
@@ -42,6 +45,19 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-targets --all-features --locked
         timeout-minutes: 15
+      # One authorized source-bound observation only. Remove after its receipt.
+      # Driver also verifies HEAD/event SHA, exact parent and version before launch.
+      - name: Single Windows recovery adapter rejection witness
+        if: runner.os == 'Windows' && github.repository == 'LLLLimbo/cedar-ide' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.before == '676e713661b7112262f109b72251447521a1a7dc' && github.run_attempt == 1
+        timeout-minutes: 5
+        run: python scripts/windows_recovery_admission_witness.py
+      - name: Single adapter witness sanitized receipt
+        if: always() && (runner.os == 'Windows' && github.repository == 'LLLLimbo/cedar-ide' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.before == '676e713661b7112262f109b72251447521a1a7dc' && github.run_attempt == 1)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-recovery-admission-witness
+          path: ${{ runner.temp }}/WINDOWS_RECOVERY_ADMISSION_WITNESS.json
+          if-no-files-found: error
       - id: release_build
         run: cargo build --release --workspace --all-features --locked
       - name: Explicit test-report reads (Unix)
