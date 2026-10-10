@@ -367,6 +367,16 @@ impl Workspace {
         self.java_startup_record(id).is_ok()
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn language_restart_cleanup_blocked(&self) -> bool {
+        self.java_startup.restart_blocked
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn block_unverified_language_restart(&mut self) {
+        self.java_startup.restart_blocked = true;
+    }
+
     pub(super) fn require_language_start_settled(&self) -> Result<(), RemoteError> {
         if self.java_startup.pending() {
             return Err(error(
@@ -395,7 +405,7 @@ impl Workspace {
             }
         }
         if self.java_startup.restart_blocked {
-            return Err(error("language_cleanup_unverified", "Reconnect before starting another language server; previous Java cleanup is unverified"));
+            return Err(error("language_cleanup_unverified", "Reconnect before starting another language server; previous language cleanup is unverified"));
         }
         if self.language.is_some() {
             return Err(error(

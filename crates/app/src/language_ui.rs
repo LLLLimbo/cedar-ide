@@ -372,7 +372,7 @@ impl CedarApp {
         }
         if self.language.restart_blocked {
             self.error = Some(
-                "Reconnect before starting another Java session; prior cleanup was not verified"
+                "Check previous server cleanup before reconnecting and starting another server; cleanup was not verified"
                     .into(),
             );
             return;
@@ -591,7 +591,11 @@ impl CedarApp {
     }
     pub(super) fn language_public_error(&self, action: &Action, error: &str) -> String {
         if self.language.mode != ServerMode::Java {
-            return error.into();
+            return if matches!(action.kind, ActionKind::Stop) {
+                "Language stop did not verify cleanup. Your drafts are retained; check the previous server cleanup before reconnecting and starting another server.".into()
+            } else {
+                error.into()
+            };
         }
         match action.kind {
             ActionKind::Start => "Java server startup failed. Check the Java executable, JDT distribution and data directory on the workspace host.".into(),
@@ -634,9 +638,11 @@ impl CedarApp {
                     self.language.diagnostic_refresh = None;
                 }
             }
-            ActionKind::Stop if self.language.mode == ServerMode::Java => {
+            ActionKind::Stop => {
                 self.language.reset();
                 self.language.restart_blocked = true;
+                self.close_after_language_stop = false;
+                self.close_snapshot = None;
                 self.language.output = error.into();
             }
             _ => {}
@@ -849,8 +855,12 @@ impl CedarApp {
                         self.error = Some(message);
                     }
                 }
-            } else {
+            } else if value.get("stopped").and_then(Value::as_bool) == Some(true) {
                 self.language.reset();
+            } else {
+                let message = self.language_public_error(&action, "Invalid Stop acknowledgement");
+                self.language_error(&action, &message);
+                self.error = Some(message);
             }
             return;
         }
@@ -1496,7 +1506,7 @@ impl CedarApp {
         if self.language.restart_blocked {
             ui.colored_label(
                 AMBER,
-                "Reconnect before starting another Java session; prior cleanup was not verified.",
+                "Check previous server cleanup before reconnecting and starting another server; cleanup was not verified.",
             );
         }
         self.maven_model_controls(ui);
@@ -2007,6 +2017,9 @@ fn safe_relative_path(path: &str) -> bool {
             .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
+#[cfg(test)]
+#[path = "linux_language_cleanup_tests.rs"]
+mod linux_cleanup_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

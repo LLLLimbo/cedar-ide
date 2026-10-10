@@ -1,10 +1,10 @@
-# Language services · phase 4 / 0.4.0
+# Language services · current transport contract
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
 `cedar-language` is a Rust stdio LSP client library, integrated with the native
-editor through the workspace agent. Phase 4 adds formatting, references and
-document symbols using frontend/agent protocol **4**. Deterministic mock-process
+editor through the workspace agent, using frontend/agent protocol **4**. Formatting,
+references and document symbols use explicit bounded operations. Deterministic mock-process
 tests and a real JDT navigation/formatting probe exercise these paths. The
 [verification report](TEST_REPORT.md) separates candidate checks from final
 aggregate and native-window acceptance.
@@ -54,8 +54,12 @@ No general refactoring or complete Java/Kotlin IDE compatibility is claimed.
   after initialization; callers own the extension's capability checks and types.
   Lifecycle and tracked document methods have dedicated entry points.
 - `shutdown()` performs the shutdown/response/exit sequence, then waits briefly,
-  kills if necessary, and reaps the direct child. Dropping the client also kills
-  and reaps that child, including when its stdin is blocked.
+  then requests owned cleanup. `shutdown_with_outcome()` distinguishes protocol
+  completion from actual process/I/O evidence. Windows reports Job-backed cleanup;
+  Linux reports its private process group, root exit code or signal, root reaping,
+  released parent endpoints and worker join separately. Other portable hosts
+  retain their legacy direct-child behavior. A legacy `Ok` can follow forced
+  cleanup and is not evidence of graceful exit.
 
 `StdioRpc` exposes the lower-level JSON-RPC transport without the LSP state machine.
 Do not pass DAP envelopes to it: DAP has a different request/response structure.
@@ -79,8 +83,28 @@ rewrite URIs or fetch remote files.
 Share a client through `Arc<LspClient>`. Issue feature requests on background
 workers, with one independent consumer draining events. The reader routes numeric
 request IDs, so responses may arrive out of order and notifications do not wait for
-an outstanding request. Writes run on a dedicated worker, so a server that stops
-reading stdin cannot indefinitely block a caller past its request deadline.
+an outstanding request. Windows and Linux use an owned nonblocking I/O worker;
+other portable hosts retain separate blocking workers. Existing request/write
+and shutdown-grace deadlines are unchanged. Linux partial incoming frames also
+use the request deadline; an idle frame boundary does not time out.
+
+Linux fixes a three-second cleanup observation deadline at the first cleanup
+trigger, shared by finish, abort and Drop. Normal completion requires actual
+worker return/join and root reaping. Timeout is cached as unverified/not joined;
+the same owner retains eventual wait responsibility, with no replacement watcher
+or caller PID retry. This is an observation budget plus ordinary scheduling and
+thread finalization, not a hard bound on an uninterruptible process. Parent pipe
+endpoints close before eventual wait; inherited stderr remains inherited.
+
+Exclusive child-wait ownership is required: no competing SIGCHLD reaper,
+SIGCHLD=SIG_IGN or SA_NOCLDWAIT. Root status is observed with WNOWAIT
+before group signaling, and the root remains unreaped until signals finish.
+Lost wait ownership disables all further cached-PID operations. Group signaling
+is not an independent group-empty observation and cannot contain escaped or
+credential-changed descendants. Abrupt agent death is not covered. Unverified
+Linux generic cleanup blocks new language startup in that workspace. Reconnecting
+does not prove the previous server has exited. Typed Linux Java/Maven remains
+unsupported in this prerequisite.
 
 Lifecycle transitions are exclusive. Shutdown waits for already-running operations
 (up to their own deadlines); no operation can race a tracked notification past the

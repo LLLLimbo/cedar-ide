@@ -1,21 +1,27 @@
 //! Platform-independent state used by the owned Windows worker, with deterministic
 //! tests on every host. No process or OS I/O is performed here.
-use super::{Error, WriteCommand};
+use super::Error;
+#[cfg(any(windows, test))]
+use super::WriteCommand;
 use crate::framing::{FrameLimits, IncrementalDecoder};
+#[cfg(any(windows, test))]
 use crate::{
     WindowsCleanupErrors, WindowsCleanupStatus, WindowsRootExit, WindowsShutdownOutcome,
     WindowsShutdownReason,
 };
+#[cfg(any(windows, test))]
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// The caller serializes joiners while the handle is consumed. A consumed handle
 /// must retain its failure; its absence must never be interpreted as success.
+#[cfg(any(windows, test))]
 pub(super) enum DurableJoin<T> {
     Running(JoinHandle<T>),
     Finished(Result<T, ()>),
 }
 
+#[cfg(any(windows, test))]
 impl<T: Clone> DurableJoin<T> {
     pub(super) fn join(&mut self) -> Result<T, ()> {
         if matches!(self, Self::Running(_)) {
@@ -31,6 +37,7 @@ impl<T: Clone> DurableJoin<T> {
     }
 }
 
+#[cfg(any(windows, test))]
 #[derive(Default)]
 pub(super) struct TerminalState {
     pub(super) reason: Option<WindowsShutdownReason>,
@@ -39,6 +46,7 @@ pub(super) struct TerminalState {
     pub(super) errors: WindowsCleanupErrors,
 }
 
+#[cfg(any(windows, test))]
 impl TerminalState {
     pub(super) fn record_reason(&mut self, reason: WindowsShutdownReason) {
         self.reason.get_or_insert(reason);
@@ -73,6 +81,7 @@ impl TerminalState {
     }
 }
 
+#[cfg(any(windows, test))]
 pub(super) struct ActiveWrite {
     command: WriteCommand,
     header: Vec<u8>,
@@ -81,6 +90,7 @@ pub(super) struct ActiveWrite {
     started: bool,
 }
 
+#[cfg(any(windows, test))]
 impl ActiveWrite {
     pub(super) fn new(command: WriteCommand, limits: FrameLimits) -> Result<Self, Error> {
         let header = format!("Content-Length: {}\r\n\r\n", command.bytes.len()).into_bytes();
@@ -200,8 +210,10 @@ impl Incoming {
     }
 }
 
+#[cfg(any(windows, test))]
 pub(super) const STDERR_TAIL_BYTES: usize = 16 * 1024;
 
+#[cfg(any(windows, test))]
 pub(super) fn retain_tail(tail: &mut Vec<u8>, bytes: &[u8]) {
     if tail.capacity() < STDERR_TAIL_BYTES {
         tail.reserve_exact(STDERR_TAIL_BYTES - tail.len());
@@ -274,6 +286,7 @@ mod tests {
                     shutdown_response_received: true,
                     exit_frame_completed: true,
                     windows: Some(owned),
+                    linux: None,
                 };
                 assert!(!outcome.is_graceful());
                 terminal.record_reason(WindowsShutdownReason::Aborted);

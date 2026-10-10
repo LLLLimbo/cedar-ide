@@ -9,13 +9,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-#[cfg(any(windows, test))]
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(any(windows, target_os = "linux", test))]
 mod owned;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 mod portable;
 #[cfg(windows)]
 mod windows;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+use linux::Backend;
+#[cfg(not(any(windows, target_os = "linux")))]
 use portable::Backend;
 #[cfg(windows)]
 use windows::Backend;
@@ -32,6 +36,8 @@ pub enum Error {
     Timeout(String),
     #[error("language service queue or pending-request limit reached")]
     QueueFull,
+    #[error("language process cleanup could not be verified; check the previous server cleanup before reconnecting and starting another server")]
+    CleanupUnverified,
     #[error("language server error {code}: {message}")]
     Remote {
         code: i64,
@@ -71,7 +77,7 @@ impl ProcessConfig {
 #[derive(Debug, Clone)]
 pub struct ClientOptions {
     pub frame_limits: FrameLimits,
-    /// Request/write deadline. On Windows this also bounds assembly of each
+    /// Request/write deadline. On Windows and Linux this also bounds assembly of each
     /// incoming frame, starting at its first byte; idle frame boundaries do not
     /// time out. Increasing initialize's per-call timeout does not change this.
     pub request_timeout: Duration,
@@ -220,7 +226,9 @@ pub(crate) fn clipped_deadline(
 ///
 /// Windows requires an isolated host with controlled process spawning. Its
 /// joined worker owns an atomic Job and completes all pending pipe I/O on Drop.
-/// Other platforms kill/reap the direct child only. Launch a trusted server.
+/// Linux owns a private process group and parent I/O; cleanup observation may
+/// time out while that owner retains eventual wait responsibility. Other portable
+/// hosts kill/reap the direct child only. Launch a trusted server.
 /// This transport does not make a caller's sequential protocol handler concurrent.
 pub struct StdioRpc {
     backend: Backend,
@@ -484,6 +492,8 @@ impl StdioRpc {
     /// On Windows this joins the worker after its process and I/O owners have
     /// been destroyed. Inspect windows_shutdown_outcome for recorded failures;
     /// join alone is not an independent observation of Job process accounting.
+    /// Linux separately reports actual joined cleanup or a durable observation
+    /// timeout while its existing owner retains eventual wait responsibility.
     pub fn finish_process(&self) -> Result<(), Error> {
         self.backend
             .finish(&self.shared, self.options.shutdown_timeout)
@@ -493,6 +503,19 @@ impl StdioRpc {
     /// joined. Other platforms never claim the Windows ownership guarantee.
     pub fn windows_shutdown_outcome(&self) -> Option<crate::WindowsShutdownOutcome> {
         self.backend.shutdown_outcome()
+    }
+
+    /// Linux ownership observation, including an explicit unverified result when
+    /// the fixed cleanup observation budget expires. No typed platform claim.
+    pub fn linux_shutdown_outcome(&self) -> Option<crate::LinuxShutdownOutcome> {
+        #[cfg(target_os = "linux")]
+        {
+            self.backend.linux_shutdown_outcome()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
     }
 
     pub fn abort(&self, reason: Error) {

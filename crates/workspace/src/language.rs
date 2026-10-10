@@ -103,7 +103,24 @@ impl std::fmt::Debug for LanguageSession {
     }
 }
 fn lsp_error(e: cedar_language::Error) -> RemoteError {
-    error("language_error", e.to_string())
+    let code = if matches!(e, cedar_language::Error::CleanupUnverified) {
+        "language_cleanup_unverified"
+    } else {
+        "language_error"
+    };
+    error(code, e.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_cleanup_verified(outcome: cedar_language::ShutdownOutcome) -> bool {
+    outcome.linux.is_some_and(|linux| {
+        linux.cleanup == cedar_language::LinuxCleanupStatus::Joined
+            && linux.worker_joined
+            && linux.root_reaped
+            && linux.io_released
+            && linux.errors == cedar_language::LinuxCleanupErrors::default()
+            && !matches!(linux.root_exit, cedar_language::LinuxRootExit::Unobserved)
+    })
 }
 
 fn java_diagnostics_refresh_supported(authorized_java_session: bool, initialize: &Value) -> bool {
@@ -123,6 +140,9 @@ mod implementations_tests;
 #[cfg(test)]
 #[path = "language_refresh_tests.rs"]
 mod java_refresh_tests;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "linux_language_cleanup_tests.rs"]
+mod linux_cleanup_tests;
 #[cfg(test)]
 #[path = "language_workspace_symbols_tests.rs"]
 mod workspace_symbols_tests;
@@ -232,6 +252,10 @@ impl Workspace {
             Operation::LanguageStartJavaPoll { startup_id }
             | Operation::LanguageStartJavaCancel { startup_id }
             if self.owns_java_startup(*startup_id));
+        #[cfg(target_os = "linux")]
+        let owned_cleanup = owned_cleanup
+            || (matches!(&op, Operation::LanguageStop)
+                && (self.language.is_some() || self.language_restart_cleanup_blocked()));
         if !self.allow_run && !owned_cleanup {
             return Err(error("run_disabled","Language servers execute code. Enable trusted tool execution before starting a server."));
         }
@@ -701,6 +725,10 @@ impl Workspace {
             }
             Operation::LanguageStop => {
                 self.require_language_start_settled()?;
+                #[cfg(target_os = "linux")]
+                if self.language.is_none() && self.language_restart_cleanup_blocked() {
+                    return Err(lsp_error(cedar_language::Error::CleanupUnverified));
+                }
                 if let Some(session) = self.language.take() {
                     if session.production_java {
                         let startup_id = session.startup_id;
@@ -715,10 +743,10 @@ impl Workspace {
                             .expect("validation session has a profile")
                             .finish(session.client, validation, None)?;
                     } else {
-                        session.client.shutdown().map_err(lsp_error)?;
+                        self.stop_generic_language(session.client)?;
                     }
                     #[cfg(not(feature = "windows-language-validation"))]
-                    session.client.shutdown().map_err(lsp_error)?;
+                    self.stop_generic_language(session.client)?;
                 }
                 Ok(Payload::Language {
                     value: json!({"stopped":true}),
@@ -727,6 +755,18 @@ impl Workspace {
             _ => Err(error("invalid_operation", "Not a language operation")),
         }
     }
+    fn stop_generic_language(&mut self, client: LspClient) -> Result<(), RemoteError> {
+        let (result, outcome) = client.shutdown_with_outcome();
+        #[cfg(target_os = "linux")]
+        if !linux_cleanup_verified(outcome) {
+            self.block_unverified_language_restart();
+            return Err(lsp_error(cedar_language::Error::CleanupUnverified));
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = outcome;
+        result.map_err(lsp_error)
+    }
+
     fn start_language_session(
         &mut self,
         config: ProcessConfig,
@@ -736,7 +776,16 @@ impl Workspace {
     ) -> Result<Payload, RemoteError> {
         let uri = url::Url::from_directory_path(&self.root)
             .map_err(|_| error("invalid_path", "Cannot create root URI"))?;
-        let client = LspClient::spawn(config, options).map_err(lsp_error)?;
+        let client = match LspClient::spawn(config, options) {
+            Ok(client) => client,
+            Err(failure) => {
+                #[cfg(target_os = "linux")]
+                if matches!(failure, cedar_language::Error::CleanupUnverified) {
+                    self.block_unverified_language_restart();
+                }
+                return Err(lsp_error(failure));
+            }
+        };
         #[cfg(feature = "windows-language-validation")]
         let java_validation = match self.windows_java_validation.as_mut() {
             Some(profile) if !production_java => match profile.begin(&client) {
@@ -773,7 +822,20 @@ impl Workspace {
         } else {
             None
         };
-        let mut result = result?;
+        let mut result = match result {
+            Ok(result) => result,
+            Err(failure) => {
+                #[cfg(target_os = "linux")]
+                {
+                    let outcome = client.abort_and_join();
+                    if !linux_cleanup_verified(outcome) {
+                        self.block_unverified_language_restart();
+                        return Err(lsp_error(cedar_language::Error::CleanupUnverified));
+                    }
+                }
+                return Err(failure);
+            }
+        };
         let authorized_java_refresh = production_java;
         #[cfg(feature = "windows-language-validation")]
         let authorized_java_refresh = authorized_java_refresh || java_validation.is_some();
@@ -1067,6 +1129,7 @@ mod java_production_tests {
         ShutdownOutcome {
             shutdown_response_received: true,
             exit_frame_completed: true,
+            linux: None,
             windows: Some(WindowsShutdownOutcome {
                 reason,
                 root_exit,

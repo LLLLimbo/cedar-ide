@@ -147,8 +147,9 @@ impl LspClient {
     /// Consume the owner, abort and wait for its cleanup. Windows returns the
     /// recorded observation only after worker join and process/I/O destruction.
     /// Kernel cancellation may delay this call; the signal has no such wait.
-    /// Portable cleanup retains its legacy direct-child-only guarantee and
-    /// therefore returns no Windows ownership observation.
+    /// Linux observes cleanup for three seconds after its first cleanup trigger;
+    /// timeout returns an unverified report while its owner retains eventual wait
+    /// responsibility. Other portable hosts retain legacy direct-child cleanup.
     pub fn abort_and_join(self) -> ShutdownOutcome {
         self.rpc
             .abort(Error::Closed("language client aborted".into()));
@@ -157,6 +158,7 @@ impl LspClient {
             _ => ShutdownOutcome::default(),
         };
         outcome.windows = self.rpc.windows_shutdown_outcome();
+        outcome.linux = self.rpc.linux_shutdown_outcome();
         outcome
     }
 
@@ -289,6 +291,7 @@ impl LspClient {
                 result: Err(error.clone()),
                 outcome: ShutdownOutcome {
                     windows: self.rpc.windows_shutdown_outcome(),
+                    linux: self.rpc.linux_shutdown_outcome(),
                     ..ShutdownOutcome::default()
                 },
             };
@@ -598,7 +601,7 @@ impl LspClient {
 
     /// Perform shutdown -> response -> exit, then reap the process. This legacy
     /// result may be Ok after forced cleanup; use shutdown_with_outcome to tell
-    /// whether the Windows shutdown was graceful. Repeated calls return the
+    /// whether owned Windows/Linux shutdown was graceful. Repeated calls return the
     /// original result, including failures, without sending another request.
     pub fn shutdown(&self) -> Result<(), Error> {
         self.shutdown_with_outcome().0
@@ -609,6 +612,8 @@ impl LspClient {
     /// no diagnostic text is copied into the report. Windows reports appear only
     /// after process/I/O owner destruction and worker join. Kernel cancellation
     /// can delay that join; this API does not promise a hard cleanup deadline.
+    /// Linux reports a durable unverified result after its fixed cleanup
+    /// observation budget; the same owner may still be waiting for its root.
     /// Calling before initialization returns InvalidState without stopping.
     pub fn shutdown_with_outcome(&self) -> (Result<(), Error>, ShutdownOutcome) {
         let _gate = self.gate.write().unwrap();
@@ -641,6 +646,7 @@ impl LspClient {
             self.rpc.abort_after_failure(error.clone());
         }
         outcome.windows = self.rpc.windows_shutdown_outcome();
+        outcome.linux = self.rpc.linux_shutdown_outcome();
         *self.lifecycle.lock().unwrap() = Lifecycle::Stopped {
             result: result.clone(),
             outcome,

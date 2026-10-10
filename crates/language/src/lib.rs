@@ -17,7 +17,8 @@ pub use lsp::{
     Diagnostic, LspAbortHandle, LspClient, LspEvent, Position, PublishDiagnostics, Range,
 };
 pub use shutdown::{
-    ShutdownOutcome, WindowsCleanupErrors, WindowsCleanupStatus, WindowsRootExit,
-    WindowsShutdownOutcome, WindowsShutdownReason,
+    LinuxCleanupErrors, LinuxCleanupStatus, LinuxExitStatus, LinuxRootExit, LinuxShutdownOutcome,
+    LinuxShutdownReason, ShutdownOutcome, WindowsCleanupErrors, WindowsCleanupStatus,
+    WindowsRootExit, WindowsShutdownOutcome, WindowsShutdownReason,
 };
 pub use transport::{ClientOptions, Error, ProcessConfig, RpcEvent, StdioRpc};

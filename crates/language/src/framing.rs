@@ -136,19 +136,19 @@ fn parse_header(header: &[u8], limits: FrameLimits) -> Result<usize, FrameError>
 /// Input is consumed through at most one frame per call. The caller owns read
 /// deadlines and must discard the decoder after an error. Body bytes are opaque;
 /// Content-Length counts bytes, including each byte of a UTF-8 character.
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) struct IncrementalDecoder {
     limits: FrameLimits,
     state: DecodeState,
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 enum DecodeState {
     Header(Vec<u8>),
     Body { length: usize, bytes: Vec<u8> },
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 impl IncrementalDecoder {
     pub(crate) fn new(limits: FrameLimits) -> Self {
         Self {

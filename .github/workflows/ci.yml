@@ -257,6 +257,10 @@ jobs:
         id: linux_agent_shipping
         if: runner.os == 'Linux'
         run: cargo build --release -p cedar-agent --bin cedar-agent --locked
+      - name: Linux generic language ownership (normal shipping agent)
+        timeout-minutes: 3
+        if: runner.os == 'Linux'
+        run: CEDAR_AGENT_BIN="$PWD/target/release/cedar-agent" CEDAR_MOCK_LSP_BIN="$PWD/target/release/cedar-mock-lsp" cargo test -p cedar-client --test linux_agent_language --locked -- --ignored --test-threads=1 --nocapture
       - name: Verify extracted Ubuntu 24.04 amd64 agent bundle
         timeout-minutes: 5
         if: runner.os == 'Linux'

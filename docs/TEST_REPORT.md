@@ -1,59 +1,66 @@
-# Verification report · Linux agent development bundle / 0.35.0
+# Verification report · Linux owned language transport / 0.36.0
 
-The previous [0.34 checkpoint](TEST_REPORT_PHASE34_EXPLICIT_DISCONNECT.md) is fully
-verified. This slice packages the normal default-feature Linux agent and verifies
-the extracted program through local stdio. It adds no protocol capability, Java
-platform port, SSH deployment or installation step.
+The [0.35 agent package checkpoint](TEST_REPORT_PHASE35_LINUX_AGENT.md) is fully
+verified. This slice repairs ownership of Linux generic LSP processes. Typed
+Java/Maven startup remains Windows-only, capabilities and wire schemas unchanged.
 
-## Required artifact and runtime contract
+## Required contract
 
-The build is pinned to Ubuntu 24.04 amd64. The archive contains only the normal
-agent, Chinese quick-start, manifest and existing license material. ELF target,
-interpreter, direct NEEDED libraries and required version symbols are measured
-from the packaged bytes and compared with the manifest. This is not a universal
-Linux, musl, ARM64 or old-glibc compatibility claim. Source document Git blob and
-SHA-256 identities bind documentation/license bytes to the clean source commit; the CI mapping
-records build provenance, not a cryptographic signature or reproducible-build proof.
+One Linux owner manages a private process group and nonblocking parent stdin/stdout.
+Inherited/discarded stderr behavior remains unchanged. Existing request, queue,
+frame and graceful-exit budgets remain unchanged. Full exit-frame acceptance and
+stdin closure precede its acknowledgement; uncertain partial writes are never
+replayed. Buffered responses precede terminal closure, and malformed/incomplete
+final capture cannot count as graceful.
 
-Tar/gzip verification rejects unsupported paths, duplicate or hidden entries,
-links, special files, unexpected modes, excessive expansion, malformed ABI data
-and inconsistent manifest/source identities. Extraction requires a fresh directory
-and rechecks exact file/directory inventory, contents and permissions afterward.
+The root remains unreaped while group/root signals are sent. Lost exclusive wait
+ownership permanently disables subsequent cached-PID operations. Internal Linux
+observations distinguish exit code from signal, pre/post termination observation,
+root reaping, released parent I/O, worker join and bounded failure categories.
+They are not Windows Job or independent process-group-empty evidence.
 
-The required runtime uses the exact extracted agent with execution trust off in
-a generated Unicode/space workspace. It checks metadata/capabilities/root, normal
-file access, conditional save/readback, search, stale-save and root-escape refusal,
-execution rejection, continued file access after errors, two consuming close
-acknowledgements and explicit reconnect. It preserves unrelated generated files
-and checks only the intended file changed. No user project is read or written.
+The first cleanup trigger fixes a three-second observation budget. Normal cleanup
+joins an actually finished owner. Timeout remains cached as Unverified/not joined;
+the same owner retains eventual wait responsibility, without a replacement watcher
+or caller PID retry. A late first observer can verify cleanup recorded complete
+within budget, but never upgrades a previously cached timeout. Recorded joined
+elapsed time describes owner completion after cleanup began, not caller waiting.
+This is not a hard real-time limit on uninterruptible processes or thread scheduling.
+
+Unverified Linux generic Stop/initialization cleanup blocks replacement startup
+within the workspace. Trust revocation still permits cleanup of an already-owned
+Linux session only. Malformed Stop acknowledgements block frontend restart while
+retaining drafts; only an explicit valid generic stopped acknowledgement clears
+that session. Typed Java retains its richer outcome validation. Reconnecting does
+not prove the previous process exited.
 
 ## Verification status
 
-Local verification passed 1,296 Rust tests across 42 suites (40 ignored), strict
-all-target/all-feature Clippy on the host and Windows MSVC target, formatting,
-all-feature release and default-feature shipping builds. The Linux archive suite
-passed 30 tests, its receipt suite passed nine, and the retained Windows archive
-suite passed 35 with one platform skip. An initial local link failure with the
-build volume nearly full was preserved; after narrowly scoped removal of obsolete
-generated harnesses, the complete verification pipeline passed.
+Final local checks passed on the cloud Debian 13 x86_64 host: 1,349 Rust tests
+passed across 44 suites (47 opt-in/helper tests ignored by aggregate discovery),
+strict host and Windows MSVC cross-target Clippy, formatting, all-feature release
+builds and default-feature shipping binaries. This is not native Windows evidence.
 
-Exact-source CI remains pending. The current cloud development host is Debian 13;
-local parser/compile tests cannot establish Ubuntu package runtime acceptance. The actual Ubuntu build, extraction, stdio test and package hashes
-must pass the pinned native CI job. Both platforms retain all existing required
-gates, including the independently regenerated Windows package.
+The dedicated normal release-agent run executed all four Linux tests, including
+blocked-write deadline cleanup with subsequent file access, independent owners and
+Stop/restart, trust-off rejection, and cleanup after trust revocation. Three bounded
+receipts record actual source preservation, root observations and agent reaping;
+the legacy wire acknowledgement is not presented as an independent transport-worker
+join witness. Internal transport and fault-seam tests separately cover joining,
+identity loss, setup/unwind failures, inherited-stderr backpressure, and readiness
+waiting after cleanup has already begun. The final aggregate includes the three
+readiness regressions added after the earlier local run.
 
-The Rust test's 30-second limit is a success ceiling checked around calls. Existing
-Client RPC deadlines remain unchanged; a failing in-flight call can exceed that
-ceiling before returning. Client-call counts include cached Hello and local
-capability refusals and are not a count of wire frames. Only successful consuming
-close acknowledgements establish local reaping. The CI step's enclosing failure
-boundary is not cleanup evidence.
+Package regressions passed: 30 Linux archive tests, nine Linux receipt tests, and
+35 Windows-package tests with one platform-specific skip. Independent lifecycle
+review cleared the final implementation. Exact-source Ubuntu 24.04 and Windows CI,
+actual native process receipts and regenerated package verification remain pending.
+No new distribution acceptance is claimed until those checks complete.
 
 ## Limits
 
-No authenticated SSH, Windows-to-Linux connection, network-loss handling, remote
-process cleanup or native GUI is exercised by this package test. Linux retains
-its current generic-LSP feature set; the Windows-specific typed Java/Maven route
-has not been ported. The archive is unsigned and does not bundle JDK, Git, language
-servers, a graphical frontend or test drivers. See the
-[Linux quick-start](LINUX_AGENT_QUICKSTART.zh-CN.md).
+No new listeners, SSH authentication/deployment, security settings, downloads,
+Java/Maven activation or capability-limit change. Existing locked libc gains only
+a Linux language-crate dependency edge. Process groups do not contain escaped or
+credential-changed descendants; abrupt agent death and competing SIGCHLD reapers, SIGCHLD=SIG_IGN and SA_NOCLDWAIT
+are outside the contract. Other portable platforms keep their existing transport.

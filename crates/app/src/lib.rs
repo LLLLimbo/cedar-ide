@@ -1275,6 +1275,15 @@ impl CedarApp {
             }
             return;
         }
+        // A retired Stop cannot reset a newer language session or its pending
+        // close intent. Transport closure still belongs to this connection.
+        if matches!(&job, Job::Language(action) if action.is_stop() && action.session != self.language.session)
+        {
+            if !event.connected {
+                self.disconnected("The connection closed while stopping a previous language session; drafts are retained.".into());
+            }
+            return;
+        }
         let payload = match event.result {
             Ok(payload) => payload,
             Err(error) => {
@@ -1445,6 +1454,11 @@ impl CedarApp {
             (Job::Run(action), _) => self.run_error(&action, true, "Unexpected command response"),
             (Job::Language(action), Payload::Language { value }) => {
                 self.apply_language_action(action, value)
+            }
+            (Job::Language(action), _) if action.is_stop() => {
+                let error = self.language_public_error(&action, "Unexpected Stop response");
+                self.language_error(&action, &error);
+                self.error = Some(error);
             }
             (Job::Language(action), _) if action.is_java_implementation() => {
                 let error = "Unexpected implementation response; no locations were accepted";

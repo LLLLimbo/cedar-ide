@@ -79,9 +79,16 @@ fn complete_lifecycle_features_and_full_document_sync() {
     let (result, outcome) = client.shutdown_with_outcome();
     result.unwrap();
     assert!(outcome.shutdown_response_received && outcome.exit_frame_completed);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         assert_eq!(outcome.windows, None);
+        assert!(outcome.linux.unwrap().worker_joined);
+        assert!(outcome.is_graceful());
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        assert_eq!(outcome.windows, None);
+        assert_eq!(outcome.linux, None);
         assert!(!outcome.is_graceful());
     }
     let (repeated, repeated_outcome) = client.shutdown_with_outcome();

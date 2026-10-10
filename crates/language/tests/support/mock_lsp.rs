@@ -18,6 +18,11 @@ fn send(output: &mut impl Write, value: Value) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str).unwrap_or("normal");
+    #[cfg(target_os = "linux")]
+    if mode.starts_with("linux-") {
+        linux_fixture::run(&args);
+        return;
+    }
     if mode == "exit-waits-eof" {
         thread::spawn(|| {
             thread::sleep(Duration::from_secs(8));
@@ -368,6 +373,221 @@ fn main() {
                 &mut output,
                 json!({"jsonrpc":"2.0","id":id,"result":result}),
             );
+        }
+    }
+}
+
+/// Linux ownership fixtures affect only their own process, standard streams,
+/// and files in the supplied synthetic directory. Descendants remain in their
+/// original process group. No fixture changes signal dispositions or subreaper
+/// settings, and no stored PID is used to signal another process.
+#[cfg(target_os = "linux")]
+mod linux_fixture {
+    use super::*;
+    use std::fs::{self, File};
+    use std::os::fd::AsRawFd;
+    use std::path::Path;
+    use std::process::{self, Command, Stdio};
+    use std::time::Instant;
+
+    #[allow(clippy::zombie_processes)]
+    pub(super) fn run(args: &[String]) {
+        let mode = args[1].as_str();
+        let dir = Path::new(args.get(2).expect("synthetic fixture directory"));
+        let name = match mode {
+            "linux-descendant" => "child",
+            "linux-grandchild" => "grandchild",
+            _ => "root",
+        };
+        let _lifetime = hold_lifetime(dir, name);
+        let expired = dir.join(format!("{name}.expired"));
+        // The production default write timeout is ten seconds. Only the normal
+        // agent blocked-input case needs a longer fixture cap to observe it.
+        let cap = if mode == "linux-agent-blocked" { 20 } else { 8 };
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(cap));
+            let _ = fs::write(expired, b"fixture lifetime cap reached");
+            process::exit(124);
+        });
+        if mode == "linux-grandchild" {
+            fs::write(dir.join("grandchild.ready"), b"ready").unwrap();
+            idle();
+        }
+        if mode == "linux-descendant" {
+            let _grandchild = descendant(dir, "linux-grandchild");
+            wait_file(&dir.join("grandchild.ready"));
+            fs::write(dir.join("child.ready"), b"ready").unwrap();
+            idle();
+        }
+        if matches!(mode, "linux-tree-exit" | "linux-agent-tree") {
+            let _child = descendant(dir, "linux-descendant");
+            wait_file(&dir.join("child.ready"));
+        }
+        fs::write(dir.join("root.ready"), b"ready").unwrap();
+        ready();
+        match mode {
+            "linux-blocked-stdin" => idle(),
+            "linux-initialize-partial" => {
+                use std::io::Read;
+                io::stdin().read_exact(&mut [0_u8; 1]).unwrap();
+                send(
+                    &mut io::stdout().lock(),
+                    json!({"jsonrpc":"2.0","method":"mock/initializePartial","params":{}}),
+                );
+                idle();
+            }
+            "linux-tree-exit" => {
+                wait_file(&dir.join("go"));
+                return;
+            }
+            "linux-premature-eof" => {
+                wait_file(&dir.join("go"));
+                close_stdout();
+                fs::write(dir.join("stdout-closed.ready"), b"closed").unwrap();
+                idle();
+            }
+            _ => {}
+        }
+        let mut input = BufReader::new(io::stdin().lock());
+        let mut initialized = false;
+        let mut shutdown = false;
+        while let Some(bytes) = read_frame(&mut input, FrameLimits::default()).unwrap() {
+            let message: Value = serde_json::from_slice(&bytes).unwrap();
+            let result = match message["method"].as_str().unwrap() {
+                "initialize" => json!({"capabilities":{
+                    "textDocumentSync":{"openClose":true,"change":1},
+                    "hoverProvider":true
+                }}),
+                "initialized" => {
+                    initialized = true;
+                    continue;
+                }
+                "textDocument/didOpen" | "textDocument/didChange" => {
+                    assert!(initialized);
+                    if mode == "linux-agent-blocked" {
+                        fs::write(dir.join("stdin-blocked.ready"), b"blocked").unwrap();
+                        idle();
+                    }
+                    continue;
+                }
+                "textDocument/didClose" | "$/cancelRequest" => continue,
+                "textDocument/hover" => {
+                    assert!(initialized);
+                    json!({"contents":{"kind":"plaintext","value":"mock hover"}})
+                }
+                "shutdown" => {
+                    assert!(initialized);
+                    shutdown = true;
+                    Value::Null
+                }
+                "exit" => {
+                    assert!(shutdown && message.get("id").is_none());
+                    assert!(read_frame(&mut input, FrameLimits::default())
+                        .expect("stdin must end after the complete exit frame")
+                        .is_none());
+                    fs::write(dir.join("stdin-eof.ready"), b"verified").unwrap();
+                    match mode {
+                        "linux-lsp-nonzero" => process::exit(23),
+                        "linux-lsp-signal" => {
+                            // SAFETY: SIGTERM targets only this synthetic fixture.
+                            assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
+                            unreachable!("SIGTERM must terminate the fixture");
+                        }
+                        "linux-lsp-final-truncated" => {
+                            io::stdout()
+                                .write_all(b"Content-Length: 16\r\n\r\n{")
+                                .unwrap();
+                            io::stdout().flush().unwrap();
+                            return;
+                        }
+                        "linux-lsp-final-malformed" => {
+                            write_frame(&mut io::stdout().lock(), b"{", FrameLimits::default())
+                                .unwrap();
+                            return;
+                        }
+                        "linux-lsp-grace-release" | "linux-lsp-grace-stalled" => {
+                            close_stdout();
+                            fs::write(dir.join("stdout-closed.ready"), b"closed").unwrap();
+                            if mode == "linux-lsp-grace-release" {
+                                wait_file(&dir.join("release"));
+                                return;
+                            }
+                            idle();
+                        }
+                        _ => return,
+                    }
+                }
+                _ => message["params"].clone(),
+            };
+            if let Some(id) = message.get("id") {
+                send(
+                    &mut io::stdout().lock(),
+                    json!({"jsonrpc":"2.0","id":id,"result":result}),
+                );
+                if mode == "linux-final-response" {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn hold_lifetime(dir: &Path, name: &str) -> File {
+        let lifetime = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dir.join(format!("{name}.lock")))
+            .unwrap();
+        // SAFETY: This live CLOEXEC descriptor belongs to this invocation.
+        assert_eq!(
+            unsafe { libc::flock(lifetime.as_raw_fd(), libc::LOCK_EX) },
+            0
+        );
+        let staging = dir.join(format!("{name}.pid-writing"));
+        fs::write(&staging, process::id().to_string()).unwrap();
+        fs::rename(staging, dir.join(format!("{name}.pid"))).unwrap();
+        lifetime
+    }
+
+    fn descendant(dir: &Path, mode: &str) -> process::Child {
+        Command::new(std::env::current_exe().unwrap())
+            .arg(mode)
+            .arg(dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap()
+    }
+
+    fn ready() {
+        send(
+            &mut io::stdout().lock(),
+            json!({"jsonrpc":"2.0","method":"mock/ready","params":{}}),
+        );
+    }
+
+    fn close_stdout() {
+        let sink = File::options().write(true).open("/dev/null").unwrap();
+        // SAFETY: Only this fixture's main thread writes stdout. Its last write
+        // has been flushed. dup2 closes this pipe end while preserving fd 1 as a
+        // harmless sink, so later fixture file opens cannot recycle stdout.
+        assert_eq!(
+            unsafe { libc::dup2(sink.as_raw_fd(), libc::STDOUT_FILENO) },
+            1
+        );
+    }
+
+    fn wait_file(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !path.is_file() {
+            assert!(Instant::now() < deadline, "fixture gate did not open");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn idle() -> ! {
+        loop {
+            thread::sleep(Duration::from_secs(1));
         }
     }
 }

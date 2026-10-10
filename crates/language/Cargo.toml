@@ -10,6 +10,9 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 cedar-winprocess = { path = "../winprocess" }
 windows-sys = { version = "=0.61.2", optional = true, features = ["Win32_Foundation"] }
