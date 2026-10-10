@@ -29,7 +29,7 @@ REPARSE_POINT = 0x400
 ERROR_CODES = {
     "native_windows_required", "python_312_required",
     "invalid_path", "invalid_file", "invalid_directory", "reparse_path",
-    "file_identity_changed", "environment_identity_changed", "environment_alias", "environment_write_failed",
+    "file_identity_changed", "file_identity_unsupported", "environment_identity_changed", "environment_alias", "environment_write_failed",
     "environment_write_unverified", "installed_toolchain_missing", "invalid_toolchain_list",
     "invalid_compiler_path", "compiler_is_proxy", "invalid_version", "compiler_mismatch",
     "total_timeout", "subprocess_timeout", "subprocess_output_limit", "subprocess_nonzero",
@@ -70,9 +70,20 @@ def local_windows_path(value):
     return re.match(r"^[A-Za-z]:[\\/]", value) is not None and ":" not in value[2:]
 
 
-def signature(info):
+def signature(info, *, windows=None):
+    # CPython 3.12.10 path stat copies birthtime into ctime, while fstat
+    # exposes ChangeTime there. Compare the explicit common creation field.
+    # https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c#L2015
+    # https://github.com/python/cpython/blob/v3.12.10/Python/fileutils.c#L1036
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        stamp = getattr(info, "st_birthtime_ns", None)
+        require(type(stamp) is int, "file_identity_unsupported")
+    else:
+        stamp = info.st_ctime_ns
     return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
-            info.st_mtime_ns, info.st_ctime_ns)
+            info.st_mtime_ns, stamp)
 
 
 def regular_info(path):

@@ -22,6 +22,49 @@ def version(release="1.90.0", commit="a" * 40, host=preflight.HOST):
             f"host: {host}\nrelease: {release}\nLLVM version: 20.1.8\n").encode("utf-8")
 
 
+class SignatureTests(unittest.TestCase):
+    @staticmethod
+    def info(**changes):
+        values = {"st_dev": 7, "st_ino": (1 << 100) + 9, "st_mode": 0o100600,
+                  "st_size": 31, "st_mtime_ns": 1200, "st_ctime_ns": 1400,
+                  "st_birthtime_ns": 800}
+        values.update(changes)
+        return SimpleNamespace(**values)
+
+    def test_windows_common_birthtime_ignores_only_incompatible_ctime_meaning(self):
+        path = self.info(st_ctime_ns=800)
+        descriptor = self.info(st_ctime_ns=1400)
+        self.assertEqual(preflight.signature(path, windows=True),
+                         preflight.signature(descriptor, windows=True))
+
+    def test_windows_every_comparable_field_remains_exact(self):
+        original = preflight.signature(self.info(), windows=True)
+        for key, value in {"st_dev": 8, "st_ino": (1 << 101) + 9,
+                           "st_mode": 0o100400, "st_size": 32,
+                           "st_mtime_ns": 1201, "st_birthtime_ns": 801}.items():
+            with self.subTest(field=key):
+                self.assertNotEqual(original, preflight.signature(
+                    self.info(**{key: value}), windows=True))
+        self.assertEqual(original[1], (1 << 100) + 9)
+
+    def test_windows_missing_or_invalid_birthtime_fails_closed(self):
+        missing = self.info()
+        del missing.st_birthtime_ns
+        for info in [missing, self.info(st_birthtime_ns=None),
+                     self.info(st_birthtime_ns=True), self.info(st_birthtime_ns=800.0)]:
+            with self.subTest(info=info):
+                with self.assertRaisesRegex(preflight.PreflightError,
+                                            "file_identity_unsupported"):
+                    preflight.signature(info, windows=True)
+
+    def test_unix_ctime_is_still_exact_and_birthtime_is_not_substituted(self):
+        original = preflight.signature(self.info(), windows=False)
+        self.assertNotEqual(original, preflight.signature(
+            self.info(st_ctime_ns=1401), windows=False))
+        self.assertEqual(original, preflight.signature(
+            self.info(st_birthtime_ns=801), windows=False))
+
+
 class PreflightTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="cedar-compiler-test-")
