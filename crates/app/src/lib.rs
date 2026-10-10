@@ -19,6 +19,9 @@ mod disk_merge;
 mod disk_merge_process_tests;
 mod disk_review;
 mod editor_state;
+mod enter_indent;
+#[cfg(test)]
+mod enter_indent_process_tests;
 #[cfg(test)]
 mod explicit_disconnect_process_tests;
 mod explorer_tree;
@@ -307,6 +310,7 @@ enum Confirm {
 
 pub struct CedarApp {
     editor_ctx: egui::Context,
+    enter_input: Option<enter_indent::FrameInput>,
     system_fonts: system_fonts::SystemFonts,
     cjk_seen: bool,
     state: ConnectionState,
@@ -412,6 +416,7 @@ impl CedarApp {
         let (result_tx, result_rx) = mpsc::channel();
         Self {
             editor_ctx: egui::Context::default(),
+            enter_input: None,
             system_fonts: system_fonts::SystemFonts::default(),
             cjk_seen: false,
             state: ConnectionState::Idle,
@@ -2578,7 +2583,28 @@ impl CedarApp {
         ui.separator();
     }
 
+    #[cfg(test)]
     fn editor(&mut self, ui: &mut egui::Ui) {
+        self.editor_with_input(ui, None);
+    }
+
+    fn editor_indent_eligible(&self, ctx: &egui::Context) -> bool {
+        !self.navigation.blocks_editor()
+            && !self.navigation.restore_focus
+            && !self.foreign_modal_owns_input(ctx)
+            && !self.open_form
+            && !self.new_file
+            && !self.find_focus
+            && self.close_tab_requested.is_none()
+            && !self.close_after_language_stop
+            && !self.allow_close
+    }
+
+    fn editor_with_input(
+        &mut self,
+        ui: &mut egui::Ui,
+        enter_input: Option<enter_indent::FrameInput>,
+    ) {
         self.history_controls(ui);
         let mut activate = None;
         let mut close = None;
@@ -2709,15 +2735,7 @@ impl CedarApp {
         ui.add_enabled_ui(!navigation_blocked, |ui| self.find_bar(ui));
         let indent_eligible = ui.is_enabled()
             && ui.ctx().input(|input| input.focused)
-            && !navigation_blocked
-            && !self.navigation.restore_focus
-            && !self.foreign_modal_owns_input(ui.ctx())
-            && !self.open_form
-            && !self.new_file
-            && !self.find_focus
-            && self.close_tab_requested.is_none()
-            && !self.close_after_language_stop
-            && !self.allow_close;
+            && self.editor_indent_eligible(ui.ctx());
         let find_open = self.find_open;
         let mut history_completion =
             if !navigation_blocked && self.active().is_some_and(|doc| doc.jump_to.is_some()) {
@@ -2733,6 +2751,7 @@ impl CedarApp {
             let editor_id = egui::Id::new(("editor", doc.id));
             editor_state::load(ui.ctx(), doc);
             let indent_eligible = indent_eligible && doc.jump_to.is_none();
+            enter_indent::handle(ui.ctx(), doc, indent_eligible, enter_input);
             block_indent::handle(ui.ctx(), doc, indent_eligible);
             if !navigation_blocked {
                 editor_state::history_shortcut(ui.ctx(), doc);
@@ -2930,10 +2949,15 @@ impl CedarApp {
 
 impl eframe::App for CedarApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.enter_input = enter_indent::capture(ctx, raw_input, self.active()).filter(|_| {
+            self.editor_indent_eligible(ctx)
+                && self.active().is_some_and(|doc| doc.jump_to.is_none())
+        });
         self.explorer_tree_input(ctx, raw_input);
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let enter_input = self.enter_input.take();
         self.workspace_access = workspace_access::Access::default();
         #[cfg(test)]
         workspace_access_tests::begin(ctx);
@@ -2985,7 +3009,7 @@ impl eframe::App for CedarApp {
                 if self.documents.is_empty() {
                     self.welcome(ui, ctx);
                 } else {
-                    self.editor(ui);
+                    self.editor_with_input(ui, enter_input);
                 }
             });
         self.dialogs(ctx);

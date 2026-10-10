@@ -170,10 +170,12 @@ fn replace_history_cursor(
         String::new(),
     );
     let anchor = past.undo(&probe).cloned();
-    if anchor
-        .as_ref()
-        .is_some_and(|state| state.0 == cursor && state.1 == text)
-    {
+    if anchor.as_ref().is_some_and(|state| {
+        state.0 == cursor
+            && state.0.primary.prefer_next_row == cursor.primary.prefer_next_row
+            && state.0.secondary.prefer_next_row == cursor.secondary.prefer_next_row
+            && state.1 == text
+    }) {
         return future;
     }
     let mut states = Vec::with_capacity(MAX_UNDO_STATES);
@@ -318,6 +320,20 @@ pub fn commit(ctx: &egui::Context, doc: &mut Document, text: String, cursor_char
         text,
         egui::text::CCursorRange::one(egui::text::CCursor::new(cursor_chars)),
     );
+}
+
+/// Move a selection without adding a text checkpoint or losing the redo branch.
+pub fn move_selection(
+    ctx: &egui::Context,
+    doc: &mut Document,
+    selection: egui::text::CCursorRange,
+) {
+    let mut state = load(ctx, doc);
+    state.set_undoer(replace_history_cursor(state.undoer(), selection, &doc.text));
+    state.cursor.set_char_range(Some(selection));
+    state.store(ctx, egui::Id::new(("editor", doc.id)));
+    doc.cursor = crate::model::cursor_location(&doc.text, selection.primary.index);
+    doc.scroll_to = Some(selection.primary.index);
 }
 
 /// One native history transaction retaining both endpoints and their affinity.

@@ -62,6 +62,66 @@ jobs:
           $env:CEDAR_BLOCK_INDENT_AGENT_BIN = "$PWD/target/release/cedar-agent.exe"
           cargo test -p cedar-app --lib block_indent_process_tests::normal_agent_selected_block_indent_is_local_and_preserves_history --locked -- --ignored --exact --test-threads=1 --nocapture
           if ($LASTEXITCODE -ne 0) { throw 'Selected-block indentation process acceptance failed.' }
+      - name: Enter indentation stays local (normal agent, both platforms)
+        timeout-minutes: 3
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          agent = pathlib.Path("target/release/cedar-agent" + (".exe" if os.name == "nt" else "")).resolve()
+          if not agent.is_file():
+              sys.exit("The normal release agent is missing.")
+          env = dict(os.environ, CEDAR_ENTER_INDENT_AGENT_BIN=str(agent))
+          result = subprocess.run(
+              ["cargo", "test", "-p", "cedar-app", "--lib",
+               "enter_indent_process_tests::normal_agent_enter_continuation_is_local_and_preserves_history",
+               "--locked", "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"],
+              env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+              text=True, encoding="utf-8", errors="replace", timeout=150,
+          )
+          print(result.stdout, end="")
+          if result.returncode:
+              sys.exit(result.returncode)
+          if result.stdout.count("test result: ok. 1 passed; 0 failed; 0 ignored;") != 1:
+              sys.exit("Exactly one Enter process acceptance test must execute.")
+          receipts = []
+          for line in result.stdout.splitlines():
+              opening = line.find("{")
+              if opening == -1:
+                  continue
+              try:
+                  receipt = json.loads(line[opening:])
+              except json.JSONDecodeError:
+                  continue
+              if isinstance(receipt, dict) and receipt.get("acceptance") == "enter_indent":
+                  receipts.append(receipt)
+          if len(receipts) != 1:
+              sys.exit("Exactly one Enter process acceptance receipt is required.")
+          expected = {
+              "acceptance": "enter_indent", "success": True,
+              "cases_executed": 27, "editor_transactions": 20,
+              "connection_hellos": 1, "lists": 1, "reads": 2, "writes": 0,
+              "other_operations": 0, "measured_editor_operations": 0,
+              "agents_reaped": 1, "source_hashes_verified": 2,
+              "trust_off": True, "production_enter_frames": True,
+              "unicode_reversed_selection_affinity_preserved": True,
+              "surviving_ascii_prefix_only": True, "lf_crlf_preserved": True,
+              "dirty_baselines_preserved": True, "one_effective_undo_redo_preserved": True,
+              "identical_text_keeps_version_and_redo": True,
+              "crlf_prefix_version_refusals_preserved": True,
+              "exact_operation_ledger_verified": True, "fixture_removed": True,
+              "watchdog_joined": True, "cleanup_verified": True,
+              "optional_font_probe_untriggered": True,
+          }
+          if receipts[0].keys() != expected.keys() or any(
+              type(receipts[0].get(key)) is not type(value) or receipts[0].get(key) != value
+              for key, value in expected.items()
+          ):
+              sys.exit("Enter process acceptance receipt did not match its fixed contract.")
       - name: Explicit test-report reads (Unix)
         timeout-minutes: 3
         if: runner.os != 'Windows'
