@@ -20,7 +20,7 @@ fn joined_outcome() -> ShutdownOutcome {
             io_released: true,
             errors: LinuxCleanupErrors::default(),
             cleanup_observation_elapsed_ms: 0,
-            cleanup_observation_budget_ms: 1_500,
+            cleanup_observation_budget_ms: 3_000,
         }),
     }
 }
@@ -225,7 +225,7 @@ fn typed_operations() -> Vec<Operation> {
 }
 
 #[test]
-fn linux_cleanup_latch_never_enables_typed_java_or_maven_routes() {
+fn linux_cleanup_latch_blocks_supported_start_and_never_enables_maven() {
     let root = tempfile::tempdir().unwrap();
     for backend in [
         cedar_tasks::BackendMode::InProcess,
@@ -237,13 +237,25 @@ fn linux_cleanup_latch_never_enables_typed_java_or_maven_routes() {
             assert_eq!(workspace.handle(op).unwrap_err().code, "run_disabled");
         }
         workspace.set_allow_run(true);
-        assert!(!java_platform_supported(backend));
+        let java_supported = backend == cedar_tasks::BackendMode::IsolatedAgent;
+        assert_eq!(java_platform_supported(backend), java_supported);
         assert!(!workspace.maven_platform_supported());
         for op in typed_operations() {
-            assert_eq!(
-                workspace.handle(op).unwrap_err().code,
-                "unsupported_platform"
-            );
+            let expected = match &op {
+                Operation::LanguageStartJava { .. } | Operation::LanguageStartJavaBegin { .. }
+                    if java_supported =>
+                {
+                    "language_cleanup_unverified"
+                }
+                Operation::LanguageStartJavaPoll { .. }
+                | Operation::LanguageStartJavaCancel { .. }
+                    if java_supported =>
+                {
+                    "unknown_language_startup"
+                }
+                _ => "unsupported_platform",
+            };
+            assert_eq!(workspace.handle(op).unwrap_err().code, expected);
         }
         assert!(workspace.language.is_none());
         assert!(workspace.tasks.is_none());
@@ -272,4 +284,81 @@ fn missing_executable_failure_is_retryable_without_launching_a_server() {
         assert!(workspace.require_language_start_available().is_ok());
     }
     assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+}
+
+#[test]
+fn typed_linux_stop_reports_real_code_or_signal_and_rejects_unverified_ownership() {
+    let mut observed = joined_outcome();
+    let Payload::Language { value } = java_stop_payload(observed).unwrap() else {
+        panic!("typed Stop");
+    };
+    assert_eq!(value["shutdown"]["platform"], "linux");
+    assert_eq!(value["shutdown"]["status"], "graceful");
+    assert_eq!(
+        value["shutdown"]["root_exit"],
+        json!({"kind":"code","code":0})
+    );
+    assert!(value["shutdown"].get("root_exit_code").is_none());
+    for code in [1, 255] {
+        observed.linux.as_mut().unwrap().root_exit =
+            LinuxRootExit::BeforeTermination(LinuxExitStatus::Code(code));
+        let Payload::Language { value } = java_stop_payload(observed).unwrap() else {
+            panic!("typed Stop");
+        };
+        assert_eq!(value["shutdown"]["status"], "error");
+        assert_eq!(value["shutdown"]["root_exit"]["code"], code);
+    }
+    for signal in [1, 9, 15, 64] {
+        observed.linux.as_mut().unwrap().root_exit =
+            LinuxRootExit::AfterTermination(LinuxExitStatus::Signal(signal));
+        observed.linux.as_mut().unwrap().reason = LinuxShutdownReason::GraceExpired;
+        let Payload::Language { value } = java_stop_payload(observed).unwrap() else {
+            panic!("typed Stop");
+        };
+        assert_eq!(value["shutdown"]["status"], "forced");
+        assert_eq!(
+            value["shutdown"]["root_exit"],
+            json!({"kind":"signal","signal":signal})
+        );
+        assert!(value["shutdown"].get("root_exit_code").is_none());
+    }
+    for exit in [
+        LinuxExitStatus::Code(-1),
+        LinuxExitStatus::Code(256),
+        LinuxExitStatus::Signal(0),
+        LinuxExitStatus::Signal(65),
+    ] {
+        let mut invalid = joined_outcome();
+        invalid.linux.as_mut().unwrap().root_exit = LinuxRootExit::BeforeTermination(exit);
+        assert_eq!(
+            java_stop_payload(invalid).unwrap_err().code,
+            "language_cleanup_unverified"
+        );
+    }
+    for index in 0..6 {
+        let mut invalid = joined_outcome();
+        let linux = invalid.linux.as_mut().unwrap();
+        match index {
+            0 => linux.worker_joined = false,
+            1 => linux.root_reaped = false,
+            2 => linux.io_released = false,
+            3 => linux.cleanup = LinuxCleanupStatus::Unverified,
+            4 => linux.errors.ownership_lost = true,
+            _ => linux.root_exit = LinuxRootExit::Unobserved,
+        }
+        assert_eq!(
+            java_stop_payload(invalid).unwrap_err().code,
+            "language_cleanup_unverified"
+        );
+    }
+    let mut failed_transport = joined_outcome();
+    failed_transport
+        .linux
+        .as_mut()
+        .unwrap()
+        .transport_failure_observed = true;
+    let Payload::Language { value } = java_stop_payload(failed_transport).unwrap() else {
+        panic!("typed Stop");
+    };
+    assert_eq!(value["shutdown"]["status"], "error");
 }

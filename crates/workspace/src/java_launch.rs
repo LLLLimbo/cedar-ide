@@ -1,4 +1,4 @@
-//! The narrow installed Windows JDT launch recipe, shared with acceptance fixtures.
+//! The narrow installed Windows/Linux JDT launch recipes and Windows fixtures.
 //! Host paths are explicit; this module never downloads, creates data directories,
 //! changes environment variables, searches PATH, or executes a shell.
 use crate::{error, io_error};
@@ -35,9 +35,8 @@ pub(super) fn production(
             ));
         }
     }
-    validate_java_executable(std::ffi::OsStr::new(java_executable))?;
     let (distribution, launcher, configuration_uri) =
-        validate_distribution(Path::new(distribution))?;
+        production_distribution(java_executable, Path::new(distribution))?;
     let data = production_data_directory(workspace_root, Path::new(data_directory))?;
     check_environment()?;
     let data_uri = directory_uri(&data)?;
@@ -58,6 +57,24 @@ pub(super) fn production(
         initialization_options: initialization_options(),
         maven: None,
     })
+}
+
+fn production_distribution(
+    java_executable: &str,
+    distribution: &Path,
+) -> Result<(PathBuf, PathBuf, String), RemoteError> {
+    // Select only the production recipe by host platform. The explicitly
+    // Windows validation fixtures retain config_win, even when tested on Linux.
+    #[cfg(target_os = "linux")]
+    {
+        validate_linux_java_executable(std::ffi::OsStr::new(java_executable))?;
+        validate_distribution_with_configuration(distribution, "config_linux")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        validate_java_executable(std::ffi::OsStr::new(java_executable))?;
+        validate_distribution(distribution)
+    }
 }
 
 pub(super) fn production_data_directory(root: &Path, data: &Path) -> Result<PathBuf, RemoteError> {
@@ -186,15 +203,27 @@ pub(super) fn ordinary_local_path(path: &Path) -> Result<PathBuf, RemoteError> {
     Ok(ordinary)
 }
 
+#[cfg(any(
+    not(target_os = "linux"),
+    feature = "windows-language-validation",
+    test
+))]
 pub(super) fn validate_distribution(
     path: &Path,
+) -> Result<(PathBuf, PathBuf, String), RemoteError> {
+    validate_distribution_with_configuration(path, "config_win")
+}
+
+fn validate_distribution_with_configuration(
+    path: &Path,
+    configuration_directory: &'static str,
 ) -> Result<(PathBuf, PathBuf, String), RemoteError> {
     if !path.is_absolute() {
         return Err(invalid("Java distribution must be absolute"));
     }
     regular_path(path, true)?;
     let distribution = ordinary_local_path(path)?;
-    let configuration = distribution.join("config_win");
+    let configuration = distribution.join(configuration_directory);
     regular_path(&configuration, true)?;
     let plugins = distribution.join("plugins");
     regular_path(&plugins, true)?;
@@ -246,6 +275,11 @@ pub(super) fn relative_launcher(
     Ok(relative.to_path_buf())
 }
 
+#[cfg(any(
+    not(target_os = "linux"),
+    feature = "windows-language-validation",
+    test
+))]
 pub(super) fn ordinary_ascii_java_spelling(text: &str) -> bool {
     let bytes = text.as_bytes();
     text.is_ascii()
@@ -267,6 +301,11 @@ pub(super) fn ordinary_ascii_java_spelling(text: &str) -> bool {
             .is_some_and(|name| name.eq_ignore_ascii_case("java.exe"))
 }
 
+#[cfg(any(
+    not(target_os = "linux"),
+    feature = "windows-language-validation",
+    test
+))]
 pub(super) fn validate_java_executable(program: &std::ffi::OsStr) -> Result<(), RemoteError> {
     if !program.to_str().is_some_and(ordinary_ascii_java_spelling) {
         return Err(invalid(
@@ -285,6 +324,60 @@ pub(super) fn validate_java_executable(program: &std::ffi::OsStr) -> Result<(), 
     // Deliberately do not replace ProcessConfig.program with its canonical path.
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+fn ordinary_linux_java_spelling(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 4096
+        && !text.chars().any(char::is_control)
+        && text.starts_with('/')
+        && !text.contains('\\')
+        && text[1..]
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && text.rsplit('/').next() == Some("java")
+}
+
+#[cfg(target_os = "linux")]
+fn validate_linux_java_executable(program: &std::ffi::OsStr) -> Result<(), RemoteError> {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+
+    if !program.to_str().is_some_and(ordinary_linux_java_spelling) {
+        return Err(invalid(
+            "Java launch requires an ordinary absolute Linux path ending in java",
+        ));
+    }
+    let path = Path::new(program);
+    regular_path(path, false)?;
+    if fs::metadata(path).map_err(io_error)?.permissions().mode() & 0o111 == 0 {
+        return Err(invalid("Linux java must have execute permission"));
+    }
+    let mut magic = [0; 4];
+    if fs::File::open(path)
+        .map_err(io_error)?
+        .read_exact(&mut magic)
+        .is_err()
+        || magic != *b"\x7fELF"
+    {
+        return Err(invalid("Linux java must be a native ELF executable"));
+    }
+    // This bounded signature check excludes script wrappers; the OS verifies
+    // the executable format at spawn. It does not authenticate the selected JDK.
+    if ordinary_local_path(path)?
+        .canonicalize()
+        .map_err(io_error)?
+        != path.canonicalize().map_err(io_error)?
+    {
+        return Err(invalid("Java executable identity changed"));
+    }
+    // Keep the selected spelling, including Unicode and ordinary parent aliases.
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "java_launch_linux_tests.rs"]
+mod linux_tests;
 
 #[cfg(test)]
 mod tests {

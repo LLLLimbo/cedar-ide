@@ -1,66 +1,27 @@
-# Verification report · Linux owned language transport / 0.36.0
+# Verification report · Linux isolated-agent typed Java / 0.37.0
 
-The [0.35 agent package checkpoint](TEST_REPORT_PHASE35_LINUX_AGENT.md) is fully
-verified. This slice repairs ownership of Linux generic LSP processes. Typed
-Java/Maven startup remains Windows-only, capabilities and wire schemas unchanged.
+The [0.36 Linux ownership checkpoint](TEST_REPORT_PHASE36_LINUX_OWNERSHIP.md) is fully verified. This slice adds basic typed Java to the Linux isolated agent; the embedded Linux Local workspace keeps generic LSP, and Maven remains Windows-only.
 
-## Required contract
+## Contract
 
-One Linux owner manages a private process group and nonblocking parent stdin/stdout.
-Inherited/discarded stderr behavior remains unchanged. Existing request, queue,
-frame and graceful-exit budgets remain unchanged. Full exit-frame acceptance and
-stdin closure precede its acknowledgement; uncertain partial writes are never
-replayed. Buffered responses precede terminal closure, and malformed/incomplete
-final capture cannot count as graceful.
+The existing seven basic Java capabilities bring Linux isolated agents to 31 of the unchanged 32-name limit. Requests, startup IDs, trust checks and fixed launch options remain unchanged. Production Linux selects an explicit native executable named `java`, `config_linux`, an exact relative launcher and an existing data directory outside the workspace. No PATH search, shell, automatic download or Maven import is introduced. JDK/JDT are separately installed trusted tools, not redistributed dependencies or a network sandbox.
 
-The root remains unreaped while group/root signals are sent. Lost exclusive wait
-ownership permanently disables subsequent cached-PID operations. Internal Linux
-observations distinguish exit code from signal, pre/post termination observation,
-root reaping, released parent I/O, worker join and bounded failure categories.
-They are not Windows Job or independent process-group-empty evidence.
+Linux Stop reports an explicit code or signal. It requires observed root termination, reaping, released owned I/O, worker join and no cleanup errors. Shutdown quality is separate: a verified nonzero/protocol-error shutdown can retire its owner, while uncertain cleanup blocks replacement. Windows Stop keeps its original body. Use the matching frontend for Linux typed Java: older parsers safely reject the new shutdown shape. Strict typed parsing rejects unknown or mixed fields; duplicate raw JSON keys retain the existing protocol Value-parser limitation.
 
-The first cleanup trigger fixes a three-second observation budget. Normal cleanup
-joins an actually finished owner. Timeout remains cached as Unverified/not joined;
-the same owner retains eventual wait responsibility, without a replacement watcher
-or caller PID retry. A late first observer can verify cleanup recorded complete
-within budget, but never upgrades a previously cached timeout. Recorded joined
-elapsed time describes owner completion after cleanup began, not caller waiting.
-This is not a hard real-time limit on uninterruptible processes or thread scheduling.
+## Required acceptance
 
-Unverified Linux generic Stop/initialization cleanup blocks replacement startup
-within the workspace. Trust revocation still permits cleanup of an already-owned
-Linux session only. Malformed Stop acknowledgements block frontend restart while
-retaining drafts; only an explicit valid generic stopped acknowledgement clears
-that session. Typed Java retains its richer outcome validation. Reconnecting does
-not prove the previous process exited.
+The native workload uses a normal default-feature agent and generated source only. Main budget is 480 seconds, comprising 360 primary and 120 reserved cleanup. Startup keeps its original 75-second envelope, admitting each 30-second Begin/Poll/Read call separately. Typed session calls retain 75 seconds. The original spontaneous diagnostic verdict remains separate from a maximum of one supported explicit refresh after timeout; recovery requires all 240 seconds for refresh, witness and Close. Insufficient remaining budget is a failed acceptance. Same-agent restart has 180 seconds, within one 720-second runtime watchdog. Preparation is bounded separately.
 
-## Verification status
+Required witnesses include asynchronous file responsiveness, semantic and editor/Undo behavior, refresh/imports/implementations, truthful Stop, restart, source preservation and process cleanup. All previous Windows and Linux package gates remain required. Exact-source native CI and regenerated package verification are pending.
 
-Final local checks passed on the cloud Debian 13 x86_64 host: 1,349 Rust tests
-passed across 44 suites (47 opt-in/helper tests ignored by aggregate discovery),
-strict host and Windows MSVC cross-target Clippy, formatting, all-feature release
-builds and default-feature shipping binaries. This is not native Windows evidence.
+## Local acceptance
 
-The dedicated normal release-agent run executed all four Linux tests, including
-blocked-write deadline cleanup with subsequent file access, independent owners and
-Stop/restart, trust-off rejection, and cleanup after trust revocation. Three bounded
-receipts record actual source preservation, root observations and agent reaping;
-the legacy wire acknowledgement is not presented as an independent transport-worker
-join witness. Internal transport and fault-seam tests separately cover joining,
-identity loss, setup/unwind failures, inherited-stderr backpressure, and readiness
-waiting after cleanup has already begun. The final aggregate includes the three
-readiness regressions added after the earlier local run.
+Final local checks passed: 1,372 Rust tests across 44 suites, with 48 explicit opt-ins ignored by the aggregate run; strict host and MSVC Clippy; formatting; and the targeted Python suites (28 driver, 5 capability, 10 Linux receipt, 30 Linux package, and 35 Windows package tests with one platform skip). The real Linux Java opt-in was executed separately as described below.
 
-Package regressions passed: 30 Linux archive tests, nine Linux receipt tests, and
-35 Windows-package tests with one platform-specific skip. Independent lifecycle
-review cleared the final implementation. Exact-source Ubuntu 24.04 and Windows CI,
-actual native process receipts and regenerated package verification remain pending.
-No new distribution acceptance is claimed until those checks complete.
+The generated Linux workload passed on the cloud Debian host in 21,865 ms with the pinned JDT 1.61.0 archive and existing JDK 21. It verified the exact 31-capability inventory and exercised the Java/read subset: asynchronous read responsiveness, semantic diagnostics, editor Apply/Undo/Redo, import organization, two type implementations and one method implementation, explicit refresh and same-agent restart. Spontaneous correction matched; conditional recovery was not attempted. The initial Stop was graceful with code 0. Restart Stop exhausted its unchanged grace period and reported forced cleanup with signal 9 and joined ownership evidence. Source files stayed unchanged, the client was reaped, and the successful fixture was removed.
+
+An earlier preparation attempt failed closed before server execution because the default test harness selected zero tests. The corrected harness explicitly enables the existing shared-fixture feature while continuing to execute the separate, unchanged normal release agent. The failed selection receipt is retained. The local receipt establishes that prebuilt agent's SHA identity, not independent equivalence to the current checkout. Native Ubuntu CI must build the normal agent from the exact published source and establish that linkage.
 
 ## Limits
 
-No new listeners, SSH authentication/deployment, security settings, downloads,
-Java/Maven activation or capability-limit change. Existing locked libc gains only
-a Linux language-crate dependency edge. Process groups do not contain escaped or
-credential-changed descendants; abrupt agent death and competing SIGCHLD reapers, SIGCHLD=SIG_IGN and SA_NOCLDWAIT
-are outside the contract. Other portable platforms keep their existing transport.
+No Linux Maven profile, local embedded typed Java, SSH deployment/authentication, user-device operation, native Windows GUI claim or resource improvement claim. Process groups retain the 0.36 escaped-descendant/abrupt-owner-death limits. Diagnostics may lag; explicit refresh is a mitigation, not an upstream race fix.

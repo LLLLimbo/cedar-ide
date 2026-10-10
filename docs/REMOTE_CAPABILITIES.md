@@ -67,9 +67,10 @@ or off. Support is not availability of an installed third-party tool.
   requests are independently rejected. BackendMode is immutable host code, not
   a wire field, request option or consequence of execution trust
 - Generic language startup is available on Linux/macOS and remains disabled on
-  Windows. The Windows isolated agent separately advertises its typed Java/JDT
-  route, including the supported optional Java and Maven operations. Linux generic
-  LSP does not inherit that typed feature set. Advertisement still requires the
+  Windows. Windows and Linux isolated agents separately advertise the basic typed
+  Java/JDT route. Maven remains Windows isolated only. Linux InProcess retains
+  generic LSP; its Local frontend mode does not gain typed Java. Linux isolated
+  agents have 31 capabilities within the unchanged 32-name ceiling. Advertisement still requires the
   caller's execution trust and installed tools; compilation alone is not native
   platform acceptance
 - No PTY/terminal capability is advertised; Cedar has no such protocol operation

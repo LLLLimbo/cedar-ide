@@ -12,7 +12,7 @@ def valid():
     return {
         **{key: True for key in acceptance.BOOLS}, **acceptance.FIXED,
         "kind": "cedar_linux_agent_bundle_probe", "status": "success",
-        "capability_count": 26, "explicit_client_calls": 76, "elapsed_ms": 123,
+        "capability_count": 31, "explicit_client_calls": 76, "elapsed_ms": 123,
     }
 
 
@@ -45,6 +45,15 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(receipt=type(receipt).__name__), self.assertRaises(ValueError):
                 acceptance.validate_probe(receipt)
 
+    def test_obsolete_windows_only_java_witness_is_rejected(self):
+        receipt = valid()
+        del receipt["typed_java_advertised_maven_unadvertised"]
+        receipt["windows_java_operations_unadvertised"] = True
+        with self.assertRaises(ValueError):
+            acceptance.validate_probe(receipt)
+        with self.assertRaises(ValueError):
+            acceptance.validate_probe({**valid(), "windows_java_operations_unadvertised": True})
+
     def test_fixed_integer_identity_and_budgets_do_not_coerce(self):
         for key, expected in acceptance.FIXED.items():
             for value in (True, False, str(expected), float(expected), expected + 1, None):
@@ -55,7 +64,7 @@ class ReceiptTests(unittest.TestCase):
 
     def test_bounded_counts_late_results_and_nonfinite_values_rejected(self):
         wrong = {
-            "capability_count": (0, 33, -1, True, 1.0, "26"),
+            "capability_count": (0, 33, -1, True, 1.0, "31"),
             "explicit_client_calls": (0, 97, -1, True, 76.0, "76"),
             "elapsed_ms": (-1, 30001, True, 0.0, float("nan"), float("inf")),
         }

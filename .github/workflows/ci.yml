@@ -24,6 +24,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: python scripts/test_public_export.py
       - run: python scripts/test_capability_smoke.py
+      - run: python scripts/test_linux_java_acceptance.py
       - run: python scripts/test_windows_bundle.py
       - run: python scripts/test_linux_agent_bundle.py
       - run: python scripts/test_linux_agent_acceptance.py
@@ -261,6 +262,18 @@ jobs:
         timeout-minutes: 3
         if: runner.os == 'Linux'
         run: CEDAR_AGENT_BIN="$PWD/target/release/cedar-agent" CEDAR_MOCK_LSP_BIN="$PWD/target/release/cedar-mock-lsp" cargo test -p cedar-client --test linux_agent_language --locked -- --ignored --test-threads=1 --nocapture
+      - name: Real Linux typed Java (normal shipping agent)
+        timeout-minutes: 26
+        if: runner.os == 'Linux'
+        run: python3 scripts/linux_java_acceptance.py --scratch-root "$RUNNER_TEMP" --java "$JAVA_HOME_21_X64/bin/java" --agent "$PWD/target/release/cedar-agent"
+      - name: Linux typed Java sanitized acceptance receipt
+        if: ${{ always() && runner.os == 'Linux' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-java-acceptance-evidence
+          path: ${{ runner.temp }}/LINUX_JAVA_ACCEPTANCE.json
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Verify extracted Ubuntu 24.04 amd64 agent bundle
         timeout-minutes: 5
         if: runner.os == 'Linux'

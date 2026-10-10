@@ -1925,3 +1925,7 @@ fn diagnostic_receipts_are_bounded_and_never_retain_server_text() {
     assert_eq!(counter, DIAGNOSTIC_COUNTER_LIMIT);
     assert!(saturated);
 }
+
+#[cfg(target_os = "linux")]
+#[path = "linux_java_production_tests.rs"]
+mod linux;

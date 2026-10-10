@@ -22,7 +22,7 @@ BOOLS = (
     "conditional_write_verified", "readback_verified", "search_verified",
     "stale_write_rejected", "root_escape_rejected", "task_operations_rejected",
     "language_operations_rejected", "git_operations_rejected",
-    "windows_java_operations_unadvertised", "errors_leave_client_usable",
+    "typed_java_advertised_maven_unadvertised", "errors_leave_client_usable",
     "preserved_fixture_unchanged", "only_expected_file_changed",
     "reconnect_saved_bytes", "initial_client_reaped", "reconnect_client_reaped",
     "fixture_removed",

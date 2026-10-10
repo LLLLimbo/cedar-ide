@@ -16,13 +16,15 @@ BASE = {'list', 'read', 'write', 'search'}
 TASKS = {'run_start', 'run_poll', 'run_cancel'}
 LANGUAGE = {'language_start', 'language_open', 'language_change',
             'language_close', 'language_events', 'language_stop'}
-WINDOWS_JAVA = {'language_start_java', 'language_start_java_begin',
-                'language_start_java_poll', 'language_start_java_cancel',
-                'language_open', 'language_change', 'language_close',
-                'language_events', 'language_stop'}
-WINDOWS_MAVEN = {'language_start_java_maven_begin', 'language_maven_model'}
-WINDOWS_DEPENDENCIES = {'language_maven_dependencies'}
-WINDOWS_IMPLEMENTATIONS = {'language_java_implementations'}
+LANGUAGE_QUERIES = {'language_query', 'language_format', 'language_references',
+                    'language_document_symbols', 'language_workspace_symbols',
+                    'language_resolve_uri', 'language_resolve_completion'}
+TYPED_JAVA = {'language_start_java', 'language_start_java_begin',
+              'language_start_java_poll', 'language_start_java_cancel',
+              'java_diagnostics_refresh', 'language_organize_java_imports',
+              'language_java_implementations'}
+WINDOWS_MAVEN = {'language_start_java_maven_begin', 'language_maven_model',
+                 'language_maven_dependencies'}
 
 
 def validate(hello):
@@ -43,20 +45,19 @@ def validate(hello):
 
 def validate_platform_capabilities(info):
     capabilities = set(info['capabilities'])
+    # This script connects only to the normal isolated agent. Require the whole
+    # platform set, including absence of capabilities assigned to another host.
+    expected = BASE | LANGUAGE_QUERIES
     if info['os'] in ('linux', 'macos'):
-        assert TASKS | {'run', 'git_status', 'git_changes', 'git_diff'} <= capabilities
+        expected |= TASKS | LANGUAGE | {'run', 'git_status', 'git_changes', 'git_diff'}
+        if info['os'] == 'linux':
+            expected |= TYPED_JAVA
     elif info['os'] == 'windows':
-        # The executable is the normal isolated agent, never a fixture host.
-        assert TASKS | {'git_changes', 'git_diff'} <= capabilities
-        assert not {'run', 'git_status'} & capabilities
+        expected |= TASKS | {'git_changes', 'git_diff'}
+        expected |= (LANGUAGE - {'language_start'}) | TYPED_JAVA | WINDOWS_MAVEN
     else:
-        assert not (TASKS | {'run', 'git_status'}) & capabilities
-    if info['os'] == 'windows':
-        assert WINDOWS_JAVA | WINDOWS_MAVEN | WINDOWS_IMPLEMENTATIONS | WINDOWS_DEPENDENCIES <= capabilities
-        assert 'language_start' not in capabilities
-    else:
-        assert LANGUAGE <= capabilities
-        assert not (WINDOWS_IMPLEMENTATIONS | WINDOWS_DEPENDENCIES) & capabilities
+        expected |= LANGUAGE
+    assert capabilities == expected, (info['os'], capabilities ^ expected)
 
 
 def main():
@@ -80,9 +81,20 @@ def main():
                 ('run_poll', {'task_id': 1}),
                 ('run_cancel', {'task_id': 1}),
                 ('language_start', {'program': 'cedar-no-such-tool', 'args': []}),
+                ('language_start_java', {'java_executable': '', 'distribution': '',
+                                         'data_directory': ''}),
+                ('language_start_java_begin', {'java_executable': '', 'distribution': '',
+                                               'data_directory': ''}),
+                ('language_start_java_maven_begin', {'java_executable': '', 'distribution': '',
+                                                     'data_directory': '', 'local_repository': ''}),
+                ('language_start_java_poll', {'startup_id': 1}),
+                ('language_start_java_cancel', {'startup_id': 1}),
                 ('language_events', {}),
                 ('language_workspace_symbols', {'query': 'NeverLaunched'}),
+                ('language_refresh_java_diagnostics', {'path': 'NeverLaunched.java', 'version': 1}),
+                ('language_organize_java_imports', {'path': 'NeverLaunched.java', 'version': 1}),
                 ('language_java_implementations', {'path': 'NeverLaunched.java', 'version': 1, 'line': 0, 'character': 0}),
+                ('language_maven_model', {}),
                 ('language_maven_dependencies', {'startup_id': 1, 'pom_sha256': 'a' * 64}),
                 ('language_stop', {}),
             ]:

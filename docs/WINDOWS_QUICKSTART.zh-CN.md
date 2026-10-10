@@ -127,7 +127,7 @@ Standard JDT 1.61 服务时，先用 **Sync now** 同步当前 `.java` 草稿，
 是否恢复了合成源码的诊断。恢复成功不表示自动推送问题已修复；刷新仍可能失败，
 无版本结果的时效限制也仍然存在。程序不会替你在后台反复刷新。
 
-此操作目前限定 Windows 隔离 agent 的专用 Java 路径；通用 Linux/macOS LSP
+此操作限定 Windows 或 Linux 独立 agent 的类型化 Java 路径；通用 Linux/macOS LSP
 会话不启用它。在已启动且明确支持此操作的 Java 会话中，可选 **Imports → Organize imports**
 整理当前草稿的导入。先同步捕获的草稿，再显示预览；**Apply to draft** 是一次可撤销
 的内存修改，仍需另行保存。它可以排序、删除未用导入、添加能唯一解析的导入；

@@ -1,7 +1,7 @@
 //! Shipping agent and separate nonshipping GC-control acceptance through the
 //! same capability-enforcing Client. Neither route includes GUI acceptance.
 use super::*;
-use crate::java_language::{JavaStopOutcome, StopReason, StopStatus};
+use crate::java_language::{JavaRootExit, JavaStopOutcome, StopReason, StopStatus};
 use cedar_client::Client;
 use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
 
@@ -234,7 +234,7 @@ fn finalize_gc_selection(file: &mut fs::File, process: &RootObservation) -> Chec
 fn gc_shutdown_is_natural(outcome: &JavaStopOutcome, actual_exit: u32) -> bool {
     outcome.status == StopStatus::Graceful
         && outcome.reason == StopReason::RootExited
-        && outcome.root_exit_code == 0
+        && outcome.root_exit == JavaRootExit::WindowsCode(0)
         && actual_exit == 0
         && outcome.shutdown_response_received
         && outcome.exit_frame_completed
@@ -1816,7 +1816,7 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             record.root_handle_signaled = true;
             record.root_exit_code = Some(actual);
             require(
-                actual == outcome.root_exit_code,
+                outcome.root_exit == JavaRootExit::WindowsCode(actual),
                 "typed stop and actual retained process exit disagree",
             )?;
             record.stop_outcome_verified = true;
@@ -2137,7 +2137,7 @@ fn gc_control_rejects_forced_zero_exit_and_incomplete_shutdown() {
     let natural = JavaStopOutcome {
         status: StopStatus::Graceful,
         reason: StopReason::RootExited,
-        root_exit_code: 0,
+        root_exit: JavaRootExit::WindowsCode(0),
         cleanup_joined: true,
         shutdown_response_received: true,
         exit_frame_completed: true,
@@ -2158,7 +2158,7 @@ fn gc_control_rejects_forced_zero_exit_and_incomplete_shutdown() {
             ..natural.clone()
         },
         JavaStopOutcome {
-            root_exit_code: 1,
+            root_exit: JavaRootExit::WindowsCode(1),
             ..natural.clone()
         },
         JavaStopOutcome {

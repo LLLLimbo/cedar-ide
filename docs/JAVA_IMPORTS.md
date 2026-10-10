@@ -7,8 +7,8 @@ The action requires the agent capability and an acknowledged Standard JDT LS
 check, not authentication of the selected language-server binary. Existing
 workspace execution trust remains required.
 
-This checkpoint supports the shipping typed Java route on the isolated Windows
-agent. Generic Linux/macOS LSP sessions do not enable this action. Agent
+The shipping typed Java route supports Windows and Linux isolated agents.
+Generic LSP sessions, including Linux Local/InProcess and macOS, do not enable this action. Agent
 capability checks keep older or unsupported connections usable without sending
 the command.
 

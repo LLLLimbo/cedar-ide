@@ -34,6 +34,9 @@ use std::{
     time::Duration,
 };
 
+const CLEANUP_RECONNECT_GUIDANCE: &str = "Inspect the previous server cleanup before explicitly reconnecting and starting another server; reconnecting does not verify cleanup.";
+const UNVERIFIED_JAVA_STOP: &str = "Java session closed; process cleanup could not be verified. Your drafts are retained. Inspect the previous server cleanup before explicitly reconnecting and starting another Java session; reconnecting does not verify cleanup.";
+
 #[derive(Clone)]
 pub(super) struct QueryContext {
     session: u64,
@@ -371,10 +374,7 @@ impl CedarApp {
             return;
         }
         if self.language.restart_blocked {
-            self.error = Some(
-                "Check previous server cleanup before reconnecting and starting another server; cleanup was not verified"
-                    .into(),
-            );
+            self.error = Some(CLEANUP_RECONNECT_GUIDANCE.into());
             return;
         }
         if !self.execution_trusted() {
@@ -592,14 +592,14 @@ impl CedarApp {
     pub(super) fn language_public_error(&self, action: &Action, error: &str) -> String {
         if self.language.mode != ServerMode::Java {
             return if matches!(action.kind, ActionKind::Stop) {
-                "Language stop did not verify cleanup. Your drafts are retained; check the previous server cleanup before reconnecting and starting another server.".into()
+                format!("Language stop did not verify cleanup. Your drafts are retained. {CLEANUP_RECONNECT_GUIDANCE}")
             } else {
                 error.into()
             };
         }
         match action.kind {
             ActionKind::Start => "Java server startup failed. Check the Java executable, JDT distribution and data directory on the workspace host.".into(),
-            ActionKind::Stop => "Java session closed; process cleanup could not be verified. Reconnect before starting another Java session.".into(),
+            ActionKind::Stop => UNVERIFIED_JAVA_STOP.into(),
             ActionKind::WorkspaceSymbols { .. } => "Find Java type failed. Try a narrower query or retry after indexing; no draft was changed.".into(),
             _ => "Java request failed. Your unsaved draft is retained; reconnect if the session is no longer available.".into(),
         }
@@ -847,7 +847,7 @@ impl CedarApp {
                         }
                     }
                     Err(_) => {
-                        let message = "Java session closed; process cleanup could not be verified. Reconnect before starting another Java session.".to_owned();
+                        let message = UNVERIFIED_JAVA_STOP.to_owned();
                         self.language.restart_blocked = true;
                         self.close_after_language_stop = false;
                         self.close_snapshot = None;
@@ -1448,6 +1448,16 @@ impl CedarApp {
         }
     }
 
+    fn java_executable_hint(&self) -> &'static str {
+        // Platform affects guidance only. Capability and trust checks authorize
+        // the operation independently, including generic-only local backends.
+        match self.agent_info.as_ref().map(|info| info.os.as_str()) {
+            Some("windows") => "Absolute ASCII path to java.exe",
+            Some("linux") => "Absolute path to java",
+            _ => "Absolute path to Java on the workspace host",
+        }
+    }
+
     pub(super) fn language_panel(&mut self, ui: &mut egui::Ui) {
         let trusted = self.execution_trusted();
         let busy = self.language_busy();
@@ -1464,6 +1474,7 @@ impl CedarApp {
         }
         let generic_supported = self.backend_generic_language_supported();
         let java_supported = self.backend_java_language_supported();
+        let java_executable_hint = self.java_executable_hint();
         if !self.language.running && !starting && !busy && !generic_supported && java_supported {
             self.language.mode = ServerMode::Java;
         }
@@ -1481,7 +1492,7 @@ impl CedarApp {
                     }),
                     ServerMode::Java => ui.vertical(|ui| {
                         ui.label("Use existing paths on the workspace host:");
-                        ui.horizontal(|ui| { ui.label("Java executable"); ui.add(egui::TextEdit::singleline(&mut self.language.java.executable).hint_text("Absolute ASCII path to java.exe").desired_width(390.0)); });
+                        ui.horizontal(|ui| { ui.label("Java executable"); ui.add(egui::TextEdit::singleline(&mut self.language.java.executable).hint_text(java_executable_hint).desired_width(390.0)); });
                         ui.horizontal(|ui| { ui.label("JDT distribution"); ui.add(egui::TextEdit::singleline(&mut self.language.java.distribution).hint_text("Existing Eclipse JDT LS directory").desired_width(390.0)); });
                         ui.horizontal(|ui| { ui.label("JDT data directory"); ui.add(egui::TextEdit::singleline(&mut self.language.java.data_directory).hint_text("Existing directory outside the workspace").desired_width(390.0)); });
                         self.maven_configuration_controls(ui);
@@ -1504,10 +1515,7 @@ impl CedarApp {
             ui.label(RichText::new("This agent uses blocking Java startup. Stop becomes available after startup finishes.").small().color(MUTED));
         }
         if self.language.restart_blocked {
-            ui.colored_label(
-                AMBER,
-                "Check previous server cleanup before reconnecting and starting another server; cleanup was not verified.",
-            );
+            ui.colored_label(AMBER, CLEANUP_RECONNECT_GUIDANCE);
         }
         self.maven_model_controls(ui);
         self.maven_dependencies_controls(ui);
@@ -2692,6 +2700,10 @@ mod tests {
         assert!(error.contains("could not be verified"));
     }
 }
+
+#[cfg(test)]
+#[path = "java_stop_ui_tests.rs"]
+mod java_stop_ui_tests;
 
 #[cfg(test)]
 #[path = "real_java_tests.rs"]

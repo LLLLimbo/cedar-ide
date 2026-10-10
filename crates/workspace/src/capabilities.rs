@@ -25,13 +25,17 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
     if java_language {
         capabilities.push("language_start_java");
         capabilities.extend_from_slice(cedar_protocol::JAVA_STARTUP_CAPABILITIES);
-        capabilities.extend_from_slice(cedar_protocol::JAVA_MAVEN_CAPABILITIES);
-        capabilities.push(cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY);
         // A bridge implementation claim, never JDT/server-version support or
         // permission to execute it. Startup reports guarded session support.
         capabilities.push("java_diagnostics_refresh");
         capabilities.push("language_organize_java_imports");
         capabilities.push("language_java_implementations");
+    }
+    // Maven remains a separate Windows isolated-agent implementation claim;
+    // enabling typed Java on Linux must not advertise this optional profile.
+    if cfg!(windows) && backend_mode == BackendMode::IsolatedAgent {
+        capabilities.extend_from_slice(cedar_protocol::JAVA_MAVEN_CAPABILITIES);
+        capabilities.push(cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY);
     }
     if generic_language || java_language {
         capabilities.extend([
@@ -199,12 +203,12 @@ mod tests {
 
     // Independent test inventory: every platform can be checked on every host.
     // Keep this derived from the explicit operation list, not agent_info itself.
-    fn expected_platform_capabilities(
-        unix_commands: bool,
-        windows: bool,
-        backend_mode: BackendMode,
-    ) -> Vec<&'static str> {
+    fn expected_platform_capabilities(os: &str, backend_mode: BackendMode) -> Vec<&'static str> {
+        let windows = os == "windows";
+        let unix_commands = matches!(os, "linux" | "macos");
         let isolated_windows = windows && backend_mode == BackendMode::IsolatedAgent;
+        let typed_java =
+            matches!(os, "linux" | "windows") && backend_mode == BackendMode::IsolatedAgent;
         let tasks = unix_commands || isolated_windows;
         let generic_language = !windows;
         let mut expected = vec!["list", "read", "write", "search"];
@@ -218,13 +222,13 @@ mod tests {
                 | "language_java_implementations"
                 | "language_start_java_begin"
                 | "language_start_java_poll"
-                | "language_start_java_cancel"
-                | "language_start_java_maven_begin"
+                | "language_start_java_cancel" => typed_java,
+                "language_start_java_maven_begin"
                 | "language_maven_model"
                 | "language_maven_dependencies" => isolated_windows,
                 "git_changes" | "git_diff" => unix_commands || isolated_windows,
                 name if RUN_TASK_CAPABILITIES.contains(&name) => tasks,
-                name if name.starts_with("language_") => generic_language || isolated_windows,
+                name if name.starts_with("language_") => generic_language || typed_java,
                 _ => unix_commands,
             };
             if supported {
@@ -237,14 +241,12 @@ mod tests {
 
     #[test]
     fn every_platform_inventory_is_unique_and_checked_against_wire_capacity_on_this_host() {
-        for (os, unix_commands, windows) in [
-            ("linux", true, false),
-            ("macos", true, false),
-            ("windows", false, true),
-            ("other", false, false),
-        ] {
+        assert_eq!(cedar_protocol::MAX_AGENT_CAPABILITIES, 32);
+        for os in ["linux", "macos", "windows", "other"] {
+            let windows = os == "windows";
+            let unix_commands = matches!(os, "linux" | "macos");
             for backend_mode in [BackendMode::InProcess, BackendMode::IsolatedAgent] {
-                let expected = expected_platform_capabilities(unix_commands, windows, backend_mode);
+                let expected = expected_platform_capabilities(os, backend_mode);
                 assert!(
                     expected.windows(2).all(|pair| pair[0] < pair[1]),
                     "{os}: duplicate capability"
@@ -254,10 +256,34 @@ mod tests {
                     "{os}: capability capacity exhausted"
                 );
                 let isolated_windows = windows && backend_mode == BackendMode::IsolatedAgent;
-                assert_eq!(
-                    expected.contains(&"language_maven_dependencies"),
-                    isolated_windows
-                );
+                let typed_java =
+                    matches!(os, "linux" | "windows") && backend_mode == BackendMode::IsolatedAgent;
+                for capability in [
+                    "language_start_java",
+                    "language_start_java_begin",
+                    "language_start_java_poll",
+                    "language_start_java_cancel",
+                    "java_diagnostics_refresh",
+                    "language_organize_java_imports",
+                    "language_java_implementations",
+                ] {
+                    assert_eq!(
+                        expected.contains(&capability),
+                        typed_java,
+                        "{os}: {capability}"
+                    );
+                }
+                for capability in [
+                    "language_start_java_maven_begin",
+                    "language_maven_model",
+                    "language_maven_dependencies",
+                ] {
+                    assert_eq!(
+                        expected.contains(&capability),
+                        isolated_windows,
+                        "{os}: {capability}"
+                    );
+                }
                 assert_eq!(expected.contains(&"language_start"), !windows);
                 assert_eq!(expected.contains(&"run"), unix_commands);
                 assert_eq!(expected.contains(&"git_status"), unix_commands);
@@ -302,10 +328,12 @@ mod tests {
             for capability in RUN_TASK_CAPABILITIES {
                 assert_eq!(agent.supports(capability), task_platform, "{capability}");
             }
-            // Generic start remains unsupported on Windows. Only an isolated
-            // Windows agent advertises the narrow Java route and its lifecycle.
+            // Typed Java is isolated-agent-only on Linux and Windows. Maven
+            // remains Windows-only, independent of the typed Java capability.
             let generic_language = !cfg!(windows);
-            let java_language = cfg!(windows) && backend_mode == BackendMode::IsolatedAgent;
+            let java_language = cfg!(any(target_os = "linux", windows))
+                && backend_mode == BackendMode::IsolatedAgent;
+            let maven_language = cfg!(windows) && backend_mode == BackendMode::IsolatedAgent;
             let language_operation_supported = |name: &str| match name {
                 "language_start" => generic_language,
                 "language_start_java"
@@ -314,10 +342,10 @@ mod tests {
                 | "language_java_implementations"
                 | "language_start_java_begin"
                 | "language_start_java_poll"
-                | "language_start_java_cancel"
-                | "language_start_java_maven_begin"
+                | "language_start_java_cancel" => java_language,
+                "language_start_java_maven_begin"
                 | "language_maven_model"
-                | "language_maven_dependencies" => java_language,
+                | "language_maven_dependencies" => maven_language,
                 _ => generic_language || java_language,
             };
             for capability in LANGUAGE_SESSION_CAPABILITIES.iter().chain(&[
@@ -345,8 +373,7 @@ mod tests {
                     "{capability}"
                 );
             }
-            let expected =
-                expected_platform_capabilities(command_platform, cfg!(windows), backend_mode);
+            let expected = expected_platform_capabilities(std::env::consts::OS, backend_mode);
             // Exact set equality also proves the exact count. Never duplicate
             // its length in a cfg-only numeric assertion that host tests skip.
             assert_eq!(agent.capabilities, expected);

@@ -116,12 +116,11 @@ fn terminal(workspace: &mut Workspace, id: u64) -> Value {
     result
 }
 fn cancellation_terminal(result: &Value) {
-    if cfg!(windows) {
+    if cfg!(any(windows, target_os = "linux")) {
         assert_eq!(result["state"], "cancelled", "{result}");
         assert_eq!(result["cleanup_verified"], true);
     } else {
-        // The portable transport owns its direct child but cannot claim joined
-        // Windows process-tree ownership. It must never manufacture that proof.
+        // Other portable transports do not provide verified owned cleanup.
         assert_eq!(result["state"], "failed", "{result}");
         assert_eq!(result["cleanup_verified"], false);
     }
@@ -543,7 +542,7 @@ fn original_deadline_survives_repeated_polls() {
     }
     let result = terminal(&mut workspace, id);
     assert_eq!(result["state"], "failed");
-    if cfg!(windows) {
+    if cfg!(any(windows, target_os = "linux")) {
         assert_eq!(result["cleanup_verified"], true);
         assert_eq!(result["error"]["code"], "language_startup_timeout");
     } else {
@@ -854,7 +853,7 @@ fn panicked_owner_fails_closed_and_never_detaches_a_result() {
     assert!(workspace.language.is_none());
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 #[test]
 fn legacy_stop_retires_ready_id_and_stale_cancel_never_touches_a_later_session() {
     let (_root, mut workspace) = workspace();
@@ -980,7 +979,7 @@ fn panic_after_atomic_adoption_preserves_the_authoritative_owned_ready_session()
     observed.assert_dead();
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 #[test]
 fn revoking_trust_preserves_only_existing_id_poll_and_cancel() {
     let (root, mut workspace) = workspace();
@@ -1417,4 +1416,65 @@ fn typed_maven_metadata_and_model_access_follow_existing_startup_ownership() {
         workspace.maven_model().unwrap_err().code,
         "language_not_running"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_retirement_separates_shutdown_quality_from_verified_ownership() {
+    let valid = json!({"stopped":true,"shutdown":{"platform":"linux","status":"error","reason":"transport_failure","root_exit":{"kind":"code","code":7},"cleanup_joined":true,"shutdown_response_received":false,"exit_frame_completed":false}});
+    assert!(verified_linux_stop_receipt(&valid));
+    for with_id in [false, true] {
+        let (_root, mut workspace) = workspace();
+        let id = with_id.then(|| {
+            let id = value(
+                workspace
+                    .begin_java_startup_worker(
+                        || Err(error("fixture_preflight", "no child created")),
+                        Duration::from_secs(5),
+                    )
+                    .unwrap(),
+            )["startup_id"]
+                .as_u64()
+                .unwrap();
+            terminal(&mut workspace, id);
+            id
+        });
+        workspace.retire_java_startup(
+            id,
+            &Ok(Payload::Language {
+                value: valid.clone(),
+            }),
+        );
+        assert!(!workspace.java_startup.restart_blocked);
+    }
+    for index in 0..9 {
+        let mut bad = valid.clone();
+        match index {
+            0 => bad["shutdown"]["cleanup_joined"] = json!(false),
+            1 => bad["shutdown"]["root_exit_code"] = json!(7),
+            2 => {
+                bad["shutdown"].as_object_mut().unwrap().remove("platform");
+            }
+            3 => bad["shutdown"]["platform"] = json!("windows"),
+            4 => bad["shutdown"]["root_exit"] = json!({"kind":"signal","signal":0}),
+            5 => bad["shutdown"]["root_exit"] = json!({"kind":"code","code":256}),
+            6 => bad["shutdown"]["status"] = json!("graceful"),
+            7 => bad["shutdown"]["shutdown_response_received"] = json!("false"),
+            _ => bad["shutdown"]["reason"] = json!("unknown"),
+        }
+        assert!(!verified_linux_stop_receipt(&bad));
+        let (_root, mut workspace) = workspace();
+        workspace.retire_java_startup(None, &Ok(Payload::Language { value: bad }));
+        assert!(workspace.java_startup.restart_blocked);
+        assert_eq!(
+            workspace
+                .require_language_start_available()
+                .unwrap_err()
+                .code,
+            "language_cleanup_unverified"
+        );
+    }
+    let (_root, mut workspace) = workspace();
+    workspace.retire_java_startup(None, &Err(error("language_cleanup_unverified", "fixture")));
+    assert!(workspace.java_startup.restart_blocked);
 }

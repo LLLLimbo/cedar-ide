@@ -254,7 +254,7 @@ fn read_source(agent: &mut Agent) {
     );
 }
 
-fn typed_startups_stay_gated(agent: &Agent) {
+fn typed_java_capabilities_keep_maven_gated(agent: &Agent) {
     let Payload::Hello {
         agent: Some(info), ..
     } = agent.handshake()
@@ -264,11 +264,19 @@ fn typed_startups_stay_gated(agent: &Agent) {
     info.validate().unwrap();
     assert_eq!(info.os, "linux");
     assert!(info.supports("language_start"));
-    assert!(!info.supports("language_start_java"));
-    for capability in JAVA_STARTUP_CAPABILITIES
-        .iter()
-        .chain(JAVA_MAVEN_CAPABILITIES)
-    {
+    for capability in [
+        "language_start_java",
+        "java_diagnostics_refresh",
+        "language_organize_java_imports",
+        "language_java_implementations",
+    ] {
+        assert!(info.supports(capability));
+    }
+    assert!(!info.supports("language_maven_dependencies"));
+    for capability in JAVA_STARTUP_CAPABILITIES {
+        assert!(info.supports(capability));
+    }
+    for capability in JAVA_MAVEN_CAPABILITIES {
         assert!(
             !info.supports(capability),
             "typed startup unexpectedly admitted: {capability}"
@@ -284,8 +292,8 @@ fn normal_agent_stop_restart_and_orderly_close_preserve_independent_language_own
     let second_root = workspace();
     let mut first = Agent::start(first_root.path(), true);
     let mut second = Agent::start(second_root.path(), true);
-    typed_startups_stay_gated(&first);
-    typed_startups_stay_gated(&second);
+    typed_java_capabilities_keep_maven_gated(&first);
+    typed_java_capabilities_keep_maven_gated(&second);
     let first_tree = start_language(
         &mut first,
         &first_root.path().join("tree"),
@@ -340,7 +348,7 @@ fn normal_agent_stop_restart_and_orderly_close_preserve_independent_language_own
             "fixture_locks_released":true, "lsp_roots_absent":true,
             "legacy_stop_acknowledged":true, "transport_worker_join_claimed":false,
             "descendant_reaping_claimed":false, "independent_owner_preserved":true,
-            "replacement_session_worked":true, "typed_startups_unadvertised":true,
+            "replacement_session_worked":true, "typed_java_advertised_maven_unadvertised":true,
             "agent_read_responsive":true, "source_bytes_unchanged":true
         })
     );
@@ -415,7 +423,7 @@ fn untrusted_normal_agent_rejects_generic_language_start_and_keeps_file_access()
     let _watchdog = Watchdog::start();
     let root = workspace();
     let mut agent = Agent::start(root.path(), false);
-    typed_startups_stay_gated(&agent);
+    typed_java_capabilities_keep_maven_gated(&agent);
     let fixture = root.path().join("must-not-start");
     fs::create_dir(&fixture).unwrap();
     let error = agent
@@ -438,7 +446,7 @@ fn untrusted_normal_agent_rejects_generic_language_start_and_keeps_file_access()
             "kind":"cedar_linux_agent_language_acceptance", "schema_version":1,
             "case":"untrusted_start_rejected", "status":"success",
             "normal_agents_started":1, "agent_close_and_reap_observed":true,
-            "fixture_process_started":false, "typed_startups_unadvertised":true,
+            "fixture_process_started":false, "typed_java_advertised_maven_unadvertised":true,
             "agent_read_responsive":true, "source_bytes_unchanged":true,
             "transport_worker_join_claimed":false
         })

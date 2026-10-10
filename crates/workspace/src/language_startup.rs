@@ -160,6 +160,9 @@ impl Drop for JavaStartup {
 }
 
 fn cleanup_verified(outcome: ShutdownOutcome) -> bool {
+    if outcome.linux.is_some() {
+        return super::linux_cleanup_verified(outcome);
+    }
     outcome.windows.is_some_and(|windows| {
         windows.cleanup == WindowsCleanupStatus::Joined
             && windows.errors == cedar_language::WindowsCleanupErrors::default()
@@ -168,6 +171,67 @@ fn cleanup_verified(outcome: ShutdownOutcome) -> bool {
                 WindowsRootExit::BeforeTermination(_) | WindowsRootExit::AfterTermination(_)
             )
     })
+}
+
+fn verified_linux_stop_receipt(value: &Value) -> bool {
+    let Some(body) = value.get("shutdown").and_then(Value::as_object) else {
+        return false;
+    };
+    let keys = [
+        "platform",
+        "status",
+        "reason",
+        "root_exit",
+        "cleanup_joined",
+        "shutdown_response_received",
+        "exit_frame_completed",
+    ];
+    if value.get("stopped").and_then(Value::as_bool) != Some(true)
+        || body.len() != keys.len()
+        || keys.iter().any(|key| !body.contains_key(*key))
+        || body["platform"] != "linux"
+        || body["cleanup_joined"].as_bool() != Some(true)
+        || body["shutdown_response_received"].as_bool().is_none()
+        || body["exit_frame_completed"].as_bool().is_none()
+        || !matches!(
+            body["status"].as_str(),
+            Some("graceful" | "forced" | "error")
+        )
+        || !matches!(
+            body["reason"].as_str(),
+            Some(
+                "root_exited"
+                    | "grace_expired"
+                    | "aborted"
+                    | "transport_failure"
+                    | "worker_panicked"
+            )
+        )
+    {
+        return false;
+    }
+    let Some(exit) = body["root_exit"].as_object() else {
+        return false;
+    };
+    if exit.len() != 2 {
+        return false;
+    }
+    let code = match exit.get("kind").and_then(Value::as_str) {
+        Some("code") => match exit.get("code").and_then(Value::as_u64) {
+            Some(code) if code <= 255 => Some(code),
+            _ => return false,
+        },
+        Some("signal") => match exit.get("signal").and_then(Value::as_u64) {
+            Some(signal) if (1..=64).contains(&signal) => None,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    body["status"] != "graceful"
+        || (code == Some(0)
+            && body["reason"] == "root_exited"
+            && body["shutdown_response_received"] == true
+            && body["exit_frame_completed"] == true)
 }
 
 fn bounded_error(mut error: RemoteError) -> RemoteError {
@@ -201,7 +265,7 @@ fn cleanup_result(
         error: if verified {
             failure
         } else {
-            Some(error("language_cleanup_unverified", "Java startup closed; owned cleanup could not be verified. Reconnect before starting again."))
+            Some(error("language_cleanup_unverified", "Java startup closed; owned cleanup could not be verified. Check previous server cleanup before explicitly reconnecting and starting again."))
         },
     }
 }
@@ -405,7 +469,7 @@ impl Workspace {
             }
         }
         if self.java_startup.restart_blocked {
-            return Err(error("language_cleanup_unverified", "Reconnect before starting another language server; previous language cleanup is unverified"));
+            return Err(error("language_cleanup_unverified", "Check previous server cleanup before explicitly reconnecting and starting another language server; cleanup is unverified"));
         }
         if self.language.is_some() {
             return Err(error(
@@ -636,7 +700,7 @@ impl Workspace {
                     cleanup_verified: false,
                     error: Some(error(
                         "language_cleanup_unverified",
-                        "Java startup worker stopped unexpectedly; reconnect before starting again",
+                        "Java startup worker stopped unexpectedly; check the previous server cleanup before reconnecting and starting again",
                     )),
                 },
             };
@@ -667,7 +731,7 @@ impl Workspace {
             let failure = bounded_error(failure.unwrap_or_else(|| {
                 error(
                     "language_cleanup_unverified",
-                    "Java startup cleanup could not be verified; reconnect before starting again",
+                    "Java startup cleanup could not be verified; check the previous server cleanup before reconnecting and starting again",
                 )
             }));
             json!({"startup_id":id,"state":"failed","cleanup_verified":verified,"error":{"code":failure.code,"message":failure.message}})
@@ -732,7 +796,7 @@ impl Workspace {
                     false,
                     Some(error(
                         "language_cleanup_unverified",
-                        "Cannot start Java cleanup owner; reconnect before starting again",
+                        "Cannot start Java cleanup owner; check the previous server cleanup before reconnecting and starting again",
                     )),
                 );
                 Ok(())
@@ -768,13 +832,25 @@ impl Workspace {
         id: Option<u64>,
         stopped: &Result<Payload, RemoteError>,
     ) {
+        let verified = stopped.as_ref().is_ok_and(|payload| matches!(payload, Payload::Language { value } if
+            if cfg!(target_os = "linux") {
+                verified_linux_stop_receipt(value)
+            } else {
+                value["shutdown"]["cleanup_joined"] == true && value["shutdown"]["status"] != "error"
+            }
+        ));
+        // A synchronous typed session has no startup ID, but uncertain Linux
+        // cleanup still owns the shared replacement-start safety latch.
+        #[cfg(target_os = "linux")]
+        if !verified {
+            self.block_unverified_language_restart();
+        }
         let Some(id) = id else {
             return;
         };
         if self.java_startup_record(id).is_err() {
             return;
         }
-        let verified = stopped.as_ref().is_ok_and(|payload| matches!(payload, Payload::Language { value } if value["shutdown"]["cleanup_joined"] == true && value["shutdown"]["status"] != "error"));
         self.finish_java_startup(id, true, verified, stopped.as_ref().err().cloned());
     }
 }

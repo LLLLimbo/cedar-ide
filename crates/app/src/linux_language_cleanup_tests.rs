@@ -248,7 +248,7 @@ fn malformed_generic_stop_events_reset_block_and_preserve_complete_dirty_editor(
         assert!(!app.allow_close);
         let message = app.error.as_deref().unwrap();
         assert!(message.contains("cleanup") && message.contains("drafts"));
-        assert!(message.contains("check the previous server cleanup"));
+        assert!(message.contains("Inspect the previous server cleanup"));
         assert!(!message.contains("Java") && !message.contains("private"));
         assert!(!app.language.output.contains("session stopped"));
         assert_eq!(snapshot(&app), before);
@@ -474,6 +474,18 @@ fn explicit_reconnect_preserves_draft_and_does_not_start_language_automatically(
 fn typed_java_stop_still_requires_its_rich_cleanup_outcome() {
     for (value, blocked) in [
         (serde_json::json!({"stopped":true}), true),
+        (
+            serde_json::json!({"stopped":true,"shutdown":{"platform":"linux","status":"forced","reason":"grace_expired","root_exit":{"kind":"signal","signal":9},"cleanup_joined":true,"shutdown_response_received":true,"exit_frame_completed":true}}),
+            false,
+        ),
+        (
+            serde_json::json!({"stopped":true,"shutdown":{"platform":"linux","status":"error","reason":"transport_failure","root_exit":{"kind":"code","code":7},"cleanup_joined":true,"shutdown_response_received":false,"exit_frame_completed":false}}),
+            false,
+        ),
+        (
+            serde_json::json!({"stopped":true,"shutdown":{"platform":"linux","status":"forced","reason":"grace_expired","root_exit":{"kind":"signal","signal":9},"root_exit_code":137,"cleanup_joined":true,"shutdown_response_received":true,"exit_frame_completed":true}}),
+            true,
+        ),
         (
             serde_json::json!({"stopped":true,"shutdown":{
                 "status":"forced","reason":"grace_expired","root_exit_code":1,

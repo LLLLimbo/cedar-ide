@@ -129,7 +129,7 @@ fn with_client<T>(
 
 fn expected_capabilities() -> Vec<&'static str> {
     // Use the shared lifecycle groups plus the explicit Linux platform set.
-    // Scoped Java/Maven and Java-only bridges remain Windows agent features.
+    // The isolated Linux agent includes typed Java; Maven stays Windows-only.
     let mut expected = vec![
         "list",
         "read",
@@ -146,6 +146,13 @@ fn expected_capabilities() -> Vec<&'static str> {
         "language_workspace_symbols",
         "language_resolve_uri",
         "language_resolve_completion",
+        "language_start_java",
+        "language_start_java_begin",
+        "language_start_java_poll",
+        "language_start_java_cancel",
+        "java_diagnostics_refresh",
+        "language_organize_java_imports",
+        "language_java_implementations",
     ];
     expected.extend_from_slice(RUN_TASK_CAPABILITIES);
     expected.extend_from_slice(LANGUAGE_SESSION_CAPABILITIES);
@@ -285,7 +292,9 @@ fn execution_operations() -> Vec<Operation> {
     ]
 }
 
-fn unsupported_java_operations() -> Vec<Operation> {
+fn typed_java_operations() -> Vec<Operation> {
+    // Empty paths cannot name a Java executable, distribution or data root.
+    // Advertised requests must reach run_disabled before path validation.
     vec![
         Operation::LanguageStartJava {
             java_executable: String::new(),
@@ -297,19 +306,8 @@ fn unsupported_java_operations() -> Vec<Operation> {
             distribution: String::new(),
             data_directory: String::new(),
         },
-        Operation::LanguageStartJavaMavenBegin {
-            java_executable: String::new(),
-            distribution: String::new(),
-            data_directory: String::new(),
-            local_repository: String::new(),
-        },
         Operation::LanguageStartJavaPoll { startup_id: 1 },
         Operation::LanguageStartJavaCancel { startup_id: 1 },
-        Operation::LanguageMavenModel,
-        Operation::LanguageMavenDependencies {
-            startup_id: 1,
-            pom_sha256: "a".repeat(64),
-        },
         Operation::LanguageRefreshJavaDiagnostics {
             path: FILE.into(),
             version: 1,
@@ -323,6 +321,24 @@ fn unsupported_java_operations() -> Vec<Operation> {
             version: 1,
             line: 0,
             character: 0,
+        },
+    ]
+}
+
+fn unsupported_maven_operations() -> Vec<Operation> {
+    // The normal Client rejects unadvertised Maven before sending a request.
+    // These empty locations remain safe if capability checking regresses.
+    vec![
+        Operation::LanguageStartJavaMavenBegin {
+            java_executable: String::new(),
+            distribution: String::new(),
+            data_directory: String::new(),
+            local_repository: String::new(),
+        },
+        Operation::LanguageMavenModel,
+        Operation::LanguageMavenDependencies {
+            startup_id: 1,
+            pom_sha256: "a".repeat(64),
         },
     ]
 }
@@ -419,7 +435,10 @@ fn verify_initial(
     for operation in execution_operations() {
         refused_and_usable(client, budget, operation, "run_disabled:", &saved_revision)?;
     }
-    for operation in unsupported_java_operations() {
+    for operation in typed_java_operations() {
+        refused_and_usable(client, budget, operation, "run_disabled:", &saved_revision)?;
+    }
+    for operation in unsupported_maven_operations() {
         refused_and_usable(
             client,
             budget,
@@ -578,7 +597,7 @@ fn verify() -> ProbeResult<serde_json::Value> {
         "task_operations_rejected": true,
         "language_operations_rejected": true,
         "git_operations_rejected": true,
-        "windows_java_operations_unadvertised": true,
+        "typed_java_advertised_maven_unadvertised": true,
         "errors_leave_client_usable": true,
         "preserved_fixture_unchanged": true,
         "only_expected_file_changed": true,

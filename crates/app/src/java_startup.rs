@@ -9,7 +9,7 @@ use std::time::Duration;
 const POLL_SECONDS: f64 = 0.25;
 // Preserve the existing Java startup envelope. Replies never extend this bound.
 const STARTUP_SECONDS: f64 = 75.0;
-const UNKNOWN: &str = "Java startup cleanup could not be verified. Reconnect before starting another Java session. Your draft is retained.";
+const UNKNOWN: &str = "Java startup cleanup could not be verified. Your draft is retained. Inspect the previous server cleanup before explicitly reconnecting and starting another Java session; reconnecting does not verify cleanup.";
 
 pub(super) struct Startup {
     generation: u64,

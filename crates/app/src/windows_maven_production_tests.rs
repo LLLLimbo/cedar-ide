@@ -6,7 +6,7 @@
 use super::*;
 use crate::{
     editor_state,
-    java_language::{JavaStopOutcome, StopReason, StopStatus},
+    java_language::{JavaRootExit, JavaStopOutcome, StopReason, StopStatus},
     model::Document,
 };
 use cedar_client::Client;
@@ -2196,7 +2196,7 @@ fn run_case(
             record.root_handle_signaled = true;
             record.root_exit_code = Some(actual);
             require(
-                actual == outcome.root_exit_code
+                outcome.root_exit == JavaRootExit::WindowsCode(actual)
                     && match outcome.status {
                         StopStatus::Graceful => true,
                         StopStatus::Forced => matches!(

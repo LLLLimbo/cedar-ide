@@ -23,7 +23,8 @@ pub(super) const fn platform_supported() -> bool {
 }
 
 pub(super) const fn java_platform_supported(backend: cedar_tasks::BackendMode) -> bool {
-    cfg!(windows) && matches!(backend, cedar_tasks::BackendMode::IsolatedAgent)
+    cfg!(any(windows, target_os = "linux"))
+        && matches!(backend, cedar_tasks::BackendMode::IsolatedAgent)
 }
 
 pub(super) struct LanguageSession {
@@ -111,16 +112,16 @@ fn lsp_error(e: cedar_language::Error) -> RemoteError {
     error(code, e.to_string())
 }
 
-#[cfg(target_os = "linux")]
 fn linux_cleanup_verified(outcome: cedar_language::ShutdownOutcome) -> bool {
-    outcome.linux.is_some_and(|linux| {
-        linux.cleanup == cedar_language::LinuxCleanupStatus::Joined
-            && linux.worker_joined
-            && linux.root_reaped
-            && linux.io_released
-            && linux.errors == cedar_language::LinuxCleanupErrors::default()
-            && !matches!(linux.root_exit, cedar_language::LinuxRootExit::Unobserved)
-    })
+    outcome.windows.is_none()
+        && outcome.linux.is_some_and(|linux| {
+            linux.cleanup == cedar_language::LinuxCleanupStatus::Joined
+                && linux.worker_joined
+                && linux.root_reaped
+                && linux.io_released
+                && linux.errors == cedar_language::LinuxCleanupErrors::default()
+                && !matches!(linux.root_exit, cedar_language::LinuxRootExit::Unobserved)
+        })
 }
 
 fn java_diagnostics_refresh_supported(authorized_java_session: bool, initialize: &Value) -> bool {
@@ -155,6 +156,9 @@ fn stop_production_java(client: LspClient) -> Result<Payload, RemoteError> {
 }
 
 fn java_stop_payload(outcome: cedar_language::ShutdownOutcome) -> Result<Payload, RemoteError> {
+    if outcome.linux.is_some() {
+        return linux_java_stop_payload(outcome);
+    }
     use cedar_language::{WindowsCleanupStatus, WindowsRootExit, WindowsShutdownReason};
     let Some(windows) = outcome.windows else {
         return Err(error(
@@ -205,9 +209,57 @@ fn java_stop_payload(outcome: cedar_language::ShutdownOutcome) -> Result<Payload
     })
 }
 
+fn linux_java_stop_payload(
+    outcome: cedar_language::ShutdownOutcome,
+) -> Result<Payload, RemoteError> {
+    use cedar_language::{LinuxExitStatus, LinuxRootExit, LinuxShutdownReason};
+    if !linux_cleanup_verified(outcome) {
+        return Err(lsp_error(cedar_language::Error::CleanupUnverified));
+    }
+    let linux = outcome.linux.expect("verified Linux observation");
+    let exit = match linux.root_exit {
+        LinuxRootExit::BeforeTermination(exit) | LinuxRootExit::AfterTermination(exit) => exit,
+        LinuxRootExit::Unobserved => {
+            return Err(lsp_error(cedar_language::Error::CleanupUnverified))
+        }
+    };
+    let root_exit = match exit {
+        LinuxExitStatus::Code(code) if (0..=255).contains(&code) => {
+            json!({"kind":"code","code":code})
+        }
+        LinuxExitStatus::Signal(signal) if (1..=64).contains(&signal) => {
+            json!({"kind":"signal","signal":signal})
+        }
+        _ => return Err(lsp_error(cedar_language::Error::CleanupUnverified)),
+    };
+    let status = if outcome.is_graceful() {
+        "graceful"
+    } else if linux.transport_failure_observed {
+        "error"
+    } else if matches!(linux.root_exit, LinuxRootExit::AfterTermination(_)) {
+        "forced"
+    } else {
+        "error"
+    };
+    let reason = match linux.reason {
+        LinuxShutdownReason::RootExited => "root_exited",
+        LinuxShutdownReason::GraceExpired => "grace_expired",
+        LinuxShutdownReason::Aborted => "aborted",
+        LinuxShutdownReason::TransportFailure => "transport_failure",
+        LinuxShutdownReason::WorkerPanicked => "worker_panicked",
+    };
+    Ok(Payload::Language {
+        value: json!({"stopped":true,"shutdown":{
+            "platform":"linux","status":status,"reason":reason,"root_exit":root_exit,
+            "cleanup_joined":true,"shutdown_response_received":outcome.shutdown_response_received,
+            "exit_frame_completed":outcome.exit_frame_completed,
+        }}),
+    })
+}
+
 impl Workspace {
     pub(super) fn maven_platform_supported(&self) -> bool {
-        if !java_platform_supported(self.backend_mode) {
+        if !cfg!(windows) || !java_platform_supported(self.backend_mode) {
             return false;
         }
         #[cfg(feature = "windows-language-validation")]
@@ -296,7 +348,14 @@ impl Workspace {
                 if !java_platform_supported(self.backend_mode) {
                     return Err(error(
                         "unsupported_platform",
-                        "Java startup requires an isolated Windows agent",
+                        "Java startup requires an isolated Windows or Linux agent",
+                    ));
+                }
+                #[cfg(feature = "windows-java-gc-diagnostic")]
+                if !cfg!(windows) && self.windows_java_gc_diagnostic.is_some() {
+                    return Err(error(
+                        "unsupported_platform",
+                        "The fixed GC diagnostic profile requires Windows",
                     ));
                 }
                 self.require_language_start_available()?;
@@ -335,7 +394,7 @@ impl Workspace {
                 if !java_platform_supported(self.backend_mode) {
                     return Err(error(
                         "unsupported_platform",
-                        "Java startup requires an isolated Windows agent",
+                        "Java startup requires an isolated Windows or Linux agent",
                     ));
                 }
                 self.begin_java_startup(java_executable, distribution, data_directory)
@@ -384,7 +443,7 @@ impl Workspace {
                 if !java_platform_supported(self.backend_mode) {
                     return Err(error(
                         "unsupported_platform",
-                        "Java startup requires an isolated Windows agent",
+                        "Java startup requires an isolated Windows or Linux agent",
                     ));
                 }
                 self.poll_java_startup(startup_id)
@@ -393,7 +452,7 @@ impl Workspace {
                 if !java_platform_supported(self.backend_mode) {
                     return Err(error(
                         "unsupported_platform",
-                        "Java startup requires an isolated Windows agent",
+                        "Java startup requires an isolated Windows or Linux agent",
                     ));
                 }
                 self.cancel_java_startup(startup_id)
