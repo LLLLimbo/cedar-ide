@@ -3,6 +3,8 @@
 //! By default the first successful Write commits before this process exits
 //! without its response. Explicit, bounded synthetic ack modes also exercise
 //! malformed Written frames. No mode enables execution or request replay.
+//! An explicit Save All profile allows only three fixed generated paths and
+//! faults the second applicable conditional Write, with a 16-request audit cap.
 use cedar_protocol::{read_frame, write_frame, Operation, Payload, RemoteError, Request, Response};
 use cedar_workspace::Workspace;
 use std::{
@@ -17,7 +19,10 @@ const OPERATIONS: &str = ".cedar-interrupted-save-operations";
 const COMMITTED: &str = ".cedar-interrupted-save-committed";
 const READ_MODE: &str = ".cedar-interrupted-save-read-mode";
 const SAVE_ACK_MODE: &str = ".cedar-synthetic-save-ack-mode";
+const SAVE_ALL_MODE: &str = ".cedar-synthetic-save-all-mode";
 const MAX_OPERATIONS: usize = 256;
+const SAVE_ALL_MAX_OPERATIONS: usize = 16;
+const SAVE_ALL_PATHS: &[&str] = &["first.txt", "pom.xml", "third.txt"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SaveAckMode {
@@ -45,6 +50,21 @@ fn save_ack_mode(root: &Path) -> io::Result<SaveAckMode> {
     }
 }
 
+fn save_all_mode(root: &Path) -> io::Result<Option<SaveAckMode>> {
+    let mode = match bounded_file(&root.join(SAVE_ALL_MODE), 64)?.as_deref() {
+        None => return Ok(None),
+        Some(b"second-lost-reply\n") => SaveAckMode::LostReply,
+        Some(b"second-wrong-digest\n") => SaveAckMode::WrongDigest,
+        _ => return Err(io::Error::other("unknown synthetic Save All mode")),
+    };
+    if bounded_file(&root.join(SAVE_ACK_MODE), 64)?.is_some() {
+        return Err(io::Error::other(
+            "synthetic save profiles cannot be combined",
+        ));
+    }
+    Ok(Some(mode))
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("cedar-agent-interrupted-save-validation: {error}");
@@ -69,10 +89,10 @@ fn bounded_file(path: &Path, limit: usize) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(contents))
 }
 
-fn log_operation(root: &Path, name: &str) -> io::Result<()> {
+fn log_operation(root: &Path, name: &str, limit: usize) -> io::Result<()> {
     let path = root.join(OPERATIONS);
-    let previous = bounded_file(&path, MAX_OPERATIONS * 9)?.unwrap_or_default();
-    if previous.split(|byte| *byte == b'\n').count() > MAX_OPERATIONS {
+    let previous = bounded_file(&path, limit * 9)?.unwrap_or_default();
+    if previous.split(|byte| *byte == b'\n').count() > limit {
         return Err(io::Error::other("fixture operation limit reached"));
     }
     let mut log = OpenOptions::new().create(true).append(true).open(path)?;
@@ -100,7 +120,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(b"1\n") => true,
         _ => return Err("invalid fixture commit counter".into()),
     };
-    let save_ack_mode = save_ack_mode(&root)?;
+    let save_all_mode = save_all_mode(&root)?;
+    let save_ack_mode = save_all_mode.unwrap_or(save_ack_mode(&root)?);
+    let mut save_all_writes = 0;
     let mut handled_write = committed;
     let mut workspace = Workspace::open(&root)?;
     let stdin = io::stdin();
@@ -111,11 +133,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let (name, allowed) = match &request.op {
             Operation::Hello => ("Hello", true),
             Operation::List { path } => ("List", path.is_empty()),
-            Operation::Read { path } => ("Read", path == "draft.txt"),
-            Operation::Write { path, .. } => ("Write", path == "draft.txt"),
+            Operation::Read { path } => (
+                "Read",
+                if save_all_mode.is_some() {
+                    SAVE_ALL_PATHS.contains(&path.as_str())
+                } else {
+                    path == "draft.txt"
+                },
+            ),
+            Operation::Write {
+                path,
+                expected_revision,
+                ..
+            } => (
+                "Write",
+                if save_all_mode.is_some() {
+                    SAVE_ALL_PATHS.contains(&path.as_str()) && expected_revision.is_some()
+                } else {
+                    path == "draft.txt"
+                },
+            ),
             _ => ("Rejected", false),
         };
-        log_operation(&root, name)?;
+        log_operation(
+            &root,
+            name,
+            if save_all_mode.is_some() {
+                SAVE_ALL_MAX_OPERATIONS
+            } else {
+                MAX_OPERATIONS
+            },
+        )?;
+        if save_all_mode.is_some() && allowed && name == "Write" {
+            save_all_writes += 1;
+        }
         let synthetic_noncommit = allowed
             && name == "Write"
             && !handled_write
@@ -131,7 +182,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             Err(RemoteError::new(
                 "fixture_operation_disabled",
-                "Only Hello, root List, and generated draft.txt Read/Write are accepted",
+                if save_all_mode.is_some() {
+                    "Only Hello, root List, and the three generated Save All paths are accepted"
+                } else {
+                    "Only Hello, root List, and generated draft.txt Read/Write are accepted"
+                },
             ))
         };
         if let Ok(Payload::Hello {
@@ -143,7 +198,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map(str::to_owned)
                 .collect();
         }
-        if name == "Write" && matches!(result, Ok(Payload::Written { .. })) && !handled_write {
+        if name == "Write"
+            && matches!(result, Ok(Payload::Written { .. }))
+            && !handled_write
+            && (save_all_mode.is_none() || save_all_writes == 2)
+        {
             handled_write = true;
             if !synthetic_noncommit {
                 let mut counter = OpenOptions::new()

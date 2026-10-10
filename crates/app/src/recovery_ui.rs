@@ -139,6 +139,9 @@ impl CedarApp {
         }
     }
     pub(crate) fn install_recovered(&mut self, draft: Draft) -> Result<(), String> {
+        if self.save_all_busy() {
+            return Err("Cancel remaining Save All writes and wait for the in-flight save before restoring a draft".into());
+        }
         if self.recovery_workspace().as_ref() != Some(&draft.workspace) || !self.ready() {
             return Err("The connected workspace does not match this recovery. The saved copy has been retained".into());
         }
@@ -176,6 +179,10 @@ impl CedarApp {
         Ok(())
     }
     fn begin_restore(&mut self, ctx: &egui::Context) {
+        if self.save_all_busy() {
+            self.recovery.error = Some("Cancel remaining Save All writes and wait for the in-flight save before restoring a draft".into());
+            return;
+        }
         if self.state == ConnectionState::Disconnecting {
             self.recovery.error = Some(crate::disconnect::WAITING.into());
             return;

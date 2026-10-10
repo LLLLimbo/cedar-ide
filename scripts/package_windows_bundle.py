@@ -47,6 +47,7 @@ SOURCE_FILES = {
     "docs/LOCATION_HISTORY.md": "LOCATION_HISTORY.md",
     "docs/INTERRUPTED_SAVES.md": "INTERRUPTED_SAVES.md",
     "docs/EXPLICIT_DISCONNECT.md": "EXPLICIT_DISCONNECT.md",
+    "docs/SAVE_ALL.md": "SAVE_ALL.md",
 }
 # Exact notice names currently collected by collect_licenses.py. Adding a new
 # upstream notice deliberately requires reviewing this allowlist.

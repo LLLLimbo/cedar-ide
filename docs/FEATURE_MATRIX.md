@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 41 / 0.41.2
+# 功能矩阵与后续验收 · checkpoint 42 / 0.42.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -55,6 +55,8 @@
 
 0.37 仅向 Linux 独立 agent 开放已有的基本 Java/JDT 路径，能力总数 31、协议上限仍为 32。内嵌 Client Local 保留通用 LSP；0.39.1 使用两个有界能力分组扩展 Linux Maven 三项操作，已通过精确 Ubuntu 原生验收。清理未验证会阻止重启，Linux 信号不伪装成退出码；匹配版本的前端才可解析新的 Stop 回执。此处不表示 SSH、完整 Maven/Gradle、原生 Windows GUI 或资源优化已验收。
 
-0.38 能力分组兼容性已通过精确双平台 CI。0.39 Linux 独立 agent 保留 31 个直接能力名，增加两个精确版本化 Maven 分组；Windows 的直接能力集合不变，协议 4、schema 1、直接能力上限 32 均不变。内嵌 Client Local 仍不支持类型化 Maven；0.41 GUI Local 的同目录独立 agent 路径待本阶段验收。
+0.38 能力分组兼容性已通过精确双平台 CI。0.39 Linux 独立 agent 保留 31 个直接能力名，增加两个精确版本化 Maven 分组；Windows 的直接能力集合不变，协议 4、schema 1、直接能力上限 32 均不变。内嵌 Client Local 仍不支持类型化 Maven；0.41.2 GUI Local 的同目录独立 agent 路径已通过精确双平台 CI、三种包校验及云端 Debian 13 X11 信任关闭 GUI 文件操作检查；未在 GUI 中执行 Java/Maven，未独立观察原生 agent 回收。
 
 0.40 在替换当前连接前复用传输层的纯 SSH 字段校验，并明确端口覆盖与字面量路径语义；此修正已通过 0.40 精确提交双平台验收，不代表真实 SSH 联机已验证。
+
+0.42 增加显式、有界的 [Save All](SAVE_ALL.md)：仅编辑器缓冲区，逐个条件写入，冲突、未知结果或候选变化停止后续提交；不是多文件原子事务，不自动 Run 或序列化配置表单。本阶段验收结果见当前测试报告。

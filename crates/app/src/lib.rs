@@ -57,6 +57,11 @@ mod run_ui;
 mod save_ack_process_tests;
 #[cfg(test)]
 mod save_ack_tests;
+mod save_all;
+#[cfg(test)]
+mod save_all_process_tests;
+#[cfg(test)]
+mod save_all_tests;
 #[cfg(test)]
 mod sidebar_layout_tests;
 #[cfg(test)]
@@ -354,6 +359,7 @@ pub struct CedarApp {
     replace: replace::Replace,
     disk_review: disk_review::DiskReview,
     interrupted_save_check: interrupted_save::Check,
+    save_all: save_all::SaveAll,
     font_size: f32,
     recovery: recovery::Recovery,
 }
@@ -456,6 +462,7 @@ impl CedarApp {
             replace: replace::Replace::default(),
             disk_review: disk_review::DiskReview::default(),
             interrupted_save_check: interrupted_save::Check::default(),
+            save_all: save_all::SaveAll::default(),
             font_size: 14.0,
             recovery: recovery::Recovery::default(),
         }
@@ -477,7 +484,8 @@ impl CedarApp {
         versions
     }
     fn mutation_pending(&self) -> bool {
-        self.language.startup_active()
+        self.save_all_busy()
+            || self.language.startup_active()
             || self.pending.values().any(|job| {
                 matches!(
                     job,
@@ -602,6 +610,7 @@ impl CedarApp {
         self.close_after_language_stop = false;
         self.close_snapshot = None;
         self.retain_interrupted_saves();
+        self.save_all_transport_lost();
         self.reset_git(false);
         self.dismiss_disk_review();
         self.run_state.disconnected();
@@ -750,6 +759,14 @@ impl CedarApp {
     }
 
     fn save_document(&mut self, id: u64) {
+        if self.save_all_busy() {
+            self.error = Some("Save All owns the pending saves. Cancel remaining saves and wait for the in-flight save before saving another file".into());
+            return;
+        }
+        self.save_document_now(id);
+    }
+
+    fn save_document_now(&mut self, id: u64) {
         let Some(doc) = self.documents.iter().find(|doc| doc.id == id) else {
             return;
         };
@@ -1009,6 +1026,17 @@ impl CedarApp {
                 Err(_) => false,
             })
         });
+        self.save_all_observe_reply(
+            event.generation,
+            event.id,
+            !invalid_save_ack
+                && event.connected
+                && matches!(self.pending.get(&event.id), Some(Job::Save { .. }))
+                && matches!(event.result, Ok(Payload::Written { .. })),
+            invalid_save_ack
+                || !event.connected
+                || !matches!(self.pending.get(&event.id), Some(Job::Save { .. })),
+        );
         if invalid_save_ack || !event.connected {
             self.retain_interrupted_save(event.id);
         }
@@ -1562,7 +1590,13 @@ impl CedarApp {
     }
 
     fn request_window_close(&mut self, ctx: &egui::Context) {
-        if self.state == ConnectionState::Disconnecting {
+        if self.save_all_busy() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.error = Some(
+                "Cancel remaining Save All writes and wait for the in-flight save before closing"
+                    .into(),
+            );
+        } else if self.state == ConnectionState::Disconnecting {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.notice = disconnect::WAITING.into();
         } else if self.close_after_language_stop {
@@ -1594,6 +1628,14 @@ impl CedarApp {
     }
 
     fn begin_close(&mut self, ctx: &egui::Context) {
+        if self.save_all_busy() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.error = Some(
+                "Cancel remaining Save All writes and wait for the in-flight save before closing"
+                    .into(),
+            );
+            return;
+        }
         if self.state == ConnectionState::Disconnecting {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.notice = disconnect::WAITING.into();
@@ -1622,6 +1664,10 @@ impl CedarApp {
     }
 
     fn close_tab(&mut self, id: u64) {
+        if self.save_all_busy() {
+            self.error = Some("Cancel remaining Save All writes and wait for the in-flight save before closing a tab".into());
+            return;
+        }
         if self.active_document == Some(id) {
             self.dismiss_disk_review();
         }
@@ -1673,7 +1719,32 @@ impl CedarApp {
         self.language_shortcuts(ctx);
         self.workspace_access_shortcuts(ctx);
         self.explorer_tree_shortcuts(ctx);
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
+        self.save_all_shortcut(ctx);
+        let save_current = ctx.input_mut(|input| {
+            let mut pressed = false;
+            input.events.retain(|event| {
+                if let egui::Event::Key {
+                    key: egui::Key::S,
+                    pressed: down,
+                    repeat,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if !modifiers.alt
+                        && !modifiers.shift
+                        && !(modifiers.ctrl && modifiers.mac_cmd)
+                        && modifiers.matches_exact(egui::Modifiers::COMMAND)
+                    {
+                        pressed |= *down && !*repeat;
+                        return false;
+                    }
+                }
+                true
+            });
+            pressed
+        });
+        if save_current {
             self.save();
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
@@ -1722,6 +1793,7 @@ impl CedarApp {
                         .on_hover_text(&self.root);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let can_save = self.backend_supports("write")
+                            && !self.save_all_busy()
                             && !self.interrupted_save_check.busy()
                             && self.active().is_some_and(|doc| {
                                 doc.dirty() && !doc.saving && !doc.save_outcome_unknown()
@@ -1736,6 +1808,34 @@ impl CedarApp {
                         {
                             self.save();
                         }
+                        ui.menu_button("▾", |ui| {
+                            if ui
+                                .add_enabled(
+                                    !self.save_all_busy() && self.backend_supports("write"),
+                                    egui::Button::new("Save all editor buffers · Ctrl/Cmd+Shift+S"),
+                                )
+                                .clicked()
+                            {
+                                self.queue_save_all();
+                                ui.close_menu();
+                            }
+                            if ui
+                                .add_enabled(
+                                    self.save_all_busy(),
+                                    egui::Button::new("Cancel remaining saves"),
+                                )
+                                .clicked()
+                            {
+                                self.cancel_save_all();
+                                ui.close_menu();
+                            }
+                            if let Some(message) = self.save_all_message() {
+                                ui.label(message);
+                            }
+                            ui.label("Saves editor buffers sequentially. Earlier saves remain on disk if a later save stops. Profile form changes are saved separately.");
+                        })
+                        .response
+                        .on_hover_text("Save All and cancel remaining saves");
                         if ui.button("Recovery").clicked() {
                             self.recovery.visible = true;
                         }
@@ -2866,6 +2966,9 @@ impl eframe::App for CedarApp {
         self.finish_recovery_close_frame(ctx);
         self.finish_workspace_access_frame(ctx);
         self.finish_history_frame(ctx);
+        // Acknowledgements are drained first, but a subsequent batch Write is
+        // admitted only after every editor, cancel and draft-mutation finisher.
+        self.finish_save_all_frame(ctx);
     }
 }
 

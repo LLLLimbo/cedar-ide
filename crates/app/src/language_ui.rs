@@ -3245,3 +3245,6 @@ mod history_admission_tests {
         );
     }
 }
+#[cfg(test)]
+#[path = "save_all_integration_tests.rs"]
+mod save_all_integration_tests;

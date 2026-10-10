@@ -8,6 +8,9 @@ pub(super) const UNVERIFIED: &str = "An earlier local connection cleanup was not
 
 impl CedarApp {
     pub(super) fn disconnect_problem(&self) -> Option<&'static str> {
+        if self.save_all_busy() {
+            return Some("Cancel remaining Save All writes and wait for the in-flight save before disconnecting.");
+        }
         if self.state == ConnectionState::Disconnecting {
             return Some(WAITING);
         }

@@ -443,7 +443,7 @@ class LinuxDesktopBundleTests(unittest.TestCase):
     def test_current_guide_links_target_packaged_files(self):
         root = Path(__file__).resolve().parent.parent
         payload = dict(self.payload)
-        for name in ("MAVEN_PROJECTS.md", "MAVEN_DEPENDENCIES.md"):
+        for name in ("MAVEN_PROJECTS.md", "MAVEN_DEPENDENCIES.md", "SAVE_ALL.md"):
             self.assertEqual(bundle.SOURCE_FILES["docs/" + name], name)
             payload[name] = (root / "docs" / name).read_bytes()
         payload[bundle.GUIDE] = (root / "docs" / bundle.GUIDE).read_bytes()

@@ -214,3 +214,7 @@ Back / Forward 在仍打开且编辑版本匹配的标签位置间导航，保�
 ## SSH 字段预检查
 
 Remote over SSH 的端口是显式覆盖值，填写 SSH 配置别名时也不会沿用别名的 Port。远程工作区要求绝对 POSIX 路径；agent 建议填写绝对路径。路径按字面量传入，`~` 和 `$变量` 不会展开，裸 agent 名称依赖远程命令环境。字段语法错误会在替换当前连接前拒绝；此检查不执行 SSH、不读取配置，也不证明远程连通或认证成功。
+
+## 保存多个已打开文件
+
+Save 旁的下拉菜单提供 **Save all editor buffers**（Ctrl/Cmd+Shift+S）和 **Cancel remaining saves**。按捕获顺序逐个保存，遇到冲突或未知结果停止后续文件，已经成功的保存不会回滚。继续输入保留为新草稿，Run 配置表单须单独 Save profile；详见 [SAVE_ALL.md](SAVE_ALL.md)。
