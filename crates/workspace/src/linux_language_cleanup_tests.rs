@@ -225,7 +225,7 @@ fn typed_operations() -> Vec<Operation> {
 }
 
 #[test]
-fn linux_cleanup_latch_blocks_supported_start_and_never_enables_maven() {
+fn linux_cleanup_latch_blocks_supported_java_and_maven_start() {
     let root = tempfile::tempdir().unwrap();
     for backend in [
         cedar_tasks::BackendMode::InProcess,
@@ -239,10 +239,12 @@ fn linux_cleanup_latch_blocks_supported_start_and_never_enables_maven() {
         workspace.set_allow_run(true);
         let java_supported = backend == cedar_tasks::BackendMode::IsolatedAgent;
         assert_eq!(java_platform_supported(backend), java_supported);
-        assert!(!workspace.maven_platform_supported());
+        assert_eq!(workspace.maven_platform_supported(), java_supported);
         for op in typed_operations() {
             let expected = match &op {
-                Operation::LanguageStartJava { .. } | Operation::LanguageStartJavaBegin { .. }
+                Operation::LanguageStartJava { .. }
+                | Operation::LanguageStartJavaBegin { .. }
+                | Operation::LanguageStartJavaMavenBegin { .. }
                     if java_supported =>
                 {
                     "language_cleanup_unverified"
@@ -252,6 +254,11 @@ fn linux_cleanup_latch_blocks_supported_start_and_never_enables_maven() {
                     if java_supported =>
                 {
                     "unknown_language_startup"
+                }
+                Operation::LanguageMavenModel | Operation::LanguageMavenDependencies { .. }
+                    if java_supported =>
+                {
+                    "language_not_running"
                 }
                 _ => "unsupported_platform",
             };

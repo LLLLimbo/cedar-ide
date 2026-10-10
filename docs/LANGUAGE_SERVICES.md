@@ -104,7 +104,7 @@ is not an independent group-empty observation and cannot contain escaped or
 credential-changed descendants. Abrupt agent death is not covered. Unverified
 Linux generic cleanup blocks new language startup in that workspace. Reconnecting
 does not prove the previous server has exited. Basic typed Java also uses this ownership contract on Linux isolated agents.
-Linux InProcess retains generic LSP, and typed Maven remains Windows-only.
+Linux InProcess retains generic LSP. The 0.39 Linux isolated Maven extension is pending native acceptance; Windows retains its existing Maven route.
 The Linux typed Stop body tags the platform and reports a bounded exit code or
 signal; Windows retains its original u32 exit-code body. Use a matching frontend
 for Linux typed Stop. Old frontends reject the unfamiliar shape safely.

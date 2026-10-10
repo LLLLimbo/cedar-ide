@@ -22,17 +22,19 @@ BOOLS = (
     "conditional_write_verified", "readback_verified", "search_verified",
     "stale_write_rejected", "root_escape_rejected", "task_operations_rejected",
     "language_operations_rejected", "git_operations_rejected",
-    "typed_java_advertised_maven_unadvertised", "errors_leave_client_usable",
+    "typed_java_advertised", "maven_groups_advertised", "maven_operations_rejected",
+    "errors_leave_client_usable",
     "preserved_fixture_unchanged", "only_expected_file_changed",
     "reconnect_saved_bytes", "initial_client_reaped", "reconnect_client_reaped",
     "fixture_removed",
 )
 FIXED = {
     "schema_version": 1, "protocol_version": 4, "agent_info_schema": 1,
+    "capability_count": 31, "capability_group_count": 2,
     "agent_processes_spawned": 2, "elapsed_bound_ms": 30000,
     "client_call_limit": 96, "agent_spawn_limit": 2, "close_bound_ms": 5000,
 }
-VARIABLE = {"capability_count", "explicit_client_calls", "elapsed_ms"}
+VARIABLE = {"explicit_client_calls", "elapsed_ms"}
 TEST_NAME = "extracted_linux_agent_stdio_acceptance"
 MAX_TEST_OUTPUT = 1024 * 1024
 
@@ -63,7 +65,6 @@ def validate_probe(receipt):
                 "Unexpected probe bound or identity")
     for key in VARIABLE:
         require(type(receipt[key]) is int, "Noninteger probe count")
-    require(1 <= receipt["capability_count"] <= 32, "Invalid capability count")
     require(1 <= receipt["explicit_client_calls"] <= receipt["client_call_limit"],
             "Invalid request count")
     require(0 <= receipt["elapsed_ms"] <= receipt["elapsed_bound_ms"],

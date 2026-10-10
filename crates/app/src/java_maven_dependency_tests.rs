@@ -874,8 +874,72 @@ pub(crate) fn verify_native_maven_dependencies(
     document: &mut Document,
     editor_ctx: &egui::Context,
 ) -> Result<(), String> {
+    verify_native_dependencies_with_agent(
+        snapshot, startup_id, pom_sha256, document, editor_ctx, None, None,
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn verify_native_linux_maven_dependencies(
+    snapshot: &MavenDependenciesSnapshot,
+    startup_id: u64,
+    pom_sha256: &str,
+    document: &mut Document,
+    editor_ctx: &egui::Context,
+    agent_info: &cedar_protocol::AgentInfo,
+    local_agent_info: &cedar_protocol::AgentInfo,
+) -> Result<(), String> {
+    agent_info
+        .validate()
+        .map_err(|_| "Invalid native Linux metadata")?;
+    local_agent_info
+        .validate()
+        .map_err(|_| "Invalid local Linux metadata")?;
+    if agent_info.os != "linux"
+        || agent_info.capability_groups
+            != [
+                cedar_protocol::JAVA_MAVEN_DEPENDENCIES_GROUP,
+                cedar_protocol::JAVA_MAVEN_LEAF_GROUP,
+            ]
+        || agent_info.capabilities.iter().any(|name| {
+            cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str())
+                || name == JAVA_MAVEN_DEPENDENCIES_CAPABILITY
+        })
+    {
+        return Err("Expected native Linux grouped Maven claims".into());
+    }
+    if local_agent_info.os != "linux"
+        || !local_agent_info.capability_groups.is_empty()
+        || local_agent_info.supports("language_start_java_maven_begin")
+        || local_agent_info.supports("language_maven_model")
+        || local_agent_info.supports(JAVA_MAVEN_DEPENDENCIES_CAPABILITY)
+    {
+        return Err("Local workspace unexpectedly claims Maven support".into());
+    }
+    verify_native_dependencies_with_agent(
+        snapshot,
+        startup_id,
+        pom_sha256,
+        document,
+        editor_ctx,
+        Some(agent_info),
+        Some(local_agent_info),
+    )
+}
+
+fn verify_native_dependencies_with_agent(
+    snapshot: &MavenDependenciesSnapshot,
+    startup_id: u64,
+    pom_sha256: &str,
+    document: &mut Document,
+    editor_ctx: &egui::Context,
+    agent_info: Option<&cedar_protocol::AgentInfo>,
+    local_agent_info: Option<&cedar_protocol::AgentInfo>,
+) -> Result<(), String> {
+    // The legacy wrapper installs the Windows fixture. The Linux wrapper
+    // supplies its validated native metadata and uses case-sensitive paths.
     snapshot
-        .validate_for(startup_id, pom_sha256, true)
+        .validate_for(startup_id, pom_sha256, agent_info.is_none())
         .map_err(|_| "Native dependency snapshot rejected")?;
     if !document.dirty() {
         return Err("Native dependency check requires a dirty document".into());
@@ -884,6 +948,26 @@ pub(crate) fn verify_native_maven_dependencies(
     let undo = history_state(editor_ctx, document)?;
     let selection = current_selection(editor_ctx, document.id);
     let (mut app, rx) = app();
+    if let Some(local) = local_agent_info {
+        app.agent_info = Some(local.clone());
+        if app.backend_java_maven_supported() {
+            return Err("Local metadata incorrectly enables Maven controls".into());
+        }
+        app.start_language();
+        if rx.try_recv().is_ok() {
+            return Err("Local Maven rejection enqueued startup".into());
+        }
+    }
+    if let Some(agent) = agent_info {
+        app.agent_info = Some(agent.clone());
+        app.active_form.as_mut().unwrap().allow_run = false;
+        app.start_language();
+        if rx.try_recv().is_ok() || !app.backend_java_maven_supported() {
+            return Err("Trust-off Maven controls failed to refuse startup".into());
+        }
+        app.active_form.as_mut().unwrap().allow_run = true;
+        app.error = None;
+    }
     start(&mut app, &rx, startup_id, pom_sha256);
     app.editor_ctx = editor_ctx.clone();
     let original = std::mem::replace(
@@ -893,22 +977,19 @@ pub(crate) fn verify_native_maven_dependencies(
     app.active_document = Some(original.id);
     app.documents.push(original);
     let result = (|| {
-        app.agent_info
-            .as_mut()
-            .unwrap()
-            .capabilities
+        let info = app.agent_info.as_mut().unwrap();
+        let original_info = info.clone();
+        info.capabilities
             .retain(|name| name != JAVA_MAVEN_DEPENDENCIES_CAPABILITY);
+        info.capability_groups
+            .retain(|name| name != cedar_protocol::JAVA_MAVEN_DEPENDENCIES_GROUP);
         app.inspect_maven_dependencies();
         if rx.try_recv().is_ok() || !app.backend_java_maven_supported() {
             return Err(
                 "Optional dependency capability did not independently gate the request".into(),
             );
         }
-        app.agent_info
-            .as_mut()
-            .unwrap()
-            .capabilities
-            .push(JAVA_MAVEN_DEPENDENCIES_CAPABILITY.into());
+        app.agent_info = Some(original_info);
         app.error = None;
         let command = inspect(&mut app, &rx);
         apply_snapshot(&mut app, command, snapshot.clone());
@@ -981,6 +1062,23 @@ fn dirty_old_pom_baseline_and_single_undo_survive_actual_dependency_path() {
     ctx.memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", document.id))));
     let before = document_state(&document);
     verify_native_maven_dependencies(&snapshot(), 42, &hash(), &mut document, &ctx).unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        let (fixture, _) = grouped_app(true);
+        let mut grouped = fixture.agent_info.unwrap();
+        grouped.os = "linux".into();
+        grouped.capability_groups.sort();
+        verify_native_linux_maven_dependencies(
+            &snapshot(),
+            42,
+            &hash(),
+            &mut document,
+            &ctx,
+            &grouped,
+            &full_test_agent(),
+        )
+        .unwrap();
+    }
     assert_eq!(document_state(&document), before);
     assert_eq!(history_state(&ctx, &document).unwrap().1, "older saved POM");
 }

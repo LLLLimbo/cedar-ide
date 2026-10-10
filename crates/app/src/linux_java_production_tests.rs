@@ -214,11 +214,19 @@ fn capabilities(client: &AcceptanceClient) -> CheckResult<()> {
             && info.schema == 1
             && info.version == env!("CARGO_PKG_VERSION")
             && info.capabilities.len() == 31
+            && info.capability_groups == ["java_maven_dependencies_v1", "java_maven_leaf_v1"]
             && info
                 .capabilities
                 .iter()
                 .map(String::as_str)
-                .eq(EXPECTED_CAPABILITIES.iter().copied()),
+                .eq(EXPECTED_CAPABILITIES.iter().copied())
+            && [
+                "language_start_java_maven_begin",
+                "language_maven_model",
+                "language_maven_dependencies",
+            ]
+            .iter()
+            .all(|capability| info.supports(capability)),
         "Linux shipping capability set was not exact",
     )
 }
@@ -369,8 +377,10 @@ struct Evidence {
     route: &'static str,
     status: &'static str,
     capability_count: u32,
+    capability_group_count: u32,
     exact_capabilities: bool,
-    maven_unadvertised: bool,
+    maven_groups_advertised: bool,
+    maven_trust_off_rejected: bool,
     trust_off_rejected: bool,
     trust_off_client_reaped: bool,
     async_begin: bool,
@@ -1150,8 +1160,9 @@ fn real_linux_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         connect(&mut client, &clock, &binary, &root, false)?;
         capabilities(client.as_ref().unwrap())?;
         evidence.capability_count = 31;
+        evidence.capability_group_count = 2;
         evidence.exact_capabilities = true;
-        evidence.maven_unadvertised = true;
+        evidence.maven_groups_advertised = true;
         let denied = client
             .as_mut()
             .unwrap()
@@ -1163,18 +1174,20 @@ fn real_linux_normal_agent_java_editor_acceptance() -> CheckResult<()> {
             "untrusted Java was not rejected before launch",
         )?;
         evidence.trust_off_rejected = true;
-        // The unchanged Client must itself reject all three absent Maven routes.
+        // The unchanged Client recognizes the two Maven groups. All three
+        // routes must reach the backend's execution-trust gate; this basic Java
+        // acceptance never performs a trusted Maven start or model request.
         for operation in [
             Operation::LanguageStartJavaMavenBegin {
-                java_executable: "must-not-run".into(),
-                distribution: "must-not-read".into(),
-                data_directory: "must-not-create".into(),
-                local_repository: "must-not-read".into(),
+                java_executable: String::new(),
+                distribution: String::new(),
+                data_directory: String::new(),
+                local_repository: String::new(),
             },
             Operation::LanguageMavenModel,
             Operation::LanguageMavenDependencies {
                 startup_id: 1,
-                pom_sha256: "must-not-read".into(),
+                pom_sha256: "a".repeat(64),
             },
         ] {
             let error = client
@@ -1182,12 +1195,22 @@ fn real_linux_normal_agent_java_editor_acceptance() -> CheckResult<()> {
                 .unwrap()
                 .request(operation)
                 .err()
-                .ok_or("normal Linux Client allowed Maven")?;
+                .ok_or("untrusted Maven unexpectedly succeeded")?;
             require(
-                error.contains("unsupported_operation"),
-                "Maven did not fail Client capability validation",
+                error.starts_with("run_disabled:") && !data.join(".metadata").exists(),
+                "Maven did not fail the backend trust gate before execution",
+            )?;
+            require(
+                matches!(
+                    client.as_mut().unwrap().request(Operation::Read {
+                        path: SOURCE_PATH.into(),
+                    })?,
+                    Payload::File { text, .. } if text == SOURCE
+                ),
+                "file access did not survive untrusted Maven refusal",
             )?;
         }
+        evidence.maven_trust_off_rejected = true;
         reap(&mut client, &clock)?;
         evidence.trust_off_client_reaped = true;
         unchanged(&source)?;

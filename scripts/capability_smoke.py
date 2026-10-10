@@ -25,6 +25,7 @@ TYPED_JAVA = {'language_start_java', 'language_start_java_begin',
               'language_java_implementations'}
 WINDOWS_MAVEN = {'language_start_java_maven_begin', 'language_maven_model',
                  'language_maven_dependencies'}
+LINUX_MAVEN_GROUPS = ['java_maven_dependencies_v1', 'java_maven_leaf_v1']
 
 
 def validate(hello):
@@ -40,13 +41,23 @@ def validate(hello):
     assert len(set(capabilities)) == len(capabilities)
     assert all(re.fullmatch(r'[a-z0-9._-]{1,64}', name) for name in capabilities)
     assert BASE <= set(capabilities)
+    groups = info.get('capability_groups', [])
+    assert isinstance(groups, list) and len(groups) <= 2
+    assert all(isinstance(name, str) and re.fullmatch(r'[a-z0-9._-]{1,64}', name)
+               for name in groups)
+    assert len(set(groups)) == len(groups)
+    assert sum(len(name) for name in groups) <= 128
+    assert len(json.dumps(groups, separators=(',', ':')).encode('ascii')) <= 135
     return info
 
 
 def validate_platform_capabilities(info):
-    # 0.38 adds reader compatibility only. Shipping Hello stays byte-shape
-    # compatible and must omit the unused optional extension entirely.
-    assert 'capability_groups' not in info
+    # Linux 0.39 keeps its complete 31-name flat inventory and advertises Maven
+    # only through these two exact groups. Other shipping hosts still omit it.
+    if info['os'] == 'linux':
+        assert info.get('capability_groups') == LINUX_MAVEN_GROUPS
+    else:
+        assert 'capability_groups' not in info
     capabilities = set(info['capabilities'])
     # This script connects only to the normal isolated agent. Require the whole
     # platform set, including absence of capabilities assigned to another host.
@@ -116,7 +127,8 @@ def main():
         assert list(root.iterdir()) == []
         print('PASS: actual agent bounded metadata/platform advertisement/trust independence/no tool startup')
         print(json.dumps({'reported_version': info['version'], 'reported_os': info['os'],
-                          'reported_arch': info['arch'], 'capability_count': len(capabilities)}))
+                          'reported_arch': info['arch'], 'capability_count': len(capabilities),
+                          'capability_group_count': len(info.get('capability_groups', []))}))
 
 
 if __name__ == '__main__':

@@ -336,5 +336,7 @@ fn presence(present: bool) -> &'static str {
 #[cfg(test)]
 #[path = "java_maven_dependency_tests.rs"]
 mod tests;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use tests::verify_native_linux_maven_dependencies;
 #[cfg(all(test, windows))]
 pub(crate) use tests::verify_native_maven_dependencies;

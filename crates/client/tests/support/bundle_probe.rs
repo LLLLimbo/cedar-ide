@@ -297,6 +297,7 @@ mod portable {
             || info.arch != std::env::consts::ARCH
             || info.version != env!("CARGO_PKG_VERSION")
             || info.capabilities != expected_capabilities
+            || !info.capability_groups.is_empty()
         {
             return Err("metadata");
         }

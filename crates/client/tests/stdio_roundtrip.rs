@@ -2,6 +2,8 @@
 use cedar_client::Client;
 use cedar_protocol::{Operation, Payload};
 use std::path::PathBuf;
+#[path = "support/capability_inventory.rs"]
+mod capability_inventory;
 #[test]
 #[ignore = "requires a compiled cedar-agent; scripts/verify.sh runs this explicitly"]
 fn process_round_trip_preserves_revisions() {
@@ -14,8 +16,7 @@ fn process_round_trip_preserves_revisions() {
     else {
         panic!("current real agent must advertise metadata");
     };
-    info.validate().unwrap();
-    assert!(info.capability_groups.is_empty());
+    capability_inventory::assert_shipping_inventory(info);
     assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
     assert_eq!(info.os, std::env::consts::OS);
     assert_eq!(info.arch, std::env::consts::ARCH);

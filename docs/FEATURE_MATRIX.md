@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 38 / 0.38.0
+# 功能矩阵与后续验收 · checkpoint 39 / 0.39.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -27,7 +27,7 @@
 | 插件 | Rust crate 扩展边界 | 稳定插件 ABI/协议、权限、生命周期、市场；无 IDEA 插件兼容承诺 |
 | 企业功能 | 无 | 数据库、Spring、Web、容器、应用服务器、Profiler、协作等需分别设计 |
 | 性能 | 懒加载、按需重绘、有界读取/输出/传输/恢复存储 | 无本阶段新内存基准；历史短时前端读数与 JVM 分开；同项目可复现基线、远程延迟、长会话泄漏、生产项目回归、完整进程树核算 |
-| 分发 | Cargo 工程、锁文件、许可清单、公开分阶段源码；0.35 已通过精确双平台 CI、Windows 开发包及 Ubuntu 24.04 amd64 agent 包的逐文件哈希和真实 stdio 验收 | 0.36 Linux 通用 LSP 清理已通过精确提交双平台 CI/包验收；0.37 Linux 独立 agent 类型化 Java 与双平台包已验收；0.38 能力分组读取兼容性待验收；未签名，Windows 包需 VC++ x64 运行库；Windows/macOS 原生 GUI、已签名安装包与自动升级仍未验收 |
+| 分发 | Cargo 工程、锁文件、许可清单、公开分阶段源码；0.35 已通过精确双平台 CI、Windows 开发包及 Ubuntu 24.04 amd64 agent 包的逐文件哈希和真实 stdio 验收 | 0.36 Linux 通用 LSP 清理已通过精确提交双平台 CI/包验收；0.37 Linux 独立 agent 类型化 Java 与双平台包已验收；0.38 能力分组读取兼容性已通过精确双平台 CI；0.39 Linux Maven 扩展待验收；未签名，Windows 包需 VC++ x64 运行库；Windows/macOS 原生 GUI、已签名安装包与自动升级仍未验收 |
 
 ## 验收边界
 
@@ -53,6 +53,6 @@
 
 ## Linux 基本类型化 Java 边界
 
-0.37 仅向 Linux 独立 agent 开放已有的基本 Java/JDT 路径，能力总数 31、协议上限仍为 32。Linux Local 内嵌工作区保留通用 LSP；Maven 三项操作仍仅限 Windows。清理未验证会阻止重启，Linux 信号不伪装成退出码；匹配版本的前端才可解析新的 Stop 回执。此处不表示 SSH、完整 Maven/Gradle、原生 Windows GUI 或资源优化已验收。
+0.37 仅向 Linux 独立 agent 开放已有的基本 Java/JDT 路径，能力总数 31、协议上限仍为 32。Linux Local 内嵌工作区保留通用 LSP；0.39 使用两个有界能力分组扩展 Linux Maven 三项操作，待原生验收。清理未验证会阻止重启，Linux 信号不伪装成退出码；匹配版本的前端才可解析新的 Stop 回执。此处不表示 SSH、完整 Maven/Gradle、原生 Windows GUI 或资源优化已验收。
 
-0.38 仅增加可选能力分组的读取兼容性：协议仍为 4、元数据 schema 仍为 1、直接能力上限仍为 32。当前分发 agent 均省略分组字段，已有能力集合不变；Linux Maven 仍未启用。
+0.38 能力分组兼容性已通过精确双平台 CI。0.39 Linux 独立 agent 保留 31 个直接能力名，增加两个精确版本化 Maven 分组；Windows 的直接能力集合不变，协议 4、schema 1、直接能力上限 32 均不变。Linux Local 内嵌工作区仍不支持类型化 Maven。

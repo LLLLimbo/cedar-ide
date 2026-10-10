@@ -64,6 +64,21 @@ class ProbeTests(unittest.TestCase):
                     with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                         acceptance.validate_probe(receipt)
 
+    def test_group_advertisement_and_trust_off_maven_replace_obsolete_witness(self):
+        receipt = valid()
+        self.assertIs(receipt["maven_groups_advertised"], True)
+        self.assertIs(receipt["maven_trust_off_rejected"], True)
+        self.assertEqual(receipt["capability_count"], 31)
+        self.assertEqual(receipt["capability_group_count"], 2)
+        del receipt["maven_groups_advertised"]
+        receipt["maven_unadvertised"] = True
+        with self.assertRaises(ValueError):
+            acceptance.validate_probe(receipt)
+        with self.assertRaises(ValueError):
+            acceptance.decode_probe(json.dumps(receipt).encode())
+        with self.assertRaises(ValueError):
+            acceptance.validate_probe({**valid(), "maven_unadvertised": True})
+
     def test_missing_extra_and_wrong_schema_rejected(self):
         for key in valid():
             receipt = valid()

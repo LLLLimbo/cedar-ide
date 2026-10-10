@@ -5,9 +5,7 @@
 #![cfg(target_os = "linux")]
 
 use cedar_client::Client;
-use cedar_protocol::{
-    LanguageQueryKind, Operation, Payload, JAVA_MAVEN_CAPABILITIES, JAVA_STARTUP_CAPABILITIES,
-};
+use cedar_protocol::{LanguageQueryKind, Operation, Payload};
 use std::fs::{self, File, OpenOptions};
 use std::ops::{Deref, DerefMut};
 use std::os::fd::AsRawFd;
@@ -15,6 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[path = "support/capability_inventory.rs"]
+mod capability_inventory;
 
 const SOURCE: &[u8] = b"class Main { /* original source stays unchanged */ }\n";
 
@@ -254,35 +255,15 @@ fn read_source(agent: &mut Agent) {
     );
 }
 
-fn typed_java_capabilities_keep_maven_gated(agent: &Agent) {
+fn exact_linux_capabilities_include_maven_groups(agent: &Agent) {
     let Payload::Hello {
         agent: Some(info), ..
     } = agent.handshake()
     else {
         panic!("missing agent metadata");
     };
-    info.validate().unwrap();
-    assert!(info.capability_groups.is_empty());
     assert_eq!(info.os, "linux");
-    assert!(info.supports("language_start"));
-    for capability in [
-        "language_start_java",
-        "java_diagnostics_refresh",
-        "language_organize_java_imports",
-        "language_java_implementations",
-    ] {
-        assert!(info.supports(capability));
-    }
-    assert!(!info.supports("language_maven_dependencies"));
-    for capability in JAVA_STARTUP_CAPABILITIES {
-        assert!(info.supports(capability));
-    }
-    for capability in JAVA_MAVEN_CAPABILITIES {
-        assert!(
-            !info.supports(capability),
-            "typed startup unexpectedly admitted: {capability}"
-        );
-    }
+    capability_inventory::assert_shipping_inventory(info);
 }
 
 #[test]
@@ -293,8 +274,8 @@ fn normal_agent_stop_restart_and_orderly_close_preserve_independent_language_own
     let second_root = workspace();
     let mut first = Agent::start(first_root.path(), true);
     let mut second = Agent::start(second_root.path(), true);
-    typed_java_capabilities_keep_maven_gated(&first);
-    typed_java_capabilities_keep_maven_gated(&second);
+    exact_linux_capabilities_include_maven_groups(&first);
+    exact_linux_capabilities_include_maven_groups(&second);
     let first_tree = start_language(
         &mut first,
         &first_root.path().join("tree"),
@@ -349,7 +330,8 @@ fn normal_agent_stop_restart_and_orderly_close_preserve_independent_language_own
             "fixture_locks_released":true, "lsp_roots_absent":true,
             "legacy_stop_acknowledged":true, "transport_worker_join_claimed":false,
             "descendant_reaping_claimed":false, "independent_owner_preserved":true,
-            "replacement_session_worked":true, "typed_java_advertised_maven_unadvertised":true,
+            "replacement_session_worked":true, "typed_java_advertised":true,
+            "maven_groups_advertised":true,
             "agent_read_responsive":true, "source_bytes_unchanged":true
         })
     );
@@ -361,6 +343,7 @@ fn blocked_language_write_cleans_up_and_normal_agent_remains_responsive() {
     let _watchdog = Watchdog::start();
     let root = workspace();
     let mut agent = Agent::start(root.path(), true);
+    exact_linux_capabilities_include_maven_groups(&agent);
     let fixture_dir = root.path().join("blocked");
     let fixture = start_language(&mut agent, &fixture_dir, "linux-agent-blocked");
     open(&mut agent);
@@ -424,7 +407,7 @@ fn untrusted_normal_agent_rejects_generic_language_start_and_keeps_file_access()
     let _watchdog = Watchdog::start();
     let root = workspace();
     let mut agent = Agent::start(root.path(), false);
-    typed_java_capabilities_keep_maven_gated(&agent);
+    exact_linux_capabilities_include_maven_groups(&agent);
     let fixture = root.path().join("must-not-start");
     fs::create_dir(&fixture).unwrap();
     let error = agent
@@ -437,6 +420,24 @@ fn untrusted_normal_agent_rejects_generic_language_start_and_keeps_file_access()
         })
         .unwrap_err();
     assert!(error.starts_with("run_disabled:"), "{error}");
+    for operation in [
+        Operation::LanguageStartJavaMavenBegin {
+            java_executable: String::new(),
+            distribution: String::new(),
+            data_directory: String::new(),
+            local_repository: String::new(),
+        },
+        Operation::LanguageMavenModel,
+        Operation::LanguageMavenDependencies {
+            startup_id: 1,
+            pom_sha256: "a".repeat(64),
+        },
+    ] {
+        let error = agent.request(operation).unwrap_err();
+        assert!(error.starts_with("run_disabled:"), "{error}");
+        assert_eq!(fs::read_dir(&fixture).unwrap().count(), 0);
+        read_source(&mut agent);
+    }
     assert_eq!(fs::read_dir(fixture).unwrap().count(), 0);
     read_source(&mut agent);
     agent.close();
@@ -447,7 +448,8 @@ fn untrusted_normal_agent_rejects_generic_language_start_and_keeps_file_access()
             "kind":"cedar_linux_agent_language_acceptance", "schema_version":1,
             "case":"untrusted_start_rejected", "status":"success",
             "normal_agents_started":1, "agent_close_and_reap_observed":true,
-            "fixture_process_started":false, "typed_java_advertised_maven_unadvertised":true,
+            "fixture_process_started":false, "typed_java_advertised":true,
+            "maven_groups_advertised":true, "maven_operations_rejected":true,
             "agent_read_responsive":true, "source_bytes_unchanged":true,
             "transport_worker_join_claimed":false
         })

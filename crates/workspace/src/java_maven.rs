@@ -67,7 +67,14 @@ pub(super) fn production(
     let root = existing_path(&root, true)?;
     existing_path(Path::new(java_executable), false)?;
     let distribution_path = existing_path(Path::new(distribution), true)?;
-    existing_path(&distribution_path.join("config_win"), true)?;
+    // Keep the Maven path checks as strict as on Windows, then reuse the native
+    // Java recipe for the selected host configuration and process ownership.
+    let configuration = if cfg!(target_os = "linux") {
+        "config_linux"
+    } else {
+        "config_win"
+    };
+    existing_path(&distribution_path.join(configuration), true)?;
     existing_path(&distribution_path.join("plugins"), true)?;
     let data = outside_project(&root, Path::new(data_directory))?;
     let repository = outside_project(&root, Path::new(local_repository))?;
@@ -834,6 +841,10 @@ fn initialization_options(pom_uri: &str, paths: &ControlPaths) -> Value {
     })
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "java_maven_linux_tests.rs"]
+mod linux_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,8 +866,8 @@ mod tests {
         "MAVEN_CMD_LINE_ARGS",
         "MAVEN_EXT_CLASS_PATH",
     ];
-    const CHILD_MODE: &str = "CEDAR_MAVEN_UNIT_CHILD_MODE";
-    const CHILD_COMPLETED: &str = "CEDAR_MAVEN_UNIT_COMPLETED_V1";
+    pub(super) const CHILD_MODE: &str = "CEDAR_MAVEN_UNIT_CHILD_MODE";
+    pub(super) const CHILD_COMPLETED: &str = "CEDAR_MAVEN_UNIT_COMPLETED_V1";
 
     fn completed_child_output(output: &[u8]) -> bool {
         std::str::from_utf8(output).is_ok_and(|text| {
@@ -866,7 +877,7 @@ mod tests {
         })
     }
 
-    fn isolated_test(test: &str, mode: &str, injected_name: Option<&str>) {
+    pub(super) fn isolated_test(test: &str, mode: &str, injected_name: Option<&str>) {
         use std::process::{Command, Stdio};
         use std::time::{Duration, Instant};
         let mut command = Command::new(std::env::current_exe().unwrap());
@@ -955,7 +966,7 @@ mod tests {
         assert!(!completed_child_output(&[255]));
     }
 
-    fn pom(body: &str) -> Vec<u8> {
+    pub(super) fn pom(body: &str) -> Vec<u8> {
         format!("<project><modelVersion>4.0.0</modelVersion><groupId>org.example</groupId><artifactId>leaf</artifactId><version>1.0</version>{body}</project>").into_bytes()
     }
 
@@ -1126,7 +1137,7 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn production_keeps_unicode_locations_and_fresh_ascii_controls() {
         if std::env::var_os(CHILD_MODE).as_deref() != Some(std::ffi::OsStr::new("recipe")) {
@@ -1157,32 +1168,50 @@ mod tests {
 
         let fixture = tempfile::tempdir().unwrap();
         let base = java_launch::ordinary_local_path(fixture.path()).unwrap();
-        // This launch profile explicitly requires an ASCII JDK/control parent.
+        // This launch profile explicitly requires an ASCII control parent.
         // A machine with a Unicode-only temporary location cannot supply it.
         assert!(
             base.to_str().is_some_and(str::is_ascii),
             "Maven recipe fixture requires an ASCII temporary parent"
         );
-        let root = base.join("project 雪");
-        let cache = base.join("cache 雪 & jars");
-        let distribution = base.join("distribution 雪");
+        let root = base.join("project 雪 % # e\u{0301}");
+        let cache = base.join("cache 雪 & jars % # e\u{0301}");
+        let distribution = base.join("distribution 雪 % # e\u{0301}");
         let data = base.join("control data");
+        #[cfg(windows)]
         let java = base.join("java.exe");
+        #[cfg(target_os = "linux")]
+        let java = base.join("JDK 雪 % $HOME 'literal';/bin/java");
         for directory in [&root, &cache, &data, &distribution] {
             fs::create_dir(directory).unwrap();
         }
-        fs::create_dir(distribution.join("config_win")).unwrap();
+        let configuration = if cfg!(target_os = "linux") {
+            "config_linux"
+        } else {
+            "config_win"
+        };
+        fs::create_dir(distribution.join(configuration)).unwrap();
         fs::create_dir(distribution.join("plugins")).unwrap();
         fs::write(
             distribution.join("plugins/org.eclipse.equinox.launcher_1.jar"),
             b"fixture",
         )
         .unwrap();
+        #[cfg(windows)]
         fs::write(&java, b"fixture executable, never launched").unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::create_dir_all(java.parent().unwrap()).unwrap();
+            // The production validator checks ELF magic and executable mode;
+            // this fixture constructs launch arguments without executing Java.
+            fs::write(&java, b"\x7fELFfixture").unwrap();
+            fs::set_permissions(&java, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         fs::write(root.join("pom.xml"), pom("")).unwrap();
         let sentinel = data.join("user-settings.xml");
         fs::write(&sentinel, b"existing user settings").unwrap();
-        // Workspace passes its internal canonical Windows verbatim-disk root.
+        // Workspace passes its canonical root, verbatim-disk on Windows.
         let canonical_root = root.canonicalize().unwrap();
         let prepare = |control_data: &Path| {
             production(
@@ -1210,7 +1239,7 @@ mod tests {
         );
         assert_eq!(
             argument(&first, "-configuration"),
-            java_launch::directory_uri(&distribution.join("config_win")).unwrap()
+            java_launch::directory_uri(&distribution.join(configuration)).unwrap()
         );
         let first_settings = user_settings(&first);
         let first_control = first_settings.parent().unwrap();

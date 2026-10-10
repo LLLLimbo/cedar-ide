@@ -129,7 +129,7 @@ fn with_client<T>(
 
 fn expected_capabilities() -> Vec<&'static str> {
     // Use the shared lifecycle groups plus the explicit Linux platform set.
-    // The isolated Linux agent includes typed Java; Maven stays Windows-only.
+    // Maven's two groups leave these 31 direct capability names unchanged.
     let mut expected = vec![
         "list",
         "read",
@@ -181,9 +181,18 @@ fn metadata(client: &Client, root: &Path) -> ProbeResult<AgentInfo> {
         || info.arch != "x86_64"
         || !expected.windows(2).all(|pair| pair[0] < pair[1])
         || info.capabilities != expected
-        || !info.capability_groups.is_empty()
+        || info.capability_groups != ["java_maven_dependencies_v1", "java_maven_leaf_v1"]
     {
         return Err("metadata");
+    }
+    for capability in [
+        "language_start_java_maven_begin",
+        "language_maven_model",
+        "language_maven_dependencies",
+    ] {
+        if info.capabilities.iter().any(|name| name == capability) || !info.supports(capability) {
+            return Err("metadata");
+        }
     }
     Ok(info.clone())
 }
@@ -326,9 +335,10 @@ fn typed_java_operations() -> Vec<Operation> {
     ]
 }
 
-fn unsupported_maven_operations() -> Vec<Operation> {
-    // The normal Client rejects unadvertised Maven before sending a request.
-    // These empty locations remain safe if capability checking regresses.
+fn maven_operations() -> Vec<Operation> {
+    // The normal Client recognizes both groups and sends all three routes to
+    // the backend's trust gate. Empty paths cannot identify any executable;
+    // exact run_disabled proves refusal precedes path or model validation.
     vec![
         Operation::LanguageStartJavaMavenBegin {
             java_executable: String::new(),
@@ -439,14 +449,8 @@ fn verify_initial(
     for operation in typed_java_operations() {
         refused_and_usable(client, budget, operation, "run_disabled:", &saved_revision)?;
     }
-    for operation in unsupported_maven_operations() {
-        refused_and_usable(
-            client,
-            budget,
-            operation,
-            "unsupported_operation:",
-            &saved_revision,
-        )?;
+    for operation in maven_operations() {
+        refused_and_usable(client, budget, operation, "run_disabled:", &saved_revision)?;
     }
     let Payload::Hello {
         protocol,
@@ -587,6 +591,7 @@ fn verify() -> ProbeResult<serde_json::Value> {
         "package_version_matches": true,
         "capabilities_exact": true,
         "capability_count": info.capabilities.len(),
+        "capability_group_count": info.capability_groups.len(),
         "trust_off": true,
         "list_verified": true,
         "read_verified": true,
@@ -598,7 +603,9 @@ fn verify() -> ProbeResult<serde_json::Value> {
         "task_operations_rejected": true,
         "language_operations_rejected": true,
         "git_operations_rejected": true,
-        "typed_java_advertised_maven_unadvertised": true,
+        "typed_java_advertised": true,
+        "maven_groups_advertised": true,
+        "maven_operations_rejected": true,
         "errors_leave_client_usable": true,
         "preserved_fixture_unchanged": true,
         "only_expected_file_changed": true,

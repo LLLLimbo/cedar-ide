@@ -31,8 +31,8 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
         capabilities.push("language_organize_java_imports");
         capabilities.push("language_java_implementations");
     }
-    // Maven remains a separate Windows isolated-agent implementation claim;
-    // enabling typed Java on Linux must not advertise this optional profile.
+    // Windows retains its direct claims. Linux uses the exact versioned groups
+    // so its existing flat inventory remains within the unchanged wire bound.
     if cfg!(windows) && backend_mode == BackendMode::IsolatedAgent {
         capabilities.extend_from_slice(cedar_protocol::JAVA_MAVEN_CAPABILITIES);
         capabilities.push(cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY);
@@ -60,9 +60,16 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
         capabilities: capabilities.into_iter().map(str::to_owned).collect(),
-        // Compatibility support is staged before Linux Maven activation.
-        // Shipping inventories retain their existing flat wire representation.
-        capability_groups: Vec::new(),
+        capability_groups: if cfg!(target_os = "linux")
+            && backend_mode == BackendMode::IsolatedAgent
+        {
+            vec![
+                cedar_protocol::JAVA_MAVEN_DEPENDENCIES_GROUP.into(),
+                cedar_protocol::JAVA_MAVEN_LEAF_GROUP.into(),
+            ]
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -253,18 +260,44 @@ mod tests {
         expected
     }
 
+    fn expected_platform_groups(os: &str, backend_mode: BackendMode) -> Vec<&'static str> {
+        if os == "linux" && backend_mode == BackendMode::IsolatedAgent {
+            vec!["java_maven_dependencies_v1", "java_maven_leaf_v1"]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn expected_effective_capabilities(os: &str, backend_mode: BackendMode) -> Vec<&'static str> {
+        let mut expected = expected_platform_capabilities(os, backend_mode);
+        if os == "linux" && backend_mode == BackendMode::IsolatedAgent {
+            expected.extend([
+                "language_start_java_maven_begin",
+                "language_maven_model",
+                "language_maven_dependencies",
+            ]);
+        }
+        expected.sort_unstable();
+        expected
+    }
+
     #[test]
     fn every_platform_inventory_is_unique_and_checked_against_wire_capacity_on_this_host() {
         assert_eq!(cedar_protocol::MAX_AGENT_CAPABILITIES, 32);
+        assert_eq!(cedar_protocol::MAX_AGENT_CAPABILITY_GROUPS, 2);
         for os in ["linux", "macos", "windows", "other"] {
             let windows = os == "windows";
             let unix_commands = matches!(os, "linux" | "macos");
             for backend_mode in [BackendMode::InProcess, BackendMode::IsolatedAgent] {
                 let expected = expected_platform_capabilities(os, backend_mode);
+                let expected_groups = expected_platform_groups(os, backend_mode);
+                let effective = expected_effective_capabilities(os, backend_mode);
                 assert!(
                     expected.windows(2).all(|pair| pair[0] < pair[1]),
                     "{os}: duplicate capability"
                 );
+                assert!(expected_groups.windows(2).all(|pair| pair[0] < pair[1]));
+                assert!(effective.windows(2).all(|pair| pair[0] < pair[1]));
                 assert!(
                     expected.len() <= cedar_protocol::MAX_AGENT_CAPABILITIES,
                     "{os}: capability capacity exhausted"
@@ -272,6 +305,10 @@ mod tests {
                 let isolated_windows = windows && backend_mode == BackendMode::IsolatedAgent;
                 let typed_java =
                     matches!(os, "linux" | "windows") && backend_mode == BackendMode::IsolatedAgent;
+                if typed_java {
+                    assert_eq!(expected.len(), 31, "{os}: raw flat inventory");
+                    assert_eq!(effective.len(), if os == "linux" { 34 } else { 31 });
+                }
                 for capability in [
                     "language_start_java",
                     "language_start_java_begin",
@@ -295,7 +332,12 @@ mod tests {
                     assert_eq!(
                         expected.contains(&capability),
                         isolated_windows,
-                        "{os}: {capability}"
+                        "{os}: direct {capability}"
+                    );
+                    assert_eq!(
+                        effective.contains(&capability),
+                        typed_java,
+                        "{os}: effective {capability}"
                     );
                 }
                 assert_eq!(expected.contains(&"language_start"), !windows);
@@ -306,10 +348,21 @@ mod tests {
                     version: "inventory-test".into(),
                     os: os.into(),
                     arch: "x86_64".into(),
-                    capabilities: expected.into_iter().map(str::to_owned).collect(),
-                    capability_groups: Vec::new(),
+                    capabilities: expected.iter().copied().map(str::to_owned).collect(),
+                    capability_groups: expected_groups.iter().copied().map(str::to_owned).collect(),
                 };
                 info.validate().unwrap();
+                for operation in execution_operations() {
+                    let name = operation.capability_name().unwrap();
+                    assert_eq!(
+                        info.supports(name),
+                        effective.contains(&name),
+                        "{os}: {name}"
+                    );
+                }
+                // Reading the union must leave the wire vectors unchanged.
+                assert_eq!(info.capabilities, expected);
+                assert_eq!(info.capability_groups, expected_groups);
                 // Exercise remaining capacity and one-over rejection with the
                 // actual expected set, without a second hardcoded platform count.
                 while info.capabilities.len() < cedar_protocol::MAX_AGENT_CAPABILITIES {
@@ -343,12 +396,12 @@ mod tests {
             for capability in RUN_TASK_CAPABILITIES {
                 assert_eq!(agent.supports(capability), task_platform, "{capability}");
             }
-            // Typed Java is isolated-agent-only on Linux and Windows. Maven
-            // remains Windows-only, independent of the typed Java capability.
+            // Typed Java and Maven require the normal Linux/Windows isolated
+            // agent; support claims do not grant workspace execution trust.
             let generic_language = !cfg!(windows);
             let java_language = cfg!(any(target_os = "linux", windows))
                 && backend_mode == BackendMode::IsolatedAgent;
-            let maven_language = cfg!(windows) && backend_mode == BackendMode::IsolatedAgent;
+            let maven_language = java_language;
             let language_operation_supported = |name: &str| match name {
                 "language_start" => generic_language,
                 "language_start_java"
@@ -392,6 +445,10 @@ mod tests {
             // Exact set equality also proves the exact count. Never duplicate
             // its length in a cfg-only numeric assertion that host tests skip.
             assert_eq!(agent.capabilities, expected);
+            assert_eq!(
+                agent.capability_groups,
+                expected_platform_groups(std::env::consts::OS, backend_mode)
+            );
             assert!(agent.capabilities.len() <= cedar_protocol::MAX_AGENT_CAPABILITIES);
             assert!(!agent.supports("terminal"));
         }
@@ -409,16 +466,20 @@ mod tests {
     }
 
     #[test]
-    fn shipping_hello_omits_groups_and_retains_flat_inventory() {
+    fn shipping_hello_retains_raw_flat_inventory_and_linux_only_groups() {
         let root = tempfile::tempdir().unwrap();
         for mode in [BackendMode::InProcess, BackendMode::IsolatedAgent] {
             let mut workspace = Workspace::with_backend_mode(root.path(), mode).unwrap();
             let info = hello(&mut workspace);
-            assert!(info.capability_groups.is_empty());
-            assert!(serde_json::to_value(&info)
-                .unwrap()
-                .get("capability_groups")
-                .is_none());
+            let groups = expected_platform_groups(std::env::consts::OS, mode);
+            assert_eq!(info.capability_groups, groups);
+            let wire = serde_json::to_value(&info).unwrap();
+            if groups.is_empty() {
+                assert!(wire.get("capability_groups").is_none());
+            } else {
+                assert_eq!(wire["capability_groups"], serde_json::json!(groups));
+                assert_eq!(wire["capabilities"].as_array().unwrap().len(), 31);
+            }
             assert_eq!(
                 info.capabilities,
                 expected_platform_capabilities(std::env::consts::OS, mode)

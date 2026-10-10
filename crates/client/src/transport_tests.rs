@@ -2160,8 +2160,8 @@ fn maven_capabilities() -> Vec<&'static str> {
         .collect()
 }
 
-// Both representations use the same controlled, side-effect-free peer. The
-// group-backed row is synthetic; shipping Linux still advertises no groups.
+// Both representations use the same controlled, side-effect-free peer: the
+// frozen Windows 0.37 direct claims and Linux's current grouped representation.
 fn maven_agent_variants(include_dependencies: bool) -> [cedar_protocol::AgentInfo; 2] {
     let mut direct = agent_info(&maven_capabilities());
     direct.version = "0.37.0".into();

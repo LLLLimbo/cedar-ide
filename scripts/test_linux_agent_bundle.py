@@ -383,6 +383,9 @@ class LinuxAgentBundleTests(unittest.TestCase):
     def test_current_guide_links_target_packaged_files(self):
         root = Path(__file__).resolve().parent.parent
         payload = dict(self.payload)
+        for name in ("MAVEN_PROJECTS.md", "MAVEN_DEPENDENCIES.md"):
+            self.assertEqual(bundle.SOURCE_FILES["docs/" + name], name)
+            payload[name] = (root / "docs" / name).read_bytes()
         payload[bundle.GUIDE] = (root / "docs" / bundle.GUIDE).read_bytes()
         manifest = bundle.make_manifest("0.35.0", COMMIT, RUN_URL, payload)
         bundle.verify_bytes(bundle.archive_bytes(payload, manifest))

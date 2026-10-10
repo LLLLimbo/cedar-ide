@@ -19,10 +19,11 @@ no capability. The object has required `schema`, `version`, `os`, `arch` and
 
 ## Optional capability groups (0.38)
 
-Schema 1 additionally accepts `capability_groups`, omitted when empty. All current
-shipping agents still omit it and retain their existing flat inventories. This
-checkpoint does not activate Linux Maven or change protocol 4, the 32-name flat
-limit, execution trust, or server/session prerequisites.
+Schema 1 additionally accepts `capability_groups`, omitted when empty. The 0.38 checkpoint kept all shipping groups empty. The 0.39 Linux isolated
+agent advertises the two groups below while retaining its 31 flat names; this
+activation is pending native acceptance. Windows retains its 31 direct claims
+and omits groups. Linux InProcess and unsupported profiles omit them. Protocol
+4, the 32-name flat limit, trust, and server/session prerequisites are unchanged.
 
 The field accepts at most two unique lowercase ASCII identifiers, each 1..64
 bytes. Identifier contents total at most 128 bytes; the compact JSON array is at
@@ -97,7 +98,7 @@ or off. Support is not availability of an installed third-party tool.
   a wire field, request option or consequence of execution trust
 - Generic language startup is available on Linux/macOS and remains disabled on
   Windows. Windows and Linux isolated agents separately advertise the basic typed
-  Java/JDT route. Maven remains Windows isolated only. Linux InProcess retains
+  Java/JDT route. Maven is supported by Windows isolated agents; the 0.39 Linux isolated extension is pending native acceptance. Linux InProcess retains
   generic LSP; its Local frontend mode does not gain typed Java. Linux isolated
   agents have 31 capabilities within the unchanged 32-name ceiling. Advertisement still requires the
   caller's execution trust and installed tools; compilation alone is not native

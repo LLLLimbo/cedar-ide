@@ -12,7 +12,7 @@ def valid():
     return {
         **{key: True for key in acceptance.BOOLS}, **acceptance.FIXED,
         "kind": "cedar_linux_agent_bundle_probe", "status": "success",
-        "capability_count": 31, "explicit_client_calls": 76, "elapsed_ms": 123,
+        "explicit_client_calls": 76, "elapsed_ms": 123,
     }
 
 
@@ -45,14 +45,23 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(receipt=type(receipt).__name__), self.assertRaises(ValueError):
                 acceptance.validate_probe(receipt)
 
-    def test_obsolete_windows_only_java_witness_is_rejected(self):
-        receipt = valid()
-        del receipt["typed_java_advertised_maven_unadvertised"]
-        receipt["windows_java_operations_unadvertised"] = True
-        with self.assertRaises(ValueError):
-            acceptance.validate_probe(receipt)
-        with self.assertRaises(ValueError):
-            acceptance.validate_probe({**valid(), "windows_java_operations_unadvertised": True})
+    def test_obsolete_unadvertised_java_or_maven_witness_is_rejected(self):
+        for obsolete in ("windows_java_operations_unadvertised",
+                         "typed_java_advertised_maven_unadvertised", "maven_unadvertised"):
+            receipt = valid()
+            del receipt["maven_groups_advertised"]
+            receipt[obsolete] = True
+            with self.subTest(obsolete=obsolete), self.assertRaises(ValueError):
+                acceptance.validate_probe(receipt)
+            with self.assertRaises(ValueError):
+                acceptance.validate_probe({**valid(), obsolete: True})
+
+    def test_exact_flat_and_group_counts_cannot_hide_inventory_drift(self):
+        for field, values in (("capability_count", (0, 1, 30, 32, 33)),
+                              ("capability_group_count", (0, 1, 3, 31))):
+            for value in values:
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    acceptance.validate_probe({**valid(), field: value})
 
     def test_fixed_integer_identity_and_budgets_do_not_coerce(self):
         for key, expected in acceptance.FIXED.items():

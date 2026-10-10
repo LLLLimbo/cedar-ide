@@ -1,6 +1,6 @@
-# Windows Maven 叶工程模式
+# Windows / Linux 隔离 agent Maven 叶工程模式
 
-0.22 增加 Windows 隔离 agent 专用 Java 路径的显式 Maven 选项。它读取工作区根目录的
+0.22 增加 Windows 隔离 agent 专用 Java 路径的显式 Maven 选项；0.39 将相同子集扩展到 Linux 独立 agent，当前待精确原生验收。它读取工作区根目录的
 `pom.xml`，通过已安装 JDT LS/m2e 建立源码、编译器设置和依赖模型。
 这是有意收窄的叶工程支持，不是完整 Maven、Gradle 或构建管理器。
 对应提交的原生 CI 与开发包清单才是该二进制的验证依据；跨平台编译不等于 Windows 运行验证。
@@ -11,7 +11,7 @@
    此功能要求现有的执行信任；能力声明不会自动开启信任。
 2. 在 **Java / JDT LS** 中填写工作区主机上的 Java 可执行文件、JDT distribution、
    JDT data directory。Java 与 JDT 必须已安装，Cedar 不安装它们。
-3. 选择 **Import root Maven pom.xml (Windows, trusted leaf project)**，填写
+3. 选择 **Import root Maven pom.xml (isolated agent, trusted leaf project)**，填写
    **Local Maven repository**。这是已有的本地缓存目录，不是远程仓库 URL。
 4. 显式 **Start server**。启动可取消，沿用原有的启动 ID、期限和所有者清理。
    初始化完成不表示项目已经完成所有索引工作。
@@ -24,7 +24,7 @@
 `MAVEN_EXT_CLASS_PATH`，本模式会拒绝启动，即使变量值为空。
 这是当前保守兼容边界；Cedar 不修改机器或父进程的环境配置。
 
-普通 Java 模式仍关闭 Maven/Gradle 导入。旧 agent、通用 LSP 与非 Windows agent
+普通 Java 模式仍关闭 Maven/Gradle 导入。旧 agent、通用 LSP 与不支持此配置的 agent
 不会隐式使用这个新模式；缺少完整 Maven 能力时必须明确选择普通 Java。
 
 ## 路径与缓存
@@ -91,3 +91,5 @@ Maven 设置为离线解析，并使用指向新建空目录的 file-only mirror
 
 生产 JVM 仍为 512 MiB 最大堆，总进程树工作集可显著高于堆上限。本阶段不声称资源优化、
 大型项目兼容、原生 Windows GUI 或真实 SSH 验证已经完成。
+
+Linux 需要支持能力分组的匹配前端（0.38+）和已启用该配置的独立 agent。31 个直接能力名之外，两个有界分组分别声明核心 Maven 操作和可选依赖快照；Windows 保留直接能力名。Linux Local 内嵌工作区不支持此配置，没有自动回退。Linux 使用 config_linux 和原生绝对 java 路径；ASCII 数据/控制目录限制仍保留，工作区、JDT 分发及缓存可以使用 Unicode。Stop 会区分正常退出码和信号；强制清理不是优雅退出，未确认清理会阻止同会话重启。

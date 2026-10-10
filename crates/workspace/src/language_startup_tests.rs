@@ -1,5 +1,5 @@
 //! These fixtures bypass only launch selection, privately in this unit module.
-//! Production Begin remains trusted, Windows-only, and isolated-agent-only.
+//! Production Begin requires trust and a Windows or Linux isolated agent.
 use super::*;
 use cedar_language::{
     ClientOptions, ProcessConfig, WindowsCleanupErrors, WindowsShutdownOutcome,

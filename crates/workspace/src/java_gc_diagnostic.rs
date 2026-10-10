@@ -257,11 +257,26 @@ mod tests {
             .as_ref()
             .unwrap()
             .supports(cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY));
+        assert!(a.as_ref().unwrap().capability_groups.is_empty());
         b.as_mut().unwrap().capabilities.retain(|name| {
             !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str())
                 && name != cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY
         });
+        b.as_mut().unwrap().capability_groups.retain(|name| {
+            name != cedar_protocol::JAVA_MAVEN_LEAF_GROUP
+                && name != cedar_protocol::JAVA_MAVEN_DEPENDENCIES_GROUP
+        });
         assert_eq!(a, b);
+        let maven_start = || Operation::LanguageStartJavaMavenBegin {
+            java_executable: "must-not-be-inspected\0".into(),
+            distribution: "must-not-be-inspected\0".into(),
+            data_directory: "must-not-be-inspected\0".into(),
+            local_repository: "must-not-be-inspected\0".into(),
+        };
+        assert_eq!(
+            diagnostic.handle(maven_start()).unwrap_err().code,
+            "run_disabled"
+        );
         assert_eq!(
             diagnostic.handle(invalid_start()).unwrap_err().code,
             "run_disabled"
@@ -274,6 +289,10 @@ mod tests {
                 .attempted
         );
         diagnostic.set_allow_run(true);
+        assert_eq!(
+            diagnostic.handle(maven_start()).unwrap_err().code,
+            "unsupported_platform"
+        );
         assert_eq!(
             diagnostic
                 .handle(Operation::LanguageMavenDependencies {

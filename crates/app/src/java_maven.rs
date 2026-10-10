@@ -1,4 +1,4 @@
-//! Explicit Windows Maven leaf profile and a finite, session-bound model snapshot.
+//! Explicit isolated-agent Maven leaf profile and a finite, session-bound model snapshot.
 //! Checking a model never saves a buffer, runs a build, or reimports the project.
 use super::{safe_relative_path, Action, ActionKind, ServerMode, View};
 use crate::{java_language::JavaConfiguration, CedarApp, Operation, Payload, AMBER, MUTED};
@@ -454,7 +454,7 @@ impl CedarApp {
             supported && self.execution_trusted(),
             egui::Checkbox::new(
                 &mut self.language.maven.enabled,
-                "Import root Maven pom.xml (Windows, trusted leaf project)",
+                "Import root Maven pom.xml (isolated agent, trusted leaf project)",
             ),
         );
         if !supported {

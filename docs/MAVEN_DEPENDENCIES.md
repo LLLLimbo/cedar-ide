@@ -1,6 +1,6 @@
 # Maven 依赖来源快照
 
-此功能用于已启动、受信任的 Windows 专用 Maven 叶工程会话。选择 Language 面板中的
+此功能用于已启动、受信任的 Windows / Linux 隔离 agent Maven 叶工程会话（Linux 扩展待 0.39 原生验收）。选择 Language 面板中的
 **Inspect dependencies**，执行一次有界查询。缺少独立能力或实际服务端项目设置命令时，
 按钮会说明原因；不会隐式启动服务或退回通用命令。原有 Check Maven model 保持独立。
 

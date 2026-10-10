@@ -15,6 +15,7 @@ fn assert_fixture_hello(fixture: &mut Workspace, ordinary: &mut Workspace) {
         assert!(!info.supports(capability));
     }
     assert!(!info.supports(cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY));
+    assert!(info.capability_groups.is_empty());
     let Payload::Hello {
         agent: Some(info), ..
     } = &mut expected
@@ -24,6 +25,10 @@ fn assert_fixture_hello(fixture: &mut Workspace, ordinary: &mut Workspace) {
     info.capabilities.retain(|name| {
         !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str())
             && name != cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY
+    });
+    info.capability_groups.retain(|name| {
+        name != cedar_protocol::JAVA_MAVEN_LEAF_GROUP
+            && name != cedar_protocol::JAVA_MAVEN_DEPENDENCIES_GROUP
     });
     assert_eq!(
         serde_json::to_value(actual).unwrap(),
@@ -62,11 +67,25 @@ fn validation_requires_synthetic_root_and_separate_execution_trust() {
     let mut fixture = Workspace::for_windows_language_validation(root.path()).unwrap();
     assert_eq!(fixture.backend_mode, BackendMode::IsolatedAgent);
     assert_eq!(fixture.handle(start()).unwrap_err().code, "run_disabled");
+    let maven_start = || Operation::LanguageStartJavaMavenBegin {
+        java_executable: "must-not-be-inspected\0".into(),
+        distribution: "must-not-be-inspected\0".into(),
+        data_directory: "must-not-be-inspected\0".into(),
+        local_repository: "must-not-be-inspected\0".into(),
+    };
+    assert_eq!(
+        fixture.handle(maven_start()).unwrap_err().code,
+        "run_disabled"
+    );
     // Even the fixture must not manufacture production capability evidence.
     let mut ordinary =
         Workspace::with_backend_mode(root.path(), BackendMode::IsolatedAgent).unwrap();
     assert_fixture_hello(&mut fixture, &mut ordinary);
     fixture.set_allow_run(true);
+    assert_eq!(
+        fixture.handle(maven_start()).unwrap_err().code,
+        "unsupported_platform"
+    );
     assert_eq!(
         fixture
             .handle(Operation::LanguageMavenDependencies {

@@ -259,7 +259,7 @@ fn linux_java_stop_payload(
 
 impl Workspace {
     pub(super) fn maven_platform_supported(&self) -> bool {
-        if !cfg!(windows) || !java_platform_supported(self.backend_mode) {
+        if !java_platform_supported(self.backend_mode) {
             return false;
         }
         #[cfg(feature = "windows-language-validation")]
@@ -408,7 +408,7 @@ impl Workspace {
                 if !self.maven_platform_supported() {
                     return Err(error(
                         "unsupported_platform",
-                        "Maven startup requires a normal isolated Windows agent",
+                        "Maven startup requires a normal isolated Windows or Linux agent",
                     ));
                 }
                 self.begin_java_maven_startup(
@@ -422,7 +422,7 @@ impl Workspace {
                 if !self.maven_platform_supported() {
                     return Err(error(
                         "unsupported_platform",
-                        "Maven model requires a normal isolated Windows agent",
+                        "Maven model requires a normal isolated Windows or Linux agent",
                     ));
                 }
                 self.maven_model()
@@ -434,7 +434,7 @@ impl Workspace {
                 if !self.maven_platform_supported() {
                     return Err(error(
                         "unsupported_platform",
-                        "Maven dependencies require a normal isolated Windows agent",
+                        "Maven dependencies require a normal isolated Windows or Linux agent",
                     ));
                 }
                 self.maven_dependencies(startup_id, &pom_sha256)
@@ -1320,7 +1320,7 @@ mod maven_route_tests {
     }
 
     #[test]
-    fn typed_maven_requires_trust_and_normal_windows_isolated_host_before_paths() {
+    fn typed_maven_requires_trust_and_normal_windows_or_linux_isolated_host_before_paths() {
         let root = tempfile::tempdir().unwrap();
         for backend in [
             cedar_tasks::BackendMode::InProcess,
@@ -1331,7 +1331,9 @@ mod maven_route_tests {
                 assert_eq!(workspace.handle(op).unwrap_err().code, "run_disabled");
             }
             workspace.set_allow_run(true);
-            if !cfg!(windows) || backend == cedar_tasks::BackendMode::InProcess {
+            if !cfg!(any(windows, target_os = "linux"))
+                || backend == cedar_tasks::BackendMode::InProcess
+            {
                 for op in [start(), Operation::LanguageMavenModel, dependencies()] {
                     assert_eq!(
                         workspace.handle(op).unwrap_err().code,
@@ -1350,6 +1352,34 @@ mod maven_route_tests {
                         .code,
                     "language_not_running"
                 );
+                // The raw route accepts owned startup on either supported
+                // platform. Invalid inputs then fail preparation without Java.
+                let Payload::Language { value } = workspace.handle(start()).unwrap() else {
+                    panic!("Maven Begin must return an owned startup")
+                };
+                assert_eq!(value["state"], "starting");
+                assert!(value["process_id"].is_null());
+                let startup_id = value["startup_id"].as_u64().unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    let Payload::Language { value } = workspace
+                        .handle(Operation::LanguageStartJavaPoll { startup_id })
+                        .unwrap()
+                    else {
+                        panic!("Maven Poll must return startup state")
+                    };
+                    if value["state"] == "failed" {
+                        assert_eq!(value["cleanup_verified"], true);
+                        assert!(matches!(
+                            value["error"]["code"].as_str(),
+                            Some("invalid_java_maven" | "invalid_java_launch")
+                        ));
+                        break;
+                    }
+                    assert_eq!(value["state"], "starting");
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
             }
             assert!(workspace.language.is_none());
             assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());

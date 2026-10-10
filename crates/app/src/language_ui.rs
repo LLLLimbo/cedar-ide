@@ -9,6 +9,8 @@ mod java_implementations;
 mod java_maven;
 #[path = "java_maven_dependencies.rs"]
 mod java_maven_dependencies;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use java_maven_dependencies::verify_native_linux_maven_dependencies;
 #[cfg(all(test, windows))]
 pub(crate) use java_maven_dependencies::verify_native_maven_dependencies;
 #[path = "java_startup.rs"]
