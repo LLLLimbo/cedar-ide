@@ -312,6 +312,22 @@ pub fn forget(ctx: &egui::Context, document: u64) {
 }
 
 pub fn commit(ctx: &egui::Context, doc: &mut Document, text: String, cursor_chars: usize) {
+    commit_selection(
+        ctx,
+        doc,
+        text,
+        egui::text::CCursorRange::one(egui::text::CCursor::new(cursor_chars)),
+    );
+}
+
+/// One native history transaction retaining both endpoints and their affinity.
+pub fn commit_selection(
+    ctx: &egui::Context,
+    doc: &mut Document,
+    text: String,
+    new_cursor: egui::text::CCursorRange,
+) {
+    let cursor_chars = new_cursor.primary.index;
     let id = egui::Id::new(("editor", doc.id));
     let mut state = load(ctx, doc);
     let old_cursor = state
@@ -319,7 +335,6 @@ pub fn commit(ctx: &egui::Context, doc: &mut Document, text: String, cursor_char
         .char_range()
         .unwrap_or_else(|| egui::text::CCursorRange::one(egui::text::CCursor::new(0)));
     let before = (old_cursor, doc.text.clone());
-    let new_cursor = egui::text::CCursorRange::one(egui::text::CCursor::new(cursor_chars));
     let after = (new_cursor, text.clone());
     // Clone history only for an explicit editor transaction, never per frame.
     let mut undoer = state.undoer();

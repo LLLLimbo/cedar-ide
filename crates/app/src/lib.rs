@@ -1,5 +1,8 @@
 //! Cedar IDE — a native Rust frontend for a local or SSH workspace agent.
 mod agent_support;
+mod block_indent;
+#[cfg(test)]
+mod block_indent_process_tests;
 #[cfg(test)]
 mod build_problem_process_tests;
 #[cfg(test)]
@@ -2704,6 +2707,17 @@ impl CedarApp {
         }
         let navigation_blocked = self.navigation.blocks_editor();
         ui.add_enabled_ui(!navigation_blocked, |ui| self.find_bar(ui));
+        let indent_eligible = ui.is_enabled()
+            && ui.ctx().input(|input| input.focused)
+            && !navigation_blocked
+            && !self.navigation.restore_focus
+            && !self.foreign_modal_owns_input(ui.ctx())
+            && !self.open_form
+            && !self.new_file
+            && !self.find_focus
+            && self.close_tab_requested.is_none()
+            && !self.close_after_language_stop
+            && !self.allow_close;
         let find_open = self.find_open;
         let mut history_completion =
             if !navigation_blocked && self.active().is_some_and(|doc| doc.jump_to.is_some()) {
@@ -2718,6 +2732,8 @@ impl CedarApp {
         {
             let editor_id = egui::Id::new(("editor", doc.id));
             editor_state::load(ui.ctx(), doc);
+            let indent_eligible = indent_eligible && doc.jump_to.is_none();
+            block_indent::handle(ui.ctx(), doc, indent_eligible);
             if !navigation_blocked {
                 editor_state::history_shortcut(ui.ctx(), doc);
             }

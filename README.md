@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的 Windows 恢复存储准入模型研究阶段（**0.46.0**，单次非分发适配器观察待验收；上一已验收版本为 0.45.0），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前是持续开发中的选中代码块缩进阶段（**0.47.0**，待验收；上一已验收版本为 0.46.0），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -12,6 +12,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - **远程能力发现**：缓存一次有效握手，报告后端版本/平台/操作支持；按后端实际能力启用功能，声明不授予执行信任
 - 平面目录浏览与显式展开的[有界目录树](docs/EXPLORER_TREE.md)、多标签编辑、新建文件、行号、简单 Java/Kotlin/Rust 高亮
 - Ctrl/Cmd+P 键盘选择已打开标签/当前目录文件或输入路径、Ctrl/Cmd+G 跳到行、Ctrl/Cmd+F 文件内查找与单文档字面量替换预览、Ctrl/Cmd+S 保存、Ctrl/Cmd+W 关闭标签
+- 选中代码块后用 Tab / Shift+Tab 缩进或减少缩进，保留选区与一次撤销；有界处理，保存仍需明确操作（0.47 待验收）
 - [显式 Save All](docs/SAVE_ALL.md)：逐个保存本次捕获的脏标签，首个冲突或未知结果停止后续提交，保留更新的输入和撤销；不自动构建或运行
 - [保存回执与未知结果核对](docs/INTERRUPTED_SAVES.md)：核对原提交内容与身份；异常回执保留草稿和恢复副本，只能显式读回核对，不自动重写
 - [Back/Forward 位置历史](docs/LOCATION_HISTORY.md)：在仍打开且未修改的标签位置间返回，保留完整选区与撤销；不重新读取或恢复关闭的文件

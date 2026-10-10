@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 46 / 0.46.0
+# 功能矩阵与后续验收 · checkpoint 47 / 0.47.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -68,3 +68,5 @@
 0.45.0 仅增加非分发的 Windows 恢复存储句柄准入适配器与故障模型，尚不接入生产 Store，不增加原生权限探测。严格所有者与 DACL 候选规则仍可能使恢复不可用；真实允许路径兼容性尚未验证。
 
 0.46.0 拟对新适配器执行一次源版本绑定的 Windows 拒绝路径观察；即使通过，也不代表生产恢复权限检查或真实允许路径已验收。
+
+0.47.0 选中代码块 Tab/Shift+Tab 缩进拟保留选区与一次撤销，文本及结果上限 1 MiB、选中逻辑行上限 4,096；验收待完成。已完成的 0.46 原生拒绝观察不再由 CI 自动触发，Windows 恢复权限生产接入继续暂停。
