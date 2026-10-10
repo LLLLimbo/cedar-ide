@@ -1,27 +1,17 @@
-# Verification report · Linux isolated-agent typed Java / 0.37.0
+# Verification report · bounded capability-group compatibility / 0.38.0
 
-The [0.36 Linux ownership checkpoint](TEST_REPORT_PHASE36_LINUX_OWNERSHIP.md) is fully verified. This slice adds basic typed Java to the Linux isolated agent; the embedded Linux Local workspace keeps generic LSP, and Maven remains Windows-only.
+The [0.37 Linux Java checkpoint](TEST_REPORT_PHASE37_LINUX_JAVA.md) is fully verified. This checkpoint adds only optional metadata-reader compatibility; shipping agents retain their exact flat capability inventories and omit the new field. Linux Maven remains disabled.
 
 ## Contract
 
-The existing seven basic Java capabilities bring Linux isolated agents to 31 of the unchanged 32-name limit. Requests, startup IDs, trust checks and fixed launch options remain unchanged. Production Linux selects an explicit native executable named `java`, `config_linux`, an exact relative launcher and an existing data directory outside the workspace. No PATH search, shell, automatic download or Maven import is introduced. JDK/JDT are separately installed trusted tools, not redistributed dependencies or a network sandbox.
+Protocol 4, AgentInfo schema 1, and the 32-name flat limit remain unchanged. At most two unique 64-byte ASCII group identifiers are accepted, with 128 content bytes and 135 compact-array bytes maximum. Exact versioned groups map only to the existing Maven core pair and optional dependency operation. Unknown well-formed identifiers are inert; malformed groups fail metadata validation. Direct/group overlap is idempotent and never flattens the inventory.
 
-Linux Stop reports an explicit code or signal. It requires observed root termination, reaping, released owned I/O, worker join and no cleanup errors. Shutdown quality is separate: a verified nonzero/protocol-error shutdown can retire its owner, while uncertain cleanup blocks replacement. Windows Stop keeps its original body. Use the matching frontend for Linux typed Java: older parsers safely reject the new shutdown shape. Strict typed parsing rejects unknown or mixed fields; duplicate raw JSON keys retain the existing protocol Value-parser limitation.
+Structural claims do not bypass trust, lifecycle, provider, session, startup/POM identity or backend platform checks. Unsupported profiles remove direct and grouped Maven claims. No discovery roundtrip, command, cache preparation, Linux Maven activation or new runtime tool is introduced.
 
-## Required acceptance
+## Required verification
 
-The native workload uses a normal default-feature agent and generated source only. Main budget is 480 seconds, comprising 360 primary and 120 reserved cleanup. Startup keeps its original 75-second envelope, admitting each 30-second Begin/Poll/Read call separately. Typed session calls retain 75 seconds. The original spontaneous diagnostic verdict remains separate from a maximum of one supported explicit refresh after timeout; recovery requires all 240 seconds for refresh, witness and Close. Insufficient remaining budget is a failed acceptance. Same-agent restart has 180 seconds, within one 720-second runtime watchdog. Preparation is bounded separately.
+Frozen 0.37 typed-reader deserialization must retain all previous Linux flat support and ignore groups; new readers must preserve old Windows direct claims and metadata-free file-only behavior. Controlled peers must prove one immutable Hello, no extra requests for refused operation families, ordinary reads after refusal and connection isolation. Frontend tests retain trust/Ready/session/POM guards. Current shipping Hello must omit groups on all supported configurations, and both packages retain exact inventories.
 
-Required witnesses include asynchronous file responsiveness, semantic and editor/Undo behavior, refresh/imports/implementations, truthful Stop, restart, source preservation and process cleanup. All previous Windows and Linux package gates remain required. Exact-source native CI and regenerated package verification are pending.
+Local formatting and strict host/MSVC Clippy passed. The complete Rust aggregate passed 1,399 tests across 45 suites, with 48 explicit opt-ins ignored. This includes 11 protocol group tests, seven new frontend tests, controlled-pipe client compatibility cases and shipping-profile omission/filter tests. Targeted Python suites passed: six capability, two export, 30 Linux package, 35 Windows package with one platform skip, and 28 Linux Java driver tests. No real Maven execution is implied by synthetic peer responses.
 
-## Local acceptance
-
-Final local checks passed: 1,372 Rust tests across 44 suites, with 48 explicit opt-ins ignored by the aggregate run; strict host and MSVC Clippy; formatting; and the targeted Python suites (28 driver, 5 capability, 10 Linux receipt, 30 Linux package, and 35 Windows package tests with one platform skip). The real Linux Java opt-in was executed separately as described below.
-
-The generated Linux workload passed on the cloud Debian host in 21,865 ms with the pinned JDT 1.61.0 archive and existing JDK 21. It verified the exact 31-capability inventory and exercised the Java/read subset: asynchronous read responsiveness, semantic diagnostics, editor Apply/Undo/Redo, import organization, two type implementations and one method implementation, explicit refresh and same-agent restart. Spontaneous correction matched; conditional recovery was not attempted. The initial Stop was graceful with code 0. Restart Stop exhausted its unchanged grace period and reported forced cleanup with signal 9 and joined ownership evidence. Source files stayed unchanged, the client was reaped, and the successful fixture was removed.
-
-An earlier preparation attempt failed closed before server execution because the default test harness selected zero tests. The corrected harness explicitly enables the existing shared-fixture feature while continuing to execute the separate, unchanged normal release agent. The failed selection receipt is retained. The local receipt establishes that prebuilt agent's SHA identity, not independent equivalence to the current checkout. Native Ubuntu CI must build the normal agent from the exact published source and establish that linkage.
-
-## Limits
-
-No Linux Maven profile, local embedded typed Java, SSH deployment/authentication, user-device operation, native Windows GUI claim or resource improvement claim. Process groups retain the 0.36 escaped-descendant/abrupt-owner-death limits. Diagnostics may lag; explicit refresh is a mitigation, not an upstream race fix.
+The rebuilt default-feature Linux agent also passed actual stdio capability/trust checks: 31 flat names, no group field, no tool startup and unchanged support with trust toggled. Local release verification covered that agent; exact-source dual CI and both complete package builds are pending. Existing Java, Maven, ownership, file-protection and distribution gates remain required. No resource, native Windows GUI or SSH interoperability claim is added.

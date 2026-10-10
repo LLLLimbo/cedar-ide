@@ -1,6 +1,7 @@
 //! Real child pipes exercise transport framing, deadlines and lifecycle. No SSH
 //! credentials/server, Python, shell, or platform-specific executable required.
 use super::*;
+use cedar_protocol::{JAVA_MAVEN_DEPENDENCIES_GROUP, JAVA_MAVEN_LEAF_GROUP};
 use std::{fs, sync::OnceLock};
 use tempfile::TempDir;
 
@@ -872,7 +873,13 @@ fn agent_info(capabilities: &[&str]) -> cedar_protocol::AgentInfo {
         os: "fixture_os".into(),
         arch: "fixture_arch".into(),
         capabilities: capabilities.iter().map(|name| (*name).into()).collect(),
+        capability_groups: Vec::new(),
     }
+}
+fn grouped_agent_info(capabilities: &[&str], groups: &[&str]) -> cedar_protocol::AgentInfo {
+    let mut agent = agent_info(capabilities);
+    agent.capability_groups = groups.iter().map(|name| (*name).into()).collect();
+    agent
 }
 fn capability_peer(directory: &Path, hello: serde_json::Value) -> ProcessClient {
     fs::write(directory.join("hello.json"), hello.to_string()).unwrap();
@@ -1008,7 +1015,10 @@ fn public_client_sends_one_hello_and_keeps_the_complete_first_snapshot() {
     let directory = tempfile::tempdir().unwrap();
     let mut client = capability_client(
         directory.path(),
-        Some(agent_info(&["list", "read", "unknown_future_feature"])),
+        Some(grouped_agent_info(
+            &["list", "read", "unknown_future_feature"],
+            &[JAVA_MAVEN_LEAF_GROUP, "unknown_future_group"],
+        )),
     );
     let snapshot = serde_json::to_value(client.handshake()).unwrap();
     for _ in 0..3 {
@@ -1019,6 +1029,10 @@ fn public_client_sends_one_hello_and_keeps_the_complete_first_snapshot() {
     assert_eq!(snapshot["agent"]["version"], "fixture-agent-6");
     assert_eq!(snapshot["agent"]["os"], "fixture_os");
     assert_eq!(snapshot["agent"]["arch"], "fixture_arch");
+    assert_eq!(
+        snapshot["agent"]["capability_groups"],
+        serde_json::json!([JAVA_MAVEN_LEAF_GROUP, "unknown_future_group"])
+    );
     assert_eq!(recorded_requests(directory.path()).len(), 1);
     read_fixture(&mut client);
     assert_eq!(serde_json::to_value(client.handshake()).unwrap(), snapshot);
@@ -1058,7 +1072,11 @@ fn legacy_peers_keep_file_operations_but_never_receive_execution_requests() {
                 limit: 1,
             })
             .unwrap();
-        for operation in advanced_operations() {
+        for operation in advanced_operations().into_iter().chain([
+            begin_maven_language(),
+            Operation::LanguageMavenModel,
+            maven_dependencies_operation(),
+        ]) {
             let name = operation.capability_name().unwrap();
             let error = client.request(operation.clone()).unwrap_err();
             assert!(
@@ -1824,6 +1842,55 @@ fn malformed_present_metadata_refuses_connection_and_never_falls_back_to_legacy(
             "transport_read:",
         ),
         ("capabilities", serde_json::Value::Null, "transport_read:"),
+        (
+            "capability_groups",
+            serde_json::Value::Null,
+            "transport_read:",
+        ),
+        (
+            "capability_groups",
+            serde_json::json!(JAVA_MAVEN_LEAF_GROUP),
+            "transport_read:",
+        ),
+        (
+            "capability_groups",
+            serde_json::json!([JAVA_MAVEN_LEAF_GROUP, 3]),
+            "transport_read:",
+        ),
+        (
+            "capability_groups",
+            serde_json::json!([JAVA_MAVEN_LEAF_GROUP, JAVA_MAVEN_LEAF_GROUP]),
+            "invalid_agent_info:",
+        ),
+        (
+            "capability_groups",
+            serde_json::json!([
+                JAVA_MAVEN_LEAF_GROUP,
+                JAVA_MAVEN_DEPENDENCIES_GROUP,
+                "future_v1"
+            ]),
+            "invalid_agent_info:",
+        ),
+        (
+            "capability_groups",
+            serde_json::json!([""]),
+            "invalid_agent_info:",
+        ),
+        (
+            "capability_groups",
+            serde_json::json!(["Java_maven_leaf_v1"]),
+            "invalid_agent_info:",
+        ),
+        (
+            "capability_groups",
+            serde_json::json!(["java_maven_leaf_v1\n"]),
+            "invalid_agent_info:",
+        ),
+        (
+            "capability_groups",
+            serde_json::json!(["g".repeat(65)]),
+            "invalid_agent_info:",
+        ),
     ] {
         let mut agent = valid.clone();
         agent[field] = value;
@@ -2093,6 +2160,25 @@ fn maven_capabilities() -> Vec<&'static str> {
         .collect()
 }
 
+// Both representations use the same controlled, side-effect-free peer. The
+// group-backed row is synthetic; shipping Linux still advertises no groups.
+fn maven_agent_variants(include_dependencies: bool) -> [cedar_protocol::AgentInfo; 2] {
+    let mut direct = agent_info(&maven_capabilities());
+    direct.version = "0.37.0".into();
+    direct.os = "windows".into();
+    direct.arch = "x86_64".into();
+    let mut grouped = grouped_agent_info(&async_java_capabilities(), &[JAVA_MAVEN_LEAF_GROUP]);
+    if include_dependencies {
+        direct
+            .capabilities
+            .push("language_maven_dependencies".into());
+        grouped
+            .capability_groups
+            .push(JAVA_MAVEN_DEPENDENCIES_GROUP.into());
+    }
+    [direct, grouped]
+}
+
 #[test]
 fn maven_requires_separate_capabilities_and_full_owned_java_lifecycle_without_fallback() {
     for missing in JAVA_MAVEN_CAPABILITIES
@@ -2131,45 +2217,56 @@ fn maven_requires_separate_capabilities_and_full_owned_java_lifecycle_without_fa
 
 #[test]
 fn typed_maven_startup_uses_the_same_owned_id_and_forwards_one_fixed_model_operation() {
-    let root = tempfile::tempdir().unwrap();
-    let mut client = capability_client(root.path(), Some(agent_info(&maven_capabilities())));
-    startup_result(
-        root.path(),
-        &mut client,
-        serde_json::json!({"startup_id":1,"state":"starting","process_id":null}),
-    );
-    client.request(begin_maven_language()).unwrap();
-    assert_eq!(process(&mut client).java_startup.pending, Some(1));
-    assert!(!process(&mut client).java_language_session);
-    startup_result(root.path(), &mut client, startup_ready(1));
-    client
-        .request(Operation::LanguageStartJavaPoll { startup_id: 1 })
-        .unwrap();
-    assert_eq!(process(&mut client).java_startup.active, Some(1));
-    assert!(process(&mut client).java_language_session);
-    let result =
-        serde_json::json!({"profile":"maven_leaf","status":"unresolved","pom_path":"pom.xml"});
-    startup_result(root.path(), &mut client, result.clone());
-    assert!(
-        matches!(client.request(Operation::LanguageMavenModel).unwrap(), Payload::Language { value } if value == result)
-    );
-    let requests = recorded_requests(root.path());
-    assert_eq!(requests.len(), 4);
-    assert_eq!(requests[1]["op"]["type"], "language_start_java_maven_begin");
-    assert_eq!(
-        requests[3]["op"],
-        serde_json::json!({"type":"language_maven_model"})
-    );
-    startup_result(
-        root.path(),
-        &mut client,
-        serde_json::json!({"startup_id":1,"state":"cancelled","cleanup_verified":true}),
-    );
-    client
-        .request(Operation::LanguageStartJavaCancel { startup_id: 1 })
-        .unwrap();
-    assert!(!process(&mut client).java_language_session);
-    assert_eq!(process(&mut client).java_startup.active, None);
+    for agent in maven_agent_variants(false) {
+        let root = tempfile::tempdir().unwrap();
+        let serialized = serde_json::to_value(&agent).unwrap();
+        if agent.os == "windows" {
+            assert!(serialized.get("capability_groups").is_none());
+        }
+        let mut client = capability_client(root.path(), Some(agent));
+        assert!(client
+            .request(maven_dependencies_operation())
+            .unwrap_err()
+            .contains("language_maven_dependencies"));
+        assert_eq!(recorded_requests(root.path()).len(), 1);
+        startup_result(
+            root.path(),
+            &mut client,
+            serde_json::json!({"startup_id":1,"state":"starting","process_id":null}),
+        );
+        client.request(begin_maven_language()).unwrap();
+        assert_eq!(process(&mut client).java_startup.pending, Some(1));
+        assert!(!process(&mut client).java_language_session);
+        startup_result(root.path(), &mut client, startup_ready(1));
+        client
+            .request(Operation::LanguageStartJavaPoll { startup_id: 1 })
+            .unwrap();
+        assert_eq!(process(&mut client).java_startup.active, Some(1));
+        assert!(process(&mut client).java_language_session);
+        let result =
+            serde_json::json!({"profile":"maven_leaf","status":"unresolved","pom_path":"pom.xml"});
+        startup_result(root.path(), &mut client, result.clone());
+        assert!(
+            matches!(client.request(Operation::LanguageMavenModel).unwrap(), Payload::Language { value } if value == result)
+        );
+        let requests = recorded_requests(root.path());
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[1]["op"]["type"], "language_start_java_maven_begin");
+        assert_eq!(
+            requests[3]["op"],
+            serde_json::json!({"type":"language_maven_model"})
+        );
+        startup_result(
+            root.path(),
+            &mut client,
+            serde_json::json!({"startup_id":1,"state":"cancelled","cleanup_verified":true}),
+        );
+        client
+            .request(Operation::LanguageStartJavaCancel { startup_id: 1 })
+            .unwrap();
+        assert!(!process(&mut client).java_language_session);
+        assert_eq!(process(&mut client).java_startup.active, None);
+    }
 }
 
 fn maven_dependencies_operation() -> Operation {
@@ -2215,44 +2312,435 @@ fn maven_dependencies_require_optional_and_complete_lifecycle_without_wire_fallb
 
 #[test]
 fn maven_dependencies_forward_exact_identity_and_typed_snapshot_once() {
+    for agent in maven_agent_variants(true) {
+        let root = tempfile::tempdir().unwrap();
+        let serialized = serde_json::to_value(&agent).unwrap();
+        if agent.os == "windows" {
+            assert!(serialized.get("capability_groups").is_none());
+        }
+        let mut client = capability_client(root.path(), Some(agent));
+        let snapshot = serde_json::json!({
+            "schema":1,"profile":"maven_leaf","startup_id":7,"pom_path":"pom.xml",
+            "pom_sha256":"a".repeat(64),"declarations":[],
+            "observation":{"status":"unavailable","reason":"model_unavailable"}
+        });
+        next_result(
+            root.path(),
+            &mut client,
+            serde_json::json!({"Ok": {
+                "type":"maven_dependencies", "snapshot":snapshot
+            }}),
+        );
+        let Payload::MavenDependencies { snapshot: actual } =
+            client.request(maven_dependencies_operation()).unwrap()
+        else {
+            panic!("typed dependency snapshot expected");
+        };
+        assert_eq!(serde_json::to_value(actual).unwrap(), snapshot);
+        let requests = recorded_requests(root.path());
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1]["op"],
+            serde_json::json!({
+                "type":"language_maven_dependencies","startup_id":7,"pom_sha256":"a".repeat(64)
+            })
+        );
+        assert!(is_language_session_operation(
+            &maven_dependencies_operation()
+        ));
+        process(&mut client).java_language_session = true;
+        assert_eq!(
+            process(&mut client).request_timeout(&maven_dependencies_operation()),
+            JAVA_LANGUAGE_REQUEST_TIMEOUT
+        );
+    }
+}
+
+#[test]
+fn grouped_maven_claims_still_require_every_owned_java_and_maven_prerequisite_before_wire() {
+    for missing in JAVA_MAVEN_CAPABILITIES
+        .iter()
+        .chain(JAVA_STARTUP_CAPABILITIES)
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES)
+    {
+        let root = tempfile::tempdir().unwrap();
+        let mut agent = maven_agent_variants(true)[1].clone();
+        agent.capabilities.retain(|name| name.as_str() != *missing);
+        if JAVA_MAVEN_CAPABILITIES.contains(missing) {
+            // Removing one core operation requires a partial direct claim:
+            // the leaf group is indivisible and must not hide the missing half.
+            agent
+                .capability_groups
+                .retain(|name| name != JAVA_MAVEN_LEAF_GROUP);
+            agent.capabilities.extend(
+                JAVA_MAVEN_CAPABILITIES
+                    .iter()
+                    .filter(|name| *name != missing)
+                    .map(|name| (*name).to_owned()),
+            );
+        }
+        let mut client = capability_client(root.path(), Some(agent));
+        for operation in [
+            begin_maven_language(),
+            Operation::LanguageMavenModel,
+            maven_dependencies_operation(),
+        ] {
+            let error = client.request(operation).unwrap_err();
+            assert!(
+                error.starts_with("unsupported_operation:"),
+                "{missing}: {error}"
+            );
+            assert!(error.contains(missing), "{missing}: {error}");
+            assert!(client.is_connected());
+        }
+        assert_eq!(recorded_requests(root.path()).len(), 1, "{missing}");
+        assert_eq!(process(&mut client).next_id, 1, "{missing}");
+        assert_eq!(process(&mut client).java_startup.pending, None);
+        assert!(!process(&mut client).java_language_session);
+        read_fixture(&mut client);
+        let requests = recorded_requests(root.path());
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1]["op"]["type"], "read");
+        assert_eq!(requests[1]["id"], 2);
+    }
+}
+
+#[test]
+fn dependency_only_and_unknown_groups_cannot_launch_or_expand_other_operation_families() {
+    for groups in [
+        vec![JAVA_MAVEN_DEPENDENCIES_GROUP],
+        vec!["java_maven_leaf_v2", "java_maven_dependencies_v2"],
+        vec!["java_maven_leaf_v1_extra", "unknown_future_group"],
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut client = capability_client(
+            root.path(),
+            Some(grouped_agent_info(&async_java_capabilities(), &groups)),
+        );
+        for operation in [
+            begin_maven_language(),
+            Operation::LanguageMavenModel,
+            maven_dependencies_operation(),
+            start_language(),
+            start_task(),
+        ] {
+            let error = client.request(operation).unwrap_err();
+            assert!(
+                error.starts_with("unsupported_operation:"),
+                "{groups:?}: {error}"
+            );
+        }
+        assert_eq!(recorded_requests(root.path()).len(), 1);
+        assert!(client.is_connected());
+        read_fixture(&mut client);
+        assert_eq!(recorded_requests(root.path()).len(), 2);
+    }
+    // Recognized groups still supply only their narrow Maven operations.
     let root = tempfile::tempdir().unwrap();
-    let capabilities: Vec<_> = maven_capabilities()
-        .into_iter()
-        .chain(["language_maven_dependencies"])
-        .collect();
-    let mut client = capability_client(root.path(), Some(agent_info(&capabilities)));
-    let snapshot = serde_json::json!({
-        "schema":1,"profile":"maven_leaf","startup_id":7,"pom_path":"pom.xml",
-        "pom_sha256":"a".repeat(64),"declarations":[],
-        "observation":{"status":"unavailable","reason":"model_unavailable"}
+    let mut client = capability_client(
+        root.path(),
+        Some(grouped_agent_info(
+            &["list", "read"],
+            &[JAVA_MAVEN_LEAF_GROUP, JAVA_MAVEN_DEPENDENCIES_GROUP],
+        )),
+    );
+    for operation in advanced_operations().into_iter().chain([
+        begin_maven_language(),
+        Operation::LanguageMavenModel,
+        maven_dependencies_operation(),
+    ]) {
+        assert!(client
+            .request(operation)
+            .unwrap_err()
+            .starts_with("unsupported_operation:"));
+    }
+    assert_eq!(recorded_requests(root.path()).len(), 1);
+    read_fixture(&mut client);
+}
+
+#[test]
+fn late_grouped_hello_reply_never_replaces_the_first_capability_snapshot() {
+    let root = tempfile::tempdir().unwrap();
+    let mut client = capability_client(root.path(), Some(agent_info(&async_java_capabilities())));
+    let snapshot = serde_json::to_value(client.handshake()).unwrap();
+    let late = serde_json::json!({
+        "type": "hello", "protocol": 4, "root": "/changed-after-connect",
+        "agent": maven_agent_variants(true)[1],
     });
+    next_result(root.path(), &mut client, serde_json::json!({"Ok": late}));
+    assert!(matches!(
+        client
+            .request(Operation::Read {
+                path: "fixture.txt".into()
+            })
+            .unwrap(),
+        Payload::Hello { .. }
+    ));
+    for operation in [
+        begin_maven_language(),
+        Operation::LanguageMavenModel,
+        maven_dependencies_operation(),
+    ] {
+        assert!(client
+            .request(operation)
+            .unwrap_err()
+            .starts_with("unsupported_operation:"));
+    }
+    assert_eq!(serde_json::to_value(client.handshake()).unwrap(), snapshot);
+    assert_eq!(
+        serde_json::to_value(client.request(Operation::Hello).unwrap()).unwrap(),
+        snapshot
+    );
+    assert_eq!(recorded_requests(root.path()).len(), 2);
+    read_fixture(&mut client);
+    let requests = recorded_requests(root.path());
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0]["op"]["type"], "hello");
+    assert_eq!(requests[1]["op"]["type"], "read");
+    assert_eq!(requests[2]["op"]["type"], "read");
+}
+
+#[test]
+fn unsolicited_grouped_hello_closes_without_discovery_or_capability_upgrade() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path().join("hello.json"),
+        serde_json::json!({
+            "type": "hello", "protocol": 4, "root": "/first",
+            "agent": agent_info(&async_java_capabilities()),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut client = Client::from_process(spawn("idle_unsolicited", root.path())).unwrap();
+    let snapshot = serde_json::to_value(client.handshake()).unwrap();
+    let wake = register_idle_wake(&mut client);
     next_result(
         root.path(),
         &mut client,
         serde_json::json!({"Ok": {
-            "type":"maven_dependencies", "snapshot":snapshot
+            "type": "hello", "protocol": 4, "root": "/late",
+            "agent": maven_agent_variants(true)[1],
         }}),
     );
-    let Payload::MavenDependencies { snapshot: actual } =
-        client.request(maven_dependencies_operation()).unwrap()
-    else {
-        panic!("typed dependency snapshot expected");
-    };
-    assert_eq!(serde_json::to_value(actual).unwrap(), snapshot);
+    fs::write(root.path().join("release-1"), b"release unsolicited Hello").unwrap();
+    wake.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(client
+        .observe_idle_transport()
+        .unwrap_err()
+        .starts_with("protocol_error: unsolicited response id 2"));
+    assert_eq!(serde_json::to_value(client.handshake()).unwrap(), snapshot);
+    for operation in [
+        Operation::Hello,
+        begin_maven_language(),
+        maven_dependencies_operation(),
+    ] {
+        assert!(client
+            .request(operation)
+            .unwrap_err()
+            .starts_with("disconnected:"));
+    }
+    client.close_and_wait(Duration::from_secs(5)).unwrap();
     let requests = recorded_requests(root.path());
-    assert_eq!(requests.len(), 2);
-    assert_eq!(
-        requests[1]["op"],
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["op"]["type"], "hello");
+}
+
+#[test]
+fn reconnect_drops_grouped_support_and_owned_startup_identity_without_replay() {
+    let root = tempfile::tempdir().unwrap();
+    let mut client = capability_client(root.path(), Some(maven_agent_variants(true)[1].clone()));
+    startup_result(
+        root.path(),
+        &mut client,
         serde_json::json!({
-            "type":"language_maven_dependencies","startup_id":7,"pom_sha256":"a".repeat(64)
-        })
+            "startup_id": 7, "state": "starting", "process_id": null,
+        }),
     );
-    assert!(is_language_session_operation(
-        &maven_dependencies_operation()
-    ));
-    process(&mut client).java_language_session = true;
+    client.request(begin_maven_language()).unwrap();
+    startup_result(root.path(), &mut client, startup_ready(7));
+    client
+        .request(Operation::LanguageStartJavaPoll { startup_id: 7 })
+        .unwrap();
+    assert_eq!(process(&mut client).java_startup.active, Some(7));
+    next_result(root.path(), &mut client, serde_json::Value::Null);
+    assert!(client
+        .request(Operation::LanguageEvents)
+        .unwrap_err()
+        .starts_with("transport_read:"));
+    assert!(!client.is_connected());
+    assert!(!process(&mut client).java_language_session);
+    assert_eq!(process(&mut client).java_startup.pending, None);
+    assert_eq!(process(&mut client).java_startup.active, None);
+    client.close_and_wait(Duration::from_secs(5)).unwrap();
+    assert_eq!(recorded_requests(root.path()).len(), 4);
+
+    let fresh_root = tempfile::tempdir().unwrap();
+    let mut fresh = capability_client(
+        fresh_root.path(),
+        Some(agent_info(&async_java_capabilities())),
+    );
+    assert!(!process(&mut fresh).java_language_session);
+    assert_eq!(process(&mut fresh).java_startup.pending, None);
+    assert_eq!(process(&mut fresh).java_startup.active, None);
     assert_eq!(
-        process(&mut client).request_timeout(&maven_dependencies_operation()),
-        JAVA_LANGUAGE_REQUEST_TIMEOUT
+        process(&mut fresh).request_timeout(&Operation::LanguageEvents),
+        Duration::from_secs(30)
     );
+    let Payload::Hello {
+        agent: Some(agent), ..
+    } = fresh.handshake()
+    else {
+        panic!("new connection metadata expected");
+    };
+    assert!(agent.capability_groups.is_empty());
+    for operation in [
+        begin_maven_language(),
+        Operation::LanguageMavenModel,
+        maven_dependencies_operation(),
+    ] {
+        assert!(fresh
+            .request(operation)
+            .unwrap_err()
+            .starts_with("unsupported_operation:"));
+    }
+    assert_eq!(recorded_requests(fresh_root.path()).len(), 1);
+    read_fixture(&mut fresh);
+    let requests = recorded_requests(fresh_root.path());
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["id"], 1);
+    assert_eq!(requests[1]["id"], 2);
+    assert_eq!(requests[1]["op"]["type"], "read");
+}
+
+#[test]
+fn old_linux_flat_inventory_keeps_typed_java_without_admitting_maven_or_discovery() {
+    // Frozen 0.37 Linux isolated-agent wire inventory, independent of current
+    // inventory generation. An empty groups field is equivalent to omission.
+    let capabilities = [
+        "list",
+        "read",
+        "write",
+        "search",
+        "git_status",
+        "run",
+        "git_changes",
+        "git_diff",
+        "run_start",
+        "run_poll",
+        "run_cancel",
+        "language_start",
+        "language_start_java",
+        "language_start_java_begin",
+        "language_start_java_poll",
+        "language_start_java_cancel",
+        "java_diagnostics_refresh",
+        "language_organize_java_imports",
+        "language_java_implementations",
+        "language_open",
+        "language_change",
+        "language_close",
+        "language_query",
+        "language_format",
+        "language_references",
+        "language_document_symbols",
+        "language_workspace_symbols",
+        "language_resolve_uri",
+        "language_resolve_completion",
+        "language_events",
+        "language_stop",
+    ];
+    assert_eq!(capabilities.len(), 31);
+    for explicit_empty in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let mut hello = serde_json::json!({
+            "type": "hello", "protocol": 4, "root": "/old-linux",
+            "agent": {
+                "schema": 1, "version": "0.37.0", "os": "linux", "arch": "x86_64",
+                "capabilities": capabilities,
+            },
+        });
+        if explicit_empty {
+            hello["agent"]["capability_groups"] = serde_json::json!([]);
+        }
+        let mut client = Client::from_process(capability_peer(root.path(), hello)).unwrap();
+        let snapshot = serde_json::to_value(client.handshake()).unwrap();
+        let Payload::Hello {
+            agent: Some(agent), ..
+        } = client.handshake()
+        else {
+            panic!("old Linux metadata expected");
+        };
+        assert_eq!(agent.capabilities.len(), 31);
+        assert!(agent.capability_groups.is_empty());
+        for capability in capabilities {
+            assert!(agent.supports(capability), "{capability}");
+        }
+        for operation in [
+            begin_maven_language(),
+            Operation::LanguageMavenModel,
+            maven_dependencies_operation(),
+        ] {
+            assert!(client
+                .request(operation)
+                .unwrap_err()
+                .starts_with("unsupported_operation:"));
+        }
+        assert_eq!(recorded_requests(root.path()).len(), 1);
+        startup_result(
+            root.path(),
+            &mut client,
+            serde_json::json!({
+                "startup_id": 1, "state": "starting", "process_id": null,
+            }),
+        );
+        client.request(begin_java_language()).unwrap();
+        read_fixture(&mut client);
+        startup_result(
+            root.path(),
+            &mut client,
+            serde_json::json!({
+                "startup_id": 1, "state": "cancelled", "cleanup_verified": true,
+            }),
+        );
+        client
+            .request(Operation::LanguageStartJavaCancel { startup_id: 1 })
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(client.request(Operation::Hello).unwrap()).unwrap(),
+            snapshot
+        );
+        let requests = recorded_requests(root.path());
+        let operations: Vec<_> = requests
+            .iter()
+            .map(|request| request["op"]["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            operations,
+            [
+                "hello",
+                "language_start_java_begin",
+                "read",
+                "language_start_java_cancel"
+            ]
+        );
+    }
+}
+
+#[test]
+fn duplicate_group_fields_are_rejected_on_the_wire_without_legacy_fallback() {
+    let root = tempfile::tempdir().unwrap();
+    let agent = serde_json::to_string(&agent_info(&["list", "read"])).unwrap();
+    let agent = agent.strip_suffix('}').unwrap();
+    let hello = format!(
+        "{{\"type\":\"hello\",\"protocol\":4,\"root\":\"/fixture\",\"agent\":{agent},\"capability_groups\":[\"{JAVA_MAVEN_LEAF_GROUP}\"],\"capability_groups\":[]}}}}"
+    );
+    fs::write(root.path().join("hello.json"), hello).unwrap();
+    let error = match Client::from_process(spawn("capability_peer", root.path())) {
+        Ok(_) => panic!("accepted duplicate capability_groups fields"),
+        Err(error) => error,
+    };
+    assert!(error.starts_with("transport_read:"), "{error}");
+    wait_until(|| root.path().join("eof").exists());
+    assert_eq!(recorded_requests(root.path()).len(), 1);
 }

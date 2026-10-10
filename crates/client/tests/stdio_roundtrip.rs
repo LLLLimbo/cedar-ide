@@ -15,6 +15,7 @@ fn process_round_trip_preserves_revisions() {
         panic!("current real agent must advertise metadata");
     };
     info.validate().unwrap();
+    assert!(info.capability_groups.is_empty());
     assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
     assert_eq!(info.os, std::env::consts::OS);
     assert_eq!(info.arch, std::env::consts::ARCH);

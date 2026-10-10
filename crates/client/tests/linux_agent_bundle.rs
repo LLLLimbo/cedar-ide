@@ -181,6 +181,7 @@ fn metadata(client: &Client, root: &Path) -> ProbeResult<AgentInfo> {
         || info.arch != "x86_64"
         || !expected.windows(2).all(|pair| pair[0] < pair[1])
         || info.capabilities != expected
+        || !info.capability_groups.is_empty()
     {
         return Err("metadata");
     }

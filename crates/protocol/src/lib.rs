@@ -11,6 +11,12 @@ pub const MAX_AGENT_VERSION_BYTES: usize = 64;
 pub const MAX_AGENT_PLATFORM_BYTES: usize = 32;
 pub const MAX_AGENT_CAPABILITIES: usize = 32;
 pub const MAX_CAPABILITY_BYTES: usize = 64;
+pub const MAX_AGENT_CAPABILITY_GROUPS: usize = 2;
+pub const MAX_CAPABILITY_GROUP_BYTES: usize = 64;
+pub const MAX_CAPABILITY_GROUPS_IDENTIFIER_BYTES: usize = 128;
+/// Maximum compact JSON array size after identifier validation: ["…","…"].
+/// Whitespace and escaped spellings on the wire remain subject to MAX_FRAME_BYTES.
+pub const MAX_CAPABILITY_GROUPS_JSON_BYTES: usize = 135;
 /// Minimum complete lifecycle required before starting a managed command task.
 pub const RUN_TASK_CAPABILITIES: &[&str] = &["run_start", "run_poll", "run_cancel"];
 /// Minimum generic session Cedar must be able to synchronize and shut down.
@@ -47,6 +53,19 @@ pub const JAVA_MAVEN_CAPABILITIES: &[&str] =
     &["language_start_java_maven_begin", "language_maven_model"];
 /// Optional read view; never changes the original Maven capability pair.
 pub const JAVA_MAVEN_DEPENDENCIES_CAPABILITY: &str = "language_maven_dependencies";
+/// Versioned support claims only; neither group grants execution permission.
+pub const JAVA_MAVEN_LEAF_GROUP: &str = "java_maven_leaf_v1";
+pub const JAVA_MAVEN_DEPENDENCIES_GROUP: &str = "java_maven_dependencies_v1";
+
+/// Exact, bounded group lookup. Unknown groups and versions are inert.
+/// These members do not include lifecycle prerequisites or imply OS support.
+pub fn capability_group_members(group: &str) -> &'static [&'static str] {
+    match group {
+        JAVA_MAVEN_LEAF_GROUP => JAVA_MAVEN_CAPABILITIES,
+        JAVA_MAVEN_DEPENDENCIES_GROUP => &[JAVA_MAVEN_DEPENDENCIES_CAPABILITY],
+        _ => &[],
+    }
+}
 
 /// Unverified implementation information, never execution permission or identity.
 /// Validate received information before retaining it as a connection snapshot.
@@ -57,6 +76,8 @@ pub struct AgentInfo {
     pub os: String,
     pub arch: String,
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capability_groups: Vec<String>,
 }
 
 impl AgentInfo {
@@ -94,15 +115,45 @@ impl AgentInfo {
                 return Err(invalid("Agent capabilities must be unique"));
             }
         }
+        if self.capability_groups.len() > MAX_AGENT_CAPABILITY_GROUPS {
+            return Err(invalid("Agent metadata exceeds 2 capability groups"));
+        }
+        for (index, group) in self.capability_groups.iter().enumerate() {
+            if !valid_identifier(group, MAX_CAPABILITY_GROUP_BYTES) {
+                return Err(invalid(
+                    "Agent capability groups must be 1..64 lowercase ASCII identifier bytes",
+                ));
+            }
+            if self.capability_groups[..index].contains(group) {
+                return Err(invalid("Agent capability groups must be unique"));
+            }
+        }
+        // Identifiers contain no JSON escapes. Count brackets, quotes and commas
+        // without serializing or flattening either advertised vector.
+        let identifier_bytes: usize = self.capability_groups.iter().map(String::len).sum();
+        let json_bytes = 2
+            + identifier_bytes
+            + 2 * self.capability_groups.len()
+            + self.capability_groups.len().saturating_sub(1);
+        if identifier_bytes > MAX_CAPABILITY_GROUPS_IDENTIFIER_BYTES
+            || json_bytes > MAX_CAPABILITY_GROUPS_JSON_BYTES
+        {
+            return Err(invalid("Agent capability groups exceed their byte budget"));
+        }
         Ok(())
     }
 
-    /// Returns only a support claim. Callers must separately enforce trust,
+    /// Returns the union of direct claims and exact known group members, without
+    /// changing either advertised vector. Callers must separately enforce trust,
     /// operation-family prerequisites, and current connection/session state.
     pub fn supports(&self, name: &str) -> bool {
         self.capabilities
             .iter()
             .any(|capability| capability == name)
+            || self
+                .capability_groups
+                .iter()
+                .any(|group| capability_group_members(group).contains(&name))
     }
 }
 

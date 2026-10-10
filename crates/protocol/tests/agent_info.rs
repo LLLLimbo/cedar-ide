@@ -20,6 +20,7 @@ fn agent() -> AgentInfo {
             "write".into(),
             "search".into(),
         ],
+        capability_groups: Vec::new(),
     }
 }
 

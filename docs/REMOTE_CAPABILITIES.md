@@ -17,6 +17,35 @@ Capability names are the existing serialized operation names. `hello` requires
 no capability. The object has required `schema`, `version`, `os`, `arch` and
 `capabilities` fields. The outer object can be absent or null for an older peer.
 
+## Optional capability groups (0.38)
+
+Schema 1 additionally accepts `capability_groups`, omitted when empty. All current
+shipping agents still omit it and retain their existing flat inventories. This
+checkpoint does not activate Linux Maven or change protocol 4, the 32-name flat
+limit, execution trust, or server/session prerequisites.
+
+The field accepts at most two unique lowercase ASCII identifiers, each 1..64
+bytes. Identifier contents total at most 128 bytes; the compact JSON array is at
+most 135 bytes. The existing frame bound still applies to incoming whitespace
+and encoding. Null, wrong types, duplicates, invalid identifiers and excessive
+length/count fail metadata validation. Well-formed unknown IDs are inert.
+
+Two exact versioned IDs are understood: `java_maven_leaf_v1` maps to
+`language_start_java_maven_begin` and `language_maven_model`;
+`java_maven_dependencies_v1` maps only to `language_maven_dependencies`.
+Direct and grouped claims form an idempotent lookup union; expansion never
+appends names to the flat vector. Unknown versions, prefixes and platform/version
+strings grant nothing. Partial inventories remain structurally valid, but
+dispatch still requires the complete Maven core, owned startup and Java session
+families, plus trust and current session/provider/POM checks. A dependencies-only
+claim cannot launch Maven. Unsupported workspace profiles strip both forms.
+
+Older schema-1 readers ignore this optional field, retain their previous flat
+capabilities and decline the newly grouped operations. New readers accept older
+Windows direct Maven claims. Metadata-free peers remain file-only. There is no
+extra discovery request, changed Hello snapshot, fallback execution or automatic
+reconnect. Capability metadata is an unverified support claim, never authority.
+
 Validation limits:
 
 - Metadata schema must be 1

@@ -44,6 +44,9 @@ def validate(hello):
 
 
 def validate_platform_capabilities(info):
+    # 0.38 adds reader compatibility only. Shipping Hello stays byte-shape
+    # compatible and must omit the unused optional extension entirely.
+    assert 'capability_groups' not in info
     capabilities = set(info['capabilities'])
     # This script connects only to the normal isolated agent. Require the whole
     # platform set, including absence of capabilities assigned to another host.

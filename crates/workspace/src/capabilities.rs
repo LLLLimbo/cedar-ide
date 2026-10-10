@@ -60,7 +60,21 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
         capabilities: capabilities.into_iter().map(str::to_owned).collect(),
+        // Compatibility support is staged before Linux Maven activation.
+        // Shipping inventories retain their existing flat wire representation.
+        capability_groups: Vec::new(),
     }
+}
+
+pub(super) fn remove_maven_claims(info: &mut AgentInfo) {
+    info.capabilities.retain(|name| {
+        !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str())
+            && name != cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY
+    });
+    info.capability_groups.retain(|name| {
+        name != cedar_protocol::JAVA_MAVEN_LEAF_GROUP
+            && name != cedar_protocol::JAVA_MAVEN_DEPENDENCIES_GROUP
+    });
 }
 
 #[cfg(test)]
@@ -293,6 +307,7 @@ mod tests {
                     os: os.into(),
                     arch: "x86_64".into(),
                     capabilities: expected.into_iter().map(str::to_owned).collect(),
+                    capability_groups: Vec::new(),
                 };
                 info.validate().unwrap();
                 // Exercise remaining capacity and one-over rejection with the
@@ -391,6 +406,53 @@ mod tests {
         assert!(!workspace.allow_run);
         assert!(workspace.tasks.is_none());
         assert!(workspace.language.is_none());
+    }
+
+    #[test]
+    fn shipping_hello_omits_groups_and_retains_flat_inventory() {
+        let root = tempfile::tempdir().unwrap();
+        for mode in [BackendMode::InProcess, BackendMode::IsolatedAgent] {
+            let mut workspace = Workspace::with_backend_mode(root.path(), mode).unwrap();
+            let info = hello(&mut workspace);
+            assert!(info.capability_groups.is_empty());
+            assert!(serde_json::to_value(&info)
+                .unwrap()
+                .get("capability_groups")
+                .is_none());
+            assert_eq!(
+                info.capabilities,
+                expected_platform_capabilities(std::env::consts::OS, mode)
+            );
+            assert!(!workspace.allow_run);
+            assert!(workspace.language.is_none());
+            assert!(workspace.tasks.is_none());
+        }
+    }
+
+    #[test]
+    fn unsupported_profile_filter_removes_direct_and_group_maven_claims() {
+        let mut info = agent_info(BackendMode::InProcess);
+        info.capabilities = vec![
+            "read".into(),
+            "language_start_java_maven_begin".into(),
+            "language_maven_model".into(),
+            "language_maven_dependencies".into(),
+        ];
+        info.capability_groups = vec![
+            cedar_protocol::JAVA_MAVEN_LEAF_GROUP.into(),
+            cedar_protocol::JAVA_MAVEN_DEPENDENCIES_GROUP.into(),
+        ];
+        remove_maven_claims(&mut info);
+        assert_eq!(info.capabilities, ["read"]);
+        assert!(info.capability_groups.is_empty());
+        for name in cedar_protocol::JAVA_MAVEN_CAPABILITIES
+            .iter()
+            .chain([&cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY])
+        {
+            assert!(!info.supports(name));
+        }
+        remove_maven_claims(&mut info);
+        assert_eq!(info.capabilities, ["read"]);
     }
 
     #[test]

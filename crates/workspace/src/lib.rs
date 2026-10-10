@@ -189,10 +189,7 @@ impl Workspace {
                 agent: Some({
                     let mut info = capabilities::agent_info(self.backend_mode);
                     if !self.maven_platform_supported() {
-                        info.capabilities.retain(|name| {
-                            !cedar_protocol::JAVA_MAVEN_CAPABILITIES.contains(&name.as_str())
-                                && name != cedar_protocol::JAVA_MAVEN_DEPENDENCIES_CAPABILITY
-                        });
+                        capabilities::remove_maven_claims(&mut info);
                     }
                     info
                 }),

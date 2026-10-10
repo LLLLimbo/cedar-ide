@@ -227,6 +227,193 @@ fn apply_snapshot(app: &mut CedarApp, command: Command, snapshot: MavenDependenc
     reply(app, command, Ok(Payload::MavenDependencies { snapshot }));
 }
 
+fn grouped_app(dependencies: bool) -> (CedarApp, Receiver<Command>) {
+    let (mut app, rx) = app();
+    let info = app.agent_info.as_mut().unwrap();
+    info.capabilities.retain(|name| {
+        !matches!(
+            name.as_str(),
+            "language_start_java_maven_begin"
+                | "language_maven_model"
+                | "language_maven_dependencies"
+        )
+    });
+    info.capability_groups = vec!["java_maven_leaf_v1".into()];
+    if dependencies {
+        info.capability_groups
+            .push("java_maven_dependencies_v1".into());
+    }
+    info.validate().unwrap();
+    (app, rx)
+}
+
+#[test]
+fn grouped_maven_claims_require_explicit_start_and_optional_dependency_inspection() {
+    for dependencies in [false, true] {
+        let (mut app, rx) = grouped_app(dependencies);
+        app.inspect_maven_dependencies();
+        assert!(rx.try_recv().is_err(), "a group must not launch Java");
+        assert!(app
+            .operation_problem(&Operation::LanguageMavenModel)
+            .is_some());
+
+        start(&mut app, &rx, 42, &hash());
+        assert!(app
+            .operation_problem(&Operation::LanguageMavenModel)
+            .is_none());
+        assert_eq!(
+            app.operation_problem(&Operation::LanguageMavenDependencies {
+                startup_id: 42,
+                pom_sha256: hash(),
+            })
+            .is_none(),
+            dependencies
+        );
+        app.inspect_maven_dependencies();
+        if dependencies {
+            let command = rx
+                .try_recv()
+                .expect("explicit grouped dependency inspection");
+            assert!(matches!(
+                &command.op,
+                Operation::LanguageMavenDependencies { startup_id: 42, pom_sha256 }
+                    if pom_sha256 == &hash()
+            ));
+            apply_snapshot(&mut app, command, snapshot());
+            assert!(app.language.maven_dependencies.snapshot.is_some());
+        } else {
+            assert!(app.language.maven_dependencies.snapshot.is_none());
+        }
+        assert!(rx.try_recv().is_err());
+        tick(&mut app, 60.0);
+        tick(&mut app, 600.0);
+        assert!(
+            rx.try_recv().is_err(),
+            "groups must not add automatic requests"
+        );
+    }
+}
+
+#[test]
+fn grouped_dependency_dispatch_preserves_trust_ready_session_and_pom_guards() {
+    for gate in [
+        "connection",
+        "trust",
+        "running",
+        "startup",
+        "profile",
+        "provider",
+        "closing",
+        "closed",
+        "changed_pom",
+        "session",
+        "leaf_group",
+        "dependency_version",
+        "request_startup",
+        "request_pom",
+    ] {
+        let (mut app, rx) = grouped_app(true);
+        start(&mut app, &rx, 42, &hash());
+        let mut document = Document::new(1, "Main.java".into(), "disk".into(), "rev".into());
+        document.text = "unsaved draft".into();
+        app.documents.push(document);
+        let mut startup_id = 42;
+        let mut pom_sha256 = hash();
+        match gate {
+            "connection" => app.state = ConnectionState::Disconnected,
+            "trust" => {
+                app.active_form.as_mut().unwrap().allow_run = false;
+                app.form.allow_run = true;
+            }
+            "running" => app.language.running = false,
+            "startup" => app.language.running_startup_id = None,
+            "profile" => app.language.mode = ServerMode::Generic,
+            "provider" => {
+                app.language.capabilities["executeCommandProvider"]["commands"] =
+                    json!(["java.project.getSettings.other"]);
+            }
+            "closing" => app.close_after_language_stop = true,
+            "closed" => app.language.diagnostics_exited = true,
+            "changed_pom" => {
+                app.observe_maven_pom_acknowledgement(app.next_request, "pom.xml", &"b".repeat(64));
+            }
+            "session" => app.language.reset(),
+            "leaf_group" => app
+                .agent_info
+                .as_mut()
+                .unwrap()
+                .capability_groups
+                .retain(|group| group != "java_maven_leaf_v1"),
+            "dependency_version" => {
+                app.agent_info.as_mut().unwrap().capability_groups = vec![
+                    "java_maven_leaf_v1".into(),
+                    "java_maven_dependencies_v2".into(),
+                ];
+            }
+            "request_startup" => startup_id = 43,
+            "request_pom" => pom_sha256 = "b".repeat(64),
+            _ => unreachable!(),
+        }
+        let operation = Operation::LanguageMavenDependencies {
+            startup_id,
+            pom_sha256,
+        };
+        assert!(app.operation_problem(&operation).is_some(), "{gate}");
+        let next = app.next_request;
+        assert_eq!(app.request(operation, crate::Job::Git), 0, "{gate}");
+        assert_eq!(app.next_request, next, "{gate}");
+        assert!(rx.try_recv().is_err(), "{gate} must block dispatch");
+        assert_eq!(app.documents[0].text, "unsaved draft", "{gate}");
+        assert_eq!(app.documents[0].revision.as_deref(), Some("rev"), "{gate}");
+    }
+}
+
+#[test]
+fn grouped_claims_cannot_replace_the_maven_ready_witness() {
+    for missing in [
+        "cedar_java_profile",
+        "cedar_java_maven_model",
+        "cedar_java_maven_pom_sha256",
+    ] {
+        let (mut app, rx) = grouped_app(true);
+        app.start_language();
+        let begin = rx.try_recv().unwrap();
+        assert!(matches!(
+            begin.op,
+            Operation::LanguageStartJavaMavenBegin { .. }
+        ));
+        reply(
+            &mut app,
+            begin,
+            Ok(Payload::Language {
+                value: json!({"state":"starting","startup_id":42,"process_id":null}),
+            }),
+        );
+        tick(&mut app, 0.3);
+        let poll = rx.try_recv().unwrap();
+        assert!(matches!(
+            poll.op,
+            Operation::LanguageStartJavaPoll { startup_id: 42 }
+        ));
+        let mut value = json!({"state":"ready","startup_id":42,"language":{"started":true,"initialize":{"capabilities":{"executeCommandProvider":{"commands":["java.project.getSettings"]}},"cedar_java_profile":"maven_leaf","cedar_java_maven_model":true,"cedar_java_maven_pom_sha256":hash()}}});
+        value["language"]["initialize"]
+            .as_object_mut()
+            .unwrap()
+            .remove(missing);
+        reply(&mut app, poll, Ok(Payload::Language { value }));
+        assert!(!app.language.running, "missing {missing}");
+        assert!(app.language.restart_blocked, "missing {missing}");
+        app.inspect_maven_dependencies();
+        assert!(app
+            .operation_problem(&Operation::LanguageMavenModel)
+            .is_some());
+        assert!(
+            rx.try_recv().is_err(),
+            "missing {missing} must not dispatch"
+        );
+    }
+}
+
 #[test]
 fn dependency_inspection_requires_optional_capability_trust_provider_and_verified_ready() {
     for missing in [

@@ -33,6 +33,15 @@ EXPECTED = {
 
 
 class PlatformCapabilityTests(unittest.TestCase):
+    def test_shipping_inventory_does_not_activate_or_emit_groups(self):
+        for platform, expected in EXPECTED.items():
+            for groups in ([], ['java_maven_leaf_v1'], ['unknown_v1'], None):
+                with self.subTest(platform=platform, groups=groups):
+                    with self.assertRaises(AssertionError):
+                        smoke.validate_platform_capabilities({
+                            'os': platform, 'capabilities': sorted(expected),
+                            'capability_groups': groups})
+
     def check(self, platform, capabilities):
         smoke.validate_platform_capabilities({'os': platform, 'capabilities': list(capabilities)})
 

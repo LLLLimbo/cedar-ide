@@ -208,6 +208,7 @@ fn fixture_trust_is_explicit_and_normal_all_feature_hosts_remain_gated() {
     fs::create_dir(&lsp_dir).unwrap();
     let mut normal = RawAgent::new(root.path(), true);
     let info = metadata(normal.ok(Operation::Hello));
+    assert!(info.capability_groups.is_empty());
     assert!(!info.supports("language_start"));
     for cap in JAVA_LANGUAGE_SESSION_CAPABILITIES {
         assert!(info.supports(cap), "standard isolated binary omitted {cap}");

@@ -262,6 +262,7 @@ fn typed_java_capabilities_keep_maven_gated(agent: &Agent) {
         panic!("missing agent metadata");
     };
     info.validate().unwrap();
+    assert!(info.capability_groups.is_empty());
     assert_eq!(info.os, "linux");
     assert!(info.supports("language_start"));
     for capability in [

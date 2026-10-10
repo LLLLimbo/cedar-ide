@@ -33,6 +33,7 @@ fn isolated_capabilities_enforce_trust_and_do_not_enable_the_in_process_host() {
     let root = tempfile::tempdir().unwrap();
     let mut untrusted = RawAgent::new(root.path(), false);
     let info = metadata(untrusted.ok(Operation::Hello));
+    assert!(info.capability_groups.is_empty());
     assert_eq!(info.os, "windows");
     assert_eq!(info.arch, std::env::consts::ARCH);
     assert_eq!(info.version, env!("CARGO_PKG_VERSION"));

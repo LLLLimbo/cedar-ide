@@ -226,6 +226,7 @@ pub(super) fn full_test_agent() -> cedar_protocol::AgentInfo {
         .into_iter()
         .map(str::to_owned)
         .collect(),
+        capability_groups: Vec::new(),
     }
 }
 
@@ -272,6 +273,157 @@ mod tests {
                 agent,
             }),
         });
+    }
+
+    fn maven_claims(groups: &[&str]) -> cedar_protocol::AgentInfo {
+        let mut info = full_test_agent();
+        info.capabilities = ["list", "read"]
+            .into_iter()
+            .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES.iter().copied())
+            .chain(JAVA_STARTUP_CAPABILITIES.iter().copied())
+            .map(str::to_owned)
+            .collect();
+        info.capability_groups = groups.iter().map(|group| (*group).into()).collect();
+        info
+    }
+
+    fn maven_begin() -> Operation {
+        Operation::LanguageStartJavaMavenBegin {
+            java_executable: r"C:\Java\bin\java.exe".into(),
+            distribution: r"D:\jdt".into(),
+            data_directory: r"D:\data".into(),
+            local_repository: r"D:\repository".into(),
+        }
+    }
+
+    #[test]
+    fn grouped_maven_hello_keeps_execution_explicit_trusted_and_connection_scoped() {
+        for os in ["linux", "windows", "unknown"] {
+            for trusted in [false, true] {
+                let mut info = maven_claims(&["java_maven_leaf_v1", "java_maven_dependencies_v1"]);
+                info.os = os.into();
+                let (mut app, rx) = connecting(trusted, Some(info.clone()));
+                assert!(matches!(rx.try_recv().unwrap().op, Operation::List { .. }));
+                assert!(
+                    rx.try_recv().is_err(),
+                    "Hello must not launch or inspect Java"
+                );
+                assert_eq!(app.agent_info.as_ref(), Some(&info));
+                assert_eq!(app.execution_trusted(), trusted);
+                assert!(app.backend_java_maven_supported());
+                assert!(app.backend_supports("language_maven_dependencies"));
+                assert!(!app.backend_run_supported());
+                assert!(!app.backend_generic_language_supported());
+                for operation in [
+                    Operation::LanguageMavenModel,
+                    Operation::LanguageMavenDependencies {
+                        startup_id: 42,
+                        pom_sha256: "a".repeat(64),
+                    },
+                    Operation::RunStart {
+                        program: "tool".into(),
+                        args: vec![],
+                        timeout_secs: 1,
+                    },
+                    Operation::LanguageStart {
+                        program: "server".into(),
+                        args: vec![],
+                    },
+                ] {
+                    assert_eq!(app.request(operation, Job::Git), 0);
+                    assert!(rx.try_recv().is_err());
+                }
+                assert_eq!(app.request(maven_begin(), Job::Git) != 0, trusted);
+                if trusted {
+                    assert!(matches!(
+                        rx.try_recv().unwrap().op,
+                        Operation::LanguageStartJavaMavenBegin { .. }
+                    ));
+                }
+                assert!(rx.try_recv().is_err());
+                app.state = ConnectionState::Disconnected;
+                assert!(!app.backend_java_maven_supported());
+                assert_eq!(app.request(maven_begin(), Job::Git), 0);
+                assert!(rx.try_recv().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn maven_groups_never_supply_missing_java_lifecycle_prerequisites() {
+        for missing in JAVA_LANGUAGE_SESSION_CAPABILITIES
+            .iter()
+            .chain(JAVA_STARTUP_CAPABILITIES)
+        {
+            let mut info = maven_claims(&["java_maven_leaf_v1", "java_maven_dependencies_v1"]);
+            info.capabilities.retain(|name| name.as_str() != *missing);
+            let (mut app, rx) = connecting(true, Some(info));
+            assert!(matches!(rx.try_recv().unwrap().op, Operation::List { .. }));
+            assert!(!app.backend_java_maven_supported(), "missing {missing}");
+            let next = app.next_request;
+            assert_eq!(app.request(maven_begin(), Job::Git), 0, "missing {missing}");
+            assert_eq!(app.next_request, next);
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn dependency_only_unknown_and_versioned_groups_cannot_start_maven_on_any_os() {
+        for groups in [
+            vec![],
+            vec!["java_maven_dependencies_v1"],
+            vec!["java_maven_leaf_v2", "java_maven_dependencies_v1"],
+            vec!["java_maven_leaf_v1.other"],
+            vec!["future_execute_everything"],
+        ] {
+            for os in ["linux", "windows", "unknown"] {
+                let mut info = maven_claims(&groups);
+                info.os = os.into();
+                let (mut app, rx) = connecting(true, Some(info));
+                assert!(matches!(rx.try_recv().unwrap().op, Operation::List { .. }));
+                assert!(!app.backend_java_maven_supported(), "{groups:?} on {os}");
+                assert_eq!(app.request(maven_begin(), Job::Git), 0);
+                assert_eq!(app.request(Operation::GitStatus, Job::Git), 0);
+                assert_eq!(
+                    app.request(
+                        Operation::Run {
+                            program: "tool".into(),
+                            args: vec![],
+                            timeout_secs: 1,
+                        },
+                        Job::Git,
+                    ),
+                    0
+                );
+                assert!(rx.try_recv().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn direct_windows_maven_claims_keep_the_existing_dispatch_contract() {
+        let mut info = maven_claims(&[]);
+        info.os = "windows".into();
+        info.capabilities.extend([
+            "language_start_java_maven_begin".into(),
+            "language_maven_model".into(),
+        ]);
+        let (mut app, rx) = connecting(true, Some(info));
+        assert!(matches!(rx.try_recv().unwrap().op, Operation::List { .. }));
+        assert!(app
+            .agent_info
+            .as_ref()
+            .unwrap()
+            .capability_groups
+            .is_empty());
+        assert!(app.backend_java_maven_supported());
+        assert!(!app.backend_supports("language_maven_dependencies"));
+        assert_ne!(app.request(maven_begin(), Job::Git), 0);
+        assert!(matches!(
+            rx.try_recv().unwrap().op,
+            Operation::LanguageStartJavaMavenBegin { .. }
+        ));
+        assert!(rx.try_recv().is_err());
     }
     #[test]
     fn agent_claims_do_not_change_trust_and_platform_does_not_select_support() {
