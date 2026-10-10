@@ -877,6 +877,61 @@ mod tests {
         })
     }
 
+    #[cfg(windows)]
+    pub(super) fn isolated_test(test: &str, mode: &str, injected_name: Option<&str>) {
+        use crate::windows_test_process::{environment_key_eq, inherited_environment, run};
+        use std::os::windows::process::ExitStatusExt;
+        use std::time::{Duration, Instant};
+
+        let mut environment = inherited_environment()
+            .into_iter()
+            .filter(|(name, _)| {
+                !LAUNCH_ENVIRONMENT
+                    .iter()
+                    .chain(std::iter::once(&CHILD_MODE))
+                    .any(|target| environment_key_eq(name, target).unwrap())
+            })
+            .collect::<Vec<_>>();
+        environment.push((CHILD_MODE.into(), mode.into()));
+        if let Some(name) = injected_name {
+            environment.retain(|(key, _)| !environment_key_eq(key, name).unwrap());
+            environment.push((name.into(), "cedar-owned-environment-test".into()));
+        }
+        let arguments = ["--exact", test, "--test-threads=1", "--nocapture"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let captured = run(
+            &std::env::current_exe().unwrap(),
+            &arguments,
+            &std::env::current_dir().unwrap(),
+            &environment,
+            Duration::from_secs(20),
+            32768,
+        )
+        .expect("isolated Maven recipe test must complete within its bounds");
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(captured.code),
+            stdout: captured.stdout,
+            stderr: captured.stderr,
+        };
+        assert!(
+            Instant::now() < deadline,
+            "isolated Maven test completed too late"
+        );
+        assert!(
+            output.stdout.len() <= 32768 && output.stderr.len() <= 32768,
+            "isolated Maven test output exceeded its bound"
+        );
+        assert!(output.status.success(), "isolated Maven test failed");
+        assert!(
+            completed_child_output(&output.stdout),
+            "isolated Maven test did not prove one completed case"
+        );
+    }
+
+    #[cfg(not(windows))]
     pub(super) fn isolated_test(test: &str, mode: &str, injected_name: Option<&str>) {
         use std::process::{Command, Stdio};
         use std::time::{Duration, Instant};

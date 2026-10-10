@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 47 / 0.47.0
+# 功能矩阵与后续验收 · checkpoint 47 / 0.47.1
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -69,4 +69,4 @@
 
 0.46.0 拟对新适配器执行一次源版本绑定的 Windows 拒绝路径观察；即使通过，也不代表生产恢复权限检查或真实允许路径已验收。
 
-0.47.0 选中代码块 Tab/Shift+Tab 缩进拟保留选区与一次撤销，文本及结果上限 1 MiB、选中逻辑行上限 4,096；验收待完成。已完成的 0.46 原生拒绝观察不再由 CI 自动触发，Windows 恢复权限生产接入继续暂停。
+0.47.1 选中代码块 Tab/Shift+Tab 缩进拟保留选区与一次撤销，文本及结果上限 1 MiB、选中逻辑行上限 4,096；验收待完成。已完成的 0.46 原生拒绝观察不再由 CI 自动触发，Windows 恢复权限生产接入继续暂停。

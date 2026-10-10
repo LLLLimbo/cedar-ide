@@ -6,10 +6,11 @@ use cedar_language::{
     WindowsShutdownReason,
 };
 use cedar_protocol::Operation;
+#[cfg(not(windows))]
+use std::process::Command;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::{mpsc, OnceLock},
 };
 use tempfile::TempDir;
@@ -26,6 +27,7 @@ fn peer() -> &'static Path {
             let path = root
                 .path()
                 .join(format!("java-startup-peer{}", std::env::consts::EXE_SUFFIX));
+            #[cfg(not(windows))]
             let output = Command::new("rustc")
                 .args(["--edition=2021", "--crate-name", "java_startup_peer"])
                 .arg(
@@ -36,6 +38,43 @@ fn peer() -> &'static Path {
                 .arg(&path)
                 .output()
                 .unwrap();
+            #[cfg(windows)]
+            let output = {
+                use std::os::windows::process::ExitStatusExt;
+
+                let environment = crate::windows_test_process::inherited_environment();
+                let rustc = crate::windows_test_process::resolve_rustc(&environment)
+                    .expect("synthetic startup fixture requires one explicit Rust compiler");
+                let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/java_startup_peer.rs");
+                let arguments = vec![
+                    "--edition=2021".into(),
+                    "--crate-name".into(),
+                    "java_startup_peer".into(),
+                    source
+                        .to_str()
+                        .expect("fixture source must be UTF-8")
+                        .into(),
+                    "-o".into(),
+                    path.to_str()
+                        .expect("fixture executable must be UTF-8")
+                        .into(),
+                ];
+                let output = crate::windows_test_process::run(
+                    &rustc,
+                    &arguments,
+                    &std::env::current_dir().unwrap(),
+                    &environment,
+                    Duration::from_secs(120),
+                    1024 * 1024,
+                )
+                .expect("synthetic startup fixture compiler must complete within its bounds");
+                std::process::Output {
+                    status: std::process::ExitStatus::from_raw(output.code),
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                }
+            };
             assert!(
                 output.status.success(),
                 "{}",

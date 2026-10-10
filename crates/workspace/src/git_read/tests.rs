@@ -326,6 +326,7 @@ fn windows_deleted_suffix_rejects_device_and_ambiguous_names_without_unicode_pan
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod repositories {
     use super::*;
+    #[cfg(not(windows))]
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -371,6 +372,7 @@ mod repositories {
         fn path(&self, path: &str) -> PathBuf {
             self.directory.path().join(path)
         }
+        #[cfg(not(windows))]
         fn command(&self, args: &[&str]) -> Command {
             let mut command = Command::new(&self.git);
             command
@@ -380,8 +382,40 @@ mod repositories {
                 .envs(child_environment(std::env::vars_os()).unwrap());
             command
         }
+        fn output(&self, args: &[&str]) -> std::process::Output {
+            #[cfg(not(windows))]
+            {
+                self.command(args).output().unwrap()
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::ExitStatusExt;
+
+                let environment = child_environment(std::env::vars_os()).unwrap();
+                let arguments = args
+                    .iter()
+                    .map(|argument| (*argument).to_owned())
+                    .collect::<Vec<_>>();
+                // Fixture setup gets its own budget; production Git limits are
+                // deliberately independent of this synthetic-repository work.
+                let output = crate::windows_test_process::run(
+                    &self.git,
+                    &arguments,
+                    self.directory.path(),
+                    &environment,
+                    Duration::from_secs(30),
+                    1024 * 1024,
+                )
+                .expect("synthetic Git fixture process must complete within its bounds");
+                std::process::Output {
+                    status: std::process::ExitStatus::from_raw(output.code),
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                }
+            }
+        }
         fn git(&self, args: &[&str]) {
-            let output = self.command(args).output().unwrap();
+            let output = self.output(args);
             assert!(
                 output.status.success(),
                 "synthetic Git {args:?}: {}",
@@ -599,12 +633,7 @@ mod repositories {
         repo.git(&["checkout", "main"]);
         repo.write("conflict", "main\n");
         repo.commit();
-        assert!(!repo
-            .command(&["merge", "other"])
-            .output()
-            .unwrap()
-            .status
-            .success());
+        assert!(!repo.output(&["merge", "other"]).status.success());
         let entry = repo
             .changes()
             .into_iter()
@@ -624,7 +653,7 @@ mod repositories {
         let mut repo = Repo::new();
         repo.write("file", "before\n");
         repo.commit();
-        let head = repo.command(&["rev-parse", "HEAD"]).output().unwrap();
+        let head = repo.output(&["rev-parse", "HEAD"]);
         assert!(head.status.success());
         let object = String::from_utf8(head.stdout).unwrap();
         fs::create_dir(repo.path("module")).unwrap();

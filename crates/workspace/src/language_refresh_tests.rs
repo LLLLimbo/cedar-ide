@@ -2,10 +2,11 @@
 //! The private setup bypasses platform launch selection only in this test module;
 //! normal workspace constructors retain their Windows-isolated startup policy.
 use super::*;
+#[cfg(not(windows))]
+use std::process::Command;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::OnceLock,
 };
 use tempfile::TempDir;
@@ -23,6 +24,7 @@ fn peer_binary() -> &'static Path {
             let path = directory
                 .path()
                 .join(format!("java-refresh-peer{}", std::env::consts::EXE_SUFFIX));
+            #[cfg(not(windows))]
             let output = Command::new("rustc")
                 .args(["--edition=2021", "--crate-name", "java_refresh_peer"])
                 .arg(
@@ -33,6 +35,43 @@ fn peer_binary() -> &'static Path {
                 .arg(&path)
                 .output()
                 .expect("Rust compiler required for synthetic real-child tests");
+            #[cfg(windows)]
+            let output = {
+                use std::os::windows::process::ExitStatusExt;
+
+                let environment = crate::windows_test_process::inherited_environment();
+                let rustc = crate::windows_test_process::resolve_rustc(&environment)
+                    .expect("synthetic refresh fixture requires one explicit Rust compiler");
+                let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/java_refresh_peer.rs");
+                let arguments = vec![
+                    "--edition=2021".into(),
+                    "--crate-name".into(),
+                    "java_refresh_peer".into(),
+                    source
+                        .to_str()
+                        .expect("fixture source must be UTF-8")
+                        .into(),
+                    "-o".into(),
+                    path.to_str()
+                        .expect("fixture executable must be UTF-8")
+                        .into(),
+                ];
+                let output = crate::windows_test_process::run(
+                    &rustc,
+                    &arguments,
+                    &std::env::current_dir().unwrap(),
+                    &environment,
+                    Duration::from_secs(120),
+                    1024 * 1024,
+                )
+                .expect("synthetic refresh fixture compiler must complete within its bounds");
+                std::process::Output {
+                    status: std::process::ExitStatus::from_raw(output.code),
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                }
+            };
             assert!(
                 output.status.success(),
                 "{}",

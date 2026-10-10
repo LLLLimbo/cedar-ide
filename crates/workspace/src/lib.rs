@@ -19,6 +19,8 @@ mod java_maven;
 mod java_validation;
 mod language;
 mod tasks;
+#[cfg(all(test, windows))]
+mod windows_test_process;
 
 #[cfg(feature = "windows-java-gc-diagnostic")]
 pub use java_gc_diagnostic::{
