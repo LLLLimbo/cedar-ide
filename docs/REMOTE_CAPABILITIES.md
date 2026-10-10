@@ -98,7 +98,7 @@ or off. Support is not availability of an installed third-party tool.
   a wire field, request option or consequence of execution trust
 - Generic language startup is available on Linux/macOS and remains disabled on
   Windows. Windows and Linux isolated agents separately advertise the basic typed
-  Java/JDT route. Maven is supported by Windows isolated agents; the 0.39 Linux isolated extension is pending native acceptance. Linux InProcess retains
+  Java/JDT route. Maven is supported by Windows isolated agents; the 0.39.1 Linux isolated extension passed exact Ubuntu native acceptance. Linux InProcess retains
   generic LSP; its Local frontend mode does not gain typed Java. Linux isolated
   agents have 31 capabilities within the unchanged 32-name ceiling. Advertisement still requires the
   caller's execution trust and installed tools; compilation alone is not native

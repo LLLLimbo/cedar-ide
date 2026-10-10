@@ -305,3 +305,7 @@ are required before startup. No session token, task adoption or replay is added.
 See [REMOTE_CAPABILITIES.md](REMOTE_CAPABILITIES.md) for the exact schema,
 bounds, compatibility table, platform rules, immutable-handshake semantics and
 validation matrix. Authenticated SSH remains the independent gate above.
+
+## Connection form preflight (0.40)
+
+The frontend validates the submitted SSH fields using the transport argument builder before retiring a current connection. This is a pure syntax check: it does not execute SSH, read its configuration, look up hosts or inspect remote paths. Invalid fields leave the current workspace connection in place. The explicit port overrides an SSH alias's configured port. Remote root and agent paths are literal; tilde and shell variables are not expanded. Prefer an absolute agent path. A bare executable name uses the remote command environment. These checks do not establish authentication, reachability or remote cleanup.

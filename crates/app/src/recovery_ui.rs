@@ -1,4 +1,7 @@
 //! Explicit recovery review and workspace identity verification.
+#[cfg(test)]
+#[path = "ssh_preflight_tests.rs"]
+mod ssh_preflight_tests;
 use crate::{model::Document, CedarApp, ConnectForm, ConnectionState, AMBER, GREEN, MUTED, RED};
 use cedar_recovery::{Draft, WorkspaceIdentity};
 use eframe::egui::{self, RichText};

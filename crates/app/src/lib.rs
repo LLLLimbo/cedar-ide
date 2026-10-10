@@ -57,6 +57,8 @@ mod save_ack_process_tests;
 mod save_ack_tests;
 #[cfg(test)]
 mod sidebar_layout_tests;
+#[cfg(test)]
+mod ssh_preflight_process_tests;
 mod syntax;
 mod system_fonts;
 #[cfg(test)]
@@ -183,6 +185,16 @@ impl ConnectForm {
                     "Enter a host, remote workspace root, agent path, and valid port".into(),
                 );
             }
+            // Use the transport's pure argument validation before connect can
+            // retire the current worker or reset any workspace state. Building
+            // these arguments performs no SSH, configuration or filesystem I/O.
+            cedar_client::ssh_arguments(
+                self.host.trim(),
+                port,
+                self.remote_root.trim(),
+                self.agent.trim(),
+                self.allow_run,
+            )?;
             Ok(ConnectionSpec::Ssh {
                 host: self.host.trim().into(),
                 port,
@@ -2173,7 +2185,7 @@ impl CedarApp {
             );
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.label(RichText::new("Port").small().color(MUTED));
+                    ui.label(RichText::new("Explicit port").small().color(MUTED));
                     ui.add(egui::TextEdit::singleline(&mut self.form.port).desired_width(75.0));
                 });
                 ui.vertical(|ui| {
@@ -2192,6 +2204,7 @@ impl CedarApp {
                 "/home/you/project",
             );
             ui.label(RichText::new("Uses your system OpenSSH and existing key/config. The remote agent must be installed on a POSIX host. Authenticate and verify its host key in your terminal first.").small().color(MUTED));
+            ui.label(RichText::new("The explicit port overrides an SSH alias's configured port. Enter literal remote paths: ~ and $variables are not expanded. Prefer an absolute agent path; a bare name uses the remote command environment.").small().color(MUTED));
         } else {
             field(
                 ui,

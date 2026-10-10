@@ -1,6 +1,6 @@
 # Windows / Linux 隔离 agent Maven 叶工程模式
 
-0.22 增加 Windows 隔离 agent 专用 Java 路径的显式 Maven 选项；0.39 将相同子集扩展到 Linux 独立 agent，当前待精确原生验收。它读取工作区根目录的
+0.22 增加 Windows 隔离 agent 专用 Java 路径的显式 Maven 选项；0.39.1 将相同子集扩展到 Linux 独立 agent，已通过精确 Ubuntu 原生验收。它读取工作区根目录的
 `pom.xml`，通过已安装 JDT LS/m2e 建立源码、编译器设置和依赖模型。
 这是有意收窄的叶工程支持，不是完整 Maven、Gradle 或构建管理器。
 对应提交的原生 CI 与开发包清单才是该二进制的验证依据；跨平台编译不等于 Windows 运行验证。
