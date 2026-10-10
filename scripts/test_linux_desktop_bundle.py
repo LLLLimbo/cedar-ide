@@ -584,10 +584,39 @@ class LinuxDesktopBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(bundle.BundleError, "clean"):
             bundle.verify_source(root, manifest, payload)
 
+    def test_dirty_source_build_rejection_is_platform_independent(self):
+        root, binary_dir, commit = self.source_fixture()
+        output = self.base / "dirty-source-must-not-exist.tar.gz"
+        (root / "LICENSE-MIT").write_bytes(b"dirty source")
+        with mock.patch.object(bundle, "require_build_host"):
+            with self.assertRaisesRegex(bundle.BundleError, "clean"):
+                bundle.build(root, binary_dir, output, commit, RUN_URL)
+        self.assertFalse(output.exists())
+
+    def test_invalid_pair_elf_payloads_are_rejected_on_every_host(self):
+        for name in bundle.BINARIES:
+            payload = dict(self.payload)
+            payload[name] = b"not an ELF"
+            with self.subTest(binary=name), self.assertRaisesRegex(bundle.BundleError, "ELF"):
+                bundle.make_manifest("0.41.0", COMMIT, RUN_URL, payload)
+
+    def test_broken_guide_payload_is_rejected_on_every_host(self):
+        payload = dict(self.payload)
+        payload[bundle.GUIDE] = b"[Missing](NOT-PACKAGED.md)\n"
+        manifest = bundle.make_manifest("0.41.0", COMMIT, RUN_URL, payload)
+        self.assert_invalid(bundle.archive_bytes(payload, manifest), "unpackaged")
+
+    @POSIX_ONLY
     def test_build_rejects_dirty_source_invalid_binary_and_broken_links_before_output(self):
         root, binary_dir, commit = self.source_fixture()
         output = self.base / "must-not-exist.tar.gz"
         (binary_dir / bundle.AGENT).write_bytes(b"not an ELF")
+        (binary_dir / bundle.DESKTOP).chmod(0o644)
+        with mock.patch.object(bundle, "require_build_host"):
+            with self.assertRaisesRegex(bundle.BundleError, "regular 0755"):
+                bundle.build(root, binary_dir, output, commit, RUN_URL)
+        self.assertFalse(output.exists())
+        (binary_dir / bundle.DESKTOP).chmod(0o755)
         with mock.patch.object(bundle, "require_build_host"):
             with self.assertRaisesRegex(bundle.BundleError, "ELF"):
                 bundle.build(root, binary_dir, output, commit, RUN_URL)
