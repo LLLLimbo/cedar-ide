@@ -733,6 +733,16 @@ impl Recovery {
             .filter(|item| item.removing && !item.retained)
             .all(|item| item.acknowledged)
     }
+    pub fn close_decision_message(&self) -> &'static str {
+        // Display only: no owned removal intent is not proof that storage is empty.
+        if !self.removals_finished() {
+            "Requested recovery copy removals could not be verified. Copies may remain. Your editor text remains open."
+        } else if !self.initialized || self.availability() != Availability::Ready {
+            "Recovery storage is unavailable or could not be inspected. Older copies may exist. Your editor text remains open."
+        } else {
+            "Review is still required before quitting. Recovery copies may remain. Your editor text remains open."
+        }
+    }
     pub fn begin_close(&mut self, guard: CloseGuard) {
         let phase = if self.resuming.is_some()
             || (self.enabled && self.availability() != Availability::Ready)

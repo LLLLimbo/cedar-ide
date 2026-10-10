@@ -306,7 +306,7 @@ impl CedarApp {
                 match phase {
                     ClosePhase::Discarding { .. } => { ui.colored_label(AMBER, "Waiting for recovery discards (up to 5 seconds before review)."); }
                     ClosePhase::NeedsDecision => {
-                        ui.colored_label(AMBER, "Recovery could not finish the requested discards. Your editor text remains open.");
+                        ui.colored_label(AMBER, self.recovery.close_decision_message());
                         if ui.button("Quit without deleting remaining recovery copies").clicked() { self.retain_recovery_and_quit(); }
                     }
                     ClosePhase::Draining { .. } => { ui.colored_label(AMBER, "Waiting up to 5 seconds for accepted recovery writes and any operation already running. Queued removals were canceled."); }
@@ -401,6 +401,250 @@ impl CedarApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recovery_actor::Availability;
+    use cedar_recovery::{record_id, DraftMetadata, Store};
+    use std::time::{Duration, Instant};
+
+    const STORAGE_UNVERIFIED: &str = "Recovery storage is unavailable or could not be inspected. Older copies may exist. Your editor text remains open.";
+    const REMOVALS_UNVERIFIED: &str = "Requested recovery copy removals could not be verified. Copies may remain. Your editor text remains open.";
+    const REVIEW_REQUIRED: &str = "Review is still required before quitting. Recovery copies may remain. Your editor text remains open.";
+    const FINAL_WARNING: &str = "Current unsaved editor text and profile form edits may be lost. Remaining recovery copies may be older or incomplete and are not proof that your current text is recoverable. Save or copy your draft before quitting if you need it.";
+
+    fn close_app() -> CedarApp {
+        let mut app = CedarApp::empty();
+        let form = ConnectForm {
+            local_root: "/synthetic/project".into(),
+            allow_run: false,
+            ..Default::default()
+        };
+        app.workspace_key = Some(form.key());
+        app.active_form = Some(form);
+        app.root = "/synthetic/project".into();
+        app.state = ConnectionState::Ready;
+        app.open_form = false;
+        let mut doc = Document::new(1, "main.rs".into(), "base".into(), "r0".into());
+        doc.text = "current unsaved text".into();
+        doc.edit_version = 1;
+        app.documents.push(doc);
+        app.active_document = Some(1);
+        app
+    }
+
+    fn wait_recovery(app: &mut CedarApp, done: impl Fn(&CedarApp) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done(app) {
+            app.recovery.poll();
+            assert!(Instant::now() < deadline, "recovery did not settle");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn recovery_frame(app: &mut CedarApp, time: f64) -> egui::FullOutput {
+        app.editor_ctx.clone().run(
+            egui::RawInput {
+                time: Some(time),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 960.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                app.recovery_window(ctx);
+                app.finish_recovery_close_frame(ctx);
+            },
+        )
+    }
+
+    fn frame_has_text(output: &egui::FullOutput, expected: &str) -> bool {
+        fn contains(shape: &egui::epaint::Shape, expected: &str) -> bool {
+            match shape {
+                egui::epaint::Shape::Text(text) => text.galley.job.text == expected,
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().any(|shape| contains(shape, expected))
+                }
+                _ => false,
+            }
+        }
+        output
+            .shapes
+            .iter()
+            .any(|shape| contains(&shape.shape, expected))
+    }
+
+    fn assert_close_frames(app: &mut CedarApp, time: f64, expected: &str) {
+        let close = app.recovery.closing.as_ref().unwrap();
+        let phase = close.phase;
+        let guard = close.guard.clone();
+        let snapshot = app.recovery.test_snapshot();
+        let text = app.documents[0].text.clone();
+        assert!(!app.allow_close);
+        recovery_frame(app, time);
+        let output = recovery_frame(app, time + 0.1);
+        assert!(frame_has_text(&output, expected), "missing {expected}");
+        assert!(!frame_has_text(
+            &output,
+            "Recovery could not finish the requested discards. Your editor text remains open."
+        ));
+        for reason in [STORAGE_UNVERIFIED, REMOVALS_UNVERIFIED, REVIEW_REQUIRED] {
+            if reason != expected {
+                assert!(!frame_has_text(&output, reason));
+            }
+        }
+        if !app.recovery.initialized {
+            assert!(!frame_has_text(&output, "No recovery copies available"));
+        }
+        assert_eq!(app.recovery.closing.as_ref().unwrap().phase, phase);
+        assert_eq!(app.recovery.closing.as_ref().unwrap().guard, guard);
+        assert_eq!(app.recovery_close_guard(), guard);
+        assert_eq!(app.recovery.test_snapshot(), snapshot);
+        assert_eq!(app.documents[0].text, text);
+        assert!(!app.allow_close);
+        assert!(!output.viewport_output.values().any(|viewport| viewport
+            .commands
+            .iter()
+            .any(|command| matches!(command, egui::ViewportCommand::Close))));
+    }
+
+    fn assert_decision_and_final_warning(app: &mut CedarApp, expected: &str) {
+        app.finish_recovery_close(&egui::Context::default());
+        assert_eq!(
+            app.recovery.closing.as_ref().unwrap().phase,
+            ClosePhase::NeedsDecision
+        );
+        assert_close_frames(app, 0.0, expected);
+        app.retain_recovery_and_quit();
+        wait_recovery(app, |app| {
+            matches!(
+                app.recovery.closing.as_ref().unwrap().phase,
+                ClosePhase::AwaitingConfirmation { .. }
+            )
+        });
+        assert_close_frames(app, 1.0, FINAL_WARNING);
+    }
+
+    #[test]
+    fn actual_frames_failed_open_without_owned_records_explains_uninspected_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("recovery");
+        std::fs::write(&path, "blocker").unwrap();
+        let mut app = close_app();
+        app.recovery.start(Ok(path.clone()), &app.editor_ctx);
+        wait_recovery(&mut app, |app| app.recovery.error.is_some());
+        assert!(!app.recovery.initialized);
+        assert!(app.recovery.drafts.is_empty());
+        assert_eq!(app.recovery.test_snapshot(), (0, 0, 0));
+        assert_decision_and_final_warning(&mut app, STORAGE_UNVERIFIED);
+        drop(app);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "blocker");
+    }
+
+    #[test]
+    fn actual_frames_requested_removal_failure_says_copies_may_remain() {
+        let mut app = close_app();
+        let workspace = app.recovery_workspace().unwrap();
+        let doc = &app.documents[0];
+        app.recovery.start(
+            Err("Recovery location is unavailable".into()),
+            &app.editor_ctx,
+        );
+        app.recovery.drafts.push(DraftMetadata {
+            id: record_id(&workspace, &doc.path).unwrap(),
+            workspace: workspace.clone(),
+            path: doc.path.clone(),
+            base_revision: doc.revision.clone(),
+            modified_ms: 1,
+            text_bytes: doc.text.len(),
+            base_text_bytes: doc.saved_text.len(),
+        });
+        app.recovery.authorize(&workspace, doc);
+        assert_decision_and_final_warning(&mut app, REMOVALS_UNVERIFIED);
+        assert_eq!(app.recovery.drafts.len(), 1);
+    }
+
+    #[test]
+    fn actual_frames_unknown_older_copy_never_claims_absence() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("recovery");
+        let mut app = close_app();
+        let draft = Draft {
+            workspace: app.recovery_workspace().unwrap(),
+            path: "main.rs".into(),
+            text: "older uninspected copy".into(),
+            base_text: "base".into(),
+            base_revision: Some("r0".into()),
+            modified_ms: 1,
+        };
+        let mut locked = Store::open(&path).unwrap();
+        locked.write(1, &draft).unwrap();
+        app.recovery.start(Ok(path), &app.editor_ctx);
+        wait_recovery(&mut app, |app| app.recovery.error.is_some());
+        assert!(matches!(
+            app.recovery.availability(),
+            Availability::Unavailable(_)
+        ));
+        assert!(!app.recovery.initialized);
+        assert!(app.recovery.drafts.is_empty());
+        assert_eq!(app.recovery.test_snapshot(), (0, 0, 0));
+        assert_decision_and_final_warning(&mut app, STORAGE_UNVERIFIED);
+        drop(app);
+        assert_eq!(
+            locked
+                .read(&record_id(&draft.workspace, &draft.path).unwrap())
+                .unwrap()
+                .text,
+            draft.text
+        );
+    }
+
+    #[test]
+    fn actual_frames_late_successful_remove_keeps_review_without_unavailable_warning() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = close_app();
+        app.recovery
+            .start(Ok(temp.path().join("recovery")), &app.editor_ctx);
+        wait_recovery(&mut app, |app| app.recovery.initialized);
+        let workspace = app.recovery_workspace().unwrap();
+        app.recovery.observe(&workspace, &app.documents[0]);
+        app.recovery.flush();
+        wait_recovery(&mut app, |app| {
+            app.recovery.protected(&workspace, &app.documents[0])
+        });
+
+        let (entered, release) = app.recovery.hold_next_operation(false);
+        app.finish_recovery_close(&egui::Context::default());
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        app.recovery.closing.as_mut().unwrap().phase = ClosePhase::Discarding {
+            started: Instant::now() - crate::recovery::CLOSE_OBSERVATION,
+        };
+        app.recovery.observe_close_deadline();
+        assert_eq!(
+            app.recovery.closing.as_ref().unwrap().phase,
+            ClosePhase::NeedsDecision
+        );
+        assert_close_frames(&mut app, 0.0, REMOVALS_UNVERIFIED);
+
+        release.send(()).unwrap();
+        wait_recovery(&mut app, |app| app.recovery.removals_finished());
+        assert!(app.recovery.initialized);
+        assert_eq!(app.recovery.availability(), Availability::Ready);
+        assert_eq!(app.recovery.test_snapshot().2, 1);
+        assert_eq!(
+            app.recovery.closing.as_ref().unwrap().phase,
+            ClosePhase::NeedsDecision
+        );
+        assert_close_frames(&mut app, 1.0, REVIEW_REQUIRED);
+
+        app.retain_recovery_and_quit();
+        wait_recovery(&mut app, |app| {
+            matches!(
+                app.recovery.closing.as_ref().unwrap().phase,
+                ClosePhase::AwaitingConfirmation { .. }
+            )
+        });
+        assert_close_frames(&mut app, 2.0, FINAL_WARNING);
+    }
+
     #[test]
     fn explicit_disconnect_wait_blocks_restore_before_taking_the_copy() {
         let mut app = CedarApp::empty();

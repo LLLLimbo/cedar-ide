@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 44 / 0.44.1
+# 功能矩阵与后续验收 · checkpoint 44 / 0.44.2
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -61,4 +61,6 @@
 
 0.42 增加显式、有界的 [Save All](SAVE_ALL.md)：仅编辑器缓冲区，逐个条件写入，冲突、未知结果或候选变化停止后续提交；不是多文件原子事务，不自动 Run 或序列化配置表单。本阶段验收结果见当前测试报告。
 
-0.44 正在验收恢复存储不可用时的生命周期保护：编辑及显式 Save/Save All 独立于恢复存储状态，退出时区分未执行、已确认和不明结果，保留剩余副本须明确选择。此阶段不启用 Windows ACL 强制检查，不自动修复权限或切换恢复目录。
+0.44.1 已通过双平台 CI 与限定 Linux 原生窗口验证的恢复存储不可用生命周期保护：编辑及显式 Save/Save All 独立于恢复存储状态，退出时区分未执行、已确认和不明结果，保留剩余副本须明确选择。此阶段不启用 Windows ACL 强制检查，不自动修复权限或切换恢复目录。
+
+0.44.2 仅修订退出原因提示，区分未能检查恢复存储与未确认的已请求删除；保守退出门槛和副本不确定性保持不变，新版本验收待完成。

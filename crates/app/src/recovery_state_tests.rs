@@ -350,3 +350,159 @@ fn late_applied_write_history_survives_a_newer_uncertain_effect() {
     assert_eq!(recovery.tracked[&id].copy.state, CopyState::Uncertain);
     assert_eq!(recovery.tracked[&id].copy.last_applied_write, Some(first));
 }
+
+const STORAGE_UNVERIFIED: &str = "Recovery storage is unavailable or could not be inspected. Older copies may exist. Your editor text remains open.";
+const REMOVALS_UNVERIFIED: &str = "Requested recovery copy removals could not be verified. Copies may remain. Your editor text remains open.";
+const REVIEW_REQUIRED: &str = "Review is still required before quitting. Recovery copies may remain. Your editor text remains open.";
+
+fn assert_close_decision_is_display_only(recovery: &Recovery, expected: &str) {
+    let close = recovery.closing.as_ref().unwrap();
+    let guard = close.guard.clone();
+    let phase = close.phase;
+    let snapshot = recovery.test_snapshot();
+    let sequence = recovery.sequence;
+    let ticket = recovery.ticket;
+    assert_eq!(phase, ClosePhase::NeedsDecision);
+    assert_eq!(recovery.close_decision_message(), expected);
+    assert_eq!(recovery.close_decision_message(), expected);
+    assert_eq!(recovery.closing.as_ref().unwrap().guard, guard);
+    assert_eq!(recovery.closing.as_ref().unwrap().phase, phase);
+    assert_eq!(recovery.test_snapshot(), snapshot);
+    assert_eq!(recovery.sequence, sequence);
+    assert_eq!(recovery.ticket, ticket);
+}
+
+#[test]
+fn close_decision_without_owned_copies_never_claims_storage_is_empty() {
+    for rejected_write in [false, true] {
+        let (mut recovery, doc, id) = tracked_recovery();
+        if rejected_write {
+            let sequence = recovery.tracked[&id].sequence;
+            recovery.acknowledge(
+                &id,
+                ack(
+                    sequence,
+                    OperationKind::Write,
+                    Effect::NotInvoked("unavailable".into()),
+                ),
+            );
+            assert_eq!(recovery.tracked[&id].copy.state, CopyState::NoOwnedCopy);
+        } else {
+            recovery.tracked.clear();
+        }
+        recovery.enabled = true;
+        recovery.discard_owned(&workspace(), &doc);
+        recovery.begin_close(CloseGuard::new(&[doc], Some(workspace()), 7, 8));
+        assert!(!recovery.initialized);
+        assert!(recovery.removals_finished());
+        assert_eq!(recovery.test_snapshot(), (0, 0, 0));
+        assert_close_decision_is_display_only(&recovery, STORAGE_UNVERIFIED);
+    }
+}
+
+#[test]
+fn close_decision_preserves_uncertainty_for_pending_rejected_and_unknown_removals() {
+    for effect in [
+        None,
+        Some(Effect::NotInvoked("unavailable".into())),
+        Some(Effect::PossiblyApplied("unknown unlink result".into())),
+    ] {
+        let (mut recovery, doc, id) = tracked_recovery();
+        let write = recovery.tracked[&id].sequence;
+        recovery.acknowledge(&id, ack(write, OperationKind::Write, Effect::Applied));
+        recovery.discard_owned(&workspace(), &doc);
+        let remove = recovery.tracked[&id].sequence;
+        if let Some(effect) = effect {
+            recovery.acknowledge(&id, ack(remove, OperationKind::Remove, effect));
+        } else {
+            let tracked = recovery.tracked.get_mut(&id).unwrap();
+            tracked.failure = None;
+            tracked.submitted.insert(remove, OperationKind::Remove);
+        }
+        recovery.enabled = true;
+        recovery.begin_close(CloseGuard::new(&[doc], Some(workspace()), 7, 8));
+        let copy_state = recovery.tracked[&id].copy.state;
+        assert_ne!(copy_state, CopyState::NoOwnedCopy);
+        assert!(!recovery.removals_finished());
+        assert_close_decision_is_display_only(&recovery, REMOVALS_UNVERIFIED);
+        assert_eq!(recovery.tracked[&id].copy.state, copy_state);
+    }
+}
+
+#[test]
+fn close_decision_ignores_completed_and_retained_removals_until_one_is_outstanding() {
+    let (mut recovery, doc, id) = tracked_recovery();
+    let write = recovery.tracked[&id].sequence;
+    recovery.acknowledge(&id, ack(write, OperationKind::Write, Effect::Applied));
+    recovery.discard_owned(&workspace(), &doc);
+    let remove = recovery.tracked[&id].sequence;
+    recovery.acknowledge(&id, ack(remove, OperationKind::Remove, Effect::Applied));
+    assert!(recovery.tracked[&id].removing);
+    assert!(recovery.tracked[&id].acknowledged);
+
+    let retained_id = record_id(&workspace(), "retained.rs").unwrap();
+    let mut retained = recovery.empty_tracking(workspace(), "retained.rs".into());
+    retained.copy.state = CopyState::Uncertain;
+    retained.removing = true;
+    retained.retained = true;
+    recovery.tracked.insert(retained_id, retained);
+    recovery.enabled = true;
+    recovery.begin_close(CloseGuard::new(&[doc], Some(workspace()), 7, 8));
+    assert!(recovery.removals_finished());
+    assert_close_decision_is_display_only(&recovery, STORAGE_UNVERIFIED);
+
+    let pending_id = record_id(&workspace(), "pending.rs").unwrap();
+    let mut pending = recovery.empty_tracking(workspace(), "pending.rs".into());
+    pending.copy.state = CopyState::Uncertain;
+    pending.removing = true;
+    recovery.tracked.insert(pending_id, pending);
+    assert!(!recovery.removals_finished());
+    assert_close_decision_is_display_only(&recovery, REMOVALS_UNVERIFIED);
+}
+
+#[test]
+fn close_decision_after_late_applied_remove_requires_review_without_claiming_unavailability() {
+    let (mut recovery, doc, id) = tracked_recovery();
+    let write = recovery.tracked[&id].sequence;
+    recovery.acknowledge(&id, ack(write, OperationKind::Write, Effect::Applied));
+    recovery.discard_owned(&workspace(), &doc);
+    let remove = recovery.tracked[&id].sequence;
+    let tracked = recovery.tracked.get_mut(&id).unwrap();
+    tracked.failure = None;
+    tracked.submitted.insert(remove, OperationKind::Remove);
+
+    // Establish real Ready/initialized availability, then exercise the close
+    // transition through a synthetic late acknowledgement without Store I/O.
+    let temp = tempfile::tempdir().unwrap();
+    recovery.start(Ok(temp.path().join("recovery")), &egui::Context::default());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !recovery.initialized {
+        recovery.poll();
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(recovery.availability(), Availability::Ready);
+    recovery.begin_close(CloseGuard::new(&[doc], Some(workspace()), 7, 8));
+    assert!(matches!(
+        recovery.closing.as_ref().unwrap().phase,
+        ClosePhase::Discarding { .. }
+    ));
+    recovery.closing.as_mut().unwrap().phase = ClosePhase::Discarding {
+        started: Instant::now() - CLOSE_OBSERVATION,
+    };
+    recovery.observe_close_deadline();
+    assert_close_decision_is_display_only(&recovery, REMOVALS_UNVERIFIED);
+
+    recovery.acknowledge(
+        &id,
+        Ack {
+            generation: recovery.generation,
+            ..ack(remove, OperationKind::Remove, Effect::Applied)
+        },
+    );
+    assert!(recovery.removals_finished());
+    assert!(recovery.tracked[&id].acknowledged);
+    assert!(recovery.initialized);
+    assert_eq!(recovery.availability(), Availability::Ready);
+    assert_close_decision_is_display_only(&recovery, REVIEW_REQUIRED);
+}
