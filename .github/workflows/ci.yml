@@ -103,7 +103,7 @@ jobs:
               sys.exit("Exactly one Enter process acceptance receipt is required.")
           expected = {
               "acceptance": "enter_indent", "success": True,
-              "cases_executed": 27, "editor_transactions": 20,
+              "cases_executed": 31, "editor_transactions": 24,
               "connection_hellos": 1, "lists": 1, "reads": 2, "writes": 0,
               "other_operations": 0, "measured_editor_operations": 0,
               "agents_reaped": 1, "source_hashes_verified": 2,
@@ -113,6 +113,7 @@ jobs:
               "dirty_baselines_preserved": True, "one_effective_undo_redo_preserved": True,
               "identical_text_keeps_version_and_redo": True,
               "crlf_prefix_version_refusals_preserved": True,
+              "collapsed_crlf_logical_end_and_original_undo": True,
               "exact_operation_ledger_verified": True, "fixture_removed": True,
               "watchdog_joined": True, "cleanup_verified": True,
               "optional_font_probe_untriggered": True,

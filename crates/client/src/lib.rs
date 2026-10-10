@@ -568,10 +568,143 @@ struct ProcessClient {
     shutdown: Option<mpsc::Sender<()>>,
     reaped: mpsc::Receiver<ReapResult>,
     stderr: Arc<Mutex<Vec<u8>>>,
+    #[cfg(test)]
+    lifecycle: Option<Arc<Mutex<ProcessLifecycle>>>,
     next_id: u64,
     connected: bool,
     java_language_session: bool,
     java_startup: JavaStartupMode,
+}
+
+// Per-owner test observations only. These never change the shipping cleanup
+// result, retain peer text, or claim that a successful kill request proves exit.
+#[cfg(test)]
+use process_lifecycle_diagnostics::*;
+#[cfg(test)]
+mod process_lifecycle_diagnostics {
+    use super::ReapError;
+
+    pub(super) const DIAGNOSTIC_BYTE_LIMIT: usize = 64 * 1024;
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) enum TerminationObservation {
+        #[default]
+        NotAttempted,
+        Attempted,
+        Succeeded,
+        Failed,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) enum ReapObservation {
+        #[default]
+        Pending,
+        WaitPending,
+        ReapedByTryWait,
+        ReapedByWait,
+        UnavailableTryWait,
+        UnavailableWait,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) enum ExitObservation {
+        #[default]
+        Pending,
+        Unavailable,
+        Success,
+        // Preserve the bounded native i32, including Windows NTSTATUS bits.
+        Code(i32),
+        Signal(u8),
+        SignalOutsideRange,
+    }
+
+    impl ExitObservation {
+        pub(super) fn from_parts(code: Option<i32>, signal: Option<i32>) -> Self {
+            match (code, signal) {
+                (Some(0), _) => Self::Success,
+                (Some(code), _) => Self::Code(code),
+                (None, Some(signal @ 1..=127)) => Self::Signal(signal as u8),
+                (None, Some(_)) => Self::SignalOutsideRange,
+                (None, None) => Self::Unavailable,
+            }
+        }
+
+        pub(super) fn from_status(status: std::process::ExitStatus) -> Self {
+            #[cfg(unix)]
+            let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+            #[cfg(not(unix))]
+            let signal = None;
+            Self::from_parts(status.code(), signal)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) enum StdinObservation {
+        #[default]
+        NotYetObserved,
+        DropReturned,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) enum StderrCompletion {
+        #[default]
+        NotYetObserved,
+        Eof,
+        ReadError,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) enum PanicObservation {
+        #[default]
+        NotObserved,
+        RustPanicMarkerObserved,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) struct BoundedBytes {
+        pub(super) bytes: usize,
+        pub(super) capped: bool,
+    }
+
+    impl BoundedBytes {
+        pub(super) fn add(&mut self, bytes: usize) {
+            let total = self.bytes.saturating_add(bytes);
+            self.bytes = total.min(DIAGNOSTIC_BYTE_LIMIT);
+            self.capped |= total > DIAGNOSTIC_BYTE_LIMIT;
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) struct StderrObservation {
+        pub(super) received: BoundedBytes,
+        pub(super) retained_bytes: usize,
+        pub(super) panic: PanicObservation,
+        pub(super) completion: StderrCompletion,
+    }
+
+    impl StderrObservation {
+        pub(super) fn observe_bytes(&mut self, received: usize, bounded_tail: &[u8]) {
+            self.received.add(received);
+            self.retained_bytes = bounded_tail.len().min(super::STDERR_TAIL_BYTES);
+            // A fixed marker classification, never the panic text or its path.
+            if bounded_tail
+                .windows(b"panicked at".len())
+                .any(|window| window == b"panicked at")
+            {
+                self.panic = PanicObservation::RustPanicMarkerObserved;
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) struct ProcessLifecycle {
+        pub(super) termination: TerminationObservation,
+        pub(super) reap: ReapObservation,
+        pub(super) exit: ExitObservation,
+        pub(super) cleanup_error: Option<ReapError>,
+        pub(super) stdin: StdinObservation,
+        pub(super) stderr: StderrObservation,
+    }
 }
 
 type TransportWaker = Arc<dyn Fn() + Send + Sync>;
@@ -830,7 +963,11 @@ impl ProcessClient {
         let mut owned = OwnedProcess {
             child,
             completion: None,
+            #[cfg(test)]
+            lifecycle: Arc::new(Mutex::new(ProcessLifecycle::default())),
         };
+        #[cfg(test)]
+        let lifecycle = owned.lifecycle.clone();
         let mut stdin = owned
             .child
             .stdin
@@ -864,6 +1001,8 @@ impl ProcessClient {
         let observation = Arc::new(TransportObservation::default());
         let writer_observation = observation.clone();
         let writer_errors = response_tx.clone();
+        #[cfg(test)]
+        let writer_lifecycle = lifecycle.clone();
         thread::spawn(move || {
             while let Ok(request) = request_rx.recv() {
                 if let Err(e) = write_frame(&mut stdin, &request) {
@@ -872,6 +1011,16 @@ impl ProcessClient {
                     let _ = writer_errors.send(Err(error));
                     break;
                 }
+            }
+            #[cfg(test)]
+            {
+                // This observes only ChildStdin::drop returning. It does not
+                // prove that the peer received EOF, nor runs during unwind.
+                drop(stdin);
+                writer_lifecycle
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .stdin = StdinObservation::DropReturned;
             }
         });
         let reader_observation = observation.clone();
@@ -902,16 +1051,43 @@ impl ProcessClient {
         });
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let capture = stderr.clone();
+        #[cfg(test)]
+        let stderr_lifecycle = lifecycle.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 1024];
             loop {
-                match err.read(&mut buf) {
+                let read = err.read(&mut buf);
+                #[cfg(test)]
+                match &read {
+                    Ok(0) => {
+                        stderr_lifecycle
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .stderr
+                            .completion = StderrCompletion::Eof;
+                    }
+                    Err(_) => {
+                        stderr_lifecycle
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .stderr
+                            .completion = StderrCompletion::ReadError;
+                    }
+                    _ => {}
+                }
+                match read {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         let mut tail = capture.lock().unwrap_or_else(|p| p.into_inner());
                         tail.extend_from_slice(&buf[..n]);
                         let excess = tail.len().saturating_sub(STDERR_TAIL_BYTES);
                         tail.drain(..excess);
+                        #[cfg(test)]
+                        stderr_lifecycle
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .stderr
+                            .observe_bytes(n, &tail);
                     }
                 }
             }
@@ -924,6 +1100,8 @@ impl ProcessClient {
             shutdown: Some(shutdown_tx),
             reaped: reaped_rx,
             stderr,
+            #[cfg(test)]
+            lifecycle: Some(lifecycle),
             next_id: 0,
             connected: true,
             java_language_session: false,
@@ -1161,6 +1339,8 @@ struct OwnedProcess {
     // Some means wait ownership has ended, either with verified reaping or an
     // error. Preserve the distinction and never signal a disowned PID again.
     completion: Option<ReapResult>,
+    #[cfg(test)]
+    lifecycle: Arc<Mutex<ProcessLifecycle>>,
 }
 impl OwnedProcess {
     // Require exclusive wait ownership, as the task supervisor does. A failed
@@ -1172,12 +1352,25 @@ impl OwnedProcess {
         loop {
             match self.child.try_wait() {
                 Ok(None) => return None,
-                Ok(Some(_)) => {
+                Ok(Some(_status)) => {
+                    #[cfg(test)]
+                    {
+                        let mut receipt = self.lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+                        receipt.reap = ReapObservation::ReapedByTryWait;
+                        receipt.exit = ExitObservation::from_status(_status);
+                    }
                     self.completion = Some(Ok(()));
                     return self.completion;
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => {
+                    #[cfg(test)]
+                    {
+                        let mut receipt = self.lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+                        receipt.reap = ReapObservation::UnavailableTryWait;
+                        receipt.exit = ExitObservation::Unavailable;
+                        receipt.cleanup_error = Some(ReapError::TryWait);
+                    }
                     self.completion = Some(Err(ReapError::TryWait));
                     return self.completion;
                 }
@@ -1188,17 +1381,59 @@ impl OwnedProcess {
         if let Some(result) = self.poll_exit() {
             return result;
         }
+        #[cfg(test)]
+        {
+            self.lifecycle
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .termination = TerminationObservation::Attempted;
+        }
         let killed = self.child.kill().map_err(|_| ReapError::Kill);
+        #[cfg(test)]
+        {
+            let mut receipt = self.lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+            receipt.termination = if killed.is_ok() {
+                TerminationObservation::Succeeded
+            } else {
+                TerminationObservation::Failed
+            };
+            receipt.reap = ReapObservation::WaitPending;
+        }
         let waited = loop {
             match self.child.wait() {
-                Ok(_) => break Ok(()),
+                Ok(_status) => {
+                    #[cfg(test)]
+                    {
+                        let mut receipt = self.lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+                        receipt.reap = ReapObservation::ReapedByWait;
+                        receipt.exit = ExitObservation::from_status(_status);
+                    }
+                    break Ok(());
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => break Err(ReapError::Wait),
+                Err(_) => {
+                    #[cfg(test)]
+                    {
+                        let mut receipt = self.lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+                        receipt.reap = ReapObservation::UnavailableWait;
+                        receipt.exit = ExitObservation::Unavailable;
+                    }
+                    break Err(ReapError::Wait);
+                }
             }
         };
         // Even if the later wait observes exit, a failed termination attempt is
         // not a successful cleanup result. A failed wait disowns the process.
         let result = waited.and(killed);
+        #[cfg(test)]
+        {
+            // Publish every final observation before returning to the sender
+            // of the unchanged ReapResult. This never joins the pipe threads.
+            self.lifecycle
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .cleanup_error = result.err();
+        }
         self.completion = Some(result);
         result
     }

@@ -247,6 +247,7 @@ fn synthetic_process(
             shutdown: Some(shutdown),
             reaped: completion_rx,
             stderr: Arc::new(Mutex::new(Vec::new())),
+            lifecycle: None,
             next_id: 0,
             connected: true,
             java_language_session: false,

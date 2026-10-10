@@ -1,4 +1,4 @@
-# Verification report · Leading-whitespace Enter / 0.48.0 (pending)
+# Verification report · Leading-whitespace Enter / 0.48.1 (pending)
 
 Latest accepted checkpoint: [0.47.4 selected-block indentation](TEST_REPORT_PHASE47_INDENT.md#final-verified-acceptance--0474), exact source `89f19a05579b09354607a0c997f412eedda83835` and [dual-platform CI 38089934135](https://github.com/LLLLimbo/cedar-ide/actions/runs/38089934135). Its three packages are verified. The historical Git pipe holder remains unknown; the Windows recovery admission line remains paused.
 
@@ -6,14 +6,36 @@ This pending slice adds bounded leading-whitespace continuation for a clean, foc
 
 Mixed input and active IME keep existing native handling; enhanced-command limits and newline guarantees do not apply to that fallback. Classification uses the original frame batch before selected-Tab interception can consume events. The native editor's interactivity gate remains separate from command eligibility. Edits remain drafts; an already-running trusted language service may synchronize ordinary changes.
 
-Acceptance is pending: independent input/transaction review, focused and aggregate tests, strict host/MSVC checks, normal-agent trust-off zero-operation proof on both OSes, full source-bound CI and three verified packages, then a bounded exact-package cloud Linux GUI Enter/selection/Undo/Redo check with unchanged generated disk files. No native result for 0.48 is claimed here.
+Acceptance is pending: independent input/transaction review, focused and aggregate tests, strict host/MSVC checks, normal-agent trust-off zero-operation proof on both OSes, full source-bound CI and three verified packages, then a bounded exact-package cloud Linux GUI Enter/selection/Undo/Redo check with unchanged generated disk files. The partial 0.48 native findings and remaining failure are recorded below; no complete GUI acceptance is claimed.
 
-## Focused and local verification
+## Preserved 0.48.0 focused and local verification
 
 All 17 new pure/production-frame tests pass. Independent review found two contract gaps during development: a pending focus-restoration intent was cleared before editor-time eligibility, and egui's affinity-blind cursor equality could omit an exact same-index pre-edit checkpoint. The final code captures the original eligible intent before Explorer filtering and update, consumes it once for the matching document/version/frame, and normalizes the effective Enter checkpoint with exact affinity. A single document-tagged IME owner clears on focus/tab changes. The initial three-failure focused result is preserved; repeat normalization and stale-pass focus setup were corrected without relaxing the substantive assertions.
 
-Formatting, strict host and Windows MSVC all-targets/all-features Clippy, and the local all-targets/all-features aggregate passed: 1,574 tests, zero failures, 58 opt-in/ignored tests across 48 suites. This includes existing selected-Tab, formatting/language-edit and history regressions. The current default-feature workspace release built successfully on cloud Debian. No dependency versions or shipping capabilities were added.
+Formatting, strict host and Windows MSVC all-targets/all-features Clippy, and the local all-targets/all-features aggregate passed: 1,574 tests, zero failures, 58 opt-in/ignored tests across 48 suites. This includes existing selected-Tab, formatting/language-edit and history regressions. The 0.48.0 default-feature workspace release built successfully on cloud Debian. No dependency versions or shipping capabilities were added.
 
 The fresh default-agent Enter process acceptance then executed exactly once and passed: 27 cases, 20 text/history transactions, one Hello/List and two explicit setup Reads; zero measured editor requests, zero Writes/other commands, two unchanged generated source hashes, one reaped agent and completed fixture/watchdog cleanup. Its Unicode fixture uses accents, Greek and emoji and verifies optional CJK font probing never starts. Pure planning still covers CJK text. The receipt claims one effective Undo/Redo, not an untested multi-entry chain. Local process success is separate from required native Windows CI and exact-package GUI acceptance.
 
-Package-guide, public-export and capability-smoke Python tests passed. Both-platform source-bound CI, all three packages and the exact new archive's bounded cloud GUI check remain pending. Historical Windows Git capture failures remain unexplained beyond their observed incomplete EOF; no production capture fix is claimed.
+Package-guide, public-export and capability-smoke Python tests passed locally for 0.48.0. Its subsequent Windows failure and partial native outcome are recorded below; 0.48.1 requires fresh source-bound CI, all three packages and its exact archive's bounded cloud GUI check. Historical Windows Git capture failures remain unexplained beyond their observed incomplete EOF; no production capture fix is claimed.
+
+## Windows client close observation / 0.48.1
+
+[0.48 CI 38092320690](https://github.com/LLLLimbo/cedar-ide/actions/runs/38092320690), exact public source `cc3568077c436bcfd89f06d99ca1daa431367849`, remains failed overall. Ubuntu passed its required stages. Windows stopped in the unchanged client test `stalled_response_has_a_short_internal_deadline_and_orderly_close`: 69 client tests passed, one failed because the generated EOF marker was absent. The timeout result, caller bound, disconnected state and direct-child reaping result had already passed; Windows release/native gates and package acceptance were not reached.
+
+The existing reaping result does not distinguish a natural exit, a nonzero natural exit, or successful forced termination and waiting. The accelerated fixture grace includes writer scheduling, stdin closure, child scheduling, log/marker I/O and exit. This evidence does not establish which occurred. The earlier workspace Git capture-holder hypothesis is not evidence for this separate client executable, and no timeout increase or missing-marker acceptance is made.
+
+The cleanup diagnostic part of 0.48.1 adds only test-compiled per-owner observations and fixed sanitized diagnostics. All original timeout/grace/assertion requirements and shipping cleanup behavior remain unchanged. Actual new source-bound CI is required; historical failure cause remains unknown.
+
+## Native CRLF caret correction / 0.48.1
+
+The exact 0.48.0 Ubuntu desktop archive exercised on cloud Debian/X11 passed bounded LF Enter/selection/Undo/Redo cases, but ordinary End then Enter on CRLF did not edit: native End places a collapsed caret after CR and before LF, where the original planner refused. Moving left once allowed continuation. Shift+End selection can put its nonempty endpoint at the same interior boundary and also refused. These are preserved native findings, not a complete 0.48 GUI pass.
+
+A separate approved production correction treats only a collapsed CRLF-interior caret as the logical line end before CR for Enter planning. Undo retains the original cursor and affinity. Nonempty selections with interior endpoints remain refused; the Shift+End limitation is documented in both guides. Global cursor navigation and selection semantics are unchanged. New actual-End frame coverage and a fresh exact-package GUI check are required. This checkpoint therefore cannot carry a claim of unchanged shipping code from 0.48.0.
+
+## 0.48.1 final-source local checks
+
+Independent lifecycle and Enter transaction reviews are clear. The revised client suite passes 89 tests; the Enter suite passes 21, including actual native End→Enter and Shift+End frame sequences. The unchanged planner's End→Enter regression first failed deterministically, and that red log is preserved. Formatting and strict host/MSVC Clippy pass. The complete local aggregate passes 1,581 tests with zero failures and 58 opt-ins across 48 suites. Only the ten Cedar workspace versions changed in Cargo.lock; external dependency versions and features are unchanged.
+
+These are local source checks, not a Windows runtime or package verdict. The original 0.48 client EOF failure remains unexplained. A fresh source-bound CI run must retain that test's original EOF assertion and deadlines, verify the added observations, and produce all three packages. The fresh desktop archive must pass the scoped cloud GUI CRLF End→Enter/Undo/Redo and LF selected replacement checks. Nonempty CRLF-interior selection refusal remains an explicit limitation.
+
+The fresh local default-feature release built successfully. The normal-agent Enter acceptance executed once: 31 cases and 24 effective text/history transactions, one Hello/List and two setup Reads, zero measured editor operations and zero Writes/other operations. Both generated source hashes were unchanged; the single agent was reaped and fixture/watchdog cleanup completed. The new collapsed-CRLF/original-Undo witness is true. This local run used cloud Debian binaries; it is separate from the required Ubuntu-built package and native Windows run.

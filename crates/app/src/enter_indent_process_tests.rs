@@ -651,17 +651,57 @@ fn normal_agent_enter_continuation_is_local_and_preserves_history() -> Check<()>
         )?;
     }
 
-    // A caret inside CRLF is refused through the production frame. Neither the
-    // underlying widget nor this feature may split the pair after the refusal.
+    // Native End can place a collapsed caret after CR and before LF. Enter
+    // treats that caret as the logical line end, while Undo restores its exact
+    // original indices and affinity rather than the normalized insertion point.
     let id = h.open(FIRST, false)?;
-    let between_crlf = caret(first_end + 1);
+    let between_crlf = range(first_end + 1, first_end + 1);
+    let continued = format!("{first_line}\r\n \t\r\n \tsecond Ω\r\nthird line\r\n");
+    let after = caret(first_end + 4);
     h.select(id, between_crlf)?;
     h.action(
         FIRST,
         egui::Key::Enter,
         egui::Modifiers::NONE,
+        &continued,
+        after,
+        true,
+    )?;
+    h.action(
+        FIRST,
+        egui::Key::Z,
+        egui::Modifiers::COMMAND,
         FIRST_BASE,
         between_crlf,
+        true,
+    )?;
+    h.action(
+        FIRST,
+        egui::Key::Z,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        &continued,
+        after,
+        true,
+    )?;
+    h.action(
+        FIRST,
+        egui::Key::Z,
+        egui::Modifiers::COMMAND,
+        FIRST_BASE,
+        between_crlf,
+        true,
+    )?;
+
+    // Nonempty selections with an endpoint inside CRLF still refuse, including
+    // the native Shift+End boundary. Do not silently expand a selected range.
+    let interior_selection = range(first_end + 1, 1);
+    h.select(id, interior_selection)?;
+    h.action(
+        FIRST,
+        egui::Key::Enter,
+        egui::Modifiers::NONE,
+        FIRST_BASE,
+        interior_selection,
         false,
     )?;
 
@@ -715,7 +755,7 @@ fn normal_agent_enter_continuation_is_local_and_preserves_history() -> Check<()>
         "exact setup operation targets differed",
     )?;
     require(
-        h.cases == 27 && h.transactions == 20,
+        h.cases == 31 && h.transactions == 24,
         "acceptance counters differed",
     )?;
     require(
@@ -753,6 +793,7 @@ fn normal_agent_enter_continuation_is_local_and_preserves_history() -> Check<()>
             "dirty_baselines_preserved": true, "one_effective_undo_redo_preserved": true,
             "identical_text_keeps_version_and_redo": true,
             "crlf_prefix_version_refusals_preserved": true,
+            "collapsed_crlf_logical_end_and_original_undo": true,
             "exact_operation_ledger_verified": true, "fixture_removed": true,
             "watchdog_joined": true, "cleanup_verified": true,
             "optional_font_probe_untriggered": true

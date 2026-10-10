@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 48 / 0.48.0（待验收；已验收 0.47.4）
+# 功能矩阵与后续验收 · checkpoint 48 / 0.48.1（待验收；已验收 0.47.4）
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -69,4 +69,4 @@
 
 0.46.0 拟对新适配器执行一次源版本绑定的 Windows 拒绝路径观察；即使通过，也不代表生产恢复权限检查或真实允许路径已验收。
 
-0.47.4 选中代码块 Tab/Shift+Tab 缩进已保留选区与一次撤销，文本及结果上限 1 MiB、选中逻辑行上限 4,096；双平台 CI、进程证明与三个分发包已验收，原生 GUI 使用精确 0.47.0 包及后续发货代码等价审查，见[最终报告](TEST_REPORT_PHASE47_INDENT.md#final-verified-acceptance--0474)。0.48.0 正在增加有界普通 Enter 行首空白延续，尚待验收。已完成的 0.46 原生拒绝观察不再由 CI 自动触发，Windows 恢复权限生产接入继续暂停。
+0.47.4 选中代码块 Tab/Shift+Tab 缩进已保留选区与一次撤销，文本及结果上限 1 MiB、选中逻辑行上限 4,096；双平台 CI、进程证明与三个分发包已验收，原生 GUI 使用精确 0.47.0 包及后续发货代码等价审查，见[最终报告](TEST_REPORT_PHASE47_INDENT.md#final-verified-acceptance--0474)。0.48.1 正在增加有界普通 Enter 行首空白延续，尚待验收。已完成的 0.46 原生拒绝观察不再由 CI 自动触发，Windows 恢复权限生产接入继续暂停。

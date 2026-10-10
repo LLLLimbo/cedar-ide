@@ -75,6 +75,169 @@ fn cancellable_peer(
     .unwrap()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum FixturePresence {
+    Present,
+    Missing,
+    Unavailable,
+}
+
+fn fixture_presence(path: &Path) -> FixturePresence {
+    match fs::metadata(path) {
+        Ok(_) => FixturePresence::Present,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => FixturePresence::Missing,
+        Err(_) => FixturePresence::Unavailable,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RequestFileSummary {
+    bytes: usize,
+    bytes_capped: bool,
+    complete_lines: usize,
+    lines_capped: bool,
+    observed_partial_line: bool,
+}
+
+fn summarize_request_bytes(bytes: &[u8]) -> RequestFileSummary {
+    let observed = &bytes[..bytes.len().min(DIAGNOSTIC_BYTE_LIMIT)];
+    let lines = observed.iter().filter(|byte| **byte == b'\n').count();
+    RequestFileSummary {
+        bytes: observed.len(),
+        bytes_capped: bytes.len() > DIAGNOSTIC_BYTE_LIMIT,
+        complete_lines: lines.min(64),
+        lines_capped: lines > 64,
+        observed_partial_line: observed.last().is_some_and(|byte| *byte != b'\n'),
+    }
+}
+
+fn request_file_summary(directory: &Path) -> Result<RequestFileSummary, FixturePresence> {
+    let input = fs::File::open(directory.join("requests")).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            FixturePresence::Missing
+        } else {
+            FixturePresence::Unavailable
+        }
+    })?;
+    let mut bytes = Vec::new();
+    input
+        .take((DIAGNOSTIC_BYTE_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| FixturePresence::Unavailable)?;
+    Ok(summarize_request_bytes(&bytes))
+}
+
+fn lifecycle_snapshot(peer: &ProcessClient) -> Option<ProcessLifecycle> {
+    peer.lifecycle
+        .as_ref()
+        .map(|lifecycle| *lifecycle.lock().unwrap_or_else(|p| p.into_inner()))
+}
+
+fn stalled_close_receipt(
+    peer: &ProcessClient,
+    directory: &Path,
+    start: Instant,
+    request_elapsed: Duration,
+    reap_wait_elapsed: Option<Duration>,
+) -> String {
+    // Some is this exact owner's observation; None explicitly means no owner
+    // observation is available (for example a channel-only synthetic client).
+    // Pipe-thread fields may still be NotYetObserved after a reaped receipt.
+    format!(
+        "stalled_close_receipt/v1 request_timeout_ms=100 fixture_grace_ms=200 \
+         caller_bound_ms=2000 reap_wait_bound_ms=5000 request_elapsed_ms={} \
+         total_elapsed_ms={} reap_wait_elapsed_ms={:?} owner={:?} requests={:?} \
+         eof={:?} eof_pending={:?}",
+        request_elapsed.as_millis(),
+        start.elapsed().as_millis(),
+        reap_wait_elapsed.map(|elapsed| elapsed.as_millis()),
+        lifecycle_snapshot(peer),
+        request_file_summary(directory),
+        fixture_presence(&directory.join("eof")),
+        fixture_presence(&directory.join("eof.pending")),
+    )
+}
+
+#[test]
+fn lifecycle_exit_categories_have_fixed_numeric_boundaries() {
+    for (code, expected) in [
+        (i32::MIN, ExitObservation::Code(i32::MIN)),
+        (-1, ExitObservation::Code(-1)),
+        (0, ExitObservation::Success),
+        (1, ExitObservation::Code(1)),
+        (255, ExitObservation::Code(255)),
+        (256, ExitObservation::Code(256)),
+        (i32::MAX, ExitObservation::Code(i32::MAX)),
+    ] {
+        assert_eq!(ExitObservation::from_parts(Some(code), None), expected);
+    }
+    for (signal, expected) in [
+        (i32::MIN, ExitObservation::SignalOutsideRange),
+        (0, ExitObservation::SignalOutsideRange),
+        (1, ExitObservation::Signal(1)),
+        (127, ExitObservation::Signal(127)),
+        (128, ExitObservation::SignalOutsideRange),
+        (i32::MAX, ExitObservation::SignalOutsideRange),
+    ] {
+        assert_eq!(ExitObservation::from_parts(None, Some(signal)), expected);
+    }
+    assert_eq!(
+        ExitObservation::from_parts(None, None),
+        ExitObservation::Unavailable
+    );
+    assert_ne!(ExitObservation::default(), ExitObservation::Unavailable);
+}
+
+#[test]
+fn lifecycle_stderr_counts_and_panic_classification_are_bounded() {
+    let mut stderr = StderrObservation::default();
+    assert_eq!(stderr.completion, StderrCompletion::NotYetObserved);
+    assert_eq!(stderr.panic, PanicObservation::NotObserved);
+    stderr.observe_bytes(DIAGNOSTIC_BYTE_LIMIT, b"ordinary diagnostic");
+    assert_eq!(stderr.received.bytes, DIAGNOSTIC_BYTE_LIMIT);
+    assert!(!stderr.received.capped);
+    stderr.observe_bytes(1, b"thread 'fixture' panicked at discarded location");
+    assert_eq!(stderr.panic, PanicObservation::RustPanicMarkerObserved);
+    stderr.observe_bytes(usize::MAX, &vec![b'x'; STDERR_TAIL_BYTES]);
+    assert_eq!(stderr.received.bytes, DIAGNOSTIC_BYTE_LIMIT);
+    assert!(stderr.received.capped);
+    assert_eq!(stderr.retained_bytes, STDERR_TAIL_BYTES);
+    assert_eq!(stderr.panic, PanicObservation::RustPanicMarkerObserved);
+    assert_eq!(stderr.completion, StderrCompletion::NotYetObserved);
+}
+
+#[test]
+fn lifecycle_request_summary_is_bounded_and_counts_only_complete_lines() {
+    assert_eq!(
+        summarize_request_bytes(b""),
+        RequestFileSummary {
+            bytes: 0,
+            bytes_capped: false,
+            complete_lines: 0,
+            lines_capped: false,
+            observed_partial_line: false,
+        }
+    );
+    let partial = summarize_request_bytes(b"first\npartial");
+    assert_eq!(partial.complete_lines, 1);
+    assert!(partial.observed_partial_line);
+    let exactly_capped = summarize_request_bytes(&vec![b'\n'; DIAGNOSTIC_BYTE_LIMIT]);
+    assert_eq!(exactly_capped.bytes, DIAGNOSTIC_BYTE_LIMIT);
+    assert!(!exactly_capped.bytes_capped);
+    assert_eq!(exactly_capped.complete_lines, 64);
+    assert!(exactly_capped.lines_capped);
+    assert!(!exactly_capped.observed_partial_line);
+    let over_cap = summarize_request_bytes(&vec![b'x'; DIAGNOSTIC_BYTE_LIMIT + 1]);
+    assert!(over_cap.bytes_capped);
+    assert!(over_cap.observed_partial_line);
+    assert_eq!(over_cap.complete_lines, 0);
+    for lines in [63, 64, 65] {
+        let summary = summarize_request_bytes(&vec![b'\n'; lines]);
+        assert_eq!(summary.complete_lines, lines.min(64));
+        assert_eq!(summary.lines_capped, lines > 64);
+    }
+}
+
 #[test]
 fn transport_observation_registration_catches_both_publication_orders() {
     for publish_first in [false, true] {
@@ -639,14 +802,58 @@ fn stalled_response_has_a_short_internal_deadline_and_orderly_close() {
     let error = peer
         .request_with_timeout(Operation::Hello, Duration::from_millis(100))
         .unwrap_err();
-    assert!(error.starts_with("transport_timeout:"));
-    assert!(start.elapsed() < Duration::from_secs(2));
-    assert!(!peer.connected);
-    peer.reaped
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap()
-        .unwrap();
-    assert!(dir.path().join("eof").exists());
+    let request_elapsed = start.elapsed();
+    assert!(
+        error.starts_with("transport_timeout:"),
+        "{}",
+        stalled_close_receipt(&peer, dir.path(), start, request_elapsed, None)
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "{}",
+        stalled_close_receipt(&peer, dir.path(), start, request_elapsed, None)
+    );
+    assert!(
+        !peer.connected,
+        "{}",
+        stalled_close_receipt(&peer, dir.path(), start, request_elapsed, None)
+    );
+    let reap_start = Instant::now();
+    let reaped = peer.reaped.recv_timeout(Duration::from_secs(5));
+    let reap_wait_elapsed = Some(reap_start.elapsed());
+    if !matches!(reaped, Ok(Ok(()))) {
+        eprintln!(
+            "{}",
+            stalled_close_receipt(&peer, dir.path(), start, request_elapsed, reap_wait_elapsed)
+        );
+    }
+    reaped.unwrap().unwrap();
+    assert!(
+        dir.path().join("eof").exists(),
+        "{}",
+        stalled_close_receipt(&peer, dir.path(), start, request_elapsed, reap_wait_elapsed)
+    );
+    let lifecycle = lifecycle_snapshot(&peer).unwrap();
+    // EOF can be written immediately before the grace deadline; preserve that
+    // accepted case even if termination wins the subsequent exit race.
+    assert!(
+        matches!(
+            (lifecycle.termination, lifecycle.reap),
+            (
+                TerminationObservation::NotAttempted,
+                ReapObservation::ReapedByTryWait
+            ) | (
+                TerminationObservation::Succeeded,
+                ReapObservation::ReapedByWait
+            )
+        ),
+        "{lifecycle:?}"
+    );
+    assert!(!matches!(
+        lifecycle.exit,
+        ExitObservation::Pending | ExitObservation::Unavailable
+    ));
+    assert_eq!(lifecycle.cleanup_error, None);
 }
 #[test]
 fn unknown_write_outcome_is_warned_and_never_automatically_replayed() {
@@ -711,6 +918,14 @@ fn blocked_writer_is_bounded_and_force_closed_off_the_calling_thread() {
         .unwrap()
         .unwrap();
     assert!(!dir.path().join("eof").exists());
+    let lifecycle = lifecycle_snapshot(&peer).unwrap();
+    assert_eq!(lifecycle.termination, TerminationObservation::Succeeded);
+    assert_eq!(lifecycle.reap, ReapObservation::ReapedByWait);
+    assert!(!matches!(
+        lifecycle.exit,
+        ExitObservation::Pending | ExitObservation::Unavailable
+    ));
+    assert_eq!(lifecycle.cleanup_error, None);
 }
 #[test]
 fn drop_is_nonblocking_and_graceful_peer_observes_eof() {
@@ -843,6 +1058,7 @@ fn lost_wait_ownership_is_unverified_and_never_retried_by_drop() {
     let mut owned = OwnedProcess {
         child,
         completion: None,
+        lifecycle: Arc::new(Mutex::new(ProcessLifecycle::default())),
     };
     let pid = owned.child.id() as libc::pid_t;
     wait_until(|| {
@@ -863,7 +1079,13 @@ fn lost_wait_ownership_is_unverified_and_never_retried_by_drop() {
     // The terminal error is sticky: the teardown path must not retry a kill or
     // wait on this PID after an external reaper may have made it reusable.
     assert_eq!(owned.terminate_and_reap(), Err(ReapError::TryWait));
+    let lifecycle = owned.lifecycle.clone();
     drop(owned);
+    let lifecycle = *lifecycle.lock().unwrap();
+    assert_eq!(lifecycle.termination, TerminationObservation::NotAttempted);
+    assert_eq!(lifecycle.reap, ReapObservation::UnavailableTryWait);
+    assert_eq!(lifecycle.exit, ExitObservation::Unavailable);
+    assert_eq!(lifecycle.cleanup_error, Some(ReapError::TryWait));
 }
 
 fn agent_info(capabilities: &[&str]) -> cedar_protocol::AgentInfo {
