@@ -1,29 +1,23 @@
-# Verification report · Recovery-unavailable lifecycle / 0.44.0
+# Verification report · Bounded Git capture diagnostics / 0.44.1
 
-The latest accepted checkpoint is [0.43.1](TEST_REPORT_PHASE431_DESCRIPTOR.md). This increment lets the editor handle unavailable recovery storage without losing unsaved text or falsely certifying a recovery copy. Full exact-source CI and all three package audits remain required before this checkpoint is accepted.
+The [0.44 failed CI result](TEST_REPORT_PHASE440_RECOVERY.md#exact-source-ci-result) remains preserved. This increment adds only test diagnostics and a controlled Windows pipe-writer lifetime regression. Production capture behavior, output limits and deadlines are unchanged. Recovery-unavailable lifecycle acceptance still requires full exact-source CI and all three package audits.
 
-## Changed behavior and safety boundaries
+## Evidence and diagnostic scope
 
-Typed actor availability and operation effects distinguish never-invoked requests from acknowledged or possibly applied writes and removals. Older copy evidence survives rejected newer submissions. Retry cannot adopt an unreviewed record, replay a canceled removal, or reopen storage after a canceled retry without a fresh explicit request.
+The old Windows error combines a true 256 KiB stream overflow with incomplete stdout or stderr EOF after a 250 ms drain. Its shared fixture assertion identifies neither the repository phase nor the Git subcommand. The old receipt therefore cannot establish either cause.
 
-The separate retained-copy quit path freezes recovery admission, cancels queued removals and drains accepted writes plus any in-flight operation. Final confirmation requires an actual matching settlement and unchanged document/workspace/session/profile state. Each UI observation has a fixed five-second bound; expiry refuses quit rather than interrupting storage or claiming settlement. Keep editing invalidates the close and resumes admission only after settlement. The warning states that current unsaved text may be lost and remaining copies may be older. See [recovery behavior and platform limits](RECOVERY.md).
+Test-only diagnostics now record a fixed command category and fixture phase, bounded retained byte counts, the actual cap-hit flag, both EOF flags, drain expiry and whether the existing pre-drain process poll observed root exit. Owner errors remain distinguishable. The snapshot precedes cancellation, and emission follows owner cleanup. No raw command arguments, paths, stream output or error messages enter the record. Three pure Windows tests cover classification, cap/EOF/error combinations, fixed scalar serialization, byte bounds and suppression on success.
 
-Independent lifecycle and recovery review covered shutdown drain, remove errors after possible unlink, stale acknowledgements, mixed known/unknown copies, canceled Retry/read state, newer edits, reopened document ownership and the language-Stop confirmation bridge. The shipping Store implementation, storage schema and non-Cedar locked dependency data are unchanged. This slice adds no Windows ACL enforcement or privacy guarantee.
+A source-backed candidate is an additional child retaining a pipe writer beyond the original job's exit. The process primitive documents that its explicit handle list restricts its own child; unrelated broad-inheritance spawns require host coordination. Parallel fixtures also use ordinary Rust process spawning. This is a candidate mechanism, not a finding that the historical failure used it. The [exact CI Rust source](https://github.com/rust-lang/rust/blob/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/process/windows.rs) documents the separate standard-library spawn lock and inheritable-handle window.
 
-## Local verification
+## Restricted lifetime regression
 
-The restored official stable toolchain resolved to Rust 1.99.0 (2026-10-01 distribution). Host verification ran in the cloud Linux executor; Windows-target compilation is not native Windows execution.
+The new Windows regression creates two independently owned suspended copies of its test executable. Both receive only the same three generated stdio handles through the existing explicit handle and job lists; neither child resumes. After the parent writers close and the first process exits with an empty job, capture must still lack EOF while the second child holds the writers. Releasing the second owner must produce both real EOF flags, zero bytes and joined capture cleanup.
 
-- Strict workspace Clippy for all targets and features passed on the host and the Windows MSVC target.
-- Workspace tests passed: 1,519 passed, zero failed, 56 ignored across 47 completed suites. Required opt-in process checks are accounted for separately.
-- Default release workspace compilation passed. The normal-agent acceptance below used the built release agent, not a mock peer.
-- All 491 Python cases completed: 482 passed and nine existing platform/tool skips. Formatting and whitespace checks passed.
-- The normal-agent unavailable-recovery acceptance passed two generated cases: a regular file at the configured store path and a child beneath a regular file. Each case exercised one explicit Save and a two-file Save All, exact conditional revisions and source bytes, full selections and Undo/Redo, 128 recovery-refresh checks, and owner cleanup.
+This model does not reproduce broad-inheritance spawning and cannot prove the earlier CI cause. It observes process exit, job emptiness and EOF within one shared five-second budget. Existing OS termination/wait and pending-I/O joining remain potentially blocking on exceptional kernel failures. Assertions follow best-effort settlement; RAII preserves ownership on errors. The existing aggregate CI step has a 15-minute outer timeout. No global spawn mutex, detached owner, security change or production deadline extension was added.
 
-The acceptance ledger totals two connections, 20 requests, six Writes, four Reads, eight Lists and two reaped agents. Each case writes its files `[2, 1]` times. There are no Run or language operations, no invented recovery-copy/protection claims, no queued recovery mutations and no acknowledged recovery removals. The first local fixture attempt incorrectly asserted that asynchronous Refresh had already completed; that failed receipt is retained. The corrected fixture waits for the matching response within the existing shared five-second cohort deadline while continuously checking unchanged editor and recovery state. No production timing or acceptance criterion was relaxed.
+## Verification boundary
 
-## Required native CI and limits
+Independent reviews cleared the restricted handle-list model, cleanup ordering and sanitized diagnostic schema. Strict workspace Clippy passed on the host and Windows MSVC target. Host all-targets/all-features workspace tests passed: 1,519 passed, zero failed and 56 ignored across 47 suites; Windows-only tests require actual native CI and are not claimed as locally executed. Fresh 0.44.1 release binaries, full retained native gates and packages remain CI requirements. Local release/process results from 0.44 retain their original source identity. The new diagnostics do not turn the old failed run into a pass or establish a capture fix.
 
-Both OS jobs retain the existing build, ownership, save, Java, Maven, Git and package gates, and add the same two-case normal shipping-agent acceptance with agent-hash preservation. Local headless and process tests do not establish native GUI behavior.
-
-The [completed Windows descriptor investigation](TEST_REPORT_PHASE431_DESCRIPTOR.md#exact-source-ci-result) is not repeated in routine CI. Its pure parser and driver tests remain. Its inherited-owner/DACL findings and earlier failed receipt remain historical evidence requiring a separate policy decision; no additional native descriptor observation, ACL mutation or recovery plaintext probe is part of this increment.
+The recovery Store, Windows ACL policy, dependency versions and the completed one-shot descriptor investigation are unchanged. No new descriptor probe is scheduled.

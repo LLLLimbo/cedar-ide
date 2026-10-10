@@ -399,12 +399,17 @@ mod repositories {
             self.git(&["commit", "-m", "synthetic fixture"]);
         }
         fn changes(&mut self) -> Vec<GitChange> {
+            self.changes_at("unspecified")
+        }
+        fn changes_at(&mut self, phase: &'static str) -> Vec<GitChange> {
             let payload = self
                 .workspace
                 .handle(Operation::GitChanges {
                     git_executable: self.git.to_str().unwrap().into(),
                 })
-                .unwrap();
+                .unwrap_or_else(|error| {
+                    panic!("Git changes fixture phase {phase}: {}", error.code)
+                });
             let Payload::GitChanges { entries } = payload else {
                 panic!("wrong payload")
             };
@@ -443,9 +448,12 @@ mod repositories {
     #[test]
     fn clean_staged_unstaged_double_change_and_unborn_without_index_writes() {
         let mut repo = Repo::new();
-        assert!(repo.changes().is_empty());
+        assert!(repo.changes_at("unborn_clean").is_empty());
         repo.write("file.txt", "first\n");
-        assert_eq!(repo.changes()[0].kind, GitChangeKind::Untracked);
+        assert_eq!(
+            repo.changes_at("unborn_untracked")[0].kind,
+            GitChangeKind::Untracked
+        );
         assert_eq!(
             repo.diff_result("file.txt", GitDiffKind::Unstaged)
                 .unwrap_err()
@@ -454,16 +462,16 @@ mod repositories {
         );
         repo.git(&["add", "--", "file.txt"]);
         let index = fs::read(repo.path(".git/index")).unwrap();
-        let entry = repo.changes().remove(0);
+        let entry = repo.changes_at("unborn_staged").remove(0);
         assert_eq!((entry.index, entry.worktree), ('A', '.'));
         assert!(repo
             .diff("file.txt", GitDiffKind::Staged)
             .contains("+first"));
         assert_eq!(fs::read(repo.path(".git/index")).unwrap(), index);
         repo.commit();
-        assert!(repo.changes().is_empty());
+        assert!(repo.changes_at("committed_clean").is_empty());
         repo.write("file.txt", "second longer\n");
-        let entry = repo.changes().remove(0);
+        let entry = repo.changes_at("unstaged").remove(0);
         assert_eq!((entry.index, entry.worktree), ('.', 'M'));
         assert!(repo
             .diff("file.txt", GitDiffKind::Unstaged)
@@ -471,7 +479,7 @@ mod repositories {
         repo.git(&["add", "--", "file.txt"]);
         repo.write("file.txt", "third even longer\n");
         let index = fs::read(repo.path(".git/index")).unwrap();
-        let entry = repo.changes().remove(0);
+        let entry = repo.changes_at("staged_and_unstaged").remove(0);
         assert_eq!((entry.index, entry.worktree), ('M', 'M'));
         assert!(repo
             .diff("file.txt", GitDiffKind::Staged)

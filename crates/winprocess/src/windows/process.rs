@@ -631,6 +631,94 @@ mod tests {
     }
 
     #[test]
+    fn separately_owned_suspended_writer_delays_eof_until_its_release() {
+        use super::super::pipes::PreparedStdio;
+        use std::time::Instant;
+
+        fn observed_empty(owner: &mut ProcessOwner, deadline: Instant) -> io::Result<()> {
+            loop {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "owned observation expired",
+                    ));
+                }
+                if owner.try_exit()?.is_some() && owner.active_processes()? == 0 {
+                    // try_exit cached an observed terminal state. This does not
+                    // turn a termination request into a successful wait.
+                    owner.wait_exit()?;
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        // These are only generated pipes and NUL. Both independent jobs receive
+        // the exact three-handle list; no broad-inheritance spawn is used.
+        // Capture is declared before the owners, so failure drops both owners
+        // before joining outstanding pipe I/O. Neither child is ever resumed.
+        let PreparedStdio {
+            child,
+            mut capture,
+            stdin,
+        } = PreparedStdio::new().unwrap();
+        drop(stdin);
+        let mut first = ProcessOwner::create_suspended(&self_spec(), &child, None).unwrap();
+        let mut holder = ProcessOwner::create_suspended(&self_spec(), &child, None).unwrap();
+        drop(child);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut bytes = 0usize;
+        let observation = (|| -> io::Result<(bool, bool)> {
+            first.terminate_tree()?;
+            observed_empty(&mut first, deadline)?;
+            let mut held = true;
+            for _ in 0..4 {
+                let progress = capture.capture_round(&mut |_, chunk| bytes += chunk.len())?;
+                held &= holder.try_exit()?.is_none()
+                    && holder.active_processes()? == 1
+                    && !progress.stdout_eof
+                    && !progress.stderr_eof
+                    && bytes == 0;
+            }
+            holder.terminate_tree()?;
+            observed_empty(&mut holder, deadline)?;
+            loop {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "EOF observation expired",
+                    ));
+                }
+                let progress = capture.capture_round(&mut |_, chunk| bytes += chunk.len())?;
+                if progress.stdout_eof && progress.stderr_eof {
+                    return Ok((held, bytes == 0));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })();
+        // Settle ownership before assertions wherever possible. On an error,
+        // existing RAII still terminates/joins; kernel teardown is not claimed
+        // to have a five-second wall-time cap. CI's aggregate outer cap is 15m.
+        let first_stop = first.terminate_tree().is_ok();
+        let holder_stop = holder.terminate_tree().is_ok();
+        let first_empty = observed_empty(&mut first, deadline).is_ok();
+        let holder_empty = observed_empty(&mut holder, deadline).is_ok();
+        drop(holder);
+        drop(first);
+        let joined = capture.cancel_and_complete_pending().is_ok();
+        let final_progress = capture.capture_round(&mut |_, chunk| bytes += chunk.len());
+        assert!(
+            first_stop && holder_stop && first_empty && holder_empty && joined,
+            "owned holder cleanup was not verified within the observation budget"
+        );
+        let (held, released) = observation.expect("holder lifetime observation failed");
+        let final_progress = final_progress.unwrap();
+        assert!(held && released && bytes == 0);
+        assert!(final_progress.stdout_eof && final_progress.stderr_eof);
+        println!("windows_pipe_holder_lifetime {{\"children\":2,\"resumed\":0,\"bytes\":0,\"held_incomplete\":true,\"released_eof\":true,\"jobs_empty\":true,\"capture_joined\":true,\"broad_inheritance_reproduced\":false}}");
+    }
+
+    #[test]
     fn job_is_noninheritable_kill_on_close_only_without_ui_restrictions() {
         let job = create_job().unwrap();
         let mut flags = 0;
