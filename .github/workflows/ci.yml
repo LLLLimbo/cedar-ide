@@ -28,6 +28,7 @@ jobs:
       - run: python scripts/test_linux_java_acceptance.py
       - run: python scripts/test_linux_maven_acceptance.py
       - run: python scripts/test_windows_bundle.py
+      - run: python scripts/test_windows_recovery_privacy_probe.py
       - run: python scripts/test_linux_agent_bundle.py
       - run: python scripts/test_linux_agent_acceptance.py
       - run: python scripts/test_linux_desktop_bundle.py
@@ -43,6 +44,21 @@ jobs:
         timeout-minutes: 15
       - id: release_build
         run: cargo build --release --workspace --all-features --locked
+      - name: Windows recovery descriptor feasibility (nonshipping, empty objects)
+        id: recovery_descriptor_probe
+        if: runner.os == 'Windows'
+        # Separate 120s compilation and 15s exact-one selection precede ONE
+        # 60s watchdog for all native object work, rename, and cleanup.
+        timeout-minutes: 5
+        run: python scripts/windows_recovery_privacy_probe.py
+      - name: Windows recovery descriptor sanitized receipt
+        if: always() && runner.os == 'Windows' && steps.recovery_descriptor_probe.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-recovery-descriptor-feasibility
+          path: ${{ runner.temp }}/WINDOWS_RECOVERY_PRIVACY_PROBE.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Explicit test-report reads (Unix)
         timeout-minutes: 3
         if: runner.os != 'Windows'

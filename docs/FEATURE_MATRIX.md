@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 42 / 0.42.1
+# 功能矩阵与后续验收 · checkpoint 43 / 0.43.0
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
