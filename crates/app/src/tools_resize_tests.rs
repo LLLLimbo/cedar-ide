@@ -55,16 +55,30 @@ fn frames(
     )
 }
 
-fn input_frames(
+fn input_frames(app: &mut CedarApp, input: egui::RawInput, discard_first: bool) -> Vec<Geometry> {
+    input_frames_diagnostic(app, input, discard_first, None)
+}
+
+fn input_frames_diagnostic(
     app: &mut CedarApp,
     mut input: egui::RawInput,
     discard_first: bool,
+    mut diagnostic: Option<&mut EditorInputDiagnostic>,
 ) -> Vec<Geometry> {
     let ctx = app.editor_ctx.clone();
     ctx.options_mut(|options| options.max_passes = 2.try_into().unwrap());
+    if let Some(trace) = diagnostic.as_deref_mut() {
+        // A traversal replaces this one-frame buffer on every Tab. Only the
+        // frame which actually reaches the editor survives for reporting.
+        *trace = EditorInputDiagnostic::default();
+        trace.record_raw(app, "BeforeRawHook", &input);
+    }
     // The production hook observes the original batch exactly once, including
     // frames which egui lays out twice. Never replay it in the render closure.
     eframe::App::raw_input_hook(app, &ctx, &mut input);
+    if let Some(trace) = diagnostic.as_deref_mut() {
+        trace.record_raw(app, "AfterRawHook", &input);
+    }
     let mut passes = Vec::new();
     let _ = ctx.run(input, |ctx| {
         workspace_access_tests::begin(ctx);
@@ -84,9 +98,15 @@ fn input_frames(
         app.sidebar(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             if !app.documents.is_empty() {
+                if let Some(trace) = diagnostic.as_deref_mut() {
+                    trace.record_pass(app, "BeforeEditor", passes.len());
+                }
                 app.editor(ui);
             }
         });
+        if let Some(trace) = diagnostic.as_deref_mut() {
+            trace.record_pass(app, "AfterRenderPass", passes.len());
+        }
         passes.push(Geometry {
             available,
             panel,
@@ -103,6 +123,24 @@ fn input_frames(
 
 fn frame(app: &mut CedarApp, size: [f32; 2], events: Vec<egui::Event>) -> Geometry {
     *frames(app, size, events, false).last().unwrap()
+}
+
+fn frame_diagnostic(
+    app: &mut CedarApp,
+    size: [f32; 2],
+    events: Vec<egui::Event>,
+    diagnostic: &mut EditorInputDiagnostic,
+) {
+    input_frames_diagnostic(
+        app,
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
+            events,
+            ..Default::default()
+        },
+        false,
+        Some(diagnostic),
+    );
 }
 
 fn settle(app: &mut CedarApp, size: [f32; 2]) -> Geometry {
@@ -570,10 +608,24 @@ fn click_widget(app: &mut CedarApp, size: [f32; 2], name: &str) -> Geometry {
 }
 
 fn tab_to(app: &mut CedarApp, size: [f32; 2], name: &str) {
+    tab_to_diagnostic(app, size, name, None);
+}
+
+fn tab_to_diagnostic(
+    app: &mut CedarApp,
+    size: [f32; 2],
+    name: &str,
+    mut diagnostic: Option<&mut EditorInputDiagnostic>,
+) {
     // Pinned egui 0.31.1 registers native scrollbars as focus stops too. Follow
     // actual focused IDs instead of assuming a fixed number/order of Tab stops.
     for _ in 0..80 {
-        frame(app, size, key(egui::Key::Tab, egui::Modifiers::NONE));
+        let events = key(egui::Key::Tab, egui::Modifiers::NONE);
+        if let Some(trace) = diagnostic.as_deref_mut() {
+            frame_diagnostic(app, size, events, trace);
+        } else {
+            frame(app, size, events);
+        }
         let response = workspace_access_tests::recorded_response(app, name);
         if app.editor_ctx.memory(|memory| memory.focused()) == Some(response.id) {
             assert!(response.enabled() && response.has_focus());
@@ -1119,6 +1171,130 @@ fn tools_automatic_height_narrow_header_controls_remain_visible_and_clickable() 
 
 type SelectionWitness = (usize, bool, usize, bool);
 
+#[derive(Default, serde::Serialize)]
+struct EditorInputDiagnostic {
+    stages: Vec<serde_json::Value>,
+    truncated: bool,
+}
+
+fn editor_event_diagnostic(events: &[egui::Event]) -> serde_json::Value {
+    // Emit only fixed event classifications, never text, paste, IME, pointer
+    // coordinates, paths, IDs, or other event payloads.
+    let classified: Vec<_> = events
+        .iter()
+        .take(8)
+        .map(|event| {
+            let kind = match event {
+                egui::Event::Key {
+                    key,
+                    pressed,
+                    repeat,
+                    modifiers,
+                    ..
+                } => {
+                    return serde_json::json!({
+                        "kind": "Key",
+                        "key": match key {
+                            egui::Key::Tab => "Tab",
+                            egui::Key::Z => "Z",
+                            egui::Key::Y => "Y",
+                            _ => "Other",
+                        },
+                        "pressed": pressed,
+                        "repeat": repeat,
+                        "modifiers": {
+                            "alt": modifiers.alt,
+                            "ctrl": modifiers.ctrl,
+                            "shift": modifiers.shift,
+                            "mac_cmd": modifiers.mac_cmd,
+                            "command": modifiers.command,
+                        },
+                    });
+                }
+                egui::Event::Copy => "Copy",
+                egui::Event::Cut => "Cut",
+                egui::Event::Paste(_) => "Paste",
+                egui::Event::Text(_) => "Text",
+                egui::Event::PointerMoved(_) => "PointerMoved",
+                egui::Event::MouseMoved(_) => "MouseMoved",
+                egui::Event::PointerButton { .. } => "PointerButton",
+                egui::Event::PointerGone => "PointerGone",
+                egui::Event::Zoom(_) => "Zoom",
+                egui::Event::Ime(_) => "Ime",
+                egui::Event::Touch { .. } => "Touch",
+                egui::Event::MouseWheel { .. } => "MouseWheel",
+                egui::Event::WindowFocused(_) => "WindowFocused",
+                _ => "Other",
+            };
+            serde_json::json!({ "kind": kind })
+        })
+        .collect();
+    serde_json::json!({
+        "count": events.len(),
+        "events": classified,
+        "truncated": events.len() > 8,
+    })
+}
+
+fn editor_focus_diagnostic(app: &CedarApp) -> serde_json::Value {
+    let editor = app.active_document.map(|id| egui::Id::new(("editor", id)));
+    app.editor_ctx.memory(|memory| {
+        let focused = memory.focused();
+        let has_focus = editor.is_some() && focused == editor;
+        let had_focus = editor.is_some_and(|id| memory.had_focus_last_frame(id));
+        serde_json::json!({
+            "focused": if has_focus { "editor" } else if focused.is_some() { "other" } else { "none" },
+            "has_focus": has_focus,
+            "had_focus_last_frame": had_focus,
+            "gained_focus": has_focus && !had_focus,
+            "lost_focus": had_focus && !has_focus,
+        })
+    })
+}
+
+impl EditorInputDiagnostic {
+    fn record_raw(&mut self, app: &CedarApp, stage: &'static str, input: &egui::RawInput) {
+        self.record(
+            app,
+            stage,
+            None,
+            input.focused,
+            editor_event_diagnostic(&input.events),
+        );
+    }
+
+    fn record_pass(&mut self, app: &CedarApp, stage: &'static str, pass: usize) {
+        let (focused, events) = app
+            .editor_ctx
+            .input(|input| (input.focused, editor_event_diagnostic(&input.events)));
+        self.record(app, stage, Some(pass), focused, events);
+    }
+
+    fn record(
+        &mut self,
+        app: &CedarApp,
+        stage: &'static str,
+        pass: Option<usize>,
+        window_focused: bool,
+        events: serde_json::Value,
+    ) {
+        // Two raw-hook boundaries plus two observations in each of at most
+        // two render passes. No diagnostic requests an extra frame or pass.
+        if self.stages.len() >= 6 {
+            self.truncated = true;
+            return;
+        }
+        self.stages.push(serde_json::json!({
+            "stage": stage,
+            "pass_in_frame": pass,
+            "cumulative_pass": app.editor_ctx.cumulative_pass_nr(),
+            "window_focused": window_focused,
+            "focus": editor_focus_diagnostic(app),
+            "input": events,
+        }));
+    }
+}
+
 #[derive(Debug, PartialEq)]
 struct EditorWitness {
     text: String,
@@ -1171,6 +1347,55 @@ fn editor_witness(app: &CedarApp) -> EditorWitness {
         selection: selection(cursor),
         history: reachable,
     }
+}
+
+fn editor_state_diagnostic(
+    app: &CedarApp,
+    stage: &'static str,
+    baseline: &EditorWitness,
+    saved: &str,
+    dirty: &str,
+    later: &str,
+) -> serde_json::Value {
+    let witness = editor_witness(app);
+    let classify = |text: &str| {
+        if text == saved {
+            "saved"
+        } else if text == dirty {
+            "dirty"
+        } else if text == later {
+            "later"
+        } else {
+            "other"
+        }
+    };
+    let history: Vec<_> = witness
+        .history
+        .iter()
+        .map(|states| {
+            states
+                .iter()
+                .map(|(_, text)| classify(text))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    serde_json::json!({
+        "stage": stage,
+        "cumulative_pass": app.editor_ctx.cumulative_pass_nr(),
+        "text_equals": {
+            "saved": witness.text == saved,
+            "dirty": witness.text == dirty,
+            "later": witness.text == later,
+            "before_tab": witness.text == baseline.text,
+        },
+        "edit_version": witness.version,
+        "version_delta_from_before_tab": i128::from(witness.version) - i128::from(baseline.version),
+        "selection": witness.selection,
+        "history_depth": [witness.history[0].len(), witness.history[1].len()],
+        "history_text_classes": history,
+        "focus": editor_focus_diagnostic(app),
+        "window_focused": app.editor_ctx.input(|input| input.focused),
+    })
 }
 
 #[test]
@@ -1262,8 +1487,32 @@ fn tools_automatic_height_preserves_dirty_selection_undo_redo_and_results_withou
         "reset must dispatch no backend operation"
     );
 
-    tab_to(&mut app, SIZE, "editor");
-    frame(&mut app, SIZE, key(egui::Key::Z, egui::Modifiers::COMMAND));
+    let before_tab = editor_witness(&app);
+    let before_tab_state =
+        editor_state_diagnostic(&app, "BeforeTabTraversal", &before_tab, saved, dirty, later);
+    let mut tab_input = EditorInputDiagnostic::default();
+    tab_to_diagnostic(&mut app, SIZE, "editor", Some(&mut tab_input));
+    let after_tab_state =
+        editor_state_diagnostic(&app, "AfterTab", &before_tab, saved, dirty, later);
+    let before_undo_state =
+        editor_state_diagnostic(&app, "BeforeUndo", &before_tab, saved, dirty, later);
+    let mut undo_input = EditorInputDiagnostic::default();
+    frame_diagnostic(
+        &mut app,
+        SIZE,
+        key(egui::Key::Z, egui::Modifiers::COMMAND),
+        &mut undo_input,
+    );
+    let after_undo_state =
+        editor_state_diagnostic(&app, "AfterUndo", &before_tab, saved, dirty, later);
+    eprintln!(
+        "tools_editor_undo_diagnostic {}",
+        serde_json::json!({
+            "states": [before_tab_state, after_tab_state, before_undo_state, after_undo_state],
+            "editor_focus_tab_input": tab_input,
+            "undo_input": undo_input,
+        })
+    );
     assert_eq!(app.documents[0].text, saved);
     frame(&mut app, SIZE, key(egui::Key::Y, egui::Modifiers::COMMAND));
     assert_eq!(app.documents[0].text, dirty);

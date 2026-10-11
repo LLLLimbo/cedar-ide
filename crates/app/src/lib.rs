@@ -98,6 +98,7 @@ mod search_navigation_process_tests;
 mod selection_replace_process_tests;
 #[cfg(test)]
 mod sidebar_layout_tests;
+mod sidebar_reveal;
 #[cfg(test)]
 mod ssh_preflight_process_tests;
 mod syntax;
@@ -2181,9 +2182,11 @@ impl CedarApp {
                     }
                     #[cfg(test)]
                     sidebar_layout_tests::record_reveal(response, activated.is_some(), resized);
-                    if activated.is_some() || response.gained_focus() || (resized && response.has_focus()) {
+                    let requested = activated.is_some() || response.gained_focus() || (resized && response.has_focus());
+                    if requested {
                         response.scroll_to_me(None);
                     }
+                    requested
                 };
                 let outer = egui::ScrollArea::vertical().id_salt("sidebar_scroll")
                     // Background drag surfaces use the previous viewport rect;
@@ -2192,7 +2195,11 @@ impl CedarApp {
                     .drag_to_scroll(false)
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                     .min_scrolled_height(0.0).auto_shrink([false, false]).animated(false)
-                    .show(ui, |ui| {
+                    .show_viewport(ui, |ui, viewport| {
+                        // The paint clip includes a margin outside the real viewport.
+                        // Capture the viewport origin before content changes min_rect.
+                        let initial_content_origin = ui.max_rect().min;
+                        let actual_viewport = viewport.translate(initial_content_origin.to_vec2());
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("EXPLORER").size(11.0).strong().color(MUTED));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2365,6 +2372,9 @@ impl CedarApp {
                         }
                         // One persistent child emits the same five auto IDs at every
                         // width; row breaks change geometry without changing focus.
+                        let footer_content_min_y = ui.min_rect().top();
+                        let outer_viewport_offset_y = viewport.min.y;
+                        let outer_item_spacing_y = ui.spacing().item_spacing.y;
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing.x = tool_gap;
                             ui.set_row_height(tool_row_height);
@@ -2374,7 +2384,17 @@ impl CedarApp {
                                     // An offline workspace has no enabled Refresh.
                                     self.workspace_access.record(workspace_access::Target::Explorer, &response);
                                 }
-                                reveal(&response);
+                                let requested = reveal(&response);
+                                let target = if requested {
+                                    sidebar_reveal::footer_target(response.rect, actual_viewport, footer_content_min_y, outer_viewport_offset_y, outer_item_spacing_y)
+                                } else { None };
+                                #[cfg(test)]
+                                sidebar_layout_tests::record_footer_target(&response, requested, target);
+                                if let Some(target) = target {
+                                    // Replace only this footer's request immediately;
+                                    // later widgets keep normal scroll-target priority.
+                                    ui.scroll_to_rect(target, Some(egui::Align::TOP));
+                                }
                                 #[cfg(test)]
                                 sidebar_layout_tests::record(ui, label, &response);
                                 #[cfg(test)]
@@ -2393,6 +2413,8 @@ impl CedarApp {
                         let help = ui.label(shortcut_help).on_hover_text("Ctrl/Cmd+J  Hide tools and return to editor, or show the selected tool\nCtrl/Cmd+Shift+E  Hide tools and focus Explorer without refreshing");
                         #[cfg(test)]
                         sidebar_layout_tests::record(ui, "help", &help);
+                        #[cfg(test)]
+                        sidebar_layout_tests::record_footer_geometry(ui, initial_content_origin.y, footer_content_min_y, actual_viewport, outer_viewport_offset_y, outer_item_spacing_y);
                         #[cfg(not(test))]
                         let _ = help;
                     });

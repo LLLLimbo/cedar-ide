@@ -1,6 +1,6 @@
 # Public source checkpoint
 
-This is the source-only public export of tested development stage `phase581-height-fixture-diagnostics-0.58.1`.
+This is the source-only public export of tested development stage `phase582-footer-viewport-reveal-0.58.2`.
 It is an independent Rust IDE project, not a complete IntelliJ IDEA replacement.
 Public commits preserve the phase-by-phase development sequence, but their hashes
 differ from the private build checkpoints because generated evidence is omitted.
