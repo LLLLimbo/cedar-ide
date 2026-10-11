@@ -964,8 +964,9 @@ fn selection_native_edge_hits_and_held_release_after_layout_move_are_admitted() 
         for (time, name) in [(1.0, "replace_preview_selection"), (3.0, "replace_apply")] {
             frame(&mut app, time, vec![]);
             let response = crate::workspace_access_tests::recorded_response(&app, name);
+            let before_rect = crate::workspace_access_tests::recorded_rect(&app, name);
             let at = if move_layout {
-                response.rect.center()
+                before_rect.center()
             } else {
                 egui::pos2(
                     response.interact_rect.right() + 1.0,
@@ -985,6 +986,8 @@ fn selection_native_edge_hits_and_held_release_after_layout_move_are_admitted() 
                 vec![egui::Event::PointerMoved(at), pointer(at, true)],
             );
             assert!(app.replace.selection_press.is_some());
+            let (pressed_id, pressed_owner) = app.replace.selection_press.clone().unwrap();
+            assert_eq!(pressed_id, response.id, "{name}: captured button identity");
             if move_layout {
                 app.error = if app.error.is_some() {
                     None
@@ -993,8 +996,25 @@ fn selection_native_edge_hits_and_held_release_after_layout_move_are_admitted() 
                 };
                 frame(&mut app, time + 0.2, vec![]);
                 let moved = crate::workspace_access_tests::recorded_response(&app, name);
-                assert!(!moved.rect.contains(at));
-                assert!(app.replace.selection_press.is_some());
+                // read_response may retain the prior interaction geometry after
+                // end_pass swaps pass state. The recorder holds this render's rect.
+                let moved_rect = crate::workspace_access_tests::recorded_rect(&app, name);
+                assert_eq!(moved.id, response.id, "{name}: moved button identity");
+                assert_ne!(
+                    before_rect, moved_rect,
+                    "{name}: notification must move the rendered button"
+                );
+                assert!(
+                    !moved_rect.contains(at),
+                    "{name}: before={before_rect:?}, moved={moved_rect:?}, interaction={:?}, held={at:?}",
+                    moved.rect
+                );
+                let (held_id, held_owner) = app.replace.selection_press.as_ref().unwrap();
+                assert_eq!(*held_id, pressed_id, "{name}: held button identity");
+                assert!(
+                    std::sync::Arc::ptr_eq(held_owner, &pressed_owner),
+                    "{name}: captured owner must survive layout movement"
+                );
             }
             frame(&mut app, time + 0.3, vec![pointer(at, false)]);
             if name == "replace_preview_selection" {

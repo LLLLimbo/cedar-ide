@@ -1,4 +1,4 @@
-# Verification checkpoint — 0.53.2 selected-slice replacement
+# Verification checkpoint — 0.53.3 selected-slice replacement
 
 ## Scope and acceptance state
 
@@ -33,3 +33,9 @@ Public `3ba65799f9896f94b88ae7d087200a12dd8a568b`, [CI 38113209812](https://gith
 Public `5f1236bf239db972a322ec942633006b8f12aa1f`, [CI 38113714668](https://github.com/LLLLimbo/cedar-ide/actions/runs/38113714668), expanded the corrected receipt macro but failed strict Clippy on both OSes: two test helpers passed an unnecessary extra reference to `admitted`. No Rust tests, process receipts, release builds or packages ran.
 
 0.53.2 removes only those two extra borrows where `app` is already a reference. The other calls borrow owned fixture values and remain unchanged. No lint allowance, assertion, shipping behavior, receipt schema or runtime budget changes. Fresh dual-platform strict checks, all tests/gates/packages and exact GUI remain required; both prior failed runs remain failed.
+
+## Preserved 0.53.2 layout-fixture failure
+
+Public `a4f866580d8b7b751dec9e2fbfe94a2ad855ed74`, [CI 38114122961](https://github.com/LLLLimbo/cedar-ide/actions/runs/38114122961), passed strict compilation on both OSes, then failed the held-click layout test's off-point precondition. Both platforms passed 30 of 31 replacement tests; no process proof or package was produced. The raw logs do not identify the Preview/Apply iteration or record its rectangles.
+
+0.53.3 changes only that test's geometry observation to the existing recorder of the rendered `Response.rect`. Pinned egui 0.31.1 swaps pass state at the end of a pass, while `read_response` prefers its current-pass storage; a post-frame reconstructed response can therefore describe prior interaction geometry. The test now verifies rendered movement, stable button ID and the same captured owner, while retaining the unchanged click point, one intervening idle frame, real press/release, off-point precondition and successful action assertions. Contextual rectangle diagnostics identify either button if fresh CI fails. No additional settling frame, sleep, shipping behavior, receipt schema or budget changes. Local Rust execution remains deferred; fresh full CI and native acceptance remain required.
