@@ -2179,6 +2179,8 @@ impl CedarApp {
                         && ctx.memory(|memory| memory.focused().is_none()) {
                         response.request_focus();
                     }
+                    #[cfg(test)]
+                    sidebar_layout_tests::record_reveal(response, activated.is_some(), resized);
                     if activated.is_some() || response.gained_focus() || (resized && response.has_focus()) {
                         response.scroll_to_me(None);
                     }

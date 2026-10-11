@@ -577,7 +577,33 @@ fn tab_to(app: &mut CedarApp, size: [f32; 2], name: &str) {
         let response = workspace_access_tests::recorded_response(app, name);
         if app.editor_ctx.memory(|memory| memory.focused()) == Some(response.id) {
             assert!(response.enabled() && response.has_focus());
-            visible_rect(app, size, name);
+            if name == "editor" {
+                let document = app
+                    .active_document
+                    .expect("the focused editor has a document");
+                assert_eq!(response.id, egui::Id::new(("editor", document)));
+                // The production editor allocates at least 30 rows inside its
+                // ScrollArea. Its visible hit region must fit, not all content.
+                let rect = workspace_access_tests::recorded_rect(app, name);
+                let clip = workspace_access_tests::recorded_clip(app, name);
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+                let visible = rect.intersect(clip).intersect(screen);
+                assert!(
+                    rect.is_finite()
+                        && clip.is_finite()
+                        && screen.is_finite()
+                        && visible.is_finite(),
+                    "editor has nonfinite geometry: {rect:?} / {clip:?} / {screen:?}"
+                );
+                assert!(
+                    visible.is_positive(),
+                    "editor has no visible hit region: {rect:?} / {clip:?} / {screen:?}"
+                );
+                let at = visible.center();
+                assert!(rect.contains(at) && clip.contains(at) && screen.contains(at));
+            } else {
+                visible_rect(app, size, name);
+            }
             return;
         }
     }

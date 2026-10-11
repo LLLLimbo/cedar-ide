@@ -10,6 +10,209 @@ const TOOLS: [(Tool, &str); 5] = [
     (Tool::Tests, "Tests"),
 ];
 const PROBE: &str = "sidebar_layout_test_probe";
+const REVEAL_DIAGNOSTIC: &str = "sidebar_reveal_diagnostic";
+// The selected matrix case has eight existing frames and egui allows two
+// layout passes by default. Observe at most those sixteen passes; never retry.
+const MAX_DIAGNOSTIC_PASSES: usize = 16;
+
+#[derive(Clone, Copy, serde::Serialize)]
+enum DiagnosticStage {
+    InitialLayout,
+    InitialSearchFocus,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct RevealDiagnostic {
+    requested: bool,
+    activated: bool,
+    resized: bool,
+    gained_focus: bool,
+    has_focus: bool,
+    range: [f32; 4],
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ScrollDiagnostic {
+    viewport: [f32; 4],
+    content: [f32; 2],
+    offset_before_layout: Option<[f32; 2]>,
+    offset_after_layout: [f32; 2],
+}
+
+#[derive(Clone, serde::Serialize)]
+struct WidgetDiagnostic {
+    rect: [f32; 4],
+    paint_clip: [f32; 4],
+    reveal: Option<RevealDiagnostic>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct PassDiagnostic {
+    stage: DiagnosticStage,
+    frame: usize,
+    pass_in_frame: usize,
+    cumulative_pass: u64,
+    native_pixels_per_point: Option<f32>,
+    pixels_per_point: f32,
+    gui_rounding: f32,
+    clip_rect_margin: f32,
+    tools_rect: Option<[f32; 4]>,
+    outer: Option<ScrollDiagnostic>,
+    search: Option<WidgetDiagnostic>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct RevealDiagnostics {
+    width: f32,
+    font_size: f32,
+    window: [f32; 2],
+    passes: Vec<PassDiagnostic>,
+    truncated: bool,
+    #[serde(skip)]
+    stage: DiagnosticStage,
+    #[serde(skip)]
+    next_frame: usize,
+}
+
+fn rect_coordinates(rect: egui::Rect) -> [f32; 4] {
+    [rect.left(), rect.top(), rect.right(), rect.bottom()]
+}
+
+fn begin_reveal_diagnostics(app: &CedarApp, width: f32, font_size: f32, window: [f32; 2]) {
+    app.editor_ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new(REVEAL_DIAGNOSTIC),
+            RevealDiagnostics {
+                width,
+                font_size,
+                window,
+                passes: Vec::with_capacity(MAX_DIAGNOSTIC_PASSES),
+                truncated: false,
+                stage: DiagnosticStage::InitialLayout,
+                next_frame: 0,
+            },
+        );
+    });
+}
+
+fn search_focus_diagnostic_stage(app: &CedarApp) {
+    app.editor_ctx.data_mut(|data| {
+        if let Some(mut trace) =
+            data.get_temp::<RevealDiagnostics>(egui::Id::new(REVEAL_DIAGNOSTIC))
+        {
+            trace.stage = DiagnosticStage::InitialSearchFocus;
+            trace.next_frame = 0;
+            data.insert_temp(egui::Id::new(REVEAL_DIAGNOSTIC), trace);
+        }
+    });
+}
+
+fn diagnostic_frame(ctx: &egui::Context) -> Option<usize> {
+    ctx.data_mut(|data| {
+        let mut trace = data.get_temp::<RevealDiagnostics>(egui::Id::new(REVEAL_DIAGNOSTIC))?;
+        let frame = trace.next_frame;
+        trace.next_frame += 1;
+        data.insert_temp(egui::Id::new(REVEAL_DIAGNOSTIC), trace);
+        Some(frame)
+    })
+}
+
+fn diagnostic_outer_offset(ctx: &egui::Context, frame: Option<usize>) -> Option<[f32; 2]> {
+    frame?;
+    let previous = ctx.data(|data| data.get_temp::<Snapshot>(egui::Id::new(PROBE)))?;
+    let state = egui::scroll_area::State::load(ctx, previous.outer?.id)?;
+    Some([state.offset.x, state.offset.y])
+}
+
+// Observe the unchanged reveal predicate before it runs. This allocates no UI,
+// consumes no input, and never requests focus, scrolling, repaint, or a pass.
+pub(super) fn record_reveal(response: &egui::Response, activated: bool, resized: bool) {
+    if !response.ctx.data(|data| {
+        data.get_temp::<RevealDiagnostics>(egui::Id::new(REVEAL_DIAGNOSTIC))
+            .is_some_and(|trace| trace.passes.len() < MAX_DIAGNOSTIC_PASSES)
+    }) {
+        return;
+    }
+    let gained_focus = response.gained_focus();
+    let has_focus = response.has_focus();
+    let reveal = RevealDiagnostic {
+        requested: activated || gained_focus || (resized && has_focus),
+        activated,
+        resized,
+        gained_focus,
+        has_focus,
+        range: rect_coordinates(response.rect),
+    };
+    response.ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<Snapshot>(egui::Id::new(PROBE))
+            .reveals
+            .insert(response.id, reveal);
+    });
+}
+
+fn record_diagnostic_pass(
+    ctx: &egui::Context,
+    frame: Option<usize>,
+    pass_in_frame: usize,
+    offset_before_layout: Option<[f32; 2]>,
+) {
+    let Some(frame) = frame else { return };
+    let Some(mut trace) =
+        ctx.data(|data| data.get_temp::<RevealDiagnostics>(egui::Id::new(REVEAL_DIAGNOSTIC)))
+    else {
+        return;
+    };
+    if trace.passes.len() == MAX_DIAGNOSTIC_PASSES {
+        trace.truncated = true;
+    } else {
+        let snapshot = ctx.data(|data| data.get_temp::<Snapshot>(egui::Id::new(PROBE)));
+        let outer = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.outer.as_ref());
+        let search = snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .widgets
+                .get("Search")
+                .map(|widget| WidgetDiagnostic {
+                    rect: rect_coordinates(widget.rect),
+                    paint_clip: rect_coordinates(widget.clip),
+                    reveal: snapshot.reveals.get(&widget.id).cloned(),
+                })
+        });
+        trace.passes.push(PassDiagnostic {
+            stage: trace.stage,
+            frame,
+            pass_in_frame,
+            cumulative_pass: ctx.cumulative_pass_nr(),
+            native_pixels_per_point: ctx.native_pixels_per_point(),
+            pixels_per_point: ctx.pixels_per_point(),
+            gui_rounding: egui::emath::GUI_ROUNDING,
+            clip_rect_margin: ctx.style().visuals.clip_rect_margin,
+            tools_rect: egui::containers::panel::PanelState::load(ctx, egui::Id::new("tools"))
+                .map(|state| rect_coordinates(state.rect)),
+            outer: outer.map(|outer| ScrollDiagnostic {
+                viewport: rect_coordinates(outer.rect),
+                content: [outer.content.x, outer.content.y],
+                offset_before_layout,
+                offset_after_layout: [outer.offset.x, outer.offset.y],
+            }),
+            search,
+        });
+    }
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(REVEAL_DIAGNOSTIC), trace));
+}
+
+fn print_reveal_diagnostics(ctx: &egui::Context) {
+    if let Some(trace) =
+        ctx.data(|data| data.get_temp::<RevealDiagnostics>(egui::Id::new(REVEAL_DIAGNOSTIC)))
+    {
+        // Numeric arrays preserve f32 precision; egui Rect Debug rounds to one
+        // decimal. Only fixed stage names, geometry, and booleans are emitted.
+        if let Ok(encoded) = serde_json::to_string(&trace) {
+            eprintln!("sidebar_reveal_diagnostic {encoded}");
+        }
+    }
+}
 
 #[derive(Clone)]
 struct Widget {
@@ -29,6 +232,7 @@ struct Snapshot {
     widgets: HashMap<String, Widget>,
     outer: Option<Scroll>,
     explorer: Option<Scroll>,
+    reveals: HashMap<egui::Id, RevealDiagnostic>,
 }
 
 pub(super) fn begin(ctx: &egui::Context) {
@@ -169,6 +373,8 @@ fn scaled_frame(
         .get_mut(&egui::ViewportId::ROOT)
         .unwrap()
         .native_pixels_per_point = Some(scale);
+    let diagnostic_frame = diagnostic_frame(&ctx);
+    let mut diagnostic_pass = 0;
     ctx.run(input, |ctx| {
         if let Some(id) = ctx.data_mut(|data| {
             let id = data.get_temp::<egui::Id>(egui::Id::new("sidebar_test_request_focus"));
@@ -182,7 +388,10 @@ fn scaled_frame(
         app.footer(ctx);
         app.notifications(ctx);
         app.tools(ctx);
+        let offset_before_layout = diagnostic_outer_offset(ctx, diagnostic_frame);
         app.sidebar(ctx);
+        record_diagnostic_pass(ctx, diagnostic_frame, diagnostic_pass, offset_before_layout);
+        diagnostic_pass += 1;
         egui::CentralPanel::default().show(ctx, |ui| {
             if !app.documents.is_empty() {
                 app.editor(ui);
@@ -198,6 +407,9 @@ fn settle(app: &mut CedarApp, size: [f32; 2]) {
 fn assert_visible(app: &CedarApp, label: &str) {
     let widget = widget(app, label);
     let outer = snapshot(app).outer.unwrap();
+    if !outer.rect.contains_rect(widget.rect) || !widget.clip.contains_rect(widget.rect) {
+        print_reveal_diagnostics(&app.editor_ctx);
+    }
     assert!(
         outer.rect.contains_rect(widget.rect),
         "{label} outside outer viewport: {:?} / {:?}",
@@ -557,8 +769,13 @@ fn sidebar_last_unicode_entry_reveals_both_scroll_levels_and_opens_existing_draf
             document.text = "precious unsaved draft 雪".into();
             app.documents.push(document);
             app.active_document = Some(1);
+            begin_reveal_diagnostics(&app, width, font_size, size);
             settle(&mut app, size);
+            search_focus_diagnostic_stage(&app);
             focus(&mut app, size, "Search");
+            app.editor_ctx.data_mut(|data| {
+                data.remove::<RevealDiagnostics>(egui::Id::new(REVEAL_DIAGNOSTIC))
+            });
             scroll_outer_bottom(&mut app, size);
             assert!(snapshot(&app).outer.unwrap().offset.y > 0.0);
             // Shift+Tab passes the native explorer scrollbar before the final file.
