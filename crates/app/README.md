@@ -49,7 +49,7 @@ paste or another action. Holding the shortcut does not repeatedly toggle tools.
 These shortcuts provide an alternative at small window heights; expanded forms
 and crowded center controls still have separate responsive-layout limitations.
 
-The 0.56.0 candidate retains an explicit tools-panel height only after an actual
+The 0.56.1 candidate retains an explicit tools-panel height only after an actual
 primary-button vertical drag on its native top divider. Until then, content can
 still shrink the panel automatically. The explicit choice lasts through empty,
 loading, loaded and cleared reports, hide/show, tool changes and reconnects in

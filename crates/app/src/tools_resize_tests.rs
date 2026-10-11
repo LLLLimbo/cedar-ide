@@ -314,13 +314,37 @@ fn tools_resize_empty_loading_populated_and_cleared_report_keep_the_preference()
     app.test_report.path = "TEST-tools.xml".into();
     app.load_test_report();
     let command = commands.try_recv().expect("explicit report read");
-    assert!(matches!(command.op, Operation::Read { .. }));
-    assert!(app.test_report.loading.is_some());
+    assert!(matches!(&command.op, Operation::Read { path } if path == "TEST-tools.xml"));
+    let load = app
+        .test_report
+        .loading
+        .clone()
+        .expect("resize fixture report Load is pending");
+    assert_eq!(
+        load.generation, app.generation,
+        "resize fixture Load generation"
+    );
+    assert_eq!(load.path, "TEST-tools.xml", "resize fixture Load path");
+    assert!(
+        matches!(app.pending.get(&command.id), Some(Job::TestReportRead(pending)) if pending == &load)
+    );
     assert_height(settle(&mut app, SIZE), 430.0);
+    assert_eq!(
+        app.test_report.loading.as_ref(),
+        Some(&load),
+        "resize fixture Load survives loading frames"
+    );
     let cases = (0..32)
         .map(|index| format!("<testcase name=\"case-{index}\" time=\"0.1\"/>"))
         .collect::<String>();
-    let text = format!("<testsuite name=\"Tools\" tests=\"32\">{cases}</testsuite>");
+    let text = format!("<testsuite name=\"Tools\" tests=\"32\" failures=\"0\" errors=\"0\" skipped=\"0\">{cases}</testsuite>");
+    let parsed = test_reports::parse_report(&text)
+        .expect("resize fixture XML must satisfy the strict report parser");
+    assert_eq!(parsed.cases.len(), 32, "resize fixture parsed case count");
+    assert_eq!(
+        parsed.counts.passed, 32,
+        "resize fixture parsed passed count"
+    );
     let revision = format!("{:x}", Sha256::digest(text.as_bytes()));
     app.apply_event(Event {
         generation: app.generation,
@@ -329,10 +353,22 @@ fn tools_resize_empty_loading_populated_and_cleared_report_keep_the_preference()
         result: Ok(Payload::File {
             path: app.test_report.path.clone(),
             text,
-            revision,
+            revision: revision.clone(),
         }),
     });
-    assert!(app.test_report.snapshot.is_some());
+    assert!(
+        app.test_report.snapshot.is_some(),
+        "resize fixture reply must create its validated report snapshot"
+    );
+    let snapshot = app.test_report.snapshot.as_ref().unwrap();
+    assert_eq!(
+        snapshot.source, load,
+        "resize fixture accepted Load identity"
+    );
+    assert_eq!(
+        snapshot.revision, revision,
+        "resize fixture accepted source revision"
+    );
     assert_height(settle(&mut app, SIZE), 430.0);
     app.test_report.clear();
     assert_height(settle(&mut app, SIZE), 430.0);
