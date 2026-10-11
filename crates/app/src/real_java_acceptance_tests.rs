@@ -6,7 +6,10 @@ use crate::{completion, editor_state, language_results, model::Document};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{cell::Cell, time::Duration};
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
 
 pub(super) const SOURCE: &str = "public class Main {\n    public static void main(String[] args) {\n        String greeting = \"Hello Cedar\";\n        System.out.println(greeting);\n        int broken = \"oops\";\n    }\n}\n";
 pub(super) const PROJECT_DIR: &str = "project with spaces 雪";
@@ -613,6 +616,106 @@ impl DiagnosticEvidence {
         count!(matching_batches, usize::from(matched));
         matched
     }
+}
+
+/// The normal Client's existing wait, with injectable observation points for
+/// deterministic tests. An admitted request may still return after the deadline.
+pub(super) fn run_production_diagnostics_wait(
+    classification: &mut DiagnosticEvidence,
+    uri: &str,
+    deadline: Instant,
+    mut request: impl FnMut() -> CheckResult<Value>,
+    mut now: impl FnMut() -> Instant,
+    mut pause: impl FnMut(Duration),
+) -> CheckResult<()> {
+    while now() < deadline {
+        classification.begin_poll();
+        let value = request()?;
+        match classification.inspect_response(&value, uri) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(_) => {
+                return Err("normal Java event stream failed exact diagnostic validation".into())
+            }
+        }
+        pause(Duration::from_millis(100));
+    }
+    classification.result = DiagnosticResult::Timeout;
+    Err("normal Java diagnostic witness timed out".into())
+}
+
+/// A separate, bounded Quick correction receipt. The six raw-agent diagnostic
+/// receipts retain their original identity and serialization.
+#[derive(Serialize)]
+pub(super) struct ProductionDiagnosticEvidence {
+    kind: &'static str,
+    profile: &'static str,
+    phase: DiagnosticPhase,
+    expected_version: i32,
+    result: DiagnosticResult,
+    elapsed_ms: u32,
+    elapsed_saturated: bool,
+    polls: u32,
+    events: u32,
+    diagnostic_batches: u32,
+    uri_match_batches: u32,
+    parsed_batches: u32,
+    version_match_batches: u32,
+    unversioned_batches: u32,
+    eligible_batches: u32,
+    eligible_empty_batches: u32,
+    eligible_error_free_batches: u32,
+    error_diagnostics: u32,
+    warning_diagnostics: u32,
+    expected_message_diagnostics: u32,
+    expected_severity_diagnostics: u32,
+    expected_range_diagnostics: u32,
+    expected_joint_diagnostics: u32,
+    eligible_expected_joint_diagnostics: u32,
+    eligible_error_diagnostics: u32,
+    matching_batches: u32,
+    counters_saturated: bool,
+}
+
+/// Ownership crosses this boundary only on an observed return. A panic unwinds
+/// without finishing elapsed time or creating a receipt; there is no Drop hook.
+pub(super) fn observe_quick_correction_diagnostics(
+    wait: impl FnOnce(&mut DiagnosticEvidence) -> CheckResult<()>,
+    elapsed_milliseconds: impl FnOnce() -> u128,
+) -> (CheckResult<()>, ProductionDiagnosticEvidence) {
+    let mut classification = DiagnosticEvidence::new(1, DiagnosticPhase::Correction);
+    let outcome = wait(&mut classification);
+    classification.finish_elapsed(elapsed_milliseconds());
+    let receipt = ProductionDiagnosticEvidence {
+        kind: "windows_java_production_diagnostics",
+        profile: "quick",
+        phase: DiagnosticPhase::Correction,
+        expected_version: 5,
+        result: classification.result,
+        elapsed_ms: classification.elapsed_ms,
+        elapsed_saturated: classification.elapsed_saturated,
+        polls: classification.polls,
+        events: classification.events,
+        diagnostic_batches: classification.diagnostic_batches,
+        uri_match_batches: classification.uri_match_batches,
+        parsed_batches: classification.parsed_batches,
+        version_match_batches: classification.version_match_batches,
+        unversioned_batches: classification.unversioned_batches,
+        eligible_batches: classification.eligible_batches,
+        eligible_empty_batches: classification.eligible_empty_batches,
+        eligible_error_free_batches: classification.eligible_error_free_batches,
+        error_diagnostics: classification.error_diagnostics,
+        warning_diagnostics: classification.warning_diagnostics,
+        expected_message_diagnostics: classification.expected_message_diagnostics,
+        expected_severity_diagnostics: classification.expected_severity_diagnostics,
+        expected_range_diagnostics: classification.expected_range_diagnostics,
+        expected_joint_diagnostics: classification.expected_joint_diagnostics,
+        eligible_expected_joint_diagnostics: classification.eligible_expected_joint_diagnostics,
+        eligible_error_diagnostics: classification.eligible_error_diagnostics,
+        matching_batches: classification.matching_batches,
+        counters_saturated: classification.counters_saturated,
+    };
+    (outcome, receipt)
 }
 
 pub(super) fn exact_definition(value: &Value, uri: &str) -> CheckResult<String> {
@@ -1367,6 +1470,358 @@ fn diagnostic_fixture(phase: DiagnosticPhase, version: Option<i32>, uri: &str) -
 }
 fn diagnostic_events(batch: Value) -> Value {
     json!({"truncated":false,"events":[{"type":"diagnostics","value":batch}]})
+}
+
+fn returned_production_diagnostics_fixture(
+    response: CheckResult<Value>,
+) -> (
+    CheckResult<()>,
+    ProductionDiagnosticEvidence,
+    usize,
+    Vec<Duration>,
+) {
+    let started = Instant::now();
+    let elapsed = Cell::new(Duration::ZERO);
+    let mut response = Some(response);
+    let mut requests = 0;
+    let mut pauses = Vec::new();
+    let (outcome, receipt) = observe_quick_correction_diagnostics(
+        |classification| {
+            run_production_diagnostics_wait(
+                classification,
+                "file:///fixture/Main.java",
+                started + Duration::from_secs(60),
+                || {
+                    requests += 1;
+                    response.take().expect("one admitted diagnostic request")
+                },
+                || started + elapsed.get(),
+                |duration| {
+                    pauses.push(duration);
+                    elapsed.set(Duration::from_secs(60));
+                },
+            )
+        },
+        || elapsed.get().as_millis(),
+    );
+    (outcome, receipt, requests, pauses)
+}
+
+#[test]
+fn quick_production_diagnostics_preserve_matches_request_errors_and_fixed_schema() {
+    const URI: &str = "file:///fixture/Main.java";
+    for version in [Some(5), None] {
+        let (outcome, receipt, requests, pauses) =
+            returned_production_diagnostics_fixture(Ok(diagnostic_events(diagnostic_fixture(
+                DiagnosticPhase::Correction,
+                version,
+                URI,
+            ))));
+        assert_eq!(outcome, Ok(()));
+        assert_eq!(receipt.result, DiagnosticResult::Matched);
+        assert_eq!(receipt.polls, 1);
+        assert_eq!(receipt.matching_batches, 1);
+        assert_eq!(receipt.unversioned_batches, u32::from(version.is_none()));
+        assert_eq!(requests, 1);
+        assert!(pauses.is_empty());
+        let serialized = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(serialized["kind"], "windows_java_production_diagnostics");
+        assert_eq!(serialized["profile"], "quick");
+        assert_eq!(serialized["phase"], "correction");
+        assert_eq!(serialized["expected_version"], 5);
+        let actual = serialized
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = [
+            "kind",
+            "profile",
+            "phase",
+            "expected_version",
+            "result",
+            "elapsed_ms",
+            "elapsed_saturated",
+            "polls",
+            "events",
+            "diagnostic_batches",
+            "uri_match_batches",
+            "parsed_batches",
+            "version_match_batches",
+            "unversioned_batches",
+            "eligible_batches",
+            "eligible_empty_batches",
+            "eligible_error_free_batches",
+            "error_diagnostics",
+            "warning_diagnostics",
+            "expected_message_diagnostics",
+            "expected_severity_diagnostics",
+            "expected_range_diagnostics",
+            "expected_joint_diagnostics",
+            "eligible_expected_joint_diagnostics",
+            "eligible_error_diagnostics",
+            "matching_batches",
+            "counters_saturated",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, expected);
+    }
+    let original_error = "original request failure with private error sentinel";
+    let (outcome, receipt, requests, pauses) =
+        returned_production_diagnostics_fixture(Err(original_error.into()));
+    assert_eq!(outcome, Err(original_error.into()));
+    assert_eq!(receipt.result, DiagnosticResult::RequestError);
+    assert_eq!(receipt.polls, 1);
+    assert_eq!(receipt.events, 0);
+    assert_eq!(requests, 1);
+    assert!(pauses.is_empty());
+    assert!(!serde_json::to_string(&receipt).unwrap().contains("private"));
+}
+
+#[test]
+fn quick_production_diagnostics_keep_stream_failures_after_a_matching_batch() {
+    const URI: &str = "file:///fixture/Main.java";
+    for (event, expected) in [
+        (json!({"type":"unknown"}), DiagnosticResult::MalformedEvents),
+        (json!({"type":"lagged"}), DiagnosticResult::Lagged),
+        (json!({"type":"closed"}), DiagnosticResult::Closed),
+    ] {
+        let mut response = diagnostic_events(diagnostic_fixture(
+            DiagnosticPhase::Correction,
+            Some(5),
+            URI,
+        ));
+        response["events"].as_array_mut().unwrap().push(event);
+        let (outcome, receipt, requests, pauses) =
+            returned_production_diagnostics_fixture(Ok(response));
+        assert_eq!(
+            outcome,
+            Err("normal Java event stream failed exact diagnostic validation".into())
+        );
+        assert_eq!(receipt.result, expected);
+        assert_eq!(receipt.matching_batches, 1);
+        assert_eq!(receipt.events, 2);
+        assert_eq!(requests, 1);
+        assert!(pauses.is_empty());
+    }
+    for (response, expected) in [
+        (Value::Null, DiagnosticResult::MalformedEvents),
+        (
+            json!({"truncated":false,"events":null}),
+            DiagnosticResult::MalformedEvents,
+        ),
+        (
+            json!({"truncated":true,"events":[]}),
+            DiagnosticResult::Truncated,
+        ),
+    ] {
+        let (outcome, receipt, requests, pauses) =
+            returned_production_diagnostics_fixture(Ok(response));
+        assert_eq!(
+            outcome,
+            Err("normal Java event stream failed exact diagnostic validation".into())
+        );
+        assert_eq!(receipt.result, expected);
+        assert_eq!(receipt.matching_batches, 0);
+        assert_eq!(requests, 1);
+        assert!(pauses.is_empty());
+    }
+}
+
+#[test]
+fn quick_production_diagnostics_timeout_retains_the_exact_witness_counters() {
+    const URI: &str = "file:///fixture/Main.java";
+    let correct = diagnostic_fixture(DiagnosticPhase::Correction, Some(5), URI);
+    for scenario in [
+        "stale",
+        "wrong_uri",
+        "empty",
+        "message",
+        "severity",
+        "range",
+        "residual_error",
+    ] {
+        let mut batch = correct.clone();
+        match scenario {
+            "stale" => batch["version"] = json!(4),
+            "wrong_uri" => batch["uri"] = json!("file:///other.java"),
+            "empty" => batch["diagnostics"] = json!([]),
+            "message" => batch["diagnostics"][0]["message"] = json!("unrelated warning"),
+            "severity" => batch["diagnostics"][0]["severity"] = json!(3),
+            "range" => batch["diagnostics"][0]["range"]["start"]["character"] = json!(0),
+            "residual_error" => batch["diagnostics"].as_array_mut().unwrap().push(
+                diagnostic_fixture(DiagnosticPhase::Initial, Some(5), URI)["diagnostics"][0]
+                    .clone(),
+            ),
+            _ => unreachable!(),
+        }
+        let (outcome, receipt, requests, pauses) =
+            returned_production_diagnostics_fixture(Ok(diagnostic_events(batch)));
+        assert_eq!(
+            outcome,
+            Err("normal Java diagnostic witness timed out".into())
+        );
+        assert_eq!(receipt.result, DiagnosticResult::Timeout);
+        assert_eq!(receipt.elapsed_ms, 60_000);
+        assert_eq!(receipt.polls, 1);
+        assert_eq!(receipt.diagnostic_batches, 1);
+        assert_eq!(receipt.parsed_batches, 1);
+        assert_eq!(
+            receipt.uri_match_batches,
+            u32::from(scenario != "wrong_uri")
+        );
+        assert_eq!(
+            receipt.version_match_batches,
+            u32::from(scenario != "stale")
+        );
+        let eligible = !matches!(scenario, "stale" | "wrong_uri");
+        assert_eq!(receipt.eligible_batches, u32::from(eligible));
+        assert_eq!(
+            receipt.eligible_empty_batches,
+            u32::from(scenario == "empty")
+        );
+        assert_eq!(
+            receipt.eligible_error_diagnostics,
+            u32::from(scenario == "residual_error")
+        );
+        assert_eq!(
+            receipt.expected_joint_diagnostics,
+            u32::from(matches!(scenario, "stale" | "wrong_uri" | "residual_error"))
+        );
+        assert_eq!(
+            receipt.eligible_expected_joint_diagnostics,
+            u32::from(scenario == "residual_error")
+        );
+        assert_eq!(receipt.matching_batches, 0);
+        assert_eq!(requests, 1);
+        assert_eq!(pauses, [Duration::from_millis(100)]);
+    }
+}
+
+#[test]
+fn production_diagnostics_preserve_dispatch_deadline_and_late_return_behavior() {
+    const URI: &str = "file:///fixture/Main.java";
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(60);
+    let mut expired = DiagnosticEvidence::new(1, DiagnosticPhase::Correction);
+    let outcome = run_production_diagnostics_wait(
+        &mut expired,
+        URI,
+        deadline,
+        || panic!("no request may start at the deadline"),
+        || deadline,
+        |_| panic!("expired loop must not pause"),
+    );
+    assert_eq!(
+        outcome,
+        Err("normal Java diagnostic witness timed out".into())
+    );
+    assert_eq!(expired.result, DiagnosticResult::Timeout);
+    assert_eq!(expired.polls, 0);
+
+    let now = Cell::new(started + Duration::from_millis(59_999));
+    let clock_reads = Cell::new(0);
+    let (outcome, receipt) = observe_quick_correction_diagnostics(
+        |classification| {
+            run_production_diagnostics_wait(
+                classification,
+                URI,
+                deadline,
+                || {
+                    now.set(started + Duration::from_secs(134));
+                    Ok(diagnostic_events(diagnostic_fixture(
+                        DiagnosticPhase::Correction,
+                        Some(5),
+                        URI,
+                    )))
+                },
+                || {
+                    clock_reads.set(clock_reads.get() + 1);
+                    now.get()
+                },
+                |_| panic!("matched request must not pause"),
+            )
+        },
+        || now.get().duration_since(started).as_millis(),
+    );
+    assert_eq!(outcome, Ok(()));
+    assert_eq!(receipt.result, DiagnosticResult::Matched);
+    assert_eq!(receipt.elapsed_ms, 134_000);
+    assert_eq!(receipt.polls, 1);
+    assert_eq!(clock_reads.get(), 1);
+}
+
+#[test]
+fn quick_production_diagnostics_copy_only_bounded_evidence_and_preserve_raw_identity() {
+    let mut original = Value::Null;
+    let (outcome, receipt) = observe_quick_correction_diagnostics(
+        |classification| {
+            classification.polls = DIAGNOSTIC_COUNTER_LIMIT;
+            classification.begin_poll();
+            let private_uri = "file:///private-source-path/Main.java";
+            let mut batch = diagnostic_fixture(DiagnosticPhase::Correction, None, private_uri);
+            batch["diagnostics"][0]["message"] = json!("private message sentinel");
+            assert_eq!(
+                classification.inspect_response(&diagnostic_events(batch), private_uri),
+                Ok(false)
+            );
+            classification.result = DiagnosticResult::Timeout;
+            classification.finish_elapsed(u128::MAX);
+            original = serde_json::to_value(&classification).unwrap();
+            Err("original private error sentinel".into())
+        },
+        || u128::MAX,
+    );
+    assert_eq!(outcome, Err("original private error sentinel".into()));
+    assert_eq!(original["kind"], "windows_java_diagnostics");
+    assert_eq!(original["session"], 1);
+    let expected = original.as_object_mut().unwrap();
+    expected.remove("session");
+    expected.insert("kind".into(), json!("windows_java_production_diagnostics"));
+    expected.insert("profile".into(), json!("quick"));
+    expected.insert("expected_version".into(), json!(5));
+    assert_eq!(serde_json::to_value(&receipt).unwrap(), original);
+    assert_eq!(receipt.polls, DIAGNOSTIC_COUNTER_LIMIT);
+    assert!(receipt.counters_saturated);
+    assert_eq!(receipt.elapsed_ms, 300_000);
+    assert!(receipt.elapsed_saturated);
+    let serialized = serde_json::to_string(&receipt).unwrap();
+    assert!(serialized.len() < 2048);
+    assert!(!serialized.contains("private"));
+}
+
+#[test]
+fn quick_production_diagnostics_panic_does_not_finish_or_emit_a_receipt() {
+    let elapsed_observed = Cell::new(false);
+    let receipt_emitted = Cell::new(false);
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (_, receipt) = observe_quick_correction_diagnostics(
+            |classification| {
+                run_production_diagnostics_wait(
+                    classification,
+                    "file:///fixture/Main.java",
+                    Instant::now() + Duration::from_secs(60),
+                    || panic!("original diagnostic request panic"),
+                    Instant::now,
+                    |_| panic!("panicked request must not pause"),
+                )
+            },
+            || {
+                elapsed_observed.set(true);
+                1
+            },
+        );
+        let _ = serde_json::to_string(&receipt).unwrap();
+        receipt_emitted.set(true);
+    }));
+    assert_eq!(
+        panic.unwrap_err().downcast_ref::<&str>(),
+        Some(&"original diagnostic request panic")
+    );
+    assert!(!elapsed_observed.get());
+    assert!(!receipt_emitted.get());
 }
 
 fn correction_refresh_ack(uri: &str) -> Value {

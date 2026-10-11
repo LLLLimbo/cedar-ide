@@ -237,6 +237,15 @@ AGENT_TRANSCRIPT_FIELDS = {
                              'ambiguity', 'close'),
            'elapsed_ms': ('integer_range', 0, 240000)},
 }
+# Only a returned Quick correction wait produces this distinct receipt. Its
+# absence does not infer a timeout. Preserve the original six raw-session
+# diagnostic records and their namespace unchanged.
+AGENT_TRANSCRIPT_FIELDS['windows_java_production_diagnostics'] = {
+    **{key: value for key, value in AGENT_TRANSCRIPT_FIELDS['windows_java_diagnostics'].items()
+       if key not in ('session', 'phase')},
+    'profile': ('quick',), 'phase': ('correction',),
+    'expected_version': ('integer_range', 5, 5),
+}
 # The diagnostic route shares bounded semantic witnesses with the shipping
 # acceptance, but has its own kind and one exact route. Never expand the shipping
 # route namespace or publish the private GC selection/PID/log paths here.
@@ -766,6 +775,7 @@ def sanitize_transcript(data, limits, schema=TRANSCRIPT_FIELDS):
     report = {'records': [], 'omitted_non_json_lines': 0, 'omitted_other_json_records': 0}
     idle_seen = False
     implementations_seen = False
+    production_diagnostics_seen = False
     # Each private source has a separate whitelist; arbitrary payloads never
     # become public evidence even when they appear alongside a known record.
     for line in data.decode('utf-8-sig', errors='replace').splitlines():
@@ -775,9 +785,13 @@ def sanitize_transcript(data, limits, schema=TRANSCRIPT_FIELDS):
             truncation.add('transcript_line_characters_limit')
             continue
         duplicate_keys = False
+        outer_pairs = []
 
         def object_pairs(pairs):
-            nonlocal duplicate_keys
+            nonlocal duplicate_keys, outer_pairs
+            # The outer object is decoded last. Retain only its pairs long
+            # enough to catch a duplicate kind that tries to hide this receipt.
+            outer_pairs = pairs
             value = {}
             for key, item in pairs:
                 if key in value:
@@ -792,6 +806,18 @@ def sanitize_transcript(data, limits, schema=TRANSCRIPT_FIELDS):
                 errors.add('malformed_json_line')
             report['omitted_non_json_lines'] += 1
             continue
+        production_diagnostics_claimed = (
+            isinstance(value, dict) and 'windows_java_production_diagnostics' in schema
+            and any(key == 'kind' and item == 'windows_java_production_diagnostics'
+                    for key, item in outer_pairs)
+        )
+        if production_diagnostics_claimed:
+            if production_diagnostics_seen:
+                errors.add('duplicate_production_diagnostics_receipt')
+            production_diagnostics_seen = True
+            if duplicate_keys:
+                errors.add('duplicate_production_diagnostics_receipt_field')
+                continue
         if not isinstance(value, dict) or not isinstance(value.get('kind'), str) or value['kind'] not in schema:
             report['omitted_other_json_records'] += 1
             continue
@@ -799,6 +825,13 @@ def sanitize_transcript(data, limits, schema=TRANSCRIPT_FIELDS):
             truncation.add('transcript_records_limit')
             continue
         kind = value['kind']
+        if kind == 'windows_java_production_diagnostics':
+            if set(value) - {'kind', *schema[kind]}:
+                # Never disclose an untrusted field name in public errors.
+                errors.add('unexpected_production_diagnostics_receipt_field')
+            for field in schema[kind]:
+                if field not in value:
+                    errors.add('missing_field_' + field)
         if kind == 'windows_java_idle_correction':
             if idle_seen:
                 errors.add('duplicate_idle_receipt')

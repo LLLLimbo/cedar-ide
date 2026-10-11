@@ -334,20 +334,23 @@ fn production_diagnostics(
 ) -> CheckResult<()> {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut classification = DiagnosticEvidence::new(1, phase);
-    while Instant::now() < deadline {
-        classification.begin_poll();
-        let value = client_language(client, Operation::LanguageEvents)?;
-        match classification.inspect_response(&value, uri) {
-            Ok(true) => return Ok(()),
-            Ok(false) => {}
-            Err(_) => {
-                return Err("normal Java event stream failed exact diagnostic validation".into())
-            }
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    // The strict fixture's six diagnostic receipts remain a separate stream.
-    Err("normal Java diagnostic witness timed out".into())
+    production_diagnostics_with_evidence(client, uri, &mut classification, deadline)
+}
+
+fn production_diagnostics_with_evidence(
+    client: &mut AcceptanceClient,
+    uri: &str,
+    classification: &mut DiagnosticEvidence,
+    deadline: Instant,
+) -> CheckResult<()> {
+    run_production_diagnostics_wait(
+        classification,
+        uri,
+        deadline,
+        || client_language(client, Operation::LanguageEvents),
+        Instant::now,
+        thread::sleep,
+    )
 }
 
 fn production_refresh_diagnostics(client: &mut AcceptanceClient, uri: &str) -> CheckResult<bool> {
@@ -1682,7 +1685,24 @@ fn normal_agent_java_acceptance(profile: ObservationProfile) -> CheckResult<()> 
             record.correction_diagnostics = idle_correction.spontaneous_success;
             correction?;
         } else {
-            production_diagnostics(client, &uri, DiagnosticPhase::Correction)?;
+            let correction = if profile == ObservationProfile::Quick {
+                let diagnostics_started = Instant::now();
+                let deadline = diagnostics_started + Duration::from_secs(60);
+                let (outcome, receipt) = observe_quick_correction_diagnostics(
+                    |classification| {
+                        production_diagnostics_with_evidence(client, &uri, classification, deadline)
+                    },
+                    || diagnostics_started.elapsed().as_millis(),
+                );
+                println!(
+                    "{}",
+                    serde_json::to_string(&receipt).expect("typed Quick correction diagnostics")
+                );
+                outcome
+            } else {
+                production_diagnostics(client, &uri, DiagnosticPhase::Correction)
+            };
+            correction?;
             record.correction_diagnostics = true;
         }
         unchanged(&source)?;

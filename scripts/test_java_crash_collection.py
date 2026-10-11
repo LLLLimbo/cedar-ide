@@ -209,6 +209,12 @@ class CrashCollectionTests(unittest.TestCase):
             'failure_stage': 'none', 'elapsed_ms': 1500, 'elapsed_saturated': False,
         }
 
+    def agent_production_diagnostics_fixture(self):
+        return {**{key: value for key, value in self.agent_diagnostics_fixture().items()
+                   if key not in ('kind', 'session', 'phase')},
+                'kind': 'windows_java_production_diagnostics', 'profile': 'quick',
+                'phase': 'correction', 'expected_version': 5}
+
     def agent_idle_fixture(self, recovered=False):
         record = {**self.agent_production_fixture(),
             'kind': 'windows_java_idle_correction',
@@ -716,6 +722,235 @@ class CrashCollectionTests(unittest.TestCase):
         for secret in ('SECRET_', 'file:///', str(self.root), 'payload', 'environment'):
             self.assertNotIn(secret, json.dumps(report))
 
+    def test_quick_diagnostics_preserve_all_failure_categories_without_changing_production_result(self):
+        for outcome in ('matched', 'timeout', 'request_error', 'malformed_events',
+                        'truncated', 'lagged', 'closed'):
+            with self.subTest(result=outcome):
+                production = {**self.agent_production_fixture(), 'success': False,
+                              'primary_failed': True, 'failure_stage': 'correction',
+                              'correction_diagnostics': False}
+                # Matching batches can precede a later malformed/lagged/closed
+                # event. Preserve the returned result without inferring success.
+                diagnostics = {**self.agent_production_diagnostics_fixture(), 'result': outcome,
+                               'counters_saturated': True, 'elapsed_saturated': True,
+                               'elapsed_ms': 300000}
+                report = collector.collect(self.root, agent_transcript=self.agent_source([
+                    production, diagnostics]))
+                self.assertEqual(report['status'], 'complete')
+                self.assertEqual(report['acceptance_result'], 'not_evaluated')
+                self.assertEqual(report['agent_transcript']['evidence']['records'], [production, diagnostics])
+
+    def test_quick_diagnostics_have_an_exact_schema_and_never_expose_unexpected_private_fields(self):
+        good = self.agent_production_diagnostics_fixture()
+        schema = collector.AGENT_TRANSCRIPT_FIELDS['windows_java_production_diagnostics']
+        self.assertEqual(set(good), {'kind', *schema})
+        self.assertEqual(set(schema) - {'profile', 'phase', 'expected_version'},
+                         set(collector.AGENT_TRANSCRIPT_FIELDS['windows_java_diagnostics']) - {'session', 'phase'})
+        for field in schema:
+            with self.subTest(missing=field):
+                missing = {key: value for key, value in good.items() if key != field}
+                report = collector.collect(self.root, agent_transcript=self.agent_source([missing]))
+                self.assertEqual(report['status'], 'error')
+                self.assertEqual(report['agent_transcript']['errors'], ['missing_field_' + field])
+        extras = {'uri': 'file:///SECRET_DIAGNOSTIC_PATH/Main.java', 'path': 'C:\\SECRET_PATH',
+                  'source': 'SECRET_SOURCE_BYTES', 'message': 'SECRET_DIAGNOSTIC_MESSAGE',
+                  'error': 'SECRET_ERROR', 'errors': ['SECRET_REQUEST_ERROR'], 'stack': 'SECRET_STACK',
+                  'payload': {'diagnostics': ['SECRET_RAW_DIAGNOSTIC']},
+                  'environment': {'TOKEN': 'SECRET_ENV'}, 'SECRET_UNKNOWN_FIELD': True,
+                  'session': 1, 'success': True, 'correction_diagnostics': True}
+        for field, value in extras.items():
+            with self.subTest(extra=field):
+                report = collector.collect(self.root, agent_transcript=self.agent_source([{**good, field: value}]))
+                self.assertEqual(report['status'], 'error')
+                self.assertEqual(report['acceptance_result'], 'not_evaluated')
+                self.assertEqual(report['agent_transcript']['evidence']['records'], [good])
+                self.assertEqual(report['agent_transcript']['errors'], ['unexpected_production_diagnostics_receipt_field'])
+                for private in ('SECRET_', 'file:///', str(self.root), 'payload', 'environment'):
+                    self.assertNotIn(private, json.dumps(report))
+
+    def test_quick_diagnostics_require_fixed_identity_and_strict_bounded_scalars(self):
+        fixture = self.agent_production_diagnostics_fixture()
+        counters = [key for key, value in fixture.items()
+                    if type(value) is int and key not in ('elapsed_ms', 'expected_version')]
+        self.assertEqual(len(counters), 19)
+        for field, minimum, maximum in ([(field, 0, 65535) for field in counters]
+                                         + [('elapsed_ms', 0, 300000), ('expected_version', 5, 5)]):
+            for value in (minimum, maximum, minimum - 1, maximum + 1, 2 ** 64,
+                          True, False, 1.0, 5.0, None, '5', 'SECRET_COUNTER', [], {},
+                          float('nan'), float('inf'), float('-inf')):
+                with self.subTest(field=field, value=value):
+                    result, errors, truncation = collector.sanitize_agent_transcript(
+                        json.dumps({**fixture, field: value}).encode(), collector.LIMITS)
+                    valid = type(value) is int and minimum <= value <= maximum
+                    self.assertEqual(errors, set() if valid else {'invalid_field_' + field})
+                    self.assertEqual(truncation, set())
+                    if valid:
+                        self.assertEqual(result['records'][0][field], value)
+                    else:
+                        self.assertNotIn(field, result['records'][0])
+                    self.assertNotIn('SECRET_', json.dumps(result))
+        for field, valid_values in (('profile', ('quick',)), ('phase', ('correction',)),
+                                    ('result', ('matched', 'timeout', 'request_error', 'malformed_events',
+                                                'truncated', 'lagged', 'closed'))):
+            for value in (*valid_values, 'SECRET_ENUM', 'initial', 'resource_baseline',
+                          'Quick', 'not_attempted', True, 0, None, [], {}, [fixture[field]]):
+                with self.subTest(field=field, value=value):
+                    result, errors, _ = collector.sanitize_agent_transcript(
+                        json.dumps({**fixture, field: value}).encode(), collector.LIMITS)
+                    valid = type(value) is str and value in valid_values
+                    self.assertEqual(errors, set() if valid else {'invalid_field_' + field})
+                    self.assertNotIn('SECRET_', json.dumps(result))
+        for field in ('counters_saturated', 'elapsed_saturated'):
+            for value in (True, False, 0, 1, 0.0, None, 'false', 'SECRET_BOOLEAN', [], {}):
+                with self.subTest(field=field, value=value):
+                    _, errors, _ = collector.sanitize_agent_transcript(
+                        json.dumps({**fixture, field: value}).encode(), collector.LIMITS)
+                    self.assertEqual(errors, set() if type(value) is bool else {'invalid_field_' + field})
+
+    def test_quick_diagnostics_reject_duplicate_records_and_json_keys_including_hidden_kind(self):
+        fixture = self.agent_production_diagnostics_fixture()
+        data = json.dumps(fixture)
+        report = collector.collect(self.root, agent_transcript=self.private_source(
+            'quick-duplicates.jsonl', data + '\n' + data))
+        self.assertEqual(report['status'], 'error')
+        self.assertEqual(report['agent_transcript']['errors'], ['duplicate_production_diagnostics_receipt'])
+        for field in fixture:
+            duplicate = data[:-1] + ',' + json.dumps(field) + ':' + json.dumps(fixture[field]) + '}'
+            with self.subTest(field=field):
+                result, errors, _ = collector.sanitize_agent_transcript(duplicate.encode(), collector.LIMITS)
+                self.assertEqual(errors, {'duplicate_production_diagnostics_receipt_field'})
+                self.assertEqual(result['records'], [])
+        for hidden_kind in ('windows_java_diagnostics', 'windows_java_production', 'SECRET_KIND', None):
+            duplicate = data[:-1] + ',"kind":' + json.dumps(hidden_kind) + '}'
+            with self.subTest(hidden_kind=hidden_kind):
+                result, errors, _ = collector.sanitize_agent_transcript(duplicate.encode(), collector.LIMITS)
+                self.assertEqual(errors, {'duplicate_production_diagnostics_receipt_field'})
+                self.assertEqual(result['records'], [])
+                self.assertNotIn('SECRET_', json.dumps(result))
+
+    def test_quick_diagnostics_do_not_replace_or_expand_the_six_raw_session_receipts(self):
+        raw = [{**self.agent_diagnostics_fixture(), 'session': session, 'phase': phase}
+               for session in (1, 2, 3) for phase in ('initial', 'correction')]
+        quick = self.agent_production_diagnostics_fixture()
+        report = collector.collect(self.root, agent_transcript=self.agent_source([*raw, quick]))
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['agent_transcript']['evidence']['records'], [*raw, quick])
+        self.assertEqual(sum(record['kind'] == 'windows_java_diagnostics'
+                             for record in report['agent_transcript']['evidence']['records']), 6)
+        for record in (quick, {**quick, 'kind': 'SECRET_KIND'},
+                       {key: value for key, value in quick.items() if key != 'kind'}):
+            result, errors, _ = collector.sanitize_transcript(json.dumps(record).encode(), collector.LIMITS)
+            self.assertEqual(result['records'], [])
+            self.assertEqual(result['omitted_other_json_records'], 1)
+            self.assertEqual(errors, set())
+        for record in ({**quick, 'kind': 'SECRET_KIND'},
+                       {key: value for key, value in quick.items() if key != 'kind'}):
+            result, errors, _ = collector.sanitize_agent_transcript(json.dumps(record).encode(), collector.LIMITS)
+            self.assertEqual(result['records'], [])
+            self.assertEqual(result['omitted_other_json_records'], 1)
+            self.assertEqual(errors, set())
+
+    @unittest.skipUnless(shutil.which('pwsh'), 'PowerShell is required for the actual Quick diagnostic predicate')
+    def test_actual_quick_diagnostic_predicate_rejects_malformed_or_nonmatched_receipts(self):
+        good = self.agent_production_diagnostics_fixture()
+        production = self.agent_production_fixture()
+        cases = []
+
+        def case(name, records, accepted=False, quick=True, kind='windows_java_production'):
+            cases.append({'name': name, 'records': records, 'accept': accepted, 'quick': quick, 'kind': kind})
+
+        case('matched_quick', [production, good], True)
+        case('raw_receipt_is_independent', [production, good, self.agent_diagnostics_fixture()], True)
+        case('missing_diagnostic_receipt', [production])
+        case('duplicate_diagnostic_receipt', [production, good, good])
+        case('missing_production_receipt', [good])
+        case('duplicate_production_receipt', [production, production, good])
+        case('raw_diagnostics_cannot_substitute', [production, self.agent_diagnostics_fixture()])
+        case('wrong_kind', [production, {**good, 'kind': 'windows_java_diagnostics'}])
+        case('nonquick_baseline_requires_no_new_record', [production], True, quick=False)
+        case('gc_control_requires_no_new_record', [self.agent_gc_control_fixture()], True,
+             quick=False, kind='windows_java_gc_control')
+        case('gc_control_cannot_claim_quick', [self.agent_gc_control_fixture(), good],
+             kind='windows_java_gc_control')
+        for malformed in (None, 'SECRET_SCALAR', 1, [], [good], {}):
+            case('malformed_member_' + repr(malformed), [production, good, malformed])
+        for records in (None, 'SECRET_SCALAR', 1, [], good, production, [[production, good]]):
+            case('malformed_container_' + repr(records), records)
+        for field, original in good.items():
+            case('missing_' + field, [production, {key: value for key, value in good.items() if key != field}])
+            if type(original) is bool:
+                invalids = (True, 0, 1, None, 'false', [], [False], {})
+            elif type(original) is int:
+                maximum = 300000 if field == 'elapsed_ms' else 5 if field == 'expected_version' else 65535
+                invalids = (-1, maximum + 1, True, 1.0, 5.0, None, str(original), [], [original], {})
+                if field in ('matching_batches', 'expected_version'):
+                    invalids += (0,)
+            else:
+                invalids = (None, 0, [], [original], {}, 'SECRET_ENUM')
+            for invalid in invalids:
+                case(field + '_' + repr(invalid), [production, {**good, field: invalid}])
+        for field in ('profile', 'phase', 'result'):
+            case('wrong_case_' + field, [production, {**good, field: good[field].upper()}])
+        for outcome in ('timeout', 'request_error', 'malformed_events', 'truncated', 'lagged', 'closed'):
+            case('failure_even_with_matching_batches_' + outcome, [production, {**good, 'result': outcome}])
+        for field in ('correction_acknowledged', 'correction_diagnostics'):
+            case('missing_production_' + field, [{key: value for key, value in production.items() if key != field}, good])
+            for invalid in (False, 0, 1, None, 'true', [], [True], {}):
+                case('production_' + field + '_' + repr(invalid), [{**production, field: invalid}, good])
+        for changes in ({'success': False}, {'primary_failed': True}, {'cleanup_failed': True},
+                        {'failure_stage': 'correction'}, {'route': 'diagnostic_agent_normal_client'}):
+            case('production_failure_' + repr(changes), [{**production, **changes}, good])
+        for extra in ('session', 'source', 'payload', 'SECRET_FIELD', 'success', 'correction_diagnostics'):
+            case('extra_' + extra, [production, {**good, extra: 'SECRET_PRIVATE'}])
+        for field in ('diagnostics_refresh_exercised', 'diagnostics_refresh_requested', 'diagnostics_refresh_witness'):
+            case('legacy_refresh_not_a_substitute_' + field, [{**production, field: True}])
+            case('legacy_refresh_not_required_' + field, [{**production, field: False}, good], True)
+        for field, original in good.items():
+            if type(original) is int and field != 'expected_version':
+                maximum = 300000 if field == 'elapsed_ms' else 65535
+                for value in ((1, maximum) if field == 'matching_batches' else (0, maximum)):
+                    case('valid_boundary_' + field + '_' + str(value), [production, {**good, field: value}], True)
+
+        cases_file = self.private_source('quick-predicate-cases.json', json.dumps(cases))
+        harness = self.private_source('quick-predicate-check.ps1', r'''param($AcceptanceScript, $CasesFile)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($AcceptanceScript, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count -ne 0) { throw 'Acceptance script did not parse.' }
+foreach ($name in @('Assert-QuickProductionDiagnosticReceipt', 'Assert-ProductionReceipt')) {
+    $function = $ast.Find({ param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name
+    }, $true)
+    if ($null -eq $function) { throw 'Missing actual Quick acceptance function.' }
+    Invoke-Expression $function.Extent.Text
+}
+foreach ($case in (Get-Content -LiteralPath $CasesFile -Raw | ConvertFrom-Json)) {
+    $accepted = $false
+    try {
+        Assert-ProductionReceipt -Receipts $case.records -Kind $case.kind -RequireQuickDiagnostics:$case.quick
+        $accepted = $true
+    } catch {}
+    if ($accepted -ne $case.accept) { throw ('Unexpected Quick diagnostic verdict: ' + $case.name) }
+}
+# JSON cannot portably represent these values. Exercise the actual predicate
+# with in-memory nonfinite numeric scalars as well as the JSON matrix above.
+$goodCase = (Get-Content -LiteralPath $CasesFile -Raw | ConvertFrom-Json)[0]
+foreach ($field in @('polls', 'elapsed_ms', 'expected_version')) {
+    foreach ($value in @([double]::NaN, [double]::PositiveInfinity, [double]::NegativeInfinity)) {
+        $records = $goodCase.records | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        $records[1].$field = $value
+        $accepted = $false
+        try { Assert-ProductionReceipt -Receipts $records -RequireQuickDiagnostics; $accepted = $true } catch {}
+        if ($accepted) { throw 'A nonfinite Quick diagnostic scalar was accepted.' }
+    }
+}
+''')
+        result = subprocess.run([shutil.which('pwsh'), '-NoLogo', '-NoProfile', '-File', str(harness),
+                                 '-AcceptanceScript', str(Path(__file__).with_name('windows_java_acceptance.ps1').resolve()),
+                                 '-CasesFile', str(cases_file)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_agent_diagnostic_counters_and_elapsed_time_require_bounded_integers(self):
         counters = [key for key, value in self.agent_diagnostics_fixture().items()
                     if type(value) is int and key not in ('session', 'elapsed_ms')]
@@ -894,7 +1129,13 @@ class CrashCollectionTests(unittest.TestCase):
         recovered[7].update(result='timeout', matching_batches=0, elapsed_ms=60020)
         recovered.append(self.correction_recovery_fixture())
         cases = [{'name': 'spontaneous', 'records': spontaneous, 'count': 0, 'accept': True},
-                 {'name': 'recovered', 'records': recovered, 'count': 1, 'accept': True}]
+                 {'name': 'recovered', 'records': recovered, 'count': 1, 'accept': True},
+                 {'name': 'quick_receipt_does_not_change_raw_six',
+                  'records': spontaneous + [self.agent_production_diagnostics_fixture()],
+                  'count': 0, 'accept': True},
+                 {'name': 'quick_receipt_cannot_replace_missing_raw_diagnostics',
+                  'records': spontaneous[:-1] + [self.agent_production_diagnostics_fixture()],
+                  'count': 0, 'accept': False}]
         def reject(name, index, field, value):
             records = json.loads(json.dumps(recovered))
             records[index][field] = value

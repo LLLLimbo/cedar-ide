@@ -82,11 +82,73 @@ function Record([string] $Text) {
     Write-Output $Text
     Add-Content -LiteralPath $EvidencePath -Value $Text
 }
+function Assert-QuickProductionDiagnosticReceipt([object] $Receipts) {
+    if ($Receipts -isnot [array]) { throw 'Quick diagnostic receipts must be a JSON array.' }
+    $matching = [Collections.Generic.List[object]]::new()
+    $production = [Collections.Generic.List[object]]::new()
+    for ($index = 0; $index -lt $Receipts.Length; $index++) {
+        $candidate = $Receipts[$index]
+        if ($candidate -is [array] -or $candidate -isnot [pscustomobject] -or
+            $candidate.kind -isnot [string]) {
+            throw 'Quick diagnostic receipts must contain scalar receipt objects.'
+        }
+        if ($candidate.kind -ceq 'windows_java_production_diagnostics') { $matching.Add($candidate) }
+        if ($candidate.kind -ceq 'windows_java_production') { $production.Add($candidate) }
+    }
+    if ($matching.Count -ne 1 -or $production.Count -ne 1) {
+        throw 'Expected exactly one Quick correction diagnostic receipt and production receipt.'
+    }
+    $record = $matching[0]
+    $counters = @('polls', 'events', 'diagnostic_batches', 'uri_match_batches', 'parsed_batches',
+        'version_match_batches', 'unversioned_batches', 'eligible_batches', 'eligible_empty_batches',
+        'eligible_error_free_batches', 'error_diagnostics', 'warning_diagnostics',
+        'expected_message_diagnostics', 'expected_severity_diagnostics', 'expected_range_diagnostics',
+        'expected_joint_diagnostics', 'eligible_expected_joint_diagnostics',
+        'eligible_error_diagnostics', 'matching_batches')
+    $fields = $counters + @('kind', 'profile', 'phase', 'expected_version', 'result',
+        'counters_saturated', 'elapsed_ms', 'elapsed_saturated')
+    $actualFields = @($record.PSObject.Properties.Name)
+    if ($actualFields.Count -ne $fields.Count) { throw 'Quick diagnostic receipt fields are incomplete or unexpected.' }
+    foreach ($field in $actualFields) {
+        if ($field -cnotin $fields) { throw 'Quick diagnostic receipt contains an unexpected field.' }
+    }
+    if ($record.profile -isnot [string] -or $record.profile -cne 'quick' -or
+        $record.phase -isnot [string] -or $record.phase -cne 'correction' -or
+        ($record.expected_version -isnot [int] -and $record.expected_version -isnot [long]) -or
+        $record.expected_version -ne 5 -or $record.result -isnot [string] -or $record.result -cne 'matched') {
+        throw 'Quick correction diagnostic receipt identity or result is invalid.'
+    }
+    foreach ($field in $counters) {
+        if (($record.$field -isnot [int] -and $record.$field -isnot [long]) -or
+            $record.$field -lt 0 -or $record.$field -gt 65535) {
+            throw 'Quick correction diagnostic counter is invalid.'
+        }
+    }
+    foreach ($field in @('counters_saturated', 'elapsed_saturated')) {
+        if ($record.$field -isnot [bool] -or $record.$field) { throw 'Quick correction diagnostic evidence saturated.' }
+    }
+    if (($record.elapsed_ms -isnot [int] -and $record.elapsed_ms -isnot [long]) -or
+        $record.elapsed_ms -lt 0 -or $record.elapsed_ms -gt 300000 -or $record.matching_batches -lt 1) {
+        throw 'Quick correction diagnostic evidence is incomplete or out of bounds.'
+    }
+    $acknowledged = $production[0]
+    if ($acknowledged.route -isnot [string] -or $acknowledged.route -cne 'normal_agent_client') {
+        throw 'Quick correction diagnostic evidence requires the production route.'
+    }
+    foreach ($field in @('correction_acknowledged', 'correction_diagnostics')) {
+        if ($acknowledged.$field -isnot [bool] -or -not $acknowledged.$field) {
+            throw 'Quick correction diagnostic evidence lacks the acknowledged correction.'
+        }
+    }
+    # diagnostics_refresh_exercised is the legacy eligibility bit, not proof
+    # that a refresh request ran. It cannot replace this returned wait evidence.
+}
 function Assert-ProductionReceipt(
     [object[]] $Receipts,
     [ValidateSet('windows_java_production', 'windows_java_gc_control')]
     [string] $Kind = 'windows_java_production',
-    [switch] $RequireWorkspaceTypes
+    [switch] $RequireWorkspaceTypes,
+    [switch] $RequireQuickDiagnostics
 ) {
     $expectedRoute = if ($Kind -ceq 'windows_java_gc_control') { 'diagnostic_agent_normal_client' } else { 'normal_agent_client' }
     $production = @($Receipts | Where-Object { $_.kind -ceq $Kind })
@@ -114,6 +176,10 @@ function Assert-ProductionReceipt(
     }
     if ($Kind -ceq 'windows_java_gc_control' -and $record.stop_status -cne 'graceful') {
         throw 'A forced exit cannot satisfy the diagnostic control natural-shutdown requirement.'
+    }
+    if ($RequireQuickDiagnostics) {
+        if ($Kind -cne 'windows_java_production') { throw 'Quick diagnostic witness requires the shipping Quick route.' }
+        Assert-QuickProductionDiagnosticReceipt -Receipts $Receipts
     }
     if ($RequireWorkspaceTypes) {
         if ($Kind -cne 'windows_java_production') { throw 'Workspace type witness requires the shipping Quick route.' }
@@ -549,7 +615,7 @@ finally {
                     'task_cap_not_reached', 'source_unchanged', 'synthetic_root_removed', 'success')) {
                     if (-not $record.$field) { throw 'Forced-owner cleanup witness is incomplete.' }
                 }
-                Assert-ProductionReceipt -Receipts @($collected.agent_transcript.evidence.records) -RequireWorkspaceTypes
+                Assert-ProductionReceipt -Receipts @($collected.agent_transcript.evidence.records) -RequireWorkspaceTypes -RequireQuickDiagnostics
                 Assert-JavaImplementationsReceipt -Receipts $collected.agent_transcript.evidence.records
                 }
             }

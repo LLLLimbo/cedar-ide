@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前已验收 **0.54.0** 的键盘整行复制与三种分发包（[验收范围](docs/TEST_REPORT_PHASE54_DUPLICATE_LINES.md#final-accepted-0540-evidence)）；正在验证 **0.55.3** 的 Tests 筛选结果键盘导航与详情返回（本次仅修正进程验收夹具的面板几何并补充有界诊断，[待验收](docs/TEST_REPORT.md)），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前已验收 **0.54.0** 的键盘整行复制与三种分发包（[验收范围](docs/TEST_REPORT_PHASE54_DUPLICATE_LINES.md#final-accepted-0540-evidence)）；正在验证 **0.55.4**（Tests 键盘导航已有 0.55.3 的限定证据；本次仅补充 Windows Java Quick 修正观察的测试诊断，完整检查点[待验收](docs/TEST_REPORT.md)），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
