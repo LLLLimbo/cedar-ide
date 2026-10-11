@@ -77,9 +77,12 @@ Ctrl+Z 可整体撤销，Ctrl+Shift+Z 重做；磁盘文件仍需 Ctrl+S 才会�
 ## 已有测试报告
 
 在 **Tests** 面板输入工作区相对 XML 路径并点 **Load report**，可阅读历史测试结果。
-同一路径更新用 **Refresh report**，清除结果用 **Clear report**；筛选并选择用例可查看详情。
-执行信任关闭也可使用；不会运行测试、扫描目录或写入文件。报告不证明当前草稿通过测试。
-支持的 Surefire/JUnit 子集和限制见 [TEST_RESULTS.md](TEST_RESULTS.md)。
+同一路径更新用 **Refresh report**，清除结果用 **Clear report**；按状态或名称/类名筛选。
+
+0.55 的键盘导航与详情返回待验收：用 Tab 或点击聚焦用例行，单独按不带修饰键的 Up/Down 在筛选结果中移动，Home/End 到首行/末行；保持 XML 原顺序，到边界停止，目标行会滚动到可见位置。Enter/Space 显示该行详情并聚焦 **Back to case**；再次按 Enter/Space 或点击它，返回并显示原行。重名用例不会合并；Tab 和筛选框保持原有操作。修改筛选、路径、读取或连接，或竞争输入到来后，尚未完成的动作会取消，请重新聚焦后操作。
+
+执行信任关闭也可使用；报告是那次读取的历史快照，不证明当前草稿通过测试。导航、筛选和详情不会额外读取、写入、运行测试、启动语言服务、扫描目录或修改编辑稿。仅支持单个 testsuite；XML 最多 1 MiB、4,096 个用例，筛选文字最多 128 个 Unicode 字符。
+支持的 Surefire/JUnit 子集和其他限制见 [TEST_RESULTS.md](TEST_RESULTS.md)。
 
 ## 空闲连接断开
 

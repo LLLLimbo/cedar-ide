@@ -1,6 +1,7 @@
 //! Explicit, bounded ordinary file reads. A report is a historical snapshot,
 //! separate from editor buffers, command state, and language diagnostics.
 use crate::{
+    report_keyboard::{self, Action, Keyboard, Target},
     test_reports::{parse_report, TestCase, TestReport, TestStatus, MAX_REPORT_BYTES},
     CedarApp, Job, Operation, Payload, AMBER, GREEN, MUTED, RED,
 };
@@ -68,10 +69,12 @@ pub(super) struct TestReportPanel {
     pub filter: Filter,
     pub name_filter: String,
     pub selected: Option<usize>,
+    pub keyboard: Keyboard,
 }
 
 impl TestReportPanel {
     pub fn clear(&mut self) {
+        self.keyboard.invalidate();
         self.loading = None;
         self.snapshot = None;
         self.message = None;
@@ -132,6 +135,7 @@ impl TestReportPanel {
     }
 
     pub fn filter_changed(&mut self) {
+        self.keyboard.invalidate();
         if self
             .selected
             .is_some_and(|selected| !self.visible_cases().contains(&selected))
@@ -333,14 +337,16 @@ impl CedarApp {
                 .hint_text("target/surefire-reports/TEST-example.xml")
                 .desired_width(ui.available_width()),
         );
+        #[cfg(test)]
+        crate::workspace_access_tests::record(ui, "test_report_path", &edit);
         if edit.changed() {
             self.test_report.path_edited();
         }
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(can_load, egui::Button::new("Load report"))
-                .clicked()
-            {
+            let load = ui.add_enabled(can_load, egui::Button::new("Load report"));
+            #[cfg(test)]
+            crate::workspace_access_tests::record(ui, "test_report_load", &load);
+            if load.clicked() {
                 self.load_test_report();
             }
             let can_refresh = can_load
@@ -349,10 +355,10 @@ impl CedarApp {
                     .snapshot
                     .as_ref()
                     .is_some_and(|snapshot| snapshot.source.path == self.test_report.path);
-            if ui
-                .add_enabled(can_refresh, egui::Button::new("Refresh report"))
-                .clicked()
-            {
+            let refresh = ui.add_enabled(can_refresh, egui::Button::new("Refresh report"));
+            #[cfg(test)]
+            crate::workspace_access_tests::record(ui, "test_report_refresh", &refresh);
+            if refresh.clicked() {
                 self.load_test_report();
             }
             if ui.button("Clear report").clicked() {
@@ -388,25 +394,45 @@ impl CedarApp {
                     .selectable_value(&mut self.test_report.filter, filter, filter.label())
                     .changed();
             }
-            changed |= ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.test_report.name_filter)
-                        .id(egui::Id::new("test_report_filter"))
-                        .char_limit(128)
-                        .hint_text("Filter name or class")
-                        .desired_width(170.0),
-                )
-                .changed();
+            let filter = ui.add(
+                egui::TextEdit::singleline(&mut self.test_report.name_filter)
+                    .id(egui::Id::new("test_report_filter"))
+                    .char_limit(128)
+                    .hint_text("Filter name or class")
+                    .desired_width(170.0),
+            );
+            #[cfg(test)]
+            crate::workspace_access_tests::record(ui, "test_report_filter", &filter);
+            changed |= filter.changed();
             if changed {
                 self.test_report.filter_changed();
             }
         });
+        // Controls may change the view in this pass. Recheck captured intent
+        // after those changes and before committing selection/rendering details.
+        let action = if ui.is_sizing_pass() {
+            None
+        } else {
+            self.take_test_report_action(ui.ctx())
+        };
+        let click = if ui.is_sizing_pass() {
+            None
+        } else {
+            self.take_test_report_click(ui.ctx())
+        };
+        if let Some(Action::Details(index)) = action {
+            self.test_report.select(index);
+        }
         let visible = self.test_report.visible_cases();
+        self.test_report.keyboard.start_presenting();
         let snapshot = self.test_report.snapshot.as_ref().unwrap();
         let report = &snapshot.report;
         let counts = &report.counts;
-        let mut select = None;
-        let scroll = egui::ScrollArea::vertical().id_salt("test_report_contents").show(ui, |ui| {
+        let selected = &mut self.test_report.selected;
+        let keyboard = &mut self.test_report.keyboard;
+        let mut back = None;
+        let mut revealed = false;
+        let scroll = egui::ScrollArea::vertical().id_salt("test_report_contents").animated(false).show(ui, |ui| {
             ui.label(RichText::new("Historical report snapshot. It does not establish the current source or test state. Refresh report explicitly to read disk again").small().color(AMBER));
             ui.label(RichText::new(format!("Path: {}", snapshot.source.path)).monospace().small());
             ui.label(RichText::new(format!("Source revision: {}", snapshot.revision)).monospace().small());
@@ -420,38 +446,71 @@ impl CedarApp {
                 || report.suite_name.clone(),
                 |seconds| format!("{} · {seconds:.3} s", report.suite_name),
             );
-            egui::CollapsingHeader::new(suite)
-                .id_salt("test_report_suite")
+            let animation_time = ui.ctx().style().animation_time;
+            if matches!(action, Some(Action::Focus(_))) {
+                // Finish expansion in this render, so Back never waits on an
+                // animation with a lingering focus/reveal request.
+                ui.ctx().style_mut(|style| style.animation_time = 0.0);
+            }
+            let suite = egui::CollapsingHeader::new(suite)
+                .id_salt(("test_report_suite", snapshot.source.generation, snapshot.source.id))
                 .default_open(true)
+                .open(matches!(action, Some(Action::Focus(_))).then_some(true))
                 .show(ui, |ui| {
                     for index in &visible {
                         let case = &report.cases[*index];
-                        if ui.selectable_label(
-                            self.test_report.selected == Some(*index),
-                            RichText::new(case_label(case)).color(status_color(case.status)),
-                        ).clicked() {
-                            select = Some(*index);
+                        let response = report_control(ui, report_keyboard::row_id(&snapshot.source, *index),
+                            *selected == Some(*index), &case_label(case), status_color(case.status));
+                        keyboard.record(ui, Target::Case(*index), &response);
+                        #[cfg(test)]
+                        crate::workspace_access_tests::record(ui, &format!("test_report_case:{index}"), &response);
+                        if click == Some(Target::Case(*index)) && response.clicked_by(egui::PointerButton::Primary) {
+                            *selected = Some(*index);
+                            response.request_focus();
+                        }
+                        if !ui.is_sizing_pass() && action == Some(Action::Focus(*index)) {
+                            response.request_focus();
+                            response.scroll_to_me(Some(egui::Align::Center));
+                            revealed = true;
+                        } else if !ui.is_sizing_pass() && action.is_none() && !revealed && response.gained_focus() {
+                            response.scroll_to_me(None);
+                            revealed = true;
                         }
                     }
-                    if visible.is_empty() {
-                        ui.label("No cases match this filter");
-                    }
+                    if visible.is_empty() { ui.label("No cases match this filter"); }
                 });
-            if let Some(case) = self.test_report.selected.and_then(|index| report.cases.get(index)) {
+            ui.ctx().style_mut(|style| style.animation_time = animation_time);
+            #[cfg(test)]
+            crate::workspace_access_tests::record(ui, "test_report_suite", &suite.header_response);
+            #[cfg(not(test))]
+            let _ = suite;
+            if let Some((index, case)) = selected.and_then(|index| report.cases.get(index).map(|case| (index, case))) {
                 ui.separator();
-                ui.label(RichText::new(&case.name).strong());
-                if let Some(classname) = &case.classname {
-                    ui.label(format!("Class: {classname}"));
+                let heading = ui.label(RichText::new(&case.name).strong());
+                #[cfg(test)]
+                crate::workspace_access_tests::record(ui, "test_report_details", &heading);
+                let response = report_control(ui, report_keyboard::back_id(&snapshot.source, index), false, "Back to case", MUTED);
+                keyboard.record(ui, Target::Back(index), &response);
+                #[cfg(test)]
+                crate::workspace_access_tests::record(ui, "test_report_back", &response);
+                if click == Some(Target::Back(index)) && response.clicked_by(egui::PointerButton::Primary) {
+                    response.request_focus();
+                    back = Some((index, response.id));
                 }
+                if !ui.is_sizing_pass() && action == Some(Action::Details(index)) {
+                    response.request_focus();
+                    // The heading is the one scroll target, even with a large
+                    // failure traceback. Back follows immediately below it.
+                    heading.scroll_to_me(Some(egui::Align::TOP));
+                } else if !ui.is_sizing_pass() && action.is_none() && !revealed && response.gained_focus() {
+                    response.scroll_to_me(None);
+                }
+                if let Some(classname) = &case.classname { ui.label(format!("Class: {classname}")); }
                 ui.label(case_label(case));
                 for detail in &case.details {
                     ui.label(RichText::new(&detail.kind).strong());
-                    if let Some(kind) = &detail.detail_type {
-                        ui.label(format!("Type: {kind}"));
-                    }
-                    if let Some(message) = &detail.message {
-                        ui.label(message);
-                    }
+                    if let Some(kind) = &detail.detail_type { ui.label(format!("Type: {kind}")); }
+                    if let Some(message) = &detail.message { ui.label(message); }
                     ui.label(RichText::new(&detail.text).monospace());
                 }
                 if case.details.is_empty() {
@@ -467,8 +526,66 @@ impl CedarApp {
         );
         #[cfg(not(test))]
         let _ = scroll;
-        if let Some(index) = select {
-            self.test_report.select(index);
+        Keyboard::finish_presenting(&mut self.test_report, ui.ctx(), action);
+        if let Some((index, focus)) = back {
+            Keyboard::return_next_frame(&mut self.test_report, index, focus);
+            ui.ctx().request_repaint();
         }
     }
+}
+
+// Use the explicit ID for the actual focusable interaction, not only an outer
+// push_id. Duplicate names and changes in the filtered row ordinal stay distinct.
+fn report_control(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    selected: bool,
+    label: &str,
+    color: egui::Color32,
+) -> egui::Response {
+    let padding = ui.spacing().button_padding;
+    let galley = egui::WidgetText::from(RichText::new(label).color(color)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Wrap),
+        (ui.available_width() - 2.0 * padding.x).max(0.0),
+        egui::TextStyle::Button,
+    );
+    let (_, rect) = ui.allocate_space(egui::vec2(
+        ui.available_width(),
+        (galley.size().y + 2.0 * padding.y).max(ui.spacing().interact_size.y),
+    ));
+    let response = ui.interact(rect, id, egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            label,
+        )
+    });
+    if response.has_focus() {
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                id,
+                egui::EventFilter {
+                    vertical_arrows: true,
+                    ..Default::default()
+                },
+            )
+        });
+    }
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, selected);
+        if selected || response.hovered() || response.has_focus() {
+            ui.painter().rect(
+                rect,
+                visuals.corner_radius,
+                visuals.weak_bg_fill,
+                visuals.bg_stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        ui.painter().galley(rect.min + padding, galley, color);
+    }
+    response
 }

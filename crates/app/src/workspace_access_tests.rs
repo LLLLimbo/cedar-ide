@@ -58,6 +58,10 @@ pub(super) fn recorded_rect(app: &CedarApp, name: &str) -> egui::Rect {
     widget(app, name).rect
 }
 
+pub(super) fn recorded_clip(app: &CedarApp, name: &str) -> egui::Rect {
+    widget(app, name).clip
+}
+
 fn focused(app: &CedarApp) -> Option<egui::Id> {
     app.editor_ctx.memory(|memory| memory.focused())
 }

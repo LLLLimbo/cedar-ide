@@ -23,6 +23,8 @@ fn app() -> (CedarApp, Receiver<Command>) {
     app.agent_info = Some(agent_support::full_test_agent());
     app.state = ConnectionState::Ready;
     app.open_form = false;
+    app.tool = Tool::Tests;
+    app.tools_open = true;
     app.documents.push(Document::new(
         1,
         "src/Main.java".into(),
@@ -67,24 +69,23 @@ fn load(app: &mut CedarApp, commands: &Receiver<Command>, path: &str) -> Command
 
 fn frame(app: &mut CedarApp, time: f64, events: Vec<egui::Event>) -> egui::FullOutput {
     let ctx = app.editor_ctx.clone();
-    ctx.run(
-        egui::RawInput {
-            time: Some(time),
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1600.0, 1200.0),
-            )),
-            events,
-            ..Default::default()
-        },
-        |ctx| {
-            app.begin_navigation_frame(ctx);
-            egui::SidePanel::right("test_results_controls")
-                .exact_width(800.0)
-                .show(ctx, |ui| app.test_report_panel(ui));
-            egui::CentralPanel::default().show(ctx, |ui| app.editor(ui));
-        },
-    )
+    let mut input = egui::RawInput {
+        time: Some(time),
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1600.0, 1200.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    ctx.run(input, |ctx| {
+        app.begin_navigation_frame(ctx);
+        egui::SidePanel::right("test_results_controls")
+            .exact_width(800.0)
+            .show(ctx, |ui| app.test_report_panel(ui));
+        egui::CentralPanel::default().show(ctx, |ui| app.editor(ui));
+    })
 }
 
 fn label_rect(output: &egui::FullOutput, label: &str) -> egui::Rect {

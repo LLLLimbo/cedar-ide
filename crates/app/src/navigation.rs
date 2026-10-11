@@ -141,7 +141,7 @@ impl Navigation {
                 .any(|event| coordinate_event_competes(event, pointer_down));
     }
 
-    fn input_frame_current(&self, ctx: &egui::Context) -> bool {
+    pub(super) fn input_frame_current(&self, ctx: &egui::Context) -> bool {
         // egui 0.31 increments its cumulative counter per pass. The completed
         // passes in this run identify its first pass, including sizing retries.
         // Keep this provenance check separate from our native frame counter.

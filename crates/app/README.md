@@ -97,8 +97,11 @@ Definitions support ordinary Location and LocationLink responses. Every target f
 
 With execution trust off, use **Tests** to explicitly **Load report**, **Refresh report**
 or **Clear report** for one relative XML path. Results describe the bytes read at the
-shown revision; they do not run tests or validate unsaved drafts. See the
-[report format and limits](../../docs/TEST_RESULTS.md).
+shown revision; they do not run tests or validate unsaved drafts. The pending 0.55
+workflow adds Up/Down/Home/End traversal of filtered rows in original XML order.
+Enter/Space reveals the focused row's exact details; **Back to case** returns to
+that row. It preserves native Tab/filter controls and keeps duplicate names
+separate. See the [report format and limits](../../docs/TEST_RESULTS.md).
 
 **Compare with disk** offers separate clean reload and conservative draft-merge
 flows. **Preview merge** is inert; **Apply** rereads disk and updates only the draft

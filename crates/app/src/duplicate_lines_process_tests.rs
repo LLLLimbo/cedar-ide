@@ -360,7 +360,7 @@ impl Harness {
             "generated fixture root or form requires unsupported CJK font probing",
         )?;
         require(
-            env!("CARGO_PKG_VERSION") == "0.54.0"
+            env!("CARGO_PKG_VERSION") == "0.55.0"
                 && self.app.agent_info.as_ref().is_some_and(|info| {
                     info.version == env!("CARGO_PKG_VERSION")
                         && info.os == if cfg!(windows) { "windows" } else { "linux" }

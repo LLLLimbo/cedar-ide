@@ -62,6 +62,51 @@ pub(crate) struct Explorer {
     retry_path: Option<String>,
 }
 
+/// Original-batch admission survives another focused surface claiming held
+/// keys. Keep only fixed metadata, never text/paste/IME bodies.
+pub(crate) struct InputBatch {
+    key: Option<egui::Key>,
+    pointer_blocked: bool,
+}
+
+impl InputBatch {
+    pub(crate) fn capture(input: &egui::RawInput) -> Self {
+        let pointer_blocked = input
+            .events
+            .iter()
+            .filter(|event| actionable(event))
+            .any(|event| {
+                !matches!(
+                    event,
+                    egui::Event::PointerButton {
+                        button: egui::PointerButton::Primary,
+                        ..
+                    }
+                )
+            });
+        let mut events = input.events.iter().filter(|event| actionable(event));
+        let first = events.next();
+        let key = if events.next().is_none() {
+            match first {
+                Some(egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                }) if modifiers.is_none() && is_tree_key(key) => Some(*key),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        Self {
+            key,
+            pointer_blocked,
+        }
+    }
+}
+
 struct KeyIntent {
     key: egui::Key,
     generation: u64,
@@ -431,23 +476,15 @@ impl CedarApp {
     /// Called by eframe before egui begin_pass. Otherwise egui schedules spatial
     /// arrow focus before row handlers run, including the very first key after
     /// pointer/Tab focus. Only one clean row-key intent survives to this frame.
-    pub(crate) fn explorer_tree_input(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+    pub(crate) fn explorer_tree_input(
+        &mut self,
+        ctx: &egui::Context,
+        input: &mut egui::RawInput,
+        original: InputBatch,
+    ) {
         self.explorer.key_intent = None;
         self.explorer.key_reveal = None;
-        self.explorer.pointer_blocked =
-            input
-                .events
-                .iter()
-                .filter(|event| actionable(event))
-                .any(|event| {
-                    !matches!(
-                        event,
-                        egui::Event::PointerButton {
-                            button: egui::PointerButton::Primary,
-                            ..
-                        }
-                    )
-                });
+        self.explorer.pointer_blocked = original.pointer_blocked;
         if !input.focused
             || input
                 .events
@@ -466,22 +503,7 @@ impl CedarApp {
                     .iter()
                     .any(|row| row_id(&row.entry.path) == focused)
             });
-        let mut events = input.events.iter().filter(|event| actionable(event));
-        let first = events.next();
-        let candidate = if owns_row && events.next().is_none() {
-            match first {
-                Some(egui::Event::Key {
-                    key,
-                    pressed: true,
-                    repeat: false,
-                    modifiers,
-                    ..
-                }) if modifiers.is_none() && is_tree_key(key) => Some(*key),
-                _ => None,
-            }
-        } else {
-            None
-        };
+        let candidate = if owns_row { original.key } else { None };
         // winit leaves repeat=false for egui to fill during begin_pass. Track
         // these seven keys before removing them. A tree-claimed key stays owned
         // until release even if Open moves focus to the editor in the meantime.

@@ -33,6 +33,7 @@ jobs:
       - run: python scripts/test_column_navigation_acceptance.py
       - run: python scripts/test_selection_replace_acceptance.py
       - run: python scripts/test_duplicate_lines_acceptance.py
+      - run: python -B scripts/test_report_triage_acceptance.py
       - run: python scripts/test_copy_draft_acceptance.py
       - run: python scripts/test_save_close_acceptance.py
       - run: python scripts/test_linux_java_acceptance.py
@@ -431,6 +432,10 @@ jobs:
         run: |
           cargo build --release -p cedar-app -p cedar-agent --bin cedar --bin cedar-agent --locked
           sha256sum target/release/cedar target/release/cedar-agent > "$RUNNER_TEMP/cedar-linux-default-pair.sha256"
+      - name: Report keyboard triage (Linux default agent, trust off)
+        timeout-minutes: 5
+        if: runner.os == 'Linux'
+        run: python -B scripts/report_triage_acceptance.py
       - name: Shipping Linux Save All (normal agent, trust off)
         timeout-minutes: 3
         if: runner.os == 'Linux'
@@ -514,6 +519,10 @@ jobs:
         id: windows_shipping
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.release_build.outcome == 'success' }}
         run: cargo build --release -p cedar-app -p cedar-agent --bin cedar --bin cedar-agent --locked
+      - name: Report keyboard triage (Windows default agent, trust off)
+        timeout-minutes: 5
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.windows_shipping.outcome == 'success' }}
+        run: python -B scripts/report_triage_acceptance.py
       - name: Shipping Windows Save All (normal agent, trust off)
         timeout-minutes: 3
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.windows_shipping.outcome == 'success' }}

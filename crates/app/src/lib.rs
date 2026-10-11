@@ -70,6 +70,11 @@ mod recovery_lifecycle_tests;
 mod recovery_tests;
 mod recovery_ui;
 mod replace;
+mod report_keyboard;
+#[cfg(test)]
+mod report_keyboard_tests;
+#[cfg(test)]
+mod report_triage_process_tests;
 mod run_ui;
 #[cfg(test)]
 mod save_ack_process_tests;
@@ -3055,7 +3060,9 @@ impl eframe::App for CedarApp {
             self.editor_indent_eligible(ctx)
                 && self.active().is_some_and(|doc| doc.jump_to.is_none())
         });
-        self.explorer_tree_input(ctx, raw_input);
+        let explorer_input = explorer_tree::InputBatch::capture(raw_input);
+        self.capture_test_report_input(ctx, raw_input);
+        self.explorer_tree_input(ctx, raw_input, explorer_input);
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
