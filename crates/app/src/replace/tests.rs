@@ -588,17 +588,426 @@ fn selection_app() -> (CedarApp, Receiver<Command>) {
     (app, commands)
 }
 
+fn focus_replace_field(app: &mut CedarApp, time: f64, field: &str) {
+    let id = egui::Id::new(field);
+    let at = app.editor_ctx.read_response(id).unwrap().rect.center();
+    frame(
+        app,
+        time,
+        vec![egui::Event::PointerMoved(at), pointer(at, true)],
+    );
+    frame(app, time + 0.01, vec![pointer(at, false)]);
+    assert!(app.editor_ctx.memory(|memory| memory.has_focus(id)));
+}
+
+fn selection_app_after_field_entry() -> (CedarApp, Receiver<Command>, egui::text::CCursorRange) {
+    let (mut app, commands) = app("cat cat cat");
+    app.find_open = false;
+    app.find_query.clear();
+    app.replace.replacement.clear();
+    frame(&mut app, 0.0, vec![]);
+    let mut before = cursor(7, 4);
+    before.primary.prefer_next_row = true;
+    editor_state::move_selection(&app.editor_ctx, &mut app.documents[0], before);
+    app.editor_ctx
+        .memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", 1u64))));
+    frame(&mut app, 0.1, key(egui::Key::F, egui::Modifiers::COMMAND));
+    assert!(app.find_open);
+    assert!(app
+        .editor_ctx
+        .memory(|memory| memory.has_focus(egui::Id::new(FIND_INPUT))));
+    for (index, (key_name, text)) in [
+        (egui::Key::C, "c"),
+        (egui::Key::A, "a"),
+        (egui::Key::T, "t"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut events = key(key_name, egui::Modifiers::NONE);
+        events.push(egui::Event::Text(text.into()));
+        frame(&mut app, 0.2 + index as f64 * 0.1, events);
+    }
+    focus_replace_field(&mut app, 0.5, REPLACE_INPUT);
+    for (index, (key_name, text)) in [
+        (egui::Key::D, "d"),
+        (egui::Key::O, "o"),
+        (egui::Key::G, "g"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut events = key(key_name, egui::Modifiers::NONE);
+        events.push(egui::Event::Text(text.into()));
+        frame(&mut app, 0.6 + index as f64 * 0.1, events);
+    }
+    assert_eq!(app.find_query, "cat");
+    assert_eq!(app.replace.replacement, "dog");
+    assert_selection(selection(&app.editor_ctx, 1), before);
+    (app, commands, before)
+}
+
+fn selection_checked_frame(
+    app: &mut CedarApp,
+    time: f64,
+    events: Vec<egui::Event>,
+    retry: bool,
+    case: &str,
+    check: impl FnOnce(&CedarApp),
+) {
+    let ctx = app.editor_ctx.clone();
+    let mut input = egui::RawInput {
+        time: Some(time),
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(780.0, 540.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    assert_eq!(
+        app.replace.selection_input.as_ref().unwrap().pass,
+        ctx.cumulative_pass_nr(),
+        "{case}: hook captured the current pass"
+    );
+    check(app);
+    let mut native = eframe::Frame::_new_kittest();
+    let mut passes = 0;
+    let output = ctx.run(input, |ctx| {
+        assert_eq!(
+            app.replace.selection_input.as_ref().unwrap().pass,
+            input_pass(ctx),
+            "{case}: activation pass including sizing retry"
+        );
+        eframe::App::update(app, ctx, &mut native);
+        passes += 1;
+        if retry && passes == 1 {
+            ctx.request_discard("exercise selection lifecycle sizing retry");
+        }
+    });
+    if retry {
+        assert_eq!(passes, 2, "{case}: forced sizing retry ran");
+    }
+    assert!(output
+        .shapes
+        .iter()
+        .all(|shape| shape.clip_rect.is_finite()));
+}
+
+#[test]
+fn selection_field_focus_split_pointer_actions_allow_ime_lifecycle_and_sizing_retries() {
+    // Synthetic native-shaped batches isolate lifecycle classification; they
+    // do not identify which events accompanied the reported desktop refusal.
+    for field in [FIND_INPUT, REPLACE_INPUT] {
+        for lifecycle in [egui::ImeEvent::Enabled, egui::ImeEvent::Disabled] {
+            for (phase, retry) in [
+                ("press", false),
+                ("held", false),
+                ("release", false),
+                ("press", true),
+                ("release", true),
+                ("both", true),
+            ] {
+                let (mut app, commands, before) = selection_app_after_field_entry();
+                app.editor_ctx
+                    .options_mut(|options| options.max_passes = 2.try_into().unwrap());
+                for (time, name) in [(1.0, "replace_preview_selection"), (2.0, "replace_apply")] {
+                    let case = format!(
+                        "{name}: field={field}, lifecycle={lifecycle:?}, phase={phase}, retry={retry}"
+                    );
+                    focus_replace_field(&mut app, time, field);
+                    let response = crate::workspace_access_tests::recorded_response(&app, name);
+                    let at = crate::workspace_access_tests::recorded_rect(&app, name).center();
+                    let mut press = vec![egui::Event::PointerMoved(at), pointer(at, true)];
+                    if phase == "press" || phase == "both" {
+                        press.push(egui::Event::Ime(lifecycle.clone()));
+                    }
+                    let mut captured_owner = None;
+                    selection_checked_frame(
+                        &mut app,
+                        time + 0.1,
+                        press,
+                        retry && (phase == "press" || phase == "both"),
+                        &case,
+                        |app| {
+                            let input = app.replace.selection_input.as_ref().unwrap();
+                            assert!(
+                                input.pointer == Some(PointerInput::Press),
+                                "{case}: press batch"
+                            );
+                            assert_eq!(
+                                input.focus,
+                                Some(egui::Id::new(field)),
+                                "{case}: field focus"
+                            );
+                            let owner = input
+                                .owner
+                                .as_ref()
+                                .unwrap_or_else(|| panic!("{case}: missing press candidate owner"));
+                            assert!(
+                                owner.current(app, &app.editor_ctx),
+                                "{case}: press owner current"
+                            );
+                            assert!(
+                                owner.selection == selection_identity(before),
+                                "{case}: press selection identity"
+                            );
+                            captured_owner = Some(owner.clone());
+                        },
+                    );
+                    assert!(
+                        crate::workspace_access_tests::recorded_response(&app, name)
+                            .is_pointer_button_down_on(),
+                        "{case}: native response owns the actual press"
+                    );
+                    let (pressed_id, pressed_owner) = app
+                        .replace
+                        .selection_press
+                        .clone()
+                        .unwrap_or_else(|| panic!("{case}: missing admitted press"));
+                    assert_eq!(pressed_id, response.id, "{case}: press button identity");
+                    assert!(
+                        Arc::ptr_eq(&pressed_owner, &captured_owner.unwrap()),
+                        "{case}: press retains the captured owner"
+                    );
+                    assert_selection(selection(&app.editor_ctx, 1), before);
+                    selection_checked_frame(
+                        &mut app,
+                        time + 0.2,
+                        if phase == "held" {
+                            vec![egui::Event::Ime(lifecycle.clone())]
+                        } else {
+                            vec![]
+                        },
+                        false,
+                        &case,
+                        |app| {
+                            let input = app.replace.selection_input.as_ref().unwrap();
+                            assert!(
+                                input.pointer.is_none() && !input.keyboard,
+                                "{case}: held batch"
+                            );
+                            assert!(
+                                input.owner.is_none(),
+                                "{case}: held frame does not copy a draft"
+                            );
+                        },
+                    );
+                    let (held_id, held_owner) = app
+                        .replace
+                        .selection_press
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("{case}: held frame lost the press"));
+                    assert_eq!(*held_id, pressed_id, "{case}: held button identity");
+                    assert!(
+                        Arc::ptr_eq(held_owner, &pressed_owner),
+                        "{case}: held frame retains the same owner allocation"
+                    );
+                    assert!(
+                        held_owner.current(&app, &app.editor_ctx),
+                        "{case}: held owner current"
+                    );
+                    assert_selection(selection(&app.editor_ctx, 1), before);
+                    let mut release = vec![pointer(at, false)];
+                    if phase == "release" || phase == "both" {
+                        release.push(egui::Event::Ime(lifecycle.clone()));
+                    }
+                    selection_checked_frame(
+                        &mut app,
+                        time + 0.3,
+                        release,
+                        retry && (phase == "release" || phase == "both"),
+                        &case,
+                        |app| {
+                            let input = app.replace.selection_input.as_ref().unwrap();
+                            assert!(
+                                input.pointer == Some(PointerInput::Release),
+                                "{case}: release batch"
+                            );
+                            let owner = input.owner.as_ref().unwrap_or_else(|| {
+                                panic!("{case}: missing release candidate owner")
+                            });
+                            assert!(
+                                owner == &pressed_owner,
+                                "{case}: release matches the press owner"
+                            );
+                            assert!(
+                                owner.current(app, &app.editor_ctx),
+                                "{case}: release owner current"
+                            );
+                            assert!(
+                                owner.selection == selection_identity(before),
+                                "{case}: release selection identity"
+                            );
+                        },
+                    );
+                    assert!(app.replace.error.is_none(), "{case}: action refused");
+                    if name == "replace_preview_selection" {
+                        let preview = app
+                            .replace
+                            .preview
+                            .as_ref()
+                            .unwrap_or_else(|| panic!("{case}: missing preview"));
+                        assert_eq!(preview.scope, Scope::Selection, "{case}: preview scope");
+                        assert_eq!(preview.plan.ranges, vec![4..7], "{case}: preview range");
+                        assert!(
+                            preview.current(&app, &app.editor_ctx),
+                            "{case}: preview current"
+                        );
+                        assert_selection(preview.selection, before);
+                        assert_selection(selection(&app.editor_ctx, 1), before);
+                        assert_eq!(
+                            app.documents[0].text, "cat cat cat",
+                            "{case}: preview source"
+                        );
+                        assert_eq!(app.documents[0].edit_version, 0, "{case}: preview version");
+                    } else {
+                        assert!(
+                            app.replace.preview.is_none(),
+                            "{case}: apply consumed preview"
+                        );
+                        assert_eq!(
+                            app.documents[0].text, "cat dog cat",
+                            "{case}: applied source"
+                        );
+                        assert_eq!(app.documents[0].edit_version, 1, "{case}: one transaction");
+                    }
+                }
+                frame(&mut app, 3.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
+                assert_eq!(app.documents[0].text, "cat cat cat");
+                assert_selection(selection(&app.editor_ctx, 1), before);
+                assert!(commands.try_recv().is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn selection_field_focus_same_batch_pointer_actions_allow_ime_lifecycle() {
+    for field in [FIND_INPUT, REPLACE_INPUT] {
+        for lifecycle in [egui::ImeEvent::Enabled, egui::ImeEvent::Disabled] {
+            let (mut app, commands, before) = selection_app_after_field_entry();
+            for (time, name) in [(1.0, "replace_preview_selection"), (2.0, "replace_apply")] {
+                let case = format!("{name}: field={field}, lifecycle={lifecycle:?}, same batch");
+                focus_replace_field(&mut app, time, field);
+                let at = crate::workspace_access_tests::recorded_rect(&app, name).center();
+                selection_checked_frame(
+                    &mut app,
+                    time + 0.1,
+                    vec![
+                        egui::Event::PointerMoved(at),
+                        pointer(at, true),
+                        egui::Event::Ime(lifecycle.clone()),
+                        pointer(at, false),
+                    ],
+                    false,
+                    &case,
+                    |app| {
+                        let input = app.replace.selection_input.as_ref().unwrap();
+                        assert!(
+                            input.pointer == Some(PointerInput::Click),
+                            "{case}: click batch"
+                        );
+                        assert_eq!(
+                            input.focus,
+                            Some(egui::Id::new(field)),
+                            "{case}: field focus"
+                        );
+                        let owner = input
+                            .owner
+                            .as_ref()
+                            .unwrap_or_else(|| panic!("{case}: missing click candidate owner"));
+                        assert!(
+                            owner.current(app, &app.editor_ctx),
+                            "{case}: click owner current"
+                        );
+                        assert!(
+                            owner.selection == selection_identity(before),
+                            "{case}: click selection identity"
+                        );
+                    },
+                );
+                assert!(app.replace.error.is_none(), "{case}: action refused");
+                if name == "replace_preview_selection" {
+                    let preview = app
+                        .replace
+                        .preview
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("{case}: missing preview"));
+                    assert_eq!(preview.scope, Scope::Selection, "{case}: preview scope");
+                    assert_eq!(preview.plan.ranges, vec![4..7], "{case}: preview range");
+                    assert!(
+                        preview.current(&app, &app.editor_ctx),
+                        "{case}: preview current"
+                    );
+                    assert_selection(preview.selection, before);
+                    assert_selection(selection(&app.editor_ctx, 1), before);
+                    assert_eq!(
+                        app.documents[0].text, "cat cat cat",
+                        "{case}: preview source"
+                    );
+                    assert_eq!(app.documents[0].edit_version, 0, "{case}: preview version");
+                } else {
+                    assert!(
+                        app.replace.preview.is_none(),
+                        "{case}: apply consumed preview"
+                    );
+                    assert_eq!(
+                        app.documents[0].text, "cat dog cat",
+                        "{case}: applied source"
+                    );
+                    assert_eq!(app.documents[0].edit_version, 1, "{case}: one transaction");
+                }
+            }
+            frame(&mut app, 3.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
+            assert_eq!(app.documents[0].text, "cat cat cat");
+            assert_selection(selection(&app.editor_ctx, 1), before);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
 #[test]
 fn selection_actual_pointer_buttons_reject_same_batch_and_split_mixed_input() {
     for applying in [false, true] {
         for split in [false, true] {
             for focus in [FIND_INPUT, REPLACE_INPUT, "editor"] {
-                for extra in [
-                    vec![egui::Event::Paste("!".into())],
-                    vec![egui::Event::Text("!".into())],
-                    vec![egui::Event::Ime(egui::ImeEvent::Commit("!".into()))],
-                    key(egui::Key::Z, egui::Modifiers::COMMAND),
-                    key(egui::Key::ArrowRight, egui::Modifiers::NONE),
+                for (competing, extra) in [
+                    ("paste", vec![egui::Event::Paste("!".into())]),
+                    ("text", vec![egui::Event::Text("!".into())]),
+                    (
+                        "empty preedit",
+                        vec![egui::Event::Ime(egui::ImeEvent::Preedit(String::new()))],
+                    ),
+                    (
+                        "preedit",
+                        vec![egui::Event::Ime(egui::ImeEvent::Preedit("!".into()))],
+                    ),
+                    (
+                        "empty commit",
+                        vec![egui::Event::Ime(egui::ImeEvent::Commit(String::new()))],
+                    ),
+                    (
+                        "commit",
+                        vec![egui::Event::Ime(egui::ImeEvent::Commit("!".into()))],
+                    ),
+                    (
+                        "lifecycle and text",
+                        vec![
+                            egui::Event::Ime(egui::ImeEvent::Enabled),
+                            egui::Event::Text("!".into()),
+                        ],
+                    ),
+                    (
+                        "lifecycle and paste",
+                        vec![
+                            egui::Event::Ime(egui::ImeEvent::Disabled),
+                            egui::Event::Paste("!".into()),
+                        ],
+                    ),
+                    ("undo", key(egui::Key::Z, egui::Modifiers::COMMAND)),
+                    ("arrow", key(egui::Key::ArrowRight, egui::Modifiers::NONE)),
                 ] {
                     let (mut app, commands) = selection_app();
                     if applying {
@@ -629,11 +1038,11 @@ fn selection_actual_pointer_buttons_reject_same_batch_and_split_mixed_input() {
                     }
                     assert!(
                         !app.documents[0].text.contains("dog"),
-                        "applying={applying}, split={split}, focus={focus}"
+                        "applying={applying}, split={split}, focus={focus}, competing={competing}"
                     );
                     assert!(
                         app.replace.preview.is_none(),
-                        "applying={applying}, split={split}, focus={focus}"
+                        "applying={applying}, split={split}, focus={focus}, competing={competing}"
                     );
                     assert!(commands.try_recv().is_err());
                 }
@@ -649,28 +1058,125 @@ fn selection_actual_owned_enter_and_space_buttons_do_not_leak_activation_text() 
             if key_name != egui::Key::Space && space_text {
                 continue;
             }
-            let (mut app, commands) = selection_app();
-            for (time, name) in [(1.0, "replace_preview_selection"), (2.0, "replace_apply")] {
-                frame(&mut app, time, vec![]);
-                let id = crate::workspace_access_tests::recorded_response(&app, name).id;
-                app.editor_ctx.memory_mut(|memory| memory.request_focus(id));
-                let mut events = key(key_name, egui::Modifiers::NONE);
-                if space_text {
-                    events.push(egui::Event::Text(" ".into()));
+            for lifecycle in [
+                None,
+                Some(egui::ImeEvent::Enabled),
+                Some(egui::ImeEvent::Disabled),
+            ] {
+                let (mut app, commands) = selection_app();
+                for (time, name) in [(1.0, "replace_preview_selection"), (2.0, "replace_apply")] {
+                    let case = format!("{name}: key={key_name:?}, space_text={space_text}, lifecycle={lifecycle:?}");
+                    frame(&mut app, time, vec![]);
+                    let id = crate::workspace_access_tests::recorded_response(&app, name).id;
+                    app.editor_ctx.memory_mut(|memory| memory.request_focus(id));
+                    let mut events = key(key_name, egui::Modifiers::NONE);
+                    if space_text {
+                        events.push(egui::Event::Text(" ".into()));
+                    }
+                    if let Some(lifecycle) = &lifecycle {
+                        events.push(egui::Event::Ime(lifecycle.clone()));
+                    }
+                    selection_checked_frame(&mut app, time + 0.1, events, false, &case, |app| {
+                        let input = app.replace.selection_input.as_ref().unwrap();
+                        assert!(input.keyboard, "{case}: clean keyboard batch");
+                        assert_eq!(
+                            input.focus,
+                            Some(id),
+                            "{case}: focused button owns activation"
+                        );
+                        let owner = input
+                            .owner
+                            .as_ref()
+                            .unwrap_or_else(|| panic!("{case}: missing keyboard candidate owner"));
+                        assert!(
+                            owner.current(app, &app.editor_ctx),
+                            "{case}: keyboard owner current"
+                        );
+                        assert!(
+                            owner.selection == selection_identity(cursor(7, 4)),
+                            "{case}: keyboard selection identity"
+                        );
+                    });
+                    if name == "replace_preview_selection" {
+                        assert!(
+                            app.replace.preview.is_some(),
+                            "{case}: {:?}",
+                            app.replace.error
+                        );
+                        assert_eq!(app.documents[0].text, "cat cat cat", "{case}");
+                        assert_selection(selection(&app.editor_ctx, 1), cursor(7, 4));
+                    }
                 }
-                frame(&mut app, time + 0.1, events);
-                if name == "replace_preview_selection" {
-                    assert!(app.replace.preview.is_some(), "{:?}", app.replace.error);
-                    assert_eq!(app.documents[0].text, "cat cat cat");
-                }
+                frame(&mut app, 3.0, vec![]);
+                assert_eq!(app.documents[0].text, "cat dog cat");
+                assert_eq!(app.documents[0].edit_version, 1);
+                frame(&mut app, 4.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
+                assert_eq!(app.documents[0].text, "cat cat cat");
+                assert_selection(selection(&app.editor_ctx, 1), cursor(7, 4));
+                assert!(commands.try_recv().is_err());
             }
-            frame(&mut app, 3.0, vec![]);
-            assert_eq!(app.documents[0].text, "cat dog cat");
-            assert_eq!(app.documents[0].edit_version, 1);
-            frame(&mut app, 4.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
-            assert_eq!(app.documents[0].text, "cat cat cat");
-            assert_selection(selection(&app.editor_ctx, 1), cursor(7, 4));
-            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn selection_actual_pointer_buttons_reject_composition_during_hold_or_release() {
+    for applying in [false, true] {
+        for phase in ["held", "release"] {
+            for (composition, ime) in [
+                ("empty preedit", egui::ImeEvent::Preedit(String::new())),
+                ("preedit", egui::ImeEvent::Preedit("!".into())),
+                ("empty commit", egui::ImeEvent::Commit(String::new())),
+                ("commit", egui::ImeEvent::Commit("!".into())),
+            ] {
+                let case = format!("applying={applying}, phase={phase}, composition={composition}");
+                let (mut app, commands) = selection_app();
+                if applying {
+                    click(&mut app, 1.0, "Preview selection");
+                }
+                frame(&mut app, 2.0, vec![]);
+                let name = if applying {
+                    "replace_apply"
+                } else {
+                    "replace_preview_selection"
+                };
+                let at = crate::workspace_access_tests::recorded_rect(&app, name).center();
+                frame(
+                    &mut app,
+                    2.1,
+                    vec![egui::Event::PointerMoved(at), pointer(at, true)],
+                );
+                assert!(
+                    crate::workspace_access_tests::recorded_response(&app, name)
+                        .is_pointer_button_down_on(),
+                    "{case}: native press"
+                );
+                assert!(
+                    app.replace.selection_press.is_some(),
+                    "{case}: clean owned press"
+                );
+                let mut events = vec![
+                    egui::Event::Ime(egui::ImeEvent::Enabled),
+                    egui::Event::Ime(ime),
+                    egui::Event::Ime(egui::ImeEvent::Disabled),
+                ];
+                if phase == "release" {
+                    events.push(pointer(at, false));
+                }
+                frame(&mut app, 2.2, events);
+                assert!(
+                    app.replace.selection_press.is_none(),
+                    "{case}: composition destroys press ownership"
+                );
+                if phase == "held" {
+                    frame(&mut app, 2.3, vec![pointer(at, false)]);
+                }
+                assert!(app.replace.preview.is_none(), "{case}: refused action");
+                assert_eq!(app.documents[0].text, "cat cat cat", "{case}");
+                assert_eq!(app.documents[0].edit_version, 0, "{case}");
+                assert_selection(selection(&app.editor_ctx, 1), cursor(7, 4));
+                assert!(commands.try_recv().is_err());
+            }
         }
     }
 }
@@ -678,12 +1184,15 @@ fn selection_actual_owned_enter_and_space_buttons_do_not_leak_activation_text() 
 #[test]
 fn selection_actual_keyboard_buttons_reject_competing_or_unowned_activation() {
     for applying in [false, true] {
-        for (key_name, extra) in [
+        for (case, (key_name, extra)) in [
             (egui::Key::Enter, vec![egui::Event::Text("\n".into())]),
             (egui::Key::Enter, vec![egui::Event::Paste("!".into())]),
             (
                 egui::Key::Enter,
-                vec![egui::Event::Ime(egui::ImeEvent::Enabled)],
+                vec![
+                    egui::Event::Ime(egui::ImeEvent::Enabled),
+                    egui::Event::Ime(egui::ImeEvent::Preedit(String::new())),
+                ],
             ),
             (egui::Key::Space, vec![egui::Event::Text("  ".into())]),
             (
@@ -696,7 +1205,40 @@ fn selection_actual_keyboard_buttons_reject_competing_or_unowned_activation() {
                     .pop()
                     .unwrap()],
             ),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            [egui::Key::Enter, egui::Key::Space]
+                .into_iter()
+                .flat_map(|key_name| {
+                    [
+                        egui::ImeEvent::Preedit(String::new()),
+                        egui::ImeEvent::Preedit("!".into()),
+                        egui::ImeEvent::Commit(String::new()),
+                        egui::ImeEvent::Commit("!".into()),
+                    ]
+                    .into_iter()
+                    .map(move |composition| (key_name, vec![egui::Event::Ime(composition)]))
+                }),
+        )
+        .chain([
+            (
+                egui::Key::Enter,
+                vec![
+                    egui::Event::Ime(egui::ImeEvent::Enabled),
+                    egui::Event::Text("!".into()),
+                ],
+            ),
+            (
+                egui::Key::Space,
+                vec![
+                    egui::Event::Ime(egui::ImeEvent::Disabled),
+                    egui::Event::Paste("!".into()),
+                ],
+            ),
+        ])
+        .enumerate()
+        {
             let (mut app, commands) = selection_app();
             if applying {
                 click(&mut app, 1.0, "Preview selection");
@@ -712,9 +1254,18 @@ fn selection_actual_keyboard_buttons_reject_competing_or_unowned_activation() {
             let mut events = key(key_name, egui::Modifiers::NONE);
             events.extend(extra);
             frame(&mut app, 3.0, events);
-            assert!(app.replace.preview.is_none(), "applying={applying}");
-            assert_eq!(app.documents[0].text, "cat cat cat");
-            assert_eq!(app.documents[0].edit_version, 0);
+            assert!(
+                app.replace.preview.is_none(),
+                "applying={applying}, key={key_name:?}, case={case}"
+            );
+            assert_eq!(
+                app.documents[0].text, "cat cat cat",
+                "applying={applying}, key={key_name:?}, case={case}"
+            );
+            assert_eq!(
+                app.documents[0].edit_version, 0,
+                "applying={applying}, key={key_name:?}, case={case}"
+            );
             assert!(commands.try_recv().is_err());
         }
     }

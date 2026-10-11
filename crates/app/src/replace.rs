@@ -394,6 +394,11 @@ impl Replace {
                 egui::Event::PointerMoved(_)
                     | egui::Event::MouseMoved(_)
                     | egui::Event::PointerGone
+                    // IME lifecycle notifications accompany native field-focus
+                    // changes without carrying composition. Keep every Preedit
+                    // and Commit event (including empty text) competing: egui
+                    // can modify a TextEdit selection for those events.
+                    | egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Disabled)
             )
         });
         let first = events.next();
