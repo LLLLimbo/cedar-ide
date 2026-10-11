@@ -1119,3 +1119,41 @@ fn explicit_typed_path_still_owns_command_enter_while_scope_control_is_focused()
     );
     assert!(commands.try_recv().is_err());
 }
+
+#[test]
+fn backward_tab_scope_focus_requires_one_following_frame_before_native_space_activation() {
+    let (mut app, commands) = app();
+    let source = app.documents[0].text.clone();
+    let mut opening = key(egui::Key::P, egui::Modifiers::COMMAND);
+    opening.push(egui::Event::Text("first".into()));
+    frame(&mut app, 0.0, opening);
+    frame(&mut app, 0.1, vec![]);
+    assert_eq!(app.navigation.query, "first");
+    assert!(!app.navigation.loaded_scope());
+    assert!(app
+        .editor_ctx
+        .memory(|memory| memory.has_focus(egui::Id::new(FILE_INPUT))));
+
+    let loaded_id = egui::Id::new("navigation_scope_loaded");
+    frame(&mut app, 1.0, key(egui::Key::Tab, egui::Modifiers::SHIFT));
+    // egui 0.31.1 interested_in_focus(Previous) records id_next_frame;
+    // begin_pass applies it on the following frame, not the Shift+Tab frame.
+    assert!(!app.editor_ctx.memory(|memory| memory.has_focus(loaded_id)));
+    assert!(!app.navigation.loaded_scope());
+
+    frame(&mut app, 2.0, vec![]);
+    assert!(app.editor_ctx.memory(|memory| memory.has_focus(loaded_id)));
+    assert!(!app.navigation.loaded_scope());
+
+    let mut activation = key(egui::Key::Space, egui::Modifiers::NONE);
+    activation.push(egui::Event::Text(" ".into()));
+    frame(&mut app, 3.0, activation);
+    assert!(app.navigation.loaded_scope());
+    assert_eq!(app.navigation.query, "first");
+    assert!(app
+        .editor_ctx
+        .memory(|memory| memory.has_focus(egui::Id::new(FILE_INPUT))));
+    assert_eq!(app.documents[0].text, source);
+    assert_eq!(app.documents[0].edit_version, 0);
+    assert!(commands.try_recv().is_err());
+}

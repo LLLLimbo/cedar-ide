@@ -111,6 +111,11 @@ impl Navigation {
     }
 
     #[cfg(test)]
+    pub(crate) fn query_text(&self) -> &str {
+        &self.query
+    }
+
+    #[cfg(test)]
     pub(crate) fn selected_file_path(&self) -> Option<&str> {
         match self.dialog.as_ref().map(|dialog| &dialog.kind) {
             Some(Kind::Files { selected, .. }) => selected.as_deref(),

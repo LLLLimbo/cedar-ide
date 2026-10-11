@@ -386,13 +386,23 @@ impl Harness {
         // The production controls precede the query. Shift+Tab, then Space is
         // the ordinary keyboard-only path; no direct scope setter is used.
         self.frame(key(egui::Key::Tab, egui::Modifiers::SHIFT))?;
+        // egui applies backward-Tab's id_next_frame in the next begin_pass.
+        // This advances the real production frame, without sleeping or setting focus.
+        self.frame(vec![])?;
         let button =
             workspace_access_tests::recorded_response(&self.app, "navigation_scope_loaded");
         require(
             button.has_focus(),
             "Shift Tab did not focus Loaded scope control",
         )?;
-        self.frame(key(egui::Key::Space, egui::Modifiers::NONE))?;
+        let query = self.app.navigation.query_text().to_owned();
+        let mut activation = key(egui::Key::Space, egui::Modifiers::NONE);
+        activation.push(egui::Event::Text(" ".into()));
+        self.frame(activation)?;
+        require(
+            self.app.navigation.query_text() == query,
+            "scope activation changed filter text",
+        )?;
         self.settle()?;
         require(
             self.app.navigation.loaded_scope(),

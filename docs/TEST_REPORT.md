@@ -1,4 +1,4 @@
-# Verification report · Loaded Explorer files / 0.49.1 (pending)
+# Verification report · Loaded Explorer files / 0.49.2 (pending)
 
 Latest accepted checkpoint is [0.48.2 Enter selection handling](TEST_REPORT_PHASE48_ENTER.md#final-verified-acceptance--0482), public `f925d8b471a08ad732a3fa3961ccbd74cf9037bf` and CI 38095477287. Earlier failed runs and the unknown client/Git failure causes remain preserved. Windows recovery admission remains paused.
 
@@ -25,3 +25,11 @@ Public `5612dbea6fc2aef8c17dbcbf7d43e9f693bff722`, [CI 38098034604](https://gith
 0.49.1 adds only the missing Linux desktop guide mapping, loads its real source bytes in the existing link test and rejects a reduced archive/manifest that omits the required guide. Strict link, mode, hash and archive validators remain unchanged; Windows and agent-only layouts remain unchanged. App/agent Rust behavior is identical to the sealed 0.49.0 source, apart from package version metadata. All three packaging test families are required locally; fresh full CI and exact-package GUI remain pending.
 
 The 0.49.1 local packaging suites passed: Linux desktop 39 tests, Linux agent 30 tests, Windows bundle 36 tests with one platform skip. No Rust rebuild was performed for this packaging-only correction; the previous focused checks apply to identical Rust source, while versioned binaries and runtime proof must come from the new CI run.
+
+## Preserved 0.49.1 process failure and 0.49.2 fixture correction
+
+Public `89fe8d4cdac11c798d3d6d08f60746a2ba360202`, [CI 38098497573](https://github.com/LLLLimbo/cedar-ide/actions/runs/38098497573), passed the corrected packaging and aggregate tests on both OSes, but its first Linux loaded-files process invocation failed at the exact Loaded-control focus assertion after Shift+Tab. No success receipt was emitted.
+
+Pinned egui 0.31.1 schedules backward-Tab focus through id_next_frame and applies it at the next begin_pass. The passing focused helper already rendered that next frame; the process helper incorrectly asserted before it. 0.49.2 adds exactly one empty production frame before the unchanged assertion, then checks real Space plus Text activation without changing the query. A paired deterministic regression asserts focus before and after that frame. No sleep, direct focus setter, production UI change, relaxed ledger, or timeout extension is introduced. Historical failed evidence remains preserved; fresh source-bound runtime proof is still required.
+
+The 0.49.2 local focused suite passes 31 navigation tests, including the paired deferred-focus regression. Formatting and strict host/MSVC checks pass. All application behavior changes remain those reviewed for 0.49.0; this correction adds only test-compiled observation/access and fixture sequencing, plus version metadata. No local full aggregate, release or normal-agent process run is claimed. Fresh CI and the exact new archive's native GUI gate remain required.
