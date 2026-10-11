@@ -2,7 +2,9 @@
 use super::*;
 use crate::report_keyboard::{back_id, clean_key, destination, row_id};
 use crate::test_report_ui::{Filter, Load, Snapshot, TestReportPanel};
-use crate::workspace_access_tests::{recorded_clip, recorded_rect, recorded_response};
+use crate::workspace_access_tests::{
+    recorded_clip, recorded_rect, recorded_report_scroll_id, recorded_response,
+};
 use sha2::{Digest, Sha256};
 
 const PATH: &str = "target/TEST-keyboard.xml";
@@ -90,8 +92,14 @@ fn render(app: &mut CedarApp, input: egui::RawInput) -> egui::FullOutput {
 }
 
 fn frame(app: &mut CedarApp, events: Vec<egui::Event>) -> egui::FullOutput {
+    frame_after(app, events, 1.0)
+}
+
+fn frame_after(app: &mut CedarApp, events: Vec<egui::Event>, seconds: f64) -> egui::FullOutput {
+    assert!(seconds.is_finite() && seconds > 0.0);
     let ctx = app.editor_ctx.clone();
     let mut input = raw(app, events);
+    input.time = Some(ctx.input(|input| input.time) + seconds);
     eframe::App::raw_input_hook(app, &ctx, &mut input);
     render(app, input)
 }
@@ -151,24 +159,54 @@ fn assert_visible(app: &CedarApp, name: &str) {
     );
 }
 
+fn pointer_events(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+    vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ]
+}
+
+fn click_position(app: &CedarApp, name: &str) -> egui::Pos2 {
+    let response = recorded_response(app, name);
+    let rect = recorded_rect(app, name);
+    let clip = recorded_clip(app, name);
+    let visible = rect.intersect(clip);
+    assert!(response.enabled(), "{name} must be enabled");
+    assert!(rect.is_finite() && clip.is_finite() && visible.is_finite());
+    assert!(
+        visible.width() > 0.0 && visible.height() > 0.0,
+        "{name} has no visible hit target: {:?} / {clip:?}",
+        rect
+    );
+    let pos = visible.center();
+    assert!(rect.contains(pos) && clip.contains(pos));
+    pos
+}
+
 fn click(app: &mut CedarApp, name: &str) {
-    let pos = recorded_rect(app, name)
-        .intersect(recorded_clip(app, name))
-        .center();
-    for pressed in [true, false] {
-        frame(
-            app,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
-    }
+    let pos = click_position(app, name);
+    let id = recorded_response(app, name).id;
+    // Keep ordinary one-second settle frames. A pointer click alone needs a
+    // short press/release interval below egui 0.31's 0.8-second click limit.
+    frame_after(app, pointer_events(pos, true), 0.01);
+    let pressed = recorded_response(app, name);
+    assert_eq!(pressed.id, id);
+    assert!(
+        pressed.is_pointer_button_down_on(),
+        "{name} did not receive the native press"
+    );
+    frame_after(app, pointer_events(pos, false), 0.01);
+    let released = recorded_response(app, name);
+    assert_eq!(released.id, id);
+    assert!(
+        released.clicked_by(egui::PointerButton::Primary),
+        "{name} did not receive the native click"
+    );
 }
 
 fn selection(app: &CedarApp) -> egui::text::CCursorRange {
@@ -285,6 +323,19 @@ fn report_keyboard_native_tab_first_arrow_filtered_end_and_home_reveal_real_rows
     app.test_report.filter_changed();
     settle(&mut app);
     focus(&mut app, "test_report_filter");
+    // Overflowing egui ScrollAreas expose their native drag viewport before
+    // the suite. Observe its actual response; do not skip or replace Tab focus.
+    let scroll_area_id = recorded_report_scroll_id(&app).with("area");
+    let scroll_area = app.editor_ctx.read_response(scroll_area_id).unwrap();
+    assert!(scroll_area.sense.is_focusable() && scroll_area.sense.senses_drag());
+    assert!(scroll_area.rect.is_finite() && scroll_area.rect.height() > 0.0);
+    frame(&mut app, key(egui::Key::Tab));
+    assert_eq!(focused(&app), Some(scroll_area.id));
+    assert!(app
+        .editor_ctx
+        .read_response(scroll_area.id)
+        .unwrap()
+        .has_focus());
     frame(&mut app, key(egui::Key::Tab));
     assert_eq!(
         focused(&app),
@@ -975,5 +1026,30 @@ fn report_keyboard_claimed_space_survives_clear_until_release_without_resurrecti
     settle(&mut app);
     assert!(app.test_report.selected.is_none());
     assert_eq!(focused(&app), Some(egui::Id::new(("editor", 1u64))));
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn report_keyboard_pointer_duration_obeys_native_click_threshold() {
+    let (mut app, commands) = app(12);
+    let name = "test_report_case:1";
+    let max_click_duration = app
+        .editor_ctx
+        .options(|options| options.input_options.max_click_duration);
+    assert_eq!(max_click_duration, 0.8, "pinned egui 0.31 click timing");
+    let pos = click_position(&app, name);
+    frame_after(&mut app, pointer_events(pos, true), 0.01);
+    assert!(recorded_response(&app, name).is_pointer_button_down_on());
+    frame_after(
+        &mut app,
+        pointer_events(pos, false),
+        max_click_duration + 0.01,
+    );
+    assert!(!recorded_response(&app, name).clicked_by(egui::PointerButton::Primary));
+    assert_eq!(app.test_report.selected, None);
+    assert!(commands.try_recv().is_err());
+    click(&mut app, name);
+    assert_eq!(app.test_report.selected, Some(1));
+    assert_eq!(focused(&app), Some(case_id(&app, 1)));
     assert!(commands.try_recv().is_err());
 }

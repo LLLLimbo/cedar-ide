@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 55 / 0.55.0（待验收；已验收 0.54.0）
+# 功能矩阵与后续验收 · checkpoint 55 / 0.55.1（待验收；已验收 0.54.0）
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
@@ -71,4 +71,4 @@
 
 0.47.4 选中代码块 Tab/Shift+Tab 缩进已保留选区与一次撤销，文本及结果上限 1 MiB、选中逻辑行上限 4,096；双平台 CI、进程证明与三个分发包已验收，原生 GUI 使用精确 0.47.0 包及后续发货代码等价审查，见[最终报告](TEST_REPORT_PHASE47_INDENT.md#final-verified-acceptance--0474)。0.48.1 有界普通 Enter 行首空白延续及折叠 CRLF 光标已验收；0.48.2 的选区上端点收缩策略已验收；0.49.2 的已加载文件选择范围已验收，见[阶段报告](TEST_REPORT_PHASE49_LOADED_FILES.md#final-verified-acceptance--0492)。已完成的 0.46 原生拒绝观察不再由 CI 自动触发，Windows 恢复权限生产接入继续暂停。
 
-0.54.0 键盘整行复制已通过精确提交双平台 CI、22 项新增测试、20 用例/47 字段正常 agent 进程证明及三种分发包验收。新一轮精确包的云端 Linux GUI 七项检查覆盖 LF/CRLF、折叠/正反向选区、EOF、Undo/Redo 和显式丢弃退出；不代表 Windows GUI、原始光标 affinity、请求数或 agent 回收观察，详见[最终报告](TEST_REPORT_PHASE54_DUPLICATE_LINES.md#final-accepted-0540-evidence)。当前 0.55.0 仅推进既有 Tests 阅读器的筛选结果键盘导航和详情返回；功能与测试已编写，Rust 运行、CI、包及原生验收仍待完成，见[当前报告](TEST_REPORT.md)。
+0.54.0 键盘整行复制已通过精确提交双平台 CI、22 项新增测试、20 用例/47 字段正常 agent 进程证明及三种分发包验收。新一轮精确包的云端 Linux GUI 七项检查覆盖 LF/CRLF、折叠/正反向选区、EOF、Undo/Redo 和显式丢弃退出；不代表 Windows GUI、原始光标 affinity、请求数或 agent 回收观察，详见[最终报告](TEST_REPORT_PHASE54_DUPLICATE_LINES.md#final-accepted-0540-evidence)。0.55.0 的 Tests 键盘导航首次双平台 CI 通过严格检查，但聚合均有三项新增测试失败；[失败证据](TEST_REPORT_PHASE55_REPORT_KEYBOARD.md#preserved-0550-first-ci-aggregate-failures)完整保留。当前 0.55.1 仅修正测试夹具的指针时序与原生 Tab 焦点探针，不宣称修复发货行为；完整 CI、进程、包及原生验收仍待完成，见[当前报告](TEST_REPORT.md)。

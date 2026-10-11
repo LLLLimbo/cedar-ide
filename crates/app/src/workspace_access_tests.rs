@@ -40,6 +40,16 @@ pub(super) fn record_report_scroll(ctx: &egui::Context, id: egui::Id, offset: eg
     ctx.data_mut(|data| data.insert_temp(egui::Id::new(REPORT_SCROLL), (id, offset)));
 }
 
+// Return the ScrollArea identity captured from the production render. Native
+// child interactions can then be inspected through Context::read_response.
+pub(super) fn recorded_report_scroll_id(app: &CedarApp) -> egui::Id {
+    app.editor_ctx.data(|data| {
+        data.get_temp::<(egui::Id, egui::Vec2)>(egui::Id::new(REPORT_SCROLL))
+            .expect("report ScrollArea was not rendered")
+            .0
+    })
+}
+
 fn widget(app: &CedarApp, name: &str) -> Widget {
     app.editor_ctx.data(|data| {
         data.get_temp::<HashMap<String, Widget>>(egui::Id::new(PROBE))
