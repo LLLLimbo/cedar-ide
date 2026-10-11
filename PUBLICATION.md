@@ -1,6 +1,6 @@
 # Public source checkpoint
 
-This is the source-only public export of tested development stage `phase591-parameter-info-ci-boundaries-0.59.1`.
+This is the source-only public export of tested development stage `phase592-parameter-info-canonical-fixture-0.59.2`.
 It is an independent Rust IDE project, not a complete IntelliJ IDEA replacement.
 Public commits preserve the phase-by-phase development sequence, but their hashes
 differ from the private build checkpoints because generated evidence is omitted.

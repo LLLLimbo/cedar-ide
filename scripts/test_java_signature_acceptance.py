@@ -62,11 +62,11 @@ def package_fixture(base, platform="linux"):
         path = root / reverse.get(name, name)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
-    (root / "Cargo.toml").write_bytes(b'[workspace.package]\nversion = "0.59.1"\n')
+    (root / "Cargo.toml").write_bytes(b'[workspace.package]\nversion = "0.59.2"\n')
     payload["cedar-agent" if platform == "linux" else "cedar-agent.exe"] = synthetic_elf() if platform == "linux" else synthetic_pe()
     if platform == "windows":
         payload["cedar.exe"] = synthetic_pe()
-    manifest = module.make_manifest("0.59.1", COMMIT, RUN_URL, payload)
+    manifest = module.make_manifest("0.59.2", COMMIT, RUN_URL, payload)
     archive = module.archive_bytes(payload, manifest)
     (artifact / ("generated.tar.gz" if platform == "linux" else "generated.zip")).write_bytes(archive)
     return root, artifact, verified, module, payload, manifest
@@ -243,9 +243,23 @@ class JavaReleaseTests(unittest.TestCase):
 
 class DriverTests(unittest.TestCase):
     def exercise(self, *, platform="linux", fail_at=None, mutate_source=False, partial=False,
-                 release=b'JAVA_VERSION="21.0.8"\n'):
+                 release=b'JAVA_VERSION="21.0.8"\n', owned_root_alias=False):
         with tempfile.TemporaryDirectory() as temporary:
-            base = Path(temporary)
+            if owned_root_alias:
+                owner = Path(temporary).resolve(strict=True)
+                canonical = owner / "canonical-owned-root"
+                segment = canonical / "alias-segment"
+                segment.mkdir(parents=True)
+                sentinel = owner / "outside-fixture.txt"
+                sentinel.write_bytes(b"preserved")
+                # Both spellings stay inside this fresh owned directory. This
+                # models a noncanonical OS spelling without symlinks or privileges.
+                temporary = segment / ".."
+            # Match the real entry point's canonical root before deriving any
+            # mock source, manifest, executable, JDK, archive or scratch path.
+            base = Path(temporary).resolve(strict=True)
+            if owned_root_alias:
+                self.assertTrue(base == canonical, "owned fixture root is not canonical")
             root, artifact, verified, _, _, _ = package_fixture(base, platform)
             proof.verify_artifact(root, artifact, verified, COMMIT, RUN_URL, platform)
             java = base / "jdk"
@@ -256,7 +270,51 @@ class DriverTests(unittest.TestCase):
             executable.write_bytes(b"mock harness, never executed")
             source = (root / "Cargo.toml").read_bytes()
             inventory = f"100644 blob {proof.windows_bundle.blob_hash(source)}\tCargo.toml\0".encode()
+            def compile_output(source_root, harness):
+                return encoded({"reason": "compiler-artifact", "manifest_path": str(source_root / "crates/app/Cargo.toml"),
+                                "target": {"name": "cedar_app", "kind": ["lib"], "src_path": str(source_root / "crates/app/src/lib.rs")},
+                                "profile": {"test": True}, "executable": str(harness)}) + b"\n"
+            if owned_root_alias:
+                alias_root = Path(temporary) / "source"
+                alias_executable = alias_root / "target/debug/deps" / executable.name
+                self.assertTrue(alias_executable != executable, "alias spelling must differ")
+                self.assertTrue(alias_executable.is_file(), "alias must name the existing mock file")
+                self.assertTrue(alias_executable.samefile(executable), "alias must preserve owned file identity")
+                self.assertTrue(alias_executable.resolve(strict=True) == executable, "alias must resolve inside the owned root")
+                # The unchanged shared validator must reject the noncanonical
+                # metadata and accept the canonical spelling of the same file.
+                with self.assertRaisesRegex(proof.AcceptanceError, "^unexpected_test_binary$"):
+                    proof.compiled_test(compile_output(alias_root, alias_executable), alias_root, platform)
+                self.assertTrue(proof.compiled_test(compile_output(root, executable), root, platform) == executable,
+                                "canonical compiler metadata must preserve the selected file")
             calls = []
+            self.compile_boundary = None
+            compiled_test = proof.compiled_test
+            def compile_with_diagnostics(data, actual_root, actual_platform):
+                try:
+                    return compiled_test(data, actual_root, actual_platform)
+                except Exception as error:
+                    classes = {proof.AcceptanceError: "AcceptanceError", OSError: "OSError",
+                               ValueError: "ValueError", TypeError: "TypeError", AssertionError: "AssertionError"}
+                    categories = {"unsupported_platform", "invalid_output_size", "invalid_output_encoding",
+                                  "duplicate_json_key", "nonfinite_json", "invalid_json", "invalid_compiler_event",
+                                  "invalid_compiler_target", "invalid_test_artifact", "unexpected_test_source",
+                                  "exact_one_binary_required", "unexpected_test_binary"}
+                    category = error.args[0] if isinstance(error, proof.AcceptanceError) and len(error.args) == 1 else None
+                    def canonical_identity(path):
+                        try:
+                            return path.resolve(strict=True) == path
+                        except (OSError, RuntimeError):
+                            return False
+                    # Fixed metadata only: never exception text, paths, compiler
+                    # payloads or environment. Preserve the original failure.
+                    self.compile_boundary = {
+                        "exception_class": classes.get(type(error), "other"),
+                        "category": category if type(category) is str and category in categories else "unclassified",
+                        "root_canonical": canonical_identity(actual_root),
+                        "executable_canonical": canonical_identity(executable),
+                    }
+                    raise
             def runner(command, cwd, environment, timeout, limit):
                 calls.append((command, timeout, limit))
                 ordinal = len(calls)
@@ -273,9 +331,7 @@ class DriverTests(unittest.TestCase):
                 if ordinal in (3, 4):
                     return b""
                 if ordinal == 5:
-                    return encoded({"reason": "compiler-artifact", "manifest_path": str(root / "crates/app/Cargo.toml"),
-                                    "target": {"name": "cedar_app", "kind": ["lib"], "src_path": str(root / "crates/app/src/lib.rs")},
-                                    "profile": {"test": True}, "executable": str(executable)}) + b"\n"
+                    return compile_output(root, executable)
                 if ordinal == 6:
                     return listing()
                 if ordinal == 7:
@@ -284,7 +340,9 @@ class DriverTests(unittest.TestCase):
                         (root / "Cargo.toml").write_bytes(source + b"#changed\n")
                     return executed()
                 self.fail("Unexpected additional child")
-            with mock.patch.object(proof, "native_platform", return_value=platform), mock.patch.dict(os.environ, {"JAVA_HOME_21_X64": str(java)}):
+            with mock.patch.object(proof, "native_platform", return_value=platform), \
+                    mock.patch.dict(os.environ, {"JAVA_HOME_21_X64": str(java)}), \
+                    mock.patch.object(proof, "compiled_test", side_effect=compile_with_diagnostics):
                 result = proof.run(root, artifact, verified, base, COMMIT, RUN_URL, runner=runner)
             public = (base / proof.EVIDENCE_NAME).read_bytes()
             self.assertNotIn(str(base).encode(), public)
@@ -292,14 +350,23 @@ class DriverTests(unittest.TestCase):
             self.assertNotIn(b"private forged", public)
             self.assertFalse(result["native_gui_proved"])
             self.assertFalse(result["raw_output_published"])
+            if owned_root_alias:
+                self.assertEqual(sentinel.read_bytes(), b"preserved")
+                self.assertFalse(any(segment.iterdir()), "alias segment must remain empty")
+                for path in (root, artifact, verified, java, executable):
+                    self.assertTrue(path == path.resolve(strict=True), "fixture child is not canonical")
+                    self.assertTrue(path.is_relative_to(canonical))
             return result, calls
+
+    def driver_diagnostic(self, result):
+        return result["stage"] + "/" + result["category"] + "; compile_boundary=" + json.dumps(self.compile_boundary, sort_keys=True)
 
     def test_both_platforms_exact_stage_budgets_and_no_offline_or_bundled_workflow(self):
         for platform in ("linux", "windows"):
             for ending in (b"\n", b"\r\n"):
                 with self.subTest(platform=platform, ending=ending):
                     result, calls = self.exercise(platform=platform, release=b'JAVA_VERSION="21.0.8"' + ending)
-                    self.assertEqual(result["status"], "passed", result["stage"] + "/" + result["category"])
+                    self.assertEqual(result["status"], "passed", self.driver_diagnostic(result))
                     self.assertEqual([call[1] for call in calls], [10, 10, 15, 180, 600, 15, 780])
                     self.assertEqual(sum(call[1] for call in calls), 1610)
                     command = calls[4][0]
@@ -314,7 +381,7 @@ class DriverTests(unittest.TestCase):
         stages = ["source_commit", "source_inventory", "jdk", "prepare", "compile", "selection", "runtime"]
         for ordinal, stage in enumerate(stages, 1):
             result, calls = self.exercise(fail_at=ordinal)
-            self.assertEqual(len(calls), ordinal)
+            self.assertEqual(len(calls), ordinal, self.driver_diagnostic(result))
             self.assertEqual(result["stage"], stage)
             self.assertEqual(result["category"], "subprocess_timeout")
             self.assertTrue(result["partial_evidence"])
@@ -326,13 +393,43 @@ class DriverTests(unittest.TestCase):
 
     def test_failed_native_record_is_retained_and_changed_source_cannot_pass(self):
         result, _ = self.exercise(fail_at=7, partial=True)
-        self.assertEqual(result["probe_record_status"], "valid")
+        self.assertEqual(result["probe_record_status"], "valid", self.driver_diagnostic(result))
         self.assertEqual(result["probe"]["failure_stage"], "first_argument")
         self.assertEqual(result["category"], "subprocess_timeout")
         result, _ = self.exercise(mutate_source=True)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["stage"], "source_after")
         self.assertFalse(result["source_before_after_verified"])
+
+    def test_owned_root_alias_preserves_success_and_terminal_partial_failures(self):
+        for platform in ("linux", "windows"):
+            for fail_at in (None, 6, 7):
+                with self.subTest(platform=platform, fail_at=fail_at):
+                    result, calls = self.exercise(platform=platform, fail_at=fail_at,
+                                                  partial=fail_at == 7, owned_root_alias=True)
+                    self.assertEqual(len(calls), fail_at or 7, self.driver_diagnostic(result))
+                    self.assertIsNone(self.compile_boundary)
+                    self.assertEqual(result["status"], "passed" if fail_at is None else "failed")
+                    self.assertEqual(result["stage"], {None: "complete", 6: "selection", 7: "runtime"}[fail_at])
+                    self.assertEqual(result["category"], "none" if fail_at is None else "subprocess_timeout")
+                    if fail_at == 7:
+                        self.assertEqual(result["probe_record_status"], "valid")
+                        self.assertEqual(result["probe"]["failure_stage"], "first_argument")
+
+    def test_compile_boundary_diagnostics_are_fixed_and_preserve_failures(self):
+        for error, expected_class, expected_category in (
+                (proof.AcceptanceError("unexpected_test_binary"), "AcceptanceError", "unexpected_test_binary"),
+                (proof.AcceptanceError("private path and compiler payload"), "AcceptanceError", "unclassified"),
+                (OSError("private path and environment"), "OSError", "unclassified")):
+            with self.subTest(exception=expected_class, category=expected_category), \
+                    mock.patch.object(proof, "compiled_test", side_effect=error) as compiler:
+                result, calls = self.exercise()
+            compiler.assert_called_once()
+            self.assertEqual(len(calls), 5)
+            self.assertEqual((result["status"], result["stage"], result["category"]), ("failed", "compile", "driver_error"))
+            self.assertEqual(self.compile_boundary, {"exception_class": expected_class, "category": expected_category,
+                                                    "root_canonical": True, "executable_canonical": True})
+            self.assertNotIn("private", self.driver_diagnostic(result))
 
     def test_finalization_budget_has_one_shared_clock(self):
         budget = proof.FinalizationBudget()

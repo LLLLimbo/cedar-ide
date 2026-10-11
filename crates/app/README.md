@@ -131,7 +131,7 @@ unfinished row intent; continue with a fresh valid key or pointer action. The fr
 most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
 oversized batches are rejected whole. No automatic search, new engine, protocol,
 capability or workspace operation is added by Search. The 0.58.4 accepted baseline
-and new 0.59.1 Parameter info candidate have separate evidence in the
+and new 0.59.2 Parameter info candidate have separate evidence in the
 [current report](../../docs/TEST_REPORT.md).
 
 ## Agent capabilities and trust
@@ -163,7 +163,7 @@ Cedar supports plain-text edits and explicit replacement-mode InsertReplaceEdit.
 
 No completion command is executed. The exact JDT LS callback `java.completion.onDidSelect` is deliberately skipped while its validated text edits are applied. Its selection-ranking feedback and automatic signature-help follow-up are unavailable. The official [JDT handler](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/main/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/CompletionHandler.java) handles that callback separately from text/import edits.
 
-### Explicit Java Parameter info (0.59.1 candidate)
+### Explicit Java Parameter info (0.59.2 candidate)
 
 In an already running trusted **Java / JDT LS** session, **Parameter info** requests
 a read-only signature snapshot at the exact synchronized Java draft version and
@@ -187,16 +187,21 @@ not edit source, move the selection, create an Undo record or save. There is no
 automatic typing callback or new activation shortcut. Synchronization does not
 prove that JDT has finished indexing or analyzing.
 
-This remains **CI-first PARTIAL**. Version 0.59.1 narrowly corrects Windows
-Python text boundaries and the retained exact capability inventory. In the first
-0.59.0 public CI run, Windows failed five of 19 new driver tests; Linux passed
-strict checks, its 1,861-test aggregate and release compilation, then failed an
-exact smoke inventory missing the already advertised 32nd capability. The
-dependent real-JDT Parameter info producer did not run; there were no artifacts.
-Rust behavior, the workflow and deadlines are unchanged; fresh exact-commit
-dual-platform CI, Parameter info proof and package evidence remain pending.
-Positive native Java/UI acceptance is **DEFERRED**; the latest fully accepted
-checkpoint remains 0.58.4. See the [complete contract and LSP default
+This remains **CI-first PARTIAL**. Version 0.59.2 canonicalizes the mocked
+driver test's owned temporary root and adds bounded test-only validator
+diagnostics. The 0.59.0 Windows text-boundary and Linux capability-inventory
+failures remain preserved. The 0.59.1 Windows gate selected 22 tests and recorded
+six failures: four success-path subcases stopped at compile/driver_error, the
+next-stage fixture observed five calls instead of six, and the partial probe was
+absent. The original exception and path were not logged; a temporary-path alias
+is a source-supported candidate. Linux passed strict checks, its 1,861-test
+aggregate, release compilation and all retained gates; both Linux packages were
+independently verified. Windows produced no package, both independent Parameter
+info producer proofs were skipped, and the workflow failed. Production Python
+behavior, Rust behavior, strict validation, workflow and deadlines are unchanged. Fresh exact-commit
+dual-platform CI, real-JDT Parameter info proof and package evidence remain
+pending. Positive native Java/UI acceptance is **DEFERRED**; the latest fully
+accepted checkpoint remains 0.58.4. See the [complete contract and LSP default
 deviation](../../docs/JAVA_PARAMETER_INFO.md).
 
 ### Problems and navigation

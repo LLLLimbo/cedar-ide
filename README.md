@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。最新完整验收为 **0.58.4**：精确提交双平台 CI、三种分发包，以及限定 Linux 原生 Automatic height → Tab → 立即 Undo/Redo 流程。正在准备 **0.59.1 Java Parameter info 的 Python 文本边界及能力清单修正**，状态为 **CI-first PARTIAL**；0.59.0 首次 CI 的 Windows 五项 Python 失败及 Linux 能力清单失败已保留，新版本双平台 CI/真实 JDT 证明待完成，原生 Java 正向验收 **DEFERRED**。历史失败与验收边界见[当前报告](docs/TEST_REPORT.md)。Cedar **不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。最新完整验收为 **0.58.4**：精确提交双平台 CI、三种分发包，以及限定 Linux 原生 Automatic height → Tab → 立即 Undo/Redo 流程。正在准备 **0.59.2 Java Parameter info 的规范临时路径测试夹具修正**，状态为 **CI-first PARTIAL**；0.59.0 的 Windows 五项失败和 Linux 能力清单失败、0.59.1 的 Windows 六条失败记录均保留。新版本双平台 CI/真实 JDT 证明待完成，原生 Java 正向验收 **DEFERRED**。历史失败与验收边界见[当前报告](docs/TEST_REPORT.md)。Cedar **不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -22,7 +22,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - **0.56.1 已验收**：用鼠标主键实际上下拖动工具面板分隔线后，在当前进程内保留显式高度，跨空内容、加载/清除、隐藏/重开、工具切换和重连；未拖动时仍按内容自动收缩，重启回到自动模式。小窗口可暂时限制显示高度，放大后恢复偏好；不保证内容硬上限或编辑区始终有空间。**0.58.4 已限定验收**：工具栏的 **Automatic height** 可显式清除本次进程的手动高度，在面板布局结束后恢复既有自动收缩；之后真实拖动仍可再次设置高度。
 - 已运行的专用 Maven 会话中显式查看[依赖来源快照](docs/MAVEN_DEPENDENCIES.md)，区分磁盘 POM 直接声明、JDT 观察及当前文件存在性；不是依赖树或下载器
 - 受信任 Java 会话中的显式 [Go to Implementations](docs/JAVA_IMPLEMENTATIONS.md)，同步草稿后查询 JDT 实现位置并在工作区内导航；结果无版本、可能滞后，不是调用图
-- **0.59.1 CI-first PARTIAL**：已启动受信任类型化 Java 会话中的显式 [Parameter info](docs/JAVA_PARAMETER_INFO.md)，绑定精确同步草稿和 UTF-16 光标，只读浏览有界重载及可验证参数高亮；不自动触发、不猜测参数 0。新 CI/真实 JDT 证明待完成，原生正向验收 DEFERRED
+- **0.59.2 CI-first PARTIAL**：已启动受信任类型化 Java 会话中的显式 [Parameter info](docs/JAVA_PARAMETER_INFO.md)，绑定精确同步草稿和 UTF-16 光标，只读浏览有界重载及可验证参数高亮；不自动触发、不猜测参数 0。新 CI/真实 JDT 证明待完成，原生正向验收 DEFERRED
 - SHA-256 版本检查；文件在外部改变时拒绝覆盖；原子替换和权限保留
 - **磁盘对比与干净标签重载**：显式双栏比较当前草稿与磁盘；只允许干净标签重载，二次读取复核，撤销后保留新的磁盘基线
 - 脏标签/退出确认；断线保留当前进程中的草稿；显式重连
@@ -143,7 +143,7 @@ SSH 远程 shell 目前要求 POSIX；Windows 前端可连接 Linux 远程工作
 
 0.58.4 已通过[精确提交双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38174023016)、全部保留进程关卡与三种包核验。Linux 1,818 通过/0 失败/66 忽略，Windows 1,761/0/110，两端各 48 套件；各有 15 项 Tab、27 项高度、23 项侧栏、33 项 Search 和 19 项报告键盘测试通过。报告进程证明为 15 用例/55 字段/10 请求/两个所有者回收。新鲜精确包云端 Linux GUI 验证真实分隔线拖动、鼠标/键盘重置，以及 37 次真实 Tab 后的编辑器进入和立即 Undo/Redo；关键证据是步骤 56/57/58，不能以步骤 55 的预期文件名替代，也没有指针重新聚焦。该次未 Save、Run、启动 LSP 或改动项目磁盘文件；不声称原始事件批次、原生请求数、agent 回收或 Windows GUI 验收。0.58.3 八项夹具失败与更早失败完整保留，见[最终基线和当前候选报告](docs/TEST_REPORT.md)。
 
-0.59.1 是显式 Java Parameter info 的 Python 文本边界及能力清单修正，保持 CI-first PARTIAL。0.59.0 首次公开 CI 在 Windows 的 19 项 Python 检查中失败五项；Linux 严格检查、1,861 项聚合与 release 编译通过后，在保留能力清单漏列第 32 项操作处失败。独立真实 JDT 参数证明被前置依赖阻断，零产物；失败与源码诊断完整保留。Rust 实现、工作流和期限不变；0.59.1 精确提交双平台 CI、真实 JDT 参数证明与包核验尚待完成。原生 Java 正向验收 DEFERRED，不能由 CI 通过替代。最新完整验收仍是 0.58.4。
+0.59.2 仅修正显式 Java Parameter info 的 Python 驱动测试夹具：先规范化自有临时目录，再派生模拟路径，并增加有界测试诊断，保持 CI-first PARTIAL。0.59.0 的五项 Windows 失败及 Linux 能力清单失败完整保留；0.59.1 Windows 选中 22 项测试，留下六条失败记录：四个成功路径子用例在 compile/driver_error 停止、下一阶段调用数为 5 而非 6、预期部分探针记录缺失。此前 UTF-8、CRLF 和字节输出修正已有进展；路径别名仅为源码支持的候选原因，原始异常与路径没有被日志确认。0.59.1 Linux 的严格检查、1,861/0/67（48 套件）聚合、release 编译和全部保留关卡通过，两个 Linux 包独立核验通过；Windows 未到 Rust 关卡且无包，两端独立 Parameter info 生产证明均跳过，工作流仍失败。生产 Python 行为、Rust 行为、工作流、期限和严格校验均不变；新版本精确提交双平台 CI、真实 JDT 参数证明与包核验尚待完成。原生 Java 正向验收 DEFERRED，不能由 CI 通过替代。最新完整验收仍是 0.58.4。
 
 第八阶段最终通过 **521 项 Rust 测试（515 + 6 显式）**、五条 agent 黑盒链、两项导出回归、严格 Linux/MSVC Clippy、Linux release 与 release-agent 集成。最终原生 Trust 关闭窗口已复验磁盘比较、二次读取竞态、重载后反复移动光标的 Undo/Redo 与脏稿恢复；范围见[第八阶段报告](docs/TEST_REPORT_PHASE8.md)。0.8.0 的精确公开提交也已通过 Ubuntu/Windows CI，包括全部 13 + 7 项 Windows 生命周期/agent 测试；第九阶段不能继承旧二进制的验收结果。
 ```sh
@@ -191,4 +191,4 @@ python3 scripts/package_checkpoint.py --output /absolute/path/cedar-checkpoint.z
 
 Public source history and omitted machine-specific evidence are described in [PUBLICATION.md](PUBLICATION.md).
 
-Linux GUI 的 Local folder 在 0.41 使用与前端同目录、同版本的独立 agent；缺失或不匹配会报错，没有内嵌回退。面向库调用者的 Client Local 仍保留内嵌模式。新的 Ubuntu 24.04 amd64 桌面包范围与运行依赖见 [Linux 桌面指南](docs/LINUX_DESKTOP_QUICKSTART.zh-CN.md)。0.58.4 的完整双平台 CI、保留进程关卡、三种包与限定 Linux 原生 Automatic height/Tab/Undo/Redo 流程已通过；0.59.1 Parameter info 的新验证仍待完成，原生 Java 正向验收 DEFERRED。
+Linux GUI 的 Local folder 在 0.41 使用与前端同目录、同版本的独立 agent；缺失或不匹配会报错，没有内嵌回退。面向库调用者的 Client Local 仍保留内嵌模式。新的 Ubuntu 24.04 amd64 桌面包范围与运行依赖见 [Linux 桌面指南](docs/LINUX_DESKTOP_QUICKSTART.zh-CN.md)。0.58.4 的完整双平台 CI、保留进程关卡、三种包与限定 Linux 原生 Automatic height/Tab/Undo/Redo 流程已通过；0.59.2 Parameter info 的新验证仍待完成，原生 Java 正向验收 DEFERRED。
