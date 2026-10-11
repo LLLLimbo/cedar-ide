@@ -241,7 +241,10 @@ fn editor_selection(app: &CedarApp) -> egui::text::CCursorRange {
     selection_at(app, egui::Id::new(("editor", app.active_document.unwrap())))
 }
 
-fn dialog_history(app: &CedarApp) -> Vec<Vec<(String, usize, usize, bool, bool)>> {
+type DialogHistoryEntry = (String, usize, usize, bool, bool);
+type DialogHistorySnapshot = Vec<Vec<DialogHistoryEntry>>;
+
+fn dialog_history(app: &CedarApp) -> DialogHistorySnapshot {
     let state = egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(LINE_INPUT)).unwrap();
     let current = (
         state.cursor.char_range().unwrap(),

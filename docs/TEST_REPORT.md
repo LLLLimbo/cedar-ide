@@ -1,4 +1,4 @@
-# Verification report · Go to line:column / 0.52.0 (pending)
+# Verification report · Go to line:column / 0.52.1 (pending)
 
 Latest accepted checkpoint is [0.51.1 Save and close](TEST_REPORT_PHASE51_SAVE_CLOSE.md#final-verified-acceptance--0511), public `d1d440bc0b7ceee45e95b45a68a2e4e592f4052e` and CI 38106723716. Historical failure evidence is preserved. The earlier Git incomplete-EOF and client marker failures still have no established historical cause. Windows recovery admission integration remains paused.
 
@@ -19,3 +19,9 @@ One shared active budget is 60 seconds, with a five-second final cleanup reserve
 Independent parser/input/history and process-ownership review found no remaining source blocker. The navigation suite contains 47 authored tests: 16 additional groups and the updated oversized-paste regression alongside retained coverage. Tests cover original input before Explorer filtering, both modal-release stages, exact connection state (including already-offline navigation), stale identities, full selection/affinity, dialog and document Undo/Redo, and the bounded initial sizing queue. Oversized sizing batches are explicitly refused instead of replaying a truncated prefix; this event-count refusal does not apply to ordinary live input frames.
 
 Local formatting and diff checks pass. The strict receipt driver passes nine Python tests and its shared supervisor passes 21. All three packaging families pass locally: 39 Linux desktop tests, 30 Linux agent tests and 36 Windows bundle tests with one platform skip. Structured lockfile comparison confirms only the ten Cedar version entries changed; third-party dependency versions and features are unchanged. Rust has not been compiled or executed locally for this checkpoint. The 14-case real-agent proof, dual-platform aggregates/releases, packages and fresh GUI remain pending.
+
+## Preserved 0.52.0 first-compilation failure and 0.52.1 correction
+
+Public `66967fa16ced29dc4e9cf466c844de32f6fbcab3`, [CI 38109309091](https://github.com/LLLLimbo/cedar-ide/actions/runs/38109309091), failed strict Clippy on both OSes because the test helper `dialog_history` exposed a nested tuple/vector return type that triggered `type_complexity`. Aggregate tests, the new process proof, release builds and packages did not run; no native GUI archive existed. The failure is preserved and no runtime pass is inferred.
+
+0.52.1 names that exact test snapshot entry and collection type. Fields, equality assertions, input and history behavior are unchanged; no lint suppression is added. Shipping Rust source and dependency versions/features are unchanged except Cedar package versions. Local Rust compilation remains deferred to fresh CI. Full dual-platform strict checks, aggregates, process ledgers, all packages and fresh exact-archive GUI remain mandatory.
