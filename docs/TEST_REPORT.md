@@ -1,4 +1,4 @@
-# Verification report · Loaded Explorer files / 0.49.0 (pending)
+# Verification report · Loaded Explorer files / 0.49.1 (pending)
 
 Latest accepted checkpoint is [0.48.2 Enter selection handling](TEST_REPORT_PHASE48_ENTER.md#final-verified-acceptance--0482), public `f925d8b471a08ad732a3fa3961ccbd74cf9037bf` and CI 38095477287. Earlier failed runs and the unknown client/Git failure causes remain preserved. Windows recovery admission remains paused.
 
@@ -8,7 +8,7 @@ The snapshot is bounded to 4,096 cached paths plus 32 open buffers and checked 1
 
 Acceptance remains pending independent cache/input/session review, deterministic regressions, both-platform normal-agent operation ledgers, all prior CI gates and three packages, then bounded exact-package cloud Trust-off keyboard navigation across sibling folders with unchanged generated files. No real SSH compatibility or new privacy guarantee is claimed.
 
-## Focused local validation and evidence limits
+## Preserved 0.49.0 focused local validation and evidence limits
 
 Independent cache/input/session review is clear. The focused navigation suite passes 30 tests (16 retained and 14 new); the same compiled harness passes 29 Explorer and 17 workspace-access regressions. Formatting and strict host/MSVC all-targets/all-features Clippy pass. External dependency versions and shipping capability declarations are unchanged; only the ten Cedar versions change in Cargo.lock.
 
@@ -17,3 +17,11 @@ Review found and corrected pointer ownership, native scope-activation text/focus
 Disk constraints deliberately limited local compilation to these focused suites and strict checks. No local full-versioned aggregate, release rebuild or new normal-agent process runtime was performed. Fresh CI must run the full workspace, build default releases and execute exactly one loaded-files process acceptance on each OS: ten cases, six explicit setup Lists, two Reads (one setup, one cached-file activation), zero chooser Lists, zero dirty-buffer Reads, zero Writes/other operations, two connections/reaped owners and five unchanged source hashes. The driver also delays delivery of a real explicit List response until after snapshot creation, then checks that it cannot retarget activation. Its shared watchdog is 60 seconds, ordinary Client call limit remains 30 seconds, and per-owner cleanup observation is 5 seconds. The CI subprocess allows 150 seconds including harness compilation under a three-minute step; no runtime deadline is extended.
 
 All three packages and fresh exact-archive cloud GUI acceptance remain required and pending. No older agent binary substitutes for that runtime proof.
+
+## Preserved 0.49.0 packaging failure and 0.49.1 correction
+
+Public `5612dbea6fc2aef8c17dbcbf7d43e9f693bff722`, [CI 38098034604](https://github.com/LLLLimbo/cedar-ide/actions/runs/38098034604), failed both OSes before Rust checks/runtime: the new Linux desktop quickstart linked EXPLORER_TREE.md, absent from that package's explicit source inventory. Windows already included the guide; the agent-only entry guide had no such link. The earlier local packaging check covered Windows only and missed the changed Linux guide. No full aggregate, release, new process or package acceptance occurred in that run.
+
+0.49.1 adds only the missing Linux desktop guide mapping, loads its real source bytes in the existing link test and rejects a reduced archive/manifest that omits the required guide. Strict link, mode, hash and archive validators remain unchanged; Windows and agent-only layouts remain unchanged. App/agent Rust behavior is identical to the sealed 0.49.0 source, apart from package version metadata. All three packaging test families are required locally; fresh full CI and exact-package GUI remain pending.
+
+The 0.49.1 local packaging suites passed: Linux desktop 39 tests, Linux agent 30 tests, Windows bundle 36 tests with one platform skip. No Rust rebuild was performed for this packaging-only correction; the previous focused checks apply to identical Rust source, while versioned binaries and runtime proof must come from the new CI run.

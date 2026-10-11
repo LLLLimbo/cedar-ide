@@ -443,12 +443,20 @@ class LinuxDesktopBundleTests(unittest.TestCase):
     def test_current_guide_links_target_packaged_files(self):
         root = Path(__file__).resolve().parent.parent
         payload = dict(self.payload)
-        for name in ("MAVEN_PROJECTS.md", "MAVEN_DEPENDENCIES.md", "SAVE_ALL.md"):
+        for name in ("MAVEN_PROJECTS.md", "MAVEN_DEPENDENCIES.md", "SAVE_ALL.md", "EXPLORER_TREE.md"):
             self.assertEqual(bundle.SOURCE_FILES["docs/" + name], name)
             payload[name] = (root / "docs" / name).read_bytes()
         payload[bundle.GUIDE] = (root / "docs" / bundle.GUIDE).read_bytes()
         manifest = bundle.make_manifest("0.41.0", COMMIT, RUN_URL, payload)
         bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+
+    def test_explorer_guide_is_required_even_with_matching_reduced_inventory(self):
+        payload = dict(self.payload)
+        del payload["EXPLORER_TREE.md"]
+        manifest = copy.deepcopy(self.manifest)
+        manifest["files"] = [item for item in manifest["files"]
+                             if item["path"] != "EXPLORER_TREE.md"]
+        self.assert_invalid(bundle.archive_bytes(payload, manifest), "required payload")
 
     @POSIX_ONLY
     def test_fresh_unicode_extraction_rechecks_inventory_hashes_and_modes(self):
