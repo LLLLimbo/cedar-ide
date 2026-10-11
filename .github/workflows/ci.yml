@@ -34,6 +34,7 @@ jobs:
       - run: python scripts/test_selection_replace_acceptance.py
       - run: python scripts/test_duplicate_lines_acceptance.py
       - run: python -B scripts/test_report_triage_acceptance.py
+      - run: python -B scripts/test_search_navigation_acceptance.py
       - run: python scripts/test_copy_draft_acceptance.py
       - run: python scripts/test_save_close_acceptance.py
       - run: python scripts/test_linux_java_acceptance.py
@@ -447,6 +448,21 @@ jobs:
           path: ${{ runner.temp }}/cedar-report-triage-diagnostic/REPORT_TRIAGE_FAILURE.json
           if-no-files-found: ignore
           retention-days: 7
+      - name: Project Search keyboard navigation (Linux default agent, trust off)
+        id: search_navigation_linux
+        timeout-minutes: 5
+        if: runner.os == 'Linux'
+        env:
+          CEDAR_SEARCH_NAVIGATION_DIAGNOSTIC_DIR: ${{ runner.temp }}/cedar-search-navigation-diagnostic
+        run: python -B scripts/search_navigation_acceptance.py
+      - name: Project Search sanitized failure evidence (Linux)
+        if: ${{ always() && runner.os == 'Linux' && steps.search_navigation_linux.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-navigation-diagnostic-${{ matrix.os }}
+          path: ${{ runner.temp }}/cedar-search-navigation-diagnostic/SEARCH_NAVIGATION_FAILURE.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Shipping Linux Save All (normal agent, trust off)
         timeout-minutes: 3
         if: runner.os == 'Linux'
@@ -543,6 +559,21 @@ jobs:
         with:
           name: report-triage-diagnostic-${{ matrix.os }}
           path: ${{ runner.temp }}/cedar-report-triage-diagnostic/REPORT_TRIAGE_FAILURE.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Project Search keyboard navigation (Windows default agent, trust off)
+        id: search_navigation_windows
+        timeout-minutes: 5
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.windows_shipping.outcome == 'success' }}
+        env:
+          CEDAR_SEARCH_NAVIGATION_DIAGNOSTIC_DIR: ${{ runner.temp }}/cedar-search-navigation-diagnostic
+        run: python -B scripts/search_navigation_acceptance.py
+      - name: Project Search sanitized failure evidence (Windows)
+        if: ${{ always() && runner.os == 'Windows' && steps.search_navigation_windows.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-navigation-diagnostic-${{ matrix.os }}
+          path: ${{ runner.temp }}/cedar-search-navigation-diagnostic/SEARCH_NAVIGATION_FAILURE.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Shipping Windows Save All (normal agent, trust off)

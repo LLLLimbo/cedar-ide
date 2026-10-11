@@ -1195,10 +1195,30 @@ fn selected_search_result_admits_after_its_line_selection() {
     let mut app = app();
     app.tools_open = true;
     app.tool = crate::Tool::Search;
-    app.search_results.push(cedar_protocol::SearchMatch {
-        path: "2.txt".into(),
-        line: 2,
-        text: "second".into(),
+    // Admit a real submitted search batch before exercising its native row.
+    let form = crate::ConnectForm {
+        local_root: "/workspace".into(),
+        ..Default::default()
+    };
+    app.workspace_key = Some(form.key());
+    app.root = "/workspace".into();
+    let (worker, commands) = Worker::recording();
+    app.worker = Some(worker);
+    app.search_query = "second".into();
+    app.search();
+    let search = commands.try_recv().unwrap();
+    app.apply_event(Event {
+        generation: app.generation,
+        id: search.id,
+        connected: true,
+        result: Ok(cedar_protocol::Payload::Matches {
+            matches: vec![cedar_protocol::SearchMatch {
+                path: "2.txt".into(),
+                line: 2,
+                text: "second".into(),
+            }],
+            truncated: false,
+        }),
     });
     let output = frame(&mut app, vec![]);
     let at = label(&output, "2.txt:2");

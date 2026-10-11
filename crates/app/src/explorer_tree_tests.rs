@@ -746,7 +746,14 @@ fn tab_modals_editor_and_newer_focus_take_precedence() {
         ..Default::default()
     };
     let original = explorer_tree::InputBatch::capture(&input);
-    app.explorer_tree_input(&ctx, &mut input, original);
+    let mut consumed = vec![false; input.events.len()];
+    app.explorer_tree_input(&ctx, &input, original, &mut consumed);
+    let mut index = 0;
+    input.events.retain(|_| {
+        let keep = !consumed[index];
+        index += 1;
+        keep
+    });
     ctx.memory_mut(|memory| memory.request_focus(egui::Id::new("newer_focus")));
     let _ = ctx.run(input, |ctx| app.explorer_tree_shortcuts(ctx));
     assert!(app.explorer.key_reveal.is_none());
@@ -768,7 +775,14 @@ fn poll_replacing_a_focused_directory_with_a_file_cancels_captured_enter() {
         ..Default::default()
     };
     let original = explorer_tree::InputBatch::capture(&input);
-    app.explorer_tree_input(&ctx, &mut input, original);
+    let mut consumed = vec![false; input.events.len()];
+    app.explorer_tree_input(&ctx, &input, original, &mut consumed);
+    let mut index = 0;
+    input.events.retain(|_| {
+        let keep = !consumed[index];
+        index += 1;
+        keep
+    });
     reply(&mut app, refresh, vec![entry("target", false)]);
     let _ = ctx.run(input, |ctx| app.explorer_tree_shortcuts(ctx));
     assert!(commands.try_recv().is_err());

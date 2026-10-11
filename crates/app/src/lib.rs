@@ -89,6 +89,11 @@ mod save_all_tests;
 mod save_close_process_tests;
 #[cfg(test)]
 mod save_close_tests;
+mod search_keyboard;
+#[cfg(test)]
+mod search_keyboard_tests;
+#[cfg(test)]
+mod search_navigation_process_tests;
 #[cfg(test)]
 mod selection_replace_process_tests;
 #[cfg(test)]
@@ -167,7 +172,7 @@ struct ConnectForm {
 }
 // Keep endpoint fields separate: paths and SSH hosts can contain colons. Trust
 // changes intentionally retain the workspace identity; Hello checks its root.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum WorkspaceKey {
     Local {
         root: String,
@@ -383,6 +388,7 @@ pub struct CedarApp {
     search_results: Vec<SearchMatch>,
     search_truncated: bool,
     search_request: u64,
+    search_state: search_keyboard::Search,
     git_output: String,
     git_state: git_ui::GitPanel,
     profiles: profile_ui::Profiles,
@@ -493,6 +499,7 @@ impl CedarApp {
             search_results: Vec::new(),
             search_truncated: false,
             search_request: 0,
+            search_state: search_keyboard::Search::default(),
             git_output: "Refresh to read workspace Git status".into(),
             git_state: git_ui::GitPanel::default(),
             profiles: profile_ui::Profiles::default(),
@@ -583,6 +590,7 @@ impl CedarApp {
         self.profiles.disconnected();
         self.worker = None;
         self.language.reset();
+        self.search_state.retire();
         self.generation += 1;
         self.location_history.clear();
         self.pending.clear();
@@ -615,6 +623,7 @@ impl CedarApp {
         self.worker = None;
         self.disk_review.outstanding = None;
         self.agent_info = None;
+        self.search_state.retire();
         self.generation += 1;
         self.location_history.clear();
         self.explorer.reset_connection();
@@ -670,6 +679,7 @@ impl CedarApp {
         self.dismiss_disk_review();
         self.run_state.disconnected();
         self.test_report.disconnected();
+        self.search_state.retire();
         self.profiles.disconnected();
         self.recovery.restoring_generation = None;
         self.state = ConnectionState::Disconnected;
@@ -1035,6 +1045,8 @@ impl CedarApp {
                         self.documents.clear();
                         self.active_document = None;
                         self.search_results.clear();
+                        self.search_state.clear_owned();
+                        self.search_truncated = false;
                         self.reset_git(true);
                         self.run_state.output = "Command output will appear here".into();
                     }
@@ -1114,6 +1126,18 @@ impl CedarApp {
         let Some(job) = self.pending.remove(&event.id) else {
             return;
         };
+        if let Job::Search { query } = job {
+            // Retired search outcomes cannot replace the current view/error,
+            // but a current transport failure still disconnects the workspace.
+            if !event.connected {
+                self.disconnected(event.result.err().unwrap_or_else(|| {
+                    "The connection closed during project search. Your drafts are retained".into()
+                }));
+            } else {
+                self.apply_search_response(event.id, query, event.result);
+            }
+            return;
+        }
         let job = match job {
             Job::List { path } => {
                 self.explorer_apply_list(event, path, None);
@@ -1574,14 +1598,6 @@ impl CedarApp {
                     self.explorer_saved(&path);
                 }
             }
-            (Job::Search { query }, Payload::Matches { matches, truncated })
-                if event.id == self.search_request =>
-            {
-                self.notice = format!("{} matches for {query:?}", matches.len());
-                self.search_results = matches;
-                self.search_truncated = truncated;
-            }
-            (Job::Search { .. }, Payload::Matches { .. }) => {}
             (Job::Git, Payload::GitStatus { text }) => {
                 self.git_output = if text.trim().is_empty() {
                     "Working tree clean".into()
@@ -1635,13 +1651,29 @@ impl CedarApp {
             return;
         }
         let query = self.search_query.clone();
+        self.search_state.invalidate();
         self.search_request = self.request(
             Operation::Search {
                 query: query.clone(),
                 limit: 500,
             },
-            Job::Search { query },
+            Job::Search {
+                query: query.clone(),
+            },
         );
+        self.search_state.pending = if self.search_request == 0 {
+            None
+        } else {
+            self.workspace_key
+                .clone()
+                .map(|workspace| search_keyboard::Source {
+                    workspace,
+                    root: self.root.clone(),
+                    generation: self.generation,
+                    request: self.search_request,
+                    query,
+                })
+        };
     }
     fn git(&mut self) {
         if !self.active_form.as_ref().is_some_and(|form| form.allow_run) {
@@ -2374,52 +2406,49 @@ impl CedarApp {
         let mut close_tools = None;
         let resize = tools_resize::prepare(ctx, self.tools_height);
         let frame = egui::Frame::new().fill(PANEL).inner_margin(12.0);
-        egui::TopBottomPanel::bottom("tools").default_height(245.0).height_range(150.0..=500.0).resizable(true)
-            .frame(frame).show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("tools")
+            .default_height(245.0)
+            .height_range(150.0..=500.0)
+            .resizable(true)
+            .frame(frame)
+            .show(ctx, |ui| {
                 if let Some(height) = resize.reserve_and_capture(ui, &frame) {
                     self.tools_height = Some(height);
                 }
                 ui.horizontal_wrapped(|ui| {
-                    for (tool, label) in [(Tool::Search, "PROJECT SEARCH"), (Tool::Git, "GIT CHANGES"), (Tool::Run, "COMMANDS"), (Tool::Language, "LANGUAGE"), (Tool::Tests, "TEST RESULTS")] {
-                        let response = ui.selectable_label(self.tool == tool, label).on_hover_text("Ctrl/Cmd+J hides tools or returns to the selected tool");
-                        self.workspace_access.record(workspace_access::Target::Tool(tool), &response);
+                    for (tool, label) in [
+                        (Tool::Search, "PROJECT SEARCH"),
+                        (Tool::Git, "GIT CHANGES"),
+                        (Tool::Run, "COMMANDS"),
+                        (Tool::Language, "LANGUAGE"),
+                        (Tool::Tests, "TEST RESULTS"),
+                    ] {
+                        let response = ui.selectable_label(self.tool == tool, label).on_hover_text(
+                            "Ctrl/Cmd+J hides tools or returns to the selected tool",
+                        );
+                        self.workspace_access
+                            .record(workspace_access::Target::Tool(tool), &response);
                         #[cfg(test)]
                         workspace_access_tests::record(ui, label, &response);
-                        if response.clicked() { self.tool = tool; }
+                        if response.clicked() {
+                            self.tool = tool;
+                        }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let close = ui.small_button("x").on_hover_text("Hide tools and return to editor · Ctrl/Cmd+J");
+                        let close = ui
+                            .small_button("x")
+                            .on_hover_text("Hide tools and return to editor · Ctrl/Cmd+J");
                         #[cfg(test)]
                         workspace_access_tests::record(ui, "close_tools", &close);
-                        if close.clicked() { close_tools = Some(close); }
+                        if close.clicked() {
+                            close_tools = Some(close);
+                        }
                     });
                 });
                 ui.separator();
                 match self.tool {
                     Tool::Language => self.language_panel(ui),
-                    Tool::Search => {
-                        if self.ready() && !self.backend_supports("search") { ui.colored_label(AMBER, self.unsupported_message("search")); }
-                        ui.horizontal(|ui| {
-                            let edit = ui.add(egui::TextEdit::singleline(&mut self.search_query).hint_text("Find text across the workspace...").desired_width((ui.available_width() - 175.0).max(180.0)));
-                            #[cfg(test)]
-                            workspace_access_tests::record(ui, "search_query", &edit);
-                            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                            if ui.add_enabled(self.backend_supports("search"), egui::Button::new("Search")).clicked() || enter { self.search(); }
-                            ui.label(RichText::new(format!("{} results", self.search_results.len())).small().color(MUTED));
-                        });
-                        if self.search_truncated { ui.colored_label(AMBER, "Results capped at 500. Narrow your query to see more specific matches"); }
-                        let mut open = None;
-                        egui::ScrollArea::vertical().id_salt("search_results").show(ui, |ui| {
-                            for result in &self.search_results {
-                                ui.horizontal(|ui| {
-                                    if ui.add(egui::Button::new(RichText::new(format!("{}:{}", result.path, result.line)).color(GREEN)).frame(false)).clicked() { open = Some((result.path.clone(), result.line)); }
-                                    ui.add(egui::Label::new(RichText::new(result.text.trim()).monospace().size(12.0).color(MUTED)).truncate());
-                                });
-                            }
-                            if self.search_results.is_empty() { ui.label(RichText::new("Case-sensitive text search. Open a result to jump to its line").small().color(MUTED)); }
-                        });
-                        if let Some((path, line)) = open { self.open(path, Some(line)); }
-                    }
+                    Tool::Search => self.search_panel(ui),
                     Tool::Git => self.git_panel(ui),
                     Tool::Run => self.run_panel(ui),
                     Tool::Tests => self.test_report_panel(ui),
@@ -3072,8 +3101,18 @@ impl eframe::App for CedarApp {
                 && self.active().is_some_and(|doc| doc.jump_to.is_none())
         });
         let explorer_input = explorer_tree::InputBatch::capture(raw_input);
-        self.capture_test_report_input(ctx, raw_input);
-        self.explorer_tree_input(ctx, raw_input, explorer_input);
+        // Classify every surface from the same ordered native batch. Filtering
+        // sooner could create a new clean action or hide a held key's release.
+        let mut consumed = vec![false; raw_input.events.len()];
+        self.capture_test_report_input(ctx, raw_input, &mut consumed);
+        self.capture_search_input(ctx, raw_input, &mut consumed);
+        self.explorer_tree_input(ctx, raw_input, explorer_input, &mut consumed);
+        let mut index = 0;
+        raw_input.events.retain(|_| {
+            let keep = !consumed[index];
+            index += 1;
+            keep
+        });
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {

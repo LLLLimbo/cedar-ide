@@ -260,6 +260,11 @@ fn sort_entries(entries: &mut [Entry]) {
 }
 
 impl Explorer {
+    #[cfg(test)]
+    pub(super) fn claims(&self, key: egui::Key) -> bool {
+        self.claimed_keys.contains(&key)
+    }
+
     pub(crate) fn usage(&self) -> Option<(usize, usize, usize)> {
         let mut rows = 0usize;
         let mut bytes = 0usize;
@@ -479,8 +484,9 @@ impl CedarApp {
     pub(crate) fn explorer_tree_input(
         &mut self,
         ctx: &egui::Context,
-        input: &mut egui::RawInput,
+        input: &egui::RawInput,
         original: InputBatch,
+        consumed: &mut [bool],
     ) {
         self.explorer.key_intent = None;
         self.explorer.key_reveal = None;
@@ -508,36 +514,41 @@ impl CedarApp {
         // these seven keys before removing them. A tree-claimed key stays owned
         // until release even if Open moves focus to the editor in the meantime.
         let mut action = None;
-        input.events.retain(|event| {
-            let egui::Event::Key {
-                key,
-                pressed,
-                repeat,
-                modifiers,
-                ..
-            } = event
-            else {
-                return true;
-            };
-            if !is_tree_key(key) {
-                return true;
-            }
-            let claimed = self.explorer.claimed_keys.contains(key);
-            if !pressed {
-                self.explorer.held_keys.remove(key);
-                self.explorer.claimed_keys.remove(key);
-                return !claimed;
-            }
-            let fresh = self.explorer.held_keys.insert(*key);
-            if owns_row && modifiers.is_none() {
-                self.explorer.claimed_keys.insert(*key);
-                if fresh && !repeat && candidate == Some(*key) {
-                    action = Some(*key);
+        for (index, event) in input.events.iter().enumerate() {
+            let keep = (|| {
+                let egui::Event::Key {
+                    key,
+                    pressed,
+                    repeat,
+                    modifiers,
+                    ..
+                } = event
+                else {
+                    return true;
+                };
+                if !is_tree_key(key) {
+                    return true;
                 }
-                return false;
-            }
-            !claimed
-        });
+                let claimed = self.explorer.claimed_keys.contains(key);
+                if !pressed {
+                    self.explorer.held_keys.remove(key);
+                    self.explorer.claimed_keys.remove(key);
+                    return !claimed;
+                }
+                let fresh = self.explorer.held_keys.insert(*key);
+                if owns_row && modifiers.is_none() {
+                    if fresh || claimed {
+                        self.explorer.claimed_keys.insert(*key);
+                    }
+                    if fresh && !repeat && candidate == Some(*key) {
+                        action = Some(*key);
+                    }
+                    return false;
+                }
+                !claimed
+            })();
+            consumed[index] |= !keep;
+        }
         self.explorer.key_intent = action.map(|key| KeyIntent {
             key,
             generation: self.generation,

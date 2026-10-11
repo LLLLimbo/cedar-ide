@@ -20,7 +20,7 @@ The optional argument prefills the local workspace field. Select **Connect works
 - Directory navigation, new-file drafts, up to 32 tabs, and path-based quick open
 - UTF-8 editing, line numbers, Java/Kotlin/Rust lexical colors, and case-sensitive find
 - Revision-checked saves, disk-version inspection, and explicit confirmation before discarding a dirty tab or quitting
-- Project text search with clickable line results
+- Explicit project text search with historical line results; 0.57.0 adds ordered keyboard navigation, pending fresh acceptance
 - Trusted-workspace Git status and explicit executable commands with literal argument rows, cancellable task output, and saved project profiles in `cedar.tasks.json`
 
 Shortcuts:
@@ -49,7 +49,7 @@ paste or another action. Holding the shortcut does not repeatedly toggle tools.
 These shortcuts provide an alternative at small window heights; expanded forms
 and crowded center controls still have separate responsive-layout limitations.
 
-The 0.56.1 candidate retains an explicit tools-panel height only after an actual
+The accepted 0.56.1 checkpoint retains an explicit tools-panel height only after an actual
 primary-button vertical drag on its native top divider. Until then, content can
 still shrink the panel automatically. The explicit choice lasts through empty,
 loading, loaded and cleared reports, hide/show, tool changes and reconnects in
@@ -57,9 +57,40 @@ this frontend process. Later drags can enlarge or reduce it. Window constraints
 may temporarily limit the displayed height without replacing the preference;
 window growth restores it when space permits. Restarting the app returns to
 automatic sizing. The existing 245-point default and 150–500 range remain, but
-neither a hard content cap nor room for the editor is guaranteed. Fresh CI and
-native GUI acceptance for this changed behavior remain pending; see the
-[current report](../../docs/TEST_REPORT.md).
+neither a hard content cap nor room for the editor is guaranteed. Dual-platform
+CI and all three packages passed; bounded Linux native acceptance combines the
+original partial run with a separate same-package shrink/regrow check. Original
+misses and limits remain in the [0.56.1 report](../../docs/TEST_REPORT_PHASE561_TOOLS_HEIGHT.md#final-accepted-0561-evidence).
+
+## Project Search keyboard navigation (0.57.0 pending acceptance)
+
+Enter a case-sensitive literal query and explicitly select **Search**, or press
+Enter in its query field. The accepted result batch labels the submitted query.
+These are historical on-disk lines, without file revisions or current-draft
+freshness: unsaved changes are not search input, and a recorded line may now point
+somewhere else. The existing engine is bounded; a limit warning may reflect scan,
+time or response limits as well as row count.
+
+Use native Tab to focus a result row. Standalone, unmodified Up/Down moves through
+backend order, Home/End reaches the first/last row, and boundaries stop without
+wrapping. The destination scrolls into view; duplicate labels retain distinct
+row identity. Movement sends no requests and leaves editor text, selection, Undo
+and history unchanged. Other controls keep their normal keys.
+
+Enter/Space or clicking an enabled row opens that exact result through ordinary
+Open. Existing dirty text and Undo stay intact, but the caret deliberately moves
+to the historical line and the departure is recorded for Back. An unopened file
+uses the ordinary root-confined Read path. No match-column or current-draft
+position guarantee is made.
+
+Old rows remain visible but inactive while a newer request is pending, the query
+differs, or the connection changes. Explicitly search again after reconnect.
+Query/batch changes, hidden or switched tools, modals and competing input cancel
+unfinished row intent; continue with a fresh valid key or pointer action. The frontend keeps at
+most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
+oversized batches are rejected whole. No automatic search, new engine, protocol,
+capability or workspace operation is added. Fresh CI, process proof, packages and
+native GUI checks remain [pending](../../docs/TEST_REPORT.md).
 
 ## Agent capabilities and trust
 
@@ -153,7 +184,7 @@ This remains an independent prototype, not a complete replacement for a mature I
 - The backend opens/saves files up to 1 MiB; the frontend allows 32 tabs
 - Pasted text is retained, never silently truncated. An oversized draft must be shortened or copied before saving or using language features
 - Undo retains at most 16 full-text snapshots per tab, initialized once. Completion creates one transaction; tab close/workspace replacement releases its stored history. Large tabs can still use significant memory; this is not a fixed-memory guarantee or a delta-based undo engine
-- In-file find retains 10,000 matches; project search requests 500
+- In-file find retains 10,000 matches; project search requests and retains at most 500, with 512 KiB of combined path/snippet bytes
 - Syntax coloring falls back to plain text above 256 KiB
 - Completion retains up to 256 candidates/4 MiB, applies at most 128 edits, and enforces a 1 MiB resulting document
 - Diagnostic display is bounded to 2,000 entries, 128 files, and 512 KiB of text

@@ -156,6 +156,11 @@ pub(super) fn clean_key(events: &[egui::Event]) -> Option<egui::Key> {
 }
 
 impl Keyboard {
+    #[cfg(test)]
+    pub(super) fn claims(&self, key: egui::Key) -> bool {
+        self.claimed.contains(&key)
+    }
+
     pub(super) fn invalidate(&mut self) {
         self.view = None;
         self.presented.clear();
@@ -226,7 +231,8 @@ impl CedarApp {
     pub(super) fn capture_test_report_input(
         &mut self,
         ctx: &egui::Context,
-        input: &mut egui::RawInput,
+        input: &egui::RawInput,
+        consumed: &mut [bool],
     ) {
         let allowed = self.report_input_allowed(ctx);
         let current = View::of(&self.test_report);
@@ -351,49 +357,52 @@ impl CedarApp {
         }
         let mut accepted = None;
         let mut claimed_space_press = false;
-        input.events.retain(|event| {
-            let egui::Event::Key {
-                key,
-                pressed,
-                repeat,
-                modifiers,
-                ..
-            } = event
-            else {
-                return true;
-            };
-            if !report_key(*key) {
-                return true;
-            }
-            let claimed = keyboard.claimed.contains(key);
-            if !pressed {
-                keyboard.held.remove(key);
-                keyboard.claimed.remove(key);
-                return !claimed;
-            }
-            let fresh = keyboard.held.insert(*key);
-            if source.is_some() && modifiers.is_none() {
-                // A key already held before report focus belongs to its
-                // original consumer. Suppress the local native repeat without
-                // taking its lifetime; its release must reach that consumer.
-                if fresh || claimed {
-                    keyboard.claimed.insert(*key);
+        for (index, event) in input.events.iter().enumerate() {
+            let keep = (|| {
+                let egui::Event::Key {
+                    key,
+                    pressed,
+                    repeat,
+                    modifiers,
+                    ..
+                } = event
+                else {
+                    return true;
+                };
+                if !report_key(*key) {
+                    return true;
                 }
-                claimed_space_press |= *key == egui::Key::Space;
-                if fresh && !repeat && candidate == Some(*key) {
-                    accepted = Some(*key);
+                let claimed = keyboard.claimed.contains(key);
+                if !pressed {
+                    keyboard.held.remove(key);
+                    keyboard.claimed.remove(key);
+                    return !claimed;
                 }
-                return false;
-            }
-            claimed_space_press |= claimed && *key == egui::Key::Space;
-            !claimed
-        });
+                let fresh = keyboard.held.insert(*key);
+                if source.is_some() && modifiers.is_none() {
+                    // A key already held before report focus belongs to its
+                    // original consumer. Suppress the local native repeat without
+                    // taking its lifetime; its release must reach that consumer.
+                    if fresh || claimed {
+                        keyboard.claimed.insert(*key);
+                    }
+                    claimed_space_press |= *key == egui::Key::Space;
+                    if fresh && !repeat && candidate == Some(*key) {
+                        accepted = Some(*key);
+                    }
+                    return false;
+                }
+                claimed_space_press |= claimed && *key == egui::Key::Space;
+                !claimed
+            })();
+            consumed[index] |= !keep;
+        }
         // Remove the companion only for a clean matching intent, including a
         // held repeat. Mixed text stays untouched and cannot activate a row.
         if claimed_space_press && companion == Some(egui::Key::Space) {
-            input
-                .events
-                .retain(|event| !matches!(event, egui::Event::Text(text) if text == " "));
+            for (index, event) in input.events.iter().enumerate() {
+                consumed[index] |= matches!(event, egui::Event::Text(text) if text == " ");
+            }
         }
         if let (Some(key), Some(source), Some(view)) = (accepted, source, current) {
             keyboard.key = Some(Intent { view, source, key });
