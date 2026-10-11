@@ -94,6 +94,7 @@ impl CedarApp {
         )
     }
     pub(crate) fn keep_editing_recovery(&mut self, ctx: &egui::Context) {
+        self.cancel_tab_close();
         self.recovery.keep_editing();
         self.allow_close = false;
         self.confirm = None;
@@ -201,6 +202,9 @@ impl CedarApp {
         }
     }
     pub(crate) fn install_recovered(&mut self, draft: Draft) -> Result<(), String> {
+        if self.save_close_tab_busy() || self.save_close_write_pending() {
+            return Err("Finish the tab close or Keep editing and wait for its save before restoring a draft".into());
+        }
         if self.save_all_busy() {
             return Err("Cancel remaining Save All writes and wait for the in-flight save before restoring a draft".into());
         }
@@ -240,6 +244,10 @@ impl CedarApp {
         Ok(())
     }
     fn begin_restore(&mut self, ctx: &egui::Context) {
+        if self.save_close_tab_busy() || self.save_close_write_pending() {
+            self.recovery.error = Some("Finish the tab close or Keep editing and wait for its save before restoring a draft".into());
+            return;
+        }
         if self.save_all_busy() {
             self.recovery.error = Some("Cancel remaining Save All writes and wait for the in-flight save before restoring a draft".into());
             return;

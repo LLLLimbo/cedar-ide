@@ -146,7 +146,9 @@ impl CedarApp {
     }
 
     fn save_all_problem(&self) -> Option<&'static str> {
-        if !self.ready() || self.worker.is_none() {
+        if self.save_close_tab_busy() || self.save_close_write_pending() {
+            Some("Finish the tab close or Keep editing and wait for its save before Save All")
+        } else if !self.ready() || self.worker.is_none() {
             Some("Reconnect to the original workspace before Save All")
         } else if !self.backend_supports("write") {
             Some("The workspace agent does not advertise writing")

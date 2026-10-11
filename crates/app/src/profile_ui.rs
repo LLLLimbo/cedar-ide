@@ -408,6 +408,10 @@ impl CedarApp {
         self.profiles.message = Some("Retained draft reviewed for this host and root. Save still checks its original disk revision; no command was started".into());
     }
     pub(super) fn save_profile(&mut self) {
+        if self.save_close_tab_busy() || self.save_close_write_pending() {
+            self.profiles.message = Some("Keep editing and wait for the submitted save before Save profile; your form and editor drafts are retained".into());
+            return;
+        }
         if self.save_all_busy() {
             self.profiles.message = Some("Save All owns the pending saves. Cancel remaining saves and wait for the in-flight save before saving this form; the form and editor drafts are retained".into());
             return;

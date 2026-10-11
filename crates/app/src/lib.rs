@@ -76,11 +76,16 @@ mod save_all_process_tests;
 #[cfg(test)]
 mod save_all_tests;
 #[cfg(test)]
+mod save_close_process_tests;
+#[cfg(test)]
+mod save_close_tests;
+#[cfg(test)]
 mod sidebar_layout_tests;
 #[cfg(test)]
 mod ssh_preflight_process_tests;
 mod syntax;
 mod system_fonts;
+mod tab_close;
 #[cfg(test)]
 mod tab_focus_tests;
 pub mod task_profiles;
@@ -340,6 +345,8 @@ pub struct CedarApp {
     documents: Vec<Document>,
     active_document: Option<u64>,
     close_tab_requested: Option<u64>,
+    tab_close: Option<tab_close::Intent>,
+    tab_close_submission: Option<tab_close::Submission>,
     directory: String,
     entries: Vec<Entry>,
     directory_request: u64,
@@ -445,6 +452,8 @@ impl CedarApp {
             documents: Vec::new(),
             active_document: None,
             close_tab_requested: None,
+            tab_close: None,
+            tab_close_submission: None,
             directory: String::new(),
             entries: Vec::new(),
             directory_request: 0,
@@ -504,6 +513,8 @@ impl CedarApp {
     }
     fn mutation_pending(&self) -> bool {
         self.save_all_busy()
+            || self.save_close_tab_busy()
+            || self.save_close_write_pending()
             || self.language.startup_active()
             || self.pending.values().any(|job| {
                 matches!(
@@ -623,6 +634,8 @@ impl CedarApp {
     }
 
     fn disconnected(&mut self, message: String) {
+        self.settle_tab_close_transport_loss();
+        self.cancel_tab_close();
         self.location_history.cancel_pending();
         // Transport loss is never proof that language cleanup finished, even
         // when an ordinary file/task request reports the loss first.
@@ -779,6 +792,13 @@ impl CedarApp {
     }
 
     fn save_document(&mut self, id: u64) {
+        if self.save_close_tab_busy() || self.save_close_write_pending() {
+            self.error = Some(
+                "Finish Save and close, or Keep editing and wait for its save before saving again"
+                    .into(),
+            );
+            return;
+        }
         if self.save_all_busy() {
             self.error = Some("Save All owns the pending saves. Cancel remaining saves and wait for the in-flight save before saving another file".into());
             return;
@@ -1056,6 +1076,14 @@ impl CedarApp {
             invalid_save_ack
                 || !event.connected
                 || !matches!(self.pending.get(&event.id), Some(Job::Save { .. })),
+        );
+        self.save_close_observe_reply(
+            event.generation,
+            event.id,
+            !invalid_save_ack
+                && event.connected
+                && matches!(self.pending.get(&event.id), Some(Job::Save { .. }))
+                && matches!(event.result, Ok(Payload::Written { .. })),
         );
         if invalid_save_ack || !event.connected {
             self.retain_interrupted_save(event.id);
@@ -1623,7 +1651,11 @@ impl CedarApp {
     }
 
     fn request_window_close(&mut self, ctx: &egui::Context) {
-        if self.save_all_busy() {
+        if self.save_close_tab_busy() || self.save_close_write_pending() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.cancel_tab_close();
+            self.notice = "Window close cancelled. Review the retained tab; a submitted save may still finish.".into();
+        } else if self.save_all_busy() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.error = Some(
                 "Cancel remaining Save All writes and wait for the in-flight save before closing"
@@ -1666,6 +1698,13 @@ impl CedarApp {
     }
 
     fn begin_close(&mut self, ctx: &egui::Context) {
+        if self.save_close_tab_busy() || self.save_close_write_pending() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.cancel_tab_close();
+            self.notice =
+                "Wait for the submitted save and review the retained tab before quitting.".into();
+            return;
+        }
         if self.recovery.resuming() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.notice =
@@ -1710,6 +1749,11 @@ impl CedarApp {
     }
 
     fn close_tab(&mut self, id: u64) {
+        if self.save_close_tab_busy() || self.save_close_write_pending() {
+            self.cancel_tab_close();
+            self.error = Some("Finish the current tab close or choose Keep editing and wait for its save before closing another tab".into());
+            return;
+        }
         if self.save_all_busy() {
             self.error = Some("Cancel remaining Save All writes and wait for the in-flight save before closing a tab".into());
             return;
@@ -1725,7 +1769,7 @@ impl CedarApp {
         if self.documents.iter().any(|doc| doc.id == id && doc.dirty())
             || (self.profiles.owns_document(id) && self.profiles.dirty())
         {
-            self.confirm = Some(Confirm::CloseTab(id));
+            self.capture_tab_close(id);
         } else {
             self.remove_tab(id);
         }
@@ -2765,7 +2809,9 @@ impl CedarApp {
         if let Some(message) = self.interrupted_save_check.message() {
             ui.label(RichText::new(message).small().color(AMBER));
         }
-        let navigation_blocked = self.navigation.blocks_editor() || self.copy_draft.is_open();
+        let navigation_blocked = self.navigation.blocks_editor()
+            || self.copy_draft.is_open()
+            || matches!(self.confirm, Some(Confirm::CloseTab(_)));
         ui.add_enabled_ui(!navigation_blocked, |ui| self.find_bar(ui));
         let indent_eligible = ui.is_enabled()
             && ui.ctx().input(|input| input.focused)
@@ -2938,30 +2984,18 @@ impl CedarApp {
                 self.new_file = false;
             }
         }
-        if self.confirm.is_some() {
-            let close_window = matches!(self.confirm, Some(Confirm::CloseWindow));
-            let target = match self.confirm.as_ref() {
-                Some(Confirm::CloseTab(id)) => self
-                    .documents
-                    .iter()
-                    .find(|doc| doc.id == *id)
-                    .map(|doc| doc.path.clone())
-                    .unwrap_or_default(),
-                _ => "all unsaved files and profile form edits".into(),
-            };
+        self.tab_close_dialog(ctx);
+        if matches!(self.confirm, Some(Confirm::CloseWindow)) {
             egui::Modal::new(egui::Id::new("discard_confirmation")).show(ctx, |ui| {
                 ui.set_max_width(430.0);
                 ui.heading("Discard unsaved changes?");
-                ui.label(format!("Your changes to {target} and recovery copies owned by these tabs will be discarded. Save or copy the draft first if you need to keep it."));
+                ui.label("Your changes to all unsaved files and profile form edits and recovery copies owned by these tabs will be discarded. Save or copy the draft first if you need to keep it.");
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.button("Keep editing").clicked() { self.keep_editing_recovery(ctx); }
-                    if ui.button(RichText::new(if close_window { "Discard and quit" } else { "Discard and close" }).color(RED)).clicked() {
-                        match self.confirm.take() {
-                            Some(Confirm::CloseTab(id)) => self.remove_tab(id),
-                            Some(Confirm::CloseWindow) => self.begin_close(ctx),
-                            None => {},
-                        }
+                    if ui.button(RichText::new("Discard and quit").color(RED)).clicked() {
+                        self.confirm = None;
+                        self.begin_close(ctx);
                     }
                 });
             });
@@ -3060,6 +3094,7 @@ impl eframe::App for CedarApp {
         // admitted only after every editor, cancel and draft-mutation finisher.
         self.finish_save_all_frame(ctx);
         self.finish_copy_draft_frame(ctx);
+        self.finish_save_close_tab_frame(ctx);
     }
 }
 
