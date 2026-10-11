@@ -1,5 +1,7 @@
 """Independent complete inventories; no actual agent or language process runs."""
 import unittest
+from pathlib import Path
+import re
 
 import capability_smoke as smoke
 
@@ -18,6 +20,7 @@ JAVA = {
     'language_start_java', 'language_start_java_begin', 'language_start_java_poll',
     'language_start_java_cancel', 'java_diagnostics_refresh',
     'language_organize_java_imports', 'language_java_implementations',
+    'language_java_signature_help',
 }
 MAVEN = {
     'language_start_java_maven_begin', 'language_maven_model',
@@ -69,8 +72,32 @@ class PlatformCapabilityTests(unittest.TestCase):
             with self.subTest(platform=platform):
                 self.check(platform, expected)
                 self.assertLessEqual(len(expected), 32)
-        self.assertEqual(len(EXPECTED['linux']), 31)
-        self.assertEqual(len(EXPECTED['windows']), 31)
+        self.assertEqual(len(EXPECTED['linux']), 32)
+        self.assertEqual(len(EXPECTED['windows']), 32)
+
+    def test_independent_inventory_covers_shipping_advertisement_sources(self):
+        # Cross-check the source's bounded current builder; do not generate the
+        # independent per-platform expected sets from the implementation.
+        root = Path(__file__).resolve().parent.parent
+        source = (root / 'crates/workspace/src/capabilities.rs').read_text(encoding='utf-8')
+        builder = source.split('pub(super) fn agent_info(', 1)[1].split('capabilities.sort_unstable();', 1)[0]
+        # The vec initializer has a different terminator from method calls.
+        initial = re.search(r'let mut capabilities = vec!\[(.*?)\];', builder, re.DOTALL)
+        self.assertIsNotNone(initial)
+        advertised = set(re.findall(r'"([a-z0-9_]+)"', initial.group(1)))
+        for body in re.findall(r'capabilities\.(?:push|extend)\((.*?)\);', builder, re.DOTALL):
+            advertised.update(re.findall(r'"([a-z0-9_]+)"', body))
+        protocol = (root / 'crates/protocol/src/lib.rs').read_text(encoding='utf-8')
+        constants = set(re.findall(r'cedar_protocol::(JAVA_[A-Z_]+)', builder))
+        self.assertEqual(constants, {'JAVA_STARTUP_CAPABILITIES', 'JAVA_MAVEN_CAPABILITIES',
+                                     'JAVA_MAVEN_DEPENDENCIES_CAPABILITY'})
+        for name in constants:
+            declaration = re.search(r'pub const ' + name + r':[^=]+=(.*?);', protocol, re.DOTALL)
+            self.assertIsNotNone(declaration, name)
+            advertised.update(re.findall(r'"([a-z0-9_]+)"', declaration.group(1)))
+        self.assertEqual(advertised, set().union(*EXPECTED.values()))
+        self.assertIn('language_java_signature_help', EXPECTED['linux'])
+        self.assertIn('language_java_signature_help', EXPECTED['windows'])
 
     def test_every_advertised_capability_is_required(self):
         for platform, expected in EXPECTED.items():
@@ -108,7 +135,10 @@ class PlatformCapabilityTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             smoke.validate(hello)
         info['capabilities'] = sorted(EXPECTED['linux'])
+        info['capabilities'].remove('language_java_signature_help')
         info['capabilities'].append('language_start_java')
+        self.assertEqual(len(info['capabilities']), 32)
+        self.assertEqual(len(set(info['capabilities'])), 31)
         with self.assertRaises(AssertionError):
             smoke.validate(hello)
 

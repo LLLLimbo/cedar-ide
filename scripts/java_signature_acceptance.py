@@ -362,6 +362,15 @@ def validate_execution(data):
         summaries[0]), "validation_failed")
 
 
+def validate_java_release(data):
+    lines = data.decode("utf-8").split("\n")
+    # Remove CR only when it belongs to a terminating CRLF. A bare CR, an
+    # embedded CR or a Unicode separator is not a release-file line ending.
+    require(any(re.fullmatch(r'JAVA_VERSION="21(?:[.\-+][^"\r\n]*)?"',
+                             line[:-1] if index < len(lines) - 1 and line.endswith("\r") else line)
+                for index, line in enumerate(lines)), "validation_failed")
+
+
 def compile_command():
     return ["cargo", "test", "-p", "cedar-app", "--lib", "--locked", "--no-run", "--message-format=json"]
 
@@ -459,8 +468,7 @@ def run(root, artifact, verified, scratch_root, commit, run_url, *, runner=bound
         java_home = Path(environment.get("JAVA_HOME_21_X64", ""))
         require(java_home.is_absolute(), "validation_failed")
         java = java_home / "bin" / ("java.exe" if platform == "windows" else "java")
-        release = regular(java_home / "release", 65536).decode("utf-8")
-        require(re.search(r'^JAVA_VERSION="21(?:[.\-+][^"\r\n]*)?"$', release, re.MULTILINE), "validation_failed")
+        validate_java_release(regular(java_home / "release", 65536))
         environment.update(JAVA_HOME=str(java_home), TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch))
         stage = "source_commit"
         actual = runner(["git", "rev-parse", "--verify", "HEAD"], root, environment, 10, 128).decode("ascii").strip()

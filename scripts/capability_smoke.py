@@ -22,7 +22,7 @@ LANGUAGE_QUERIES = {'language_query', 'language_format', 'language_references',
 TYPED_JAVA = {'language_start_java', 'language_start_java_begin',
               'language_start_java_poll', 'language_start_java_cancel',
               'java_diagnostics_refresh', 'language_organize_java_imports',
-              'language_java_implementations'}
+              'language_java_implementations', 'language_java_signature_help'}
 WINDOWS_MAVEN = {'language_start_java_maven_begin', 'language_maven_model',
                  'language_maven_dependencies'}
 LINUX_MAVEN_GROUPS = ['java_maven_dependencies_v1', 'java_maven_leaf_v1']
@@ -52,8 +52,8 @@ def validate(hello):
 
 
 def validate_platform_capabilities(info):
-    # Linux 0.39 keeps its complete 31-name flat inventory and advertises Maven
-    # only through these two exact groups. Other shipping hosts still omit it.
+    # Current Linux uses all 32 flat slots and advertises Maven only through
+    # these two exact groups. Other shipping hosts still omit the groups.
     if info['os'] == 'linux':
         assert info.get('capability_groups') == LINUX_MAVEN_GROUPS
     else:
@@ -108,6 +108,7 @@ def main():
                 ('language_refresh_java_diagnostics', {'path': 'NeverLaunched.java', 'version': 1}),
                 ('language_organize_java_imports', {'path': 'NeverLaunched.java', 'version': 1}),
                 ('language_java_implementations', {'path': 'NeverLaunched.java', 'version': 1, 'line': 0, 'character': 0}),
+                ('language_java_signature_help', {'path': 'NeverLaunched.java', 'version': 1, 'line': 0, 'character': 0}),
                 ('language_maven_model', {}),
                 ('language_maven_dependencies', {'startup_id': 1, 'pom_sha256': 'a' * 64}),
                 ('language_stop', {}),

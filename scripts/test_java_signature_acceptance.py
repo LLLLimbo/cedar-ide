@@ -62,11 +62,11 @@ def package_fixture(base, platform="linux"):
         path = root / reverse.get(name, name)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
-    (root / "Cargo.toml").write_bytes(b'[workspace.package]\nversion = "0.59.0"\n')
+    (root / "Cargo.toml").write_bytes(b'[workspace.package]\nversion = "0.59.1"\n')
     payload["cedar-agent" if platform == "linux" else "cedar-agent.exe"] = synthetic_elf() if platform == "linux" else synthetic_pe()
     if platform == "windows":
         payload["cedar.exe"] = synthetic_pe()
-    manifest = module.make_manifest("0.59.0", COMMIT, RUN_URL, payload)
+    manifest = module.make_manifest("0.59.1", COMMIT, RUN_URL, payload)
     archive = module.archive_bytes(payload, manifest)
     (artifact / ("generated.tar.gz" if platform == "linux" else "generated.zip")).write_bytes(archive)
     return root, artifact, verified, module, payload, manifest
@@ -151,7 +151,7 @@ class PackageTests(unittest.TestCase):
         for platform in ("linux", "windows"):
             with tempfile.TemporaryDirectory() as temporary:
                 root, artifact, verified, _, _, _ = package_fixture(Path(temporary), platform)
-                (root / "docs/MAVEN_PROJECTS.md").write_text("private forged guide")
+                (root / "docs/MAVEN_PROJECTS.md").write_bytes(b"private forged guide")
                 with self.assertRaises(ValueError):
                     proof.verify_artifact(root, artifact, verified, COMMIT, RUN_URL, platform)
                 self.assertFalse(verified.exists())
@@ -198,15 +198,59 @@ class PackageTests(unittest.TestCase):
                     proof.source_inventory(f"{mode} blob {object_id}\tCargo.toml\0".encode())
 
 
+    def test_crlf_checkout_matches_git_blob_and_retains_raw_snapshot_hash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "Cargo.toml"
+            canonical = "fixture 雪😀\nsecond line\n".encode("utf-8")
+            checkout = canonical.replace(b"\n", b"\r\n")
+            object_id = proof.windows_bundle.blob_hash(canonical)
+            inventory = proof.source_inventory(f"100644 blob {object_id}\tCargo.toml\0".encode("ascii"))
+            path.write_bytes(checkout)
+            before = proof.snapshot(root, inventory)
+            self.assertEqual(before, {"Cargo.toml": proof.hashlib.sha256(checkout).hexdigest()})
+            self.assertNotEqual(before["Cargo.toml"], proof.hashlib.sha256(canonical).hexdigest())
+            path.write_bytes(canonical)
+            self.assertNotEqual(proof.snapshot(root, inventory), before)
+            path.write_bytes(checkout.replace(b"second", b"changed"))
+            with self.assertRaises(ValueError):
+                proof.snapshot(root, inventory)
+
+
+class JavaReleaseTests(unittest.TestCase):
+    def test_lf_crlf_and_unterminated_fields_preserve_version_grammar(self):
+        for version in (b"21", b"21.0.8", b"21-ea", b"21+35"):
+            for ending in (b"\n", b"\r\n", b""):
+                with self.subTest(version=version, ending=ending):
+                    proof.validate_java_release(b'JAVA_VERSION="' + version + b'"' + ending)
+        proof.validate_java_release(b'IMPLEMENTOR="Fixture"\r\nJAVA_VERSION="21.0.8"\nJAVA_VERSION_DATE="2025-07-15"\r\n')
+        # Preserve the original existential match when another version appears.
+        proof.validate_java_release(b'JAVA_VERSION="17"\nJAVA_VERSION="21"\n')
+
+    def test_malformed_required_field_does_not_match(self):
+        for data in (b"", b'JAVA_VERSION="17"\n', b'JAVA_VERSION="210"\n',
+                     b'JAVA_VERSION="21ea"\n', b'JAVA_VERSION="21.0.8"\r',
+                     b'JAVA_VERSION="21.0.8"\r\r\n', b'JAVA_VERSION="21.0\r.8"\n',
+                     b'JAVA_VERSION="21.0.8"\rOTHER="value"\n',
+                     b' JAVA_VERSION="21.0.8"\n', b'JAVA_VERSION ="21.0.8"\n',
+                     b'JAVA_VERSION="21.0.8" extra\n', b'JAVA_VERSION=21.0.8\n',
+                     b'JAVA_VERSION_DATE="21"\n',
+                     'JAVA_VERSION="21.0.8"\u2028'.encode("utf-8"),
+                     'OTHER="value"\u0085JAVA_VERSION="21.0.8"\n'.encode("utf-8")):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                proof.validate_java_release(data)
+
+
 class DriverTests(unittest.TestCase):
-    def exercise(self, *, platform="linux", fail_at=None, mutate_source=False, partial=False):
+    def exercise(self, *, platform="linux", fail_at=None, mutate_source=False, partial=False,
+                 release=b'JAVA_VERSION="21.0.8"\n'):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             root, artifact, verified, _, _, _ = package_fixture(base, platform)
             proof.verify_artifact(root, artifact, verified, COMMIT, RUN_URL, platform)
             java = base / "jdk"
             java.mkdir()
-            (java / "release").write_text('JAVA_VERSION="21.0.8"\n')
+            (java / "release").write_bytes(release)
             executable = root / "target/debug/deps" / ("cedar_app-abc.exe" if platform == "windows" else "cedar_app-abc")
             executable.parent.mkdir(parents=True)
             executable.write_bytes(b"mock harness, never executed")
@@ -252,17 +296,19 @@ class DriverTests(unittest.TestCase):
 
     def test_both_platforms_exact_stage_budgets_and_no_offline_or_bundled_workflow(self):
         for platform in ("linux", "windows"):
-            result, calls = self.exercise(platform=platform)
-            self.assertEqual(result["status"], "passed")
-            self.assertEqual([call[1] for call in calls], [10, 10, 15, 180, 600, 15, 780])
-            self.assertEqual(sum(call[1] for call in calls), 1610)
-            command = calls[4][0]
-            self.assertEqual(command, proof.compile_command())
-            self.assertNotIn("--offline", command)
-            self.assertNotIn("--release", command)
-            self.assertEqual(calls[-1][0][1], proof.TEST_NAME)
-            self.assertTrue(result["source_before_after_verified"])
-            self.assertTrue(result["packaged_agent_unchanged"])
+            for ending in (b"\n", b"\r\n"):
+                with self.subTest(platform=platform, ending=ending):
+                    result, calls = self.exercise(platform=platform, release=b'JAVA_VERSION="21.0.8"' + ending)
+                    self.assertEqual(result["status"], "passed", result["stage"] + "/" + result["category"])
+                    self.assertEqual([call[1] for call in calls], [10, 10, 15, 180, 600, 15, 780])
+                    self.assertEqual(sum(call[1] for call in calls), 1610)
+                    command = calls[4][0]
+                    self.assertEqual(command, proof.compile_command())
+                    self.assertNotIn("--offline", command)
+                    self.assertNotIn("--release", command)
+                    self.assertEqual(calls[-1][0][1], proof.TEST_NAME)
+                    self.assertTrue(result["source_before_after_verified"])
+                    self.assertTrue(result["packaged_agent_unchanged"])
 
     def test_every_failed_stage_is_terminal_and_original_failure_preserved(self):
         stages = ["source_commit", "source_inventory", "jdk", "prepare", "compile", "selection", "runtime"]
@@ -362,7 +408,9 @@ class ProcessTests(unittest.TestCase):
             root = Path(temporary)
             def run(source, timeout=2, cap=128):
                 return proof.bounded_process([sys.executable, "-B", "-c", source], root, dict(os.environ), timeout, cap)
-            self.assertEqual(run('print("ready")'), b"ready\n")
+            for expected in (b"ready\n", b"ready\r\n"):
+                with self.subTest(expected=expected):
+                    self.assertEqual(run("import sys; sys.stdout.buffer.write(" + repr(expected) + ")"), expected)
             for source, timeout, cap, category in (
                 ('print("secret path"); raise SystemExit(7)', 2, 128, "subprocess_nonzero"),
                 ('print("x" * 100000)', 2, 128, "subprocess_output_limit"),
@@ -392,18 +440,18 @@ class ProcessTests(unittest.TestCase):
 class WorkflowTests(unittest.TestCase):
     def test_native_schema_and_static_fixture_digest_match_the_driver(self):
         root = Path(__file__).resolve().parent.parent
-        native = (root / "crates/app/src/java_parameter_info_acceptance_tests.rs").read_text()
+        native = (root / "crates/app/src/java_parameter_info_acceptance_tests.rs").read_text(encoding="utf-8")
         body = native.split("struct Evidence {", 1)[1].split("\n}", 1)[0]
         fields = set(re.findall(r"^    ([a-z0-9_]+):", body, re.MULTILINE))
         self.assertEqual(fields, set(good_probe()))
         source_literal = re.search(r'const SOURCE: &str = (".*");', native).group(1)
-        self.assertEqual(proof.hashlib.sha256(json.loads(source_literal).encode()).hexdigest(), proof.SOURCE_FIXTURE_SHA256)
+        self.assertEqual(proof.hashlib.sha256(json.loads(source_literal).encode("utf-8")).hexdigest(), proof.SOURCE_FIXTURE_SHA256)
         self.assertIn('const SOURCE_SHA256: &str = "' + proof.SOURCE_FIXTURE_SHA256 + '";', native)
         self.assertIn("fn " + proof.TEST_NAME.split("::")[-1] + "()", native)
-        self.assertIn('mod java_parameter_info_acceptance_tests;', (root / "crates/app/src/lib.rs").read_text())
+        self.assertIn('mod java_parameter_info_acceptance_tests;', (root / "crates/app/src/lib.rs").read_text(encoding="utf-8"))
 
     def test_independent_same_run_job_budget_and_old_java_clocks(self):
-        workflow = (Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml").read_text()
+        workflow = (Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         new = workflow.split("\n  java_signature:\n", 1)[1]
         self.assertIn("needs: test", new)
         self.assertIn("timeout-minutes: 35", new)
