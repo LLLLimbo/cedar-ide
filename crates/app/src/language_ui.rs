@@ -2151,6 +2151,95 @@ mod tests {
     }
 
     #[test]
+    fn duplication_preserves_ordinary_enabled_language_sync_and_debounce() {
+        fn frame(app: &mut CedarApp, events: Vec<egui::Event>) {
+            let ctx = app.editor_ctx.clone();
+            let mut input = egui::RawInput {
+                time: Some(ctx.input(|input| input.time) + 1.0),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1320.0, 880.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            eframe::App::raw_input_hook(app, &ctx, &mut input);
+            let mut native = eframe::Frame::_new_kittest();
+            let _ = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native));
+        }
+
+        let source = "fn main(){}\n";
+        for automatic in [false, true] {
+            let mut app = CedarApp::empty();
+            app.open_form = false;
+            app.documents.push(Document::new(
+                1,
+                "main.rs".into(),
+                source.into(),
+                "revision".into(),
+            ));
+            app.active_document = Some(1);
+            frame(&mut app, vec![]);
+            let ctx = app.editor_ctx.clone();
+            ctx.set_os(egui::os::OperatingSystem::Nix);
+            let id = egui::Id::new(("editor", 1u64));
+            let mut state = crate::editor_state::load(&ctx, &mut app.documents[0]);
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(1),
+                )));
+            state.store(&ctx, id);
+            ctx.memory_mut(|memory| memory.request_focus(id));
+            app.state = crate::ConnectionState::Ready;
+            app.agent_info = Some(crate::agent_support::full_test_agent());
+            let (worker, commands) = crate::worker::Worker::recording();
+            app.worker = Some(worker);
+            app.language.running = true;
+            app.language.session = 4;
+            app.language.automatic = automatic;
+            app.language.next_events = f64::INFINITY;
+            app.language.sync.observe(1, 0, 0.0);
+            app.language.sync.acknowledge(
+                1,
+                Acknowledged {
+                    version: 17,
+                    edit_version: 0,
+                    uri: "file:///workspace/main.rs".into(),
+                },
+            );
+            let duplicate = [true, false]
+                .into_iter()
+                .map(|pressed| egui::Event::Key {
+                    key: egui::Key::D,
+                    physical_key: Some(egui::Key::D),
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+                })
+                .collect();
+            frame(&mut app, duplicate);
+            assert_eq!(app.documents[0].text, source.repeat(2));
+            assert_eq!(app.documents[0].edit_version, 1);
+            assert_eq!(app.language.automatic, automatic);
+            assert_eq!(app.language.session, 4);
+            assert!(app.language.running);
+            assert!(!app.language.sync.synced(1, 1));
+            assert!(commands.try_recv().is_err());
+            frame(&mut app, vec![]);
+            if automatic {
+                let command = commands.try_recv().unwrap();
+                assert!(matches!(command.op, Operation::LanguageChange {
+                    path, version: 18, text
+                } if path == "main.rs" && text == source.repeat(2)));
+            }
+            assert!(commands.try_recv().is_err());
+            assert_eq!(app.documents[0].saved_text, source);
+            assert_eq!(app.documents[0].revision.as_deref(), Some("revision"));
+        }
+    }
+
+    #[test]
     fn disk_reload_uses_existing_language_debounce_and_preserves_sync_mode() {
         for automatic in [false, true] {
             let mut app = CedarApp::empty();

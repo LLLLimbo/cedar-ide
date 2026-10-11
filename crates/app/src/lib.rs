@@ -23,6 +23,9 @@ mod disk_merge;
 #[cfg(test)]
 mod disk_merge_process_tests;
 mod disk_review;
+mod duplicate_lines;
+#[cfg(test)]
+mod duplicate_lines_process_tests;
 mod editor_state;
 mod enter_indent;
 #[cfg(test)]
@@ -325,6 +328,7 @@ enum Confirm {
 pub struct CedarApp {
     editor_ctx: egui::Context,
     enter_input: Option<enter_indent::FrameInput>,
+    duplicate_input: Option<duplicate_lines::FrameInput>,
     system_fonts: system_fonts::SystemFonts,
     cjk_seen: bool,
     state: ConnectionState,
@@ -435,6 +439,7 @@ impl CedarApp {
         Self {
             editor_ctx: egui::Context::default(),
             enter_input: None,
+            duplicate_input: None,
             system_fonts: system_fonts::SystemFonts::default(),
             cjk_seen: false,
             state: ConnectionState::Idle,
@@ -2670,7 +2675,7 @@ impl CedarApp {
 
     #[cfg(test)]
     fn editor(&mut self, ui: &mut egui::Ui) {
-        self.editor_with_input(ui, None);
+        self.editor_with_input(ui, None, None);
     }
 
     fn editor_indent_eligible(&self, ctx: &egui::Context) -> bool {
@@ -2689,6 +2694,7 @@ impl CedarApp {
         &mut self,
         ui: &mut egui::Ui,
         enter_input: Option<enter_indent::FrameInput>,
+        duplicate_input: Option<duplicate_lines::FrameInput>,
     ) {
         self.history_controls(ui);
         let mut activate = None;
@@ -2826,6 +2832,11 @@ impl CedarApp {
         let indent_eligible = ui.is_enabled()
             && ui.ctx().input(|input| input.focused)
             && self.editor_indent_eligible(ui.ctx());
+        self.duplicate_lines(
+            ui.ctx(),
+            ui.is_enabled() && !navigation_blocked,
+            duplicate_input,
+        );
         let find_open = self.find_open;
         let mut history_completion =
             if !navigation_blocked && self.active().is_some_and(|doc| doc.jump_to.is_some()) {
@@ -3036,6 +3047,7 @@ impl CedarApp {
 
 impl eframe::App for CedarApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.duplicate_input = self.capture_duplicate_input(ctx, raw_input);
         self.capture_replace_input(ctx, raw_input);
         self.navigation.begin_input_frame(ctx, raw_input);
         self.capture_tab_close_focus_input(ctx, raw_input);
@@ -3047,6 +3059,7 @@ impl eframe::App for CedarApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let duplicate_input = self.duplicate_input.take();
         self.begin_tab_close_focus_frame(ctx);
         let enter_input = self.enter_input.take();
         self.workspace_access = workspace_access::Access::default();
@@ -3101,7 +3114,7 @@ impl eframe::App for CedarApp {
                 if self.documents.is_empty() {
                     self.welcome(ui, ctx);
                 } else {
-                    self.editor_with_input(ui, enter_input);
+                    self.editor_with_input(ui, enter_input, duplicate_input);
                 }
             });
         self.dialogs(ctx);
