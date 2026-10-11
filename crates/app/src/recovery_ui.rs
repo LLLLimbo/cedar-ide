@@ -216,8 +216,7 @@ impl CedarApp {
         if self.documents.len() >= 32 {
             return Err("Close a tab before restoring another draft (32-buffer limit)".into());
         }
-        let id = self.next_document;
-        self.next_document += 1;
+        let id = self.allocate_document_id()?;
         let mut doc = Document::new(
             id,
             draft.path.clone(),

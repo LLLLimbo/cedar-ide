@@ -1,4 +1,4 @@
-# 功能矩阵与后续验收 · checkpoint 49 / 0.49.2（待验收；已验收 0.48.2）
+# 功能矩阵与后续验收 · checkpoint 50 / 0.50.0（待验收；已验收 0.49.2）
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 

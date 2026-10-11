@@ -11,6 +11,9 @@ mod build_problems;
 pub mod completion;
 #[cfg(test)]
 mod connection_cancel_tests;
+mod copy_draft;
+#[cfg(test)]
+mod copy_draft_process_tests;
 mod disconnect;
 #[cfg(test)]
 mod disconnect_tests;
@@ -365,6 +368,7 @@ pub struct CedarApp {
     workspace_access: workspace_access::Access,
     new_file: bool,
     new_path: String,
+    copy_draft: copy_draft::CopyDraft,
     find_open: bool,
     find_query: String,
     find_index: Option<usize>,
@@ -469,6 +473,7 @@ impl CedarApp {
             workspace_access: workspace_access::Access::default(),
             new_file: false,
             new_path: String::new(),
+            copy_draft: copy_draft::CopyDraft::default(),
             find_open: false,
             find_query: String::new(),
             find_index: None,
@@ -1447,8 +1452,14 @@ impl CedarApp {
                     );
                     return;
                 }
-                let id = self.next_document;
-                self.next_document += 1;
+                let id = match self.allocate_document_id() {
+                    Ok(id) => id,
+                    Err(error) => {
+                        self.history_cancel_ticket(navigation);
+                        self.error = Some(error);
+                        return;
+                    }
+                };
                 let mut doc = Document::new(id, path, text, revision);
                 if let Some(line) = line {
                     doc.jump_to = Some(line_start(&doc.text, line));
@@ -1844,6 +1855,13 @@ impl CedarApp {
                             self.save();
                         }
                         ui.menu_button("...", |ui| {
+                            if ui.add_enabled(
+                                self.active().is_some() && !self.copy_draft.is_open(),
+                                egui::Button::new("Copy to new draft…"),
+                            ).clicked() {
+                                self.begin_copy_draft();
+                                ui.close_menu();
+                            }
                             if ui
                                 .add_enabled(
                                     !self.save_all_busy() && self.backend_supports("write"),
@@ -1980,6 +1998,20 @@ impl CedarApp {
     }
 
     fn notifications(&mut self, ctx: &egui::Context) {
+        if let Some(doc) = self
+            .documents
+            .iter()
+            .find(|doc| Some(doc.id) != self.active_document && doc.save_outcome_unknown())
+        {
+            egui::TopBottomPanel::top("inactive_unknown_save")
+                .frame(egui::Frame::new().fill(PANEL).inner_margin(10.0))
+                .show(ctx, |ui| {
+                    ui.colored_label(AMBER, format!(
+                        "Save outcome unknown: {}. This tab still needs review; copying a draft does not resolve an unknown save. Save All remains blocked.",
+                        doc.path
+                    ));
+                });
+        }
         if let Some(error) = self.error.clone() {
             egui::TopBottomPanel::top("error")
                 .frame(
@@ -2733,7 +2765,7 @@ impl CedarApp {
         if let Some(message) = self.interrupted_save_check.message() {
             ui.label(RichText::new(message).small().color(AMBER));
         }
-        let navigation_blocked = self.navigation.blocks_editor();
+        let navigation_blocked = self.navigation.blocks_editor() || self.copy_draft.is_open();
         ui.add_enabled_ui(!navigation_blocked, |ui| self.find_bar(ui));
         let indent_eligible = ui.is_enabled()
             && ui.ctx().input(|input| input.focused)
@@ -2898,19 +2930,8 @@ impl CedarApp {
                 ui.label("Relative path in the workspace");
                 ui.add(egui::TextEdit::singleline(&mut self.new_path).hint_text("src/new_file.rs").desired_width(f32::INFINITY));
                 ui.label(RichText::new("Created on Save. Existing files will never be overwritten by a new tab.").small().color(MUTED));
-                if ui.add_enabled(self.ready() && !self.new_path.trim().is_empty(), egui::Button::new("Create draft")).clicked() {
-                    let path = self.new_path.trim().replace('\\', "/");
-                    if path.starts_with('/') || path.split('/').any(|part| part.is_empty() || part == "." || part == "..") || path.contains(':') {
-                        self.error = Some("Use a relative file path without empty, dot, or parent directory components".into());
-                    } else if let Some(doc) = self.documents.iter().find(|doc| doc.path == path) {
-                        self.active_document = Some(doc.id); self.new_file = false;
-                    } else if self.documents.len() >= 32 { self.error = Some("Close a tab before opening another. Cedar limits the workspace to 32 buffers".into()); }
-                    else {
-                        let id = self.next_document; self.next_document += 1;
-                        let mut doc = Document::new(id, path, String::new(), String::new());
-                        doc.revision = None;
-                        self.documents.push(doc); self.navigation_changed(); self.active_document = Some(id); self.new_file = false;
-                    }
+                if ui.add_enabled(self.ready(), egui::Button::new("Create draft")).clicked() {
+                    self.create_new_file_draft();
                 }
             });
             if !visible {
@@ -2976,6 +2997,7 @@ impl eframe::App for CedarApp {
                 || system_fonts::contains_cjk(&self.find_query)
                 || system_fonts::contains_cjk(&self.replace.replacement)
                 || self.navigation.has_cjk()
+                || self.copy_draft.has_cjk()
                 || system_fonts::contains_cjk(&self.profiles.draft.name)
                 || system_fonts::contains_cjk(&self.profiles.draft.program)
                 || self
@@ -3015,6 +3037,7 @@ impl eframe::App for CedarApp {
                 }
             });
         self.dialogs(ctx);
+        self.copy_draft_window(ctx);
         if !self.navigation.blocks_editor() {
             self.language_popups(ctx);
         }
@@ -3036,6 +3059,7 @@ impl eframe::App for CedarApp {
         // Acknowledgements are drained first, but a subsequent batch Write is
         // admitted only after every editor, cancel and draft-mutation finisher.
         self.finish_save_all_frame(ctx);
+        self.finish_copy_draft_frame(ctx);
     }
 }
 

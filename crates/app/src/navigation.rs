@@ -368,6 +368,7 @@ fn defer_initial_input(ctx: &egui::Context) -> Vec<egui::Event> {
 impl CedarApp {
     fn foreign_modal_pending(&self) -> bool {
         self.confirm.is_some()
+            || self.copy_draft.is_open()
             || self.recovery.remove_confirmation.is_some()
             || self.run_state.transition_pending()
     }

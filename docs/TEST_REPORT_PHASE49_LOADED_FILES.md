@@ -1,0 +1,41 @@
+# Verification report · Loaded Explorer files / 0.49.2 (pending)
+
+Latest accepted checkpoint is [0.48.2 Enter selection handling](TEST_REPORT_PHASE48_ENTER.md#final-verified-acceptance--0482), public `f925d8b471a08ad732a3fa3961ccbd74cf9037bf` and CI 38095477287. Earlier failed runs and the unknown client/Git failure causes remain preserved. Windows recovery admission remains paused.
+
+This pending slice adds an explicit Loaded Explorer files scope to Ctrl/Cmd+P. Current directory remains the default and retains its live listing behavior. Loaded scope freezes only current-session, current-mode admitted Explorer files plus open buffers; filtering and scope changes perform no List, Read, scan or indexing. Flat-mode admission is separate from retained display rows.
+
+The snapshot is bounded to 4,096 cached paths plus 32 open buffers and checked 1 MiB path storage; display stays at 64 matches. Oversized snapshots are visibly refused as a whole. Exact candidate identity, mode and session are checked at activation; a removed/retyped/invalidated row cannot retarget an Enter or click. Accepted stale listings are labeled as snapshots, not current disk truth. An already-open dirty buffer preserves its selection/Undo with no Read; unopened paths use the existing ordinary Open route.
+
+Acceptance remains pending independent cache/input/session review, deterministic regressions, both-platform normal-agent operation ledgers, all prior CI gates and three packages, then bounded exact-package cloud Trust-off keyboard navigation across sibling folders with unchanged generated files. No real SSH compatibility or new privacy guarantee is claimed.
+
+## Preserved 0.49.0 focused local validation and evidence limits
+
+Independent cache/input/session review is clear. The focused navigation suite passes 30 tests (16 retained and 14 new); the same compiled harness passes 29 Explorer and 17 workspace-access regressions. Formatting and strict host/MSVC all-targets/all-features Clippy pass. External dependency versions and shipping capability declarations are unchanged; only the ten Cedar versions change in Cargo.lock.
+
+Review found and corrected pointer ownership, native scope-activation text/focus, failed-refresh stale labeling and Ctrl/Cmd+Enter scope-focus issues before sealing. The first focused run had 21 passes and four fixture-focus failures. Its raw log was overwritten and is unavailable; a separately labeled reconstruction describes the backward-Tab settle-frame correction and its provenance limits. Preserved final logs are execution evidence; the reconstruction is not a substitute for the missing raw output.
+
+Disk constraints deliberately limited local compilation to these focused suites and strict checks. No local full-versioned aggregate, release rebuild or new normal-agent process runtime was performed. Fresh CI must run the full workspace, build default releases and execute exactly one loaded-files process acceptance on each OS: ten cases, six explicit setup Lists, two Reads (one setup, one cached-file activation), zero chooser Lists, zero dirty-buffer Reads, zero Writes/other operations, two connections/reaped owners and five unchanged source hashes. The driver also delays delivery of a real explicit List response until after snapshot creation, then checks that it cannot retarget activation. Its shared watchdog is 60 seconds, ordinary Client call limit remains 30 seconds, and per-owner cleanup observation is 5 seconds. The CI subprocess allows 150 seconds including harness compilation under a three-minute step; no runtime deadline is extended.
+
+All three packages and fresh exact-archive cloud GUI acceptance remain required and pending. No older agent binary substitutes for that runtime proof.
+
+## Preserved 0.49.0 packaging failure and 0.49.1 correction
+
+Public `5612dbea6fc2aef8c17dbcbf7d43e9f693bff722`, [CI 38098034604](https://github.com/LLLLimbo/cedar-ide/actions/runs/38098034604), failed both OSes before Rust checks/runtime: the new Linux desktop quickstart linked EXPLORER_TREE.md, absent from that package's explicit source inventory. Windows already included the guide; the agent-only entry guide had no such link. The earlier local packaging check covered Windows only and missed the changed Linux guide. No full aggregate, release, new process or package acceptance occurred in that run.
+
+0.49.1 adds only the missing Linux desktop guide mapping, loads its real source bytes in the existing link test and rejects a reduced archive/manifest that omits the required guide. Strict link, mode, hash and archive validators remain unchanged; Windows and agent-only layouts remain unchanged. App/agent Rust behavior is identical to the sealed 0.49.0 source, apart from package version metadata. All three packaging test families are required locally; fresh full CI and exact-package GUI remain pending.
+
+The 0.49.1 local packaging suites passed: Linux desktop 39 tests, Linux agent 30 tests, Windows bundle 36 tests with one platform skip. No Rust rebuild was performed for this packaging-only correction; the previous focused checks apply to identical Rust source, while versioned binaries and runtime proof must come from the new CI run.
+
+## Preserved 0.49.1 process failure and 0.49.2 fixture correction
+
+Public `89fe8d4cdac11c798d3d6d08f60746a2ba360202`, [CI 38098497573](https://github.com/LLLLimbo/cedar-ide/actions/runs/38098497573), passed the corrected packaging and aggregate tests on both OSes, but its first Linux loaded-files process invocation failed at the exact Loaded-control focus assertion after Shift+Tab. No success receipt was emitted.
+
+Pinned egui 0.31.1 schedules backward-Tab focus through id_next_frame and applies it at the next begin_pass. The passing focused helper already rendered that next frame; the process helper incorrectly asserted before it. 0.49.2 adds exactly one empty production frame before the unchanged assertion, then checks real Space plus Text activation without changing the query. A paired deterministic regression asserts focus before and after that frame. No sleep, direct focus setter, production UI change, relaxed ledger, or timeout extension is introduced. Historical failed evidence remains preserved; fresh source-bound runtime proof is still required.
+
+The 0.49.2 local focused suite passes 31 navigation tests, including the paired deferred-focus regression. Formatting and strict host/MSVC checks pass. All application behavior changes remain those reviewed for 0.49.0; this correction adds only test-compiled observation/access and fixture sequencing, plus version metadata. No local full aggregate, release or normal-agent process run is claimed. Fresh CI and the exact new archive's native GUI gate remain required.
+
+## Final verified acceptance — 0.49.2
+
+Public `01a0005becafd0fba29c4511674b505384c7c17a`, [CI 38099424327](https://github.com/LLLLimbo/cedar-ide/actions/runs/38099424327), passed both OSes and all three packages. Windows aggregate: 1,544 passed, 103 ignored; Linux: 1,601 passed, 59 ignored, across 48 suites each. Required later opt-in gates ran separately. Both exact ten-case loaded-files ledgers passed: six explicit Lists, two Reads, zero Writes/other operations, two reaped connections and five source hashes.
+
+Fresh exact-package cloud Debian 13/X11 GUI verified keyboard scope selection, retained query, opening a loaded sibling, dirty-buffer selection/Undo/Redo preservation and cancellation. Explicit discard exited the frontend with status 0. Archive, all 529 extracted files/modes, three generated workspace files and 968 sealed source files stayed unchanged. This is not Windows GUI, SSH, native agent-reaping or GUI request-count evidence. Prior failed runs and unavailable initial raw log remain as recorded above.

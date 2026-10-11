@@ -279,7 +279,7 @@ impl CedarApp {
         }
     }
     pub(super) fn apply_profile_load(&mut self, epoch: u64, file: Option<(String, String)>) {
-        let focus_invalid = self.profiles.load_navigation.take() == Some(self.navigation_epoch);
+        let focus_invalid = self.profiles.load_navigation == Some(self.navigation_epoch);
         // The response may arrive after a raw-editor open or a form edit. Preserve both.
         let id = if let Some(doc) = self.documents.iter().find(|doc| doc.path == PATH) {
             doc.id
@@ -294,8 +294,13 @@ impl CedarApp {
             let missing = file.is_none();
             let (text, revision) =
                 file.unwrap_or_else(|| ("{\"version\":1,\"profiles\":[]}".into(), String::new()));
-            let id = self.next_document;
-            self.next_document += 1;
+            let id = match self.allocate_document_id() {
+                Ok(id) => id,
+                Err(error) => {
+                    self.profiles.message = Some(error);
+                    return;
+                }
+            };
             let mut doc = Document::new(id, PATH.into(), text, revision);
             if missing {
                 doc.revision = None;
@@ -303,6 +308,7 @@ impl CedarApp {
             self.documents.push(doc);
             id
         };
+        self.profiles.load_navigation = None;
         // A first Load must leave a usable editor selection. Do not steal a
         // newer selection, including a deliberately emptied editor after navigation.
         if focus_invalid && self.active_document.is_none() {

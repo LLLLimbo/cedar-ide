@@ -4,6 +4,74 @@ fn workspace() -> WorkspaceIdentity {
         root: "/synthetic".into(),
     }
 }
+
+#[test]
+fn copy_destination_query_retains_pending_uncertain_and_listed_recovery_ownership() {
+    let workspace = workspace();
+    let path = "copy.rs";
+    let id = record_id(&workspace, path).unwrap();
+    for kind in 0..9 {
+        let mut recovery = Recovery::default();
+        let mut tracked = recovery.empty_tracking(workspace.clone(), path.into());
+        tracked.owner = Some(71);
+        tracked.sequence = 19;
+        match kind {
+            0 => tracked.copy.state = CopyState::Present,
+            1 => tracked.copy.state = CopyState::Uncertain,
+            2 => {
+                tracked.submitted.insert(19, OperationKind::Write);
+            }
+            3 => tracked.retained = true,
+            4 => tracked.removing = true,
+            5 => recovery.reading = Some(id.clone()),
+            6 => recovery.remove_confirmation = Some(id.clone()),
+            7 => {
+                recovery.pending_restore = Some(Draft {
+                    workspace: workspace.clone(),
+                    path: path.into(),
+                    text: "retained".into(),
+                    base_text: String::new(),
+                    base_revision: None,
+                    modified_ms: 1,
+                })
+            }
+            8 => recovery
+                .issues
+                .push((format!("{id}.draft"), "Uninspected damaged record".into())),
+            _ => unreachable!(),
+        }
+        recovery.tracked.insert(id.clone(), tracked);
+        let before_sequence = recovery.sequence;
+        let before_generation = recovery.generation;
+        assert!(
+            recovery.known_path_collision(&workspace, path),
+            "kind {kind}"
+        );
+        assert!(!recovery.known_path_collision(&workspace, "other.rs"));
+        assert!(!recovery.known_path_collision(
+            &WorkspaceIdentity::Local {
+                root: "/different".into()
+            },
+            path
+        ));
+        assert_eq!(recovery.sequence, before_sequence);
+        assert_eq!(recovery.generation, before_generation);
+        assert_eq!(recovery.tracked[&id].owner, Some(71));
+        assert_eq!(recovery.tracked[&id].sequence, 19);
+    }
+    let mut recovery = Recovery::default();
+    recovery
+        .issues
+        .push(("(store)".into(), "Store unavailable".into()));
+    recovery
+        .issues
+        .push(("unrelated.draft".into(), "Unrelated damaged record".into()));
+    assert!(!recovery.initialized);
+    assert!(
+        !recovery.known_path_collision(&workspace, path),
+        "uninspected storage makes no absence claim and does not prohibit local editing"
+    );
+}
 fn doc() -> Document {
     let mut doc = Document::new(1, "file.rs".into(), "base".into(), "r0".into());
     doc.text = "draft".into();

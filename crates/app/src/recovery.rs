@@ -144,6 +144,30 @@ pub struct Recovery {
     initial_notice: bool,
 }
 impl Recovery {
+    /// Read only bookkeeping: this reports known collisions, never filesystem
+    /// absence, and never adopts or authorizes a retained record for a new tab.
+    pub(crate) fn known_path_collision(&self, workspace: &WorkspaceIdentity, path: &str) -> bool {
+        let Ok(id) = record_id(workspace, path) else {
+            return true;
+        };
+        self.drafts.iter().any(|draft| draft.id == id)
+            // Store listings retain exact `<record-id>.draft` names for
+            // damaged/unsafe records whose metadata could not be inspected.
+            || self.issues.iter().any(|(name, _)| name == &format!("{id}.draft"))
+            || self
+                .pending_restore
+                .as_ref()
+                .is_some_and(|draft| &draft.workspace == workspace && draft.path == path)
+            || self.reading.as_ref() == Some(&id)
+            || self.remove_confirmation.as_ref() == Some(&id)
+            || self.tracked.get(&id).is_some_and(|tracked| {
+                tracked.may_own_copy()
+                    || tracked.removing
+                    || tracked.retained
+                    || !tracked.submitted.is_empty()
+            })
+    }
+
     pub fn start(&mut self, path: Result<PathBuf, String>, ctx: &egui::Context) {
         self.enabled = true;
         self.initial_notice = true;
