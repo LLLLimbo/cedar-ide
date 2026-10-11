@@ -1179,22 +1179,92 @@ fn scrolled_pointer_app() -> (CedarApp, Receiver<Command>) {
     (app, commands)
 }
 
-#[derive(Debug)]
 struct PointerFrame {
+    case: RawMotionAt,
+    edge: PointerEdge,
+    target_id: egui::Id,
+    edge_pointer: egui::Pos2,
+    pre_hook_previous_render_target: Option<PointerRow>,
+    pre_hook_previous_pointer: Option<egui::Pos2>,
+    pre_hook_scroll: PointerScroll,
     captured: search_keyboard::PointerProbe,
     passes: Vec<PointerPass>,
 }
 
-#[derive(Debug)]
 struct PointerPass {
     number: u64,
+    pre_update_scroll: PointerScroll,
+    post_update_scroll: PointerScroll,
+    input_pointer: Option<egui::Pos2>,
+    input_pointer_delta: egui::Vec2,
+    post_update_scroll_area_dragged: Option<bool>,
     consumed: search_keyboard::PointerProbe,
     rows: Vec<PointerRow>,
 }
 
 const POINTER_RESPONSE_PROBE: &str = "search_pointer_response_probe";
+const POINTER_DIAGNOSTIC_PASSES: usize = 8;
+const POINTER_DIAGNOSTIC_TARGET_ROWS: usize = 2;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
+enum PointerEdge {
+    Press,
+    Held,
+    Release,
+}
+
+// Diagnostics must not panic before the original assertion, expose content,
+// or serialize non-finite geometry. Missing/non-finite values are statuses.
+struct PointerNumbers<const N: usize>(Option<[f32; N]>);
+
+impl<const N: usize> std::fmt::Debug for PointerNumbers<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(values) if values.iter().all(|value| value.is_finite()) => {
+                std::fmt::Debug::fmt(&values, f)
+            }
+            Some(_) => f.write_str("non_finite"),
+            None => f.write_str("missing"),
+        }
+    }
+}
+
+fn pointer_rect(rect: egui::Rect) -> PointerNumbers<4> {
+    PointerNumbers(Some([rect.min.x, rect.min.y, rect.max.x, rect.max.y]))
+}
+
+fn pointer_pos(pos: Option<egui::Pos2>) -> PointerNumbers<2> {
+    PointerNumbers(pos.map(|pos| [pos.x, pos.y]))
+}
+
+struct PointerScroll {
+    id: Option<egui::Id>,
+    offset: Option<egui::Vec2>,
+}
+
+impl PointerScroll {
+    fn load(ctx: &egui::Context) -> Self {
+        let id = ctx.data(|data| data.get_temp::<egui::Id>(egui::Id::new(SCROLL)));
+        let offset = id
+            .and_then(|id| egui::scroll_area::State::load(ctx, id))
+            .map(|state| state.offset);
+        Self { id, offset }
+    }
+}
+
+impl std::fmt::Debug for PointerScroll {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Scroll")
+            .field("id", &self.id)
+            .field(
+                "offset",
+                &PointerNumbers(self.offset.map(|offset| [offset.x, offset.y])),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 struct PointerRow {
     pass: u64,
     sizing: bool,
@@ -1208,6 +1278,81 @@ struct PointerRow {
     cedar_click: Option<usize>,
 }
 
+impl std::fmt::Debug for PointerRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gate")
+            .field("pass", &self.pass)
+            .field("sizing", &self.sizing)
+            .field("index", &self.index)
+            .field("id", &self.id)
+            .field("rect", &pointer_rect(self.rect))
+            .field("clip", &pointer_rect(self.clip))
+            .field("enabled", &self.enabled)
+            .field("down", &self.down)
+            .field("clicked", &self.clicked)
+            .field("cedar_click", &self.cedar_click)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for PointerFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let target = SCROLLED_COUNT - 2;
+        writeln!(
+            f,
+            "case={:?} edge={:?} target_index={target} target_id={:?} edge_pointer={:?}",
+            self.case,
+            self.edge,
+            self.target_id,
+            pointer_pos(Some(self.edge_pointer)),
+        )?;
+        writeln!(
+            f,
+            "pre_hook_previous_render_target={:?} pre_hook_previous_pointer={:?} pre_hook_scroll={:?} post_hook_ticket={:?}",
+            self.pre_hook_previous_render_target,
+            pointer_pos(self.pre_hook_previous_pointer),
+            self.pre_hook_scroll,
+            self.captured,
+        )?;
+        // Keep the retained final pass even if egui's configured pass count
+        // grows. Assertions still examine every pass and every row.
+        for (index, pass) in self.passes.iter().enumerate().filter(|(index, _)| {
+            *index < POINTER_DIAGNOSTIC_PASSES - 1 || *index + 1 == self.passes.len()
+        }) {
+            writeln!(
+                f,
+                "pass={} retained={} recorded_row_count={} pre_update_scroll={:?} post_update_scroll={:?} input_pointer={:?} input_pointer_delta={:?} post_update_scroll_area_dragged={:?} post_update_ticket={:?}",
+                pass.number,
+                index + 1 == self.passes.len(),
+                pass.rows.len(),
+                pass.pre_update_scroll,
+                pass.post_update_scroll,
+                pointer_pos(pass.input_pointer),
+                PointerNumbers(Some([pass.input_pointer_delta.x, pass.input_pointer_delta.y])),
+                pass.post_update_scroll_area_dragged,
+                pass.consumed,
+            )?;
+            let targets = pass.rows.iter().filter(|row| row.index == target);
+            let target_count = targets.clone().count();
+            writeln!(f, "gate_target_count={target_count}")?;
+            for row in targets.take(POINTER_DIAGNOSTIC_TARGET_ROWS) {
+                writeln!(f, "actual_target_response={row:?}")?;
+            }
+            writeln!(
+                f,
+                "omitted_target_rows={}",
+                target_count.saturating_sub(POINTER_DIAGNOSTIC_TARGET_ROWS)
+            )?;
+        }
+        write!(
+            f,
+            "pass_count={} omitted_passes={}",
+            self.passes.len(),
+            self.passes.len().saturating_sub(POINTER_DIAGNOSTIC_PASSES)
+        )
+    }
+}
+
 // Called next to the actual row_control response and before its click gate.
 // Snapshot values here: Context::read_response would reconstruct the response
 // later and can change focus, while clicked_by consults live per-frame input.
@@ -1218,10 +1363,10 @@ pub(super) fn record_pointer_response(
     cedar_click: Option<usize>,
 ) {
     let probe = egui::Id::new(POINTER_RESPONSE_PROBE);
-    if !ui
+    let observe_all = ui
         .ctx()
-        .data(|data| data.get_temp::<bool>(probe).unwrap_or(false))
-    {
+        .data(|data| data.get_temp::<bool>(probe).unwrap_or(false));
+    if !observe_all && index != SCROLLED_COUNT - 2 {
         return;
     }
     let row = PointerRow {
@@ -1237,16 +1382,35 @@ pub(super) fn record_pointer_response(
         cedar_click,
     };
     ui.ctx().data_mut(|data| {
-        data.get_temp_mut_or_default::<Vec<PointerRow>>(probe.with("rows"))
-            .push(row);
+        // A passive singleton also records the fixture's previous layout.
+        // This is the actual response; never reconstruct it via read_response.
+        if index == SCROLLED_COUNT - 2 {
+            data.insert_temp(probe.with("previous_target"), row.clone());
+        }
+        if observe_all {
+            data.get_temp_mut_or_default::<Vec<PointerRow>>(probe.with("rows"))
+                .push(row);
+        }
     });
 }
 
-fn observe_pointer_frame(app: &mut CedarApp, original: Vec<egui::Event>) -> PointerFrame {
+fn observe_pointer_frame(
+    app: &mut CedarApp,
+    original: Vec<egui::Event>,
+    case: RawMotionAt,
+    edge: PointerEdge,
+    target_id: egui::Id,
+    edge_pointer: egui::Pos2,
+) -> PointerFrame {
     // The independent original survives the hook unchanged. Neither the probe
     // nor this helper inserts Cedar tickets or mutates egui focus/ownership.
     let mut input = raw(app, original.clone());
     let ctx = app.editor_ctx.clone();
+    let probe = egui::Id::new(POINTER_RESPONSE_PROBE);
+    let pre_hook_previous_render_target =
+        ctx.data(|data| data.get_temp::<PointerRow>(probe.with("previous_target")));
+    let pre_hook_previous_pointer = ctx.input(|input| input.pointer.interact_pos());
+    let pre_hook_scroll = PointerScroll::load(&ctx);
     eframe::App::raw_input_hook(app, &ctx, &mut input);
     assert_eq!(
         input.events, original,
@@ -1255,13 +1419,22 @@ fn observe_pointer_frame(app: &mut CedarApp, original: Vec<egui::Event>) -> Poin
     let captured = app.search_state.pointer_probe();
     let mut native = eframe::Frame::_new_kittest();
     let mut passes = Vec::new();
-    let probe = egui::Id::new(POINTER_RESPONSE_PROBE);
     ctx.data_mut(|data| data.insert_temp(probe, true));
     let _ = ctx.run(input, |ctx| {
         ctx.data_mut(|data| data.insert_temp(probe.with("rows"), Vec::<PointerRow>::new()));
+        let pre_update_scroll = PointerScroll::load(ctx);
         eframe::App::update(app, ctx, &mut native);
+        let post_update_scroll = PointerScroll::load(ctx);
+        let post_update_scroll_area_dragged = post_update_scroll
+            .id
+            .map(|id| ctx.is_being_dragged(id.with("area")));
         passes.push(PointerPass {
             number: ctx.cumulative_pass_nr(),
+            pre_update_scroll,
+            post_update_scroll,
+            input_pointer: ctx.input(|input| input.pointer.interact_pos()),
+            input_pointer_delta: ctx.input(|input| input.pointer.delta()),
+            post_update_scroll_area_dragged,
             consumed: app.search_state.pointer_probe(),
             rows: ctx.data_mut(|data| data.remove_temp(probe.with("rows")).unwrap()),
         });
@@ -1271,7 +1444,17 @@ fn observe_pointer_frame(app: &mut CedarApp, original: Vec<egui::Event>) -> Poin
     assert!(passes
         .windows(2)
         .all(|pair| pair[0].number < pair[1].number));
-    PointerFrame { captured, passes }
+    PointerFrame {
+        case,
+        edge,
+        target_id,
+        edge_pointer,
+        pre_hook_previous_render_target,
+        pre_hook_previous_pointer,
+        pre_hook_scroll,
+        captured,
+        passes,
+    }
 }
 
 fn assert_pointer_owners(
@@ -1285,18 +1468,18 @@ fn assert_pointer_owners(
     let target = SCROLLED_COUNT - 2;
     for pass in &frame.passes {
         for row in &pass.rows {
-            assert_eq!(row.pass, pass.number);
+            assert_eq!(row.pass, pass.number, "{frame:?}");
             assert!(
                 !row.down || (down && row.index == target),
-                "unexpected press owner: {row:?}"
+                "unexpected press owner: {frame:?}"
             );
             assert!(
                 !row.clicked || (clicked && row.index == target),
-                "unexpected click owner: {row:?}"
+                "unexpected click owner: {frame:?}"
             );
             assert!(
                 row.cedar_click.is_none() || (cedar_click && row.cedar_click == Some(target)),
-                "unexpected Cedar click admission: {row:?}"
+                "unexpected Cedar click admission: {frame:?}"
             );
         }
     }
@@ -1314,15 +1497,15 @@ fn assert_pointer_owners(
         .iter()
         .filter(|row| !row.sizing)
         .collect::<Vec<_>>();
-    assert_eq!(rows.len(), SCROLLED_COUNT);
+    assert_eq!(rows.len(), SCROLLED_COUNT, "{frame:?}");
     let row = rows.into_iter().find(|row| row.index == target).unwrap();
-    assert_eq!(row.id, target_id);
-    assert!(row.enabled);
-    assert!(row.rect.intersect(row.clip).contains(pos));
-    assert_eq!(row.down, down, "retained-pass press ownership: {row:?}");
+    assert_eq!(row.id, target_id, "{frame:?}");
+    assert!(row.enabled, "{frame:?}");
+    assert!(row.rect.intersect(row.clip).contains(pos), "{frame:?}");
+    assert_eq!(row.down, down, "retained-pass press ownership: {frame:?}");
     assert_eq!(
         row.clicked, clicked,
-        "retained-pass click ownership: {row:?}"
+        "retained-pass click ownership: {frame:?}"
     );
 }
 
@@ -1359,7 +1542,17 @@ fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
     if raw_motion == RawMotionAt::Press {
         press.insert(1, egui::Event::MouseMoved(egui::vec2(1.0, -1.0)));
     }
-    let down = observe_pointer_frame(&mut app, press);
+    let down = observe_pointer_frame(
+        &mut app,
+        press,
+        raw_motion,
+        PointerEdge::Press,
+        target_id,
+        pos,
+    );
+    // The test harness captures these bounded witnesses: a later held/release
+    // failure must retain the earlier press offset/delta without another frame.
+    eprintln!("{down:?}");
     assert_pointer_owners(&down, target_id, pos, true, false, false);
     assert_eq!(
         down.captured.pressed,
@@ -1383,7 +1576,12 @@ fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
         let held = observe_pointer_frame(
             &mut app,
             vec![egui::Event::MouseMoved(egui::vec2(1.0, -1.0))],
+            raw_motion,
+            PointerEdge::Held,
+            target_id,
+            pos,
         );
+        eprintln!("{held:?}");
         assert_pointer_owners(&held, target_id, pos, true, false, false);
         assert_eq!(held.captured.pressed, None);
         assert_eq!(held.captured.click, None);
@@ -1404,8 +1602,16 @@ fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
     if raw_motion == RawMotionAt::Release {
         release.insert(1, egui::Event::MouseMoved(egui::vec2(1.0, -1.0)));
     }
-    let up = observe_pointer_frame(&mut app, release);
+    let up = observe_pointer_frame(
+        &mut app,
+        release,
+        raw_motion,
+        PointerEdge::Release,
+        target_id,
+        release_pos,
+    );
     let admitted = raw_motion == RawMotionAt::None;
+    eprintln!("{up:?}");
     assert_pointer_owners(&up, target_id, release_pos, false, true, admitted);
     assert_eq!(up.captured.pressed, None);
     assert_eq!(up.captured.click, if admitted { ticket } else { None });
