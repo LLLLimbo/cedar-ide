@@ -1,4 +1,4 @@
-# Verification checkpoint — 0.53.1 selected-slice replacement
+# Verification checkpoint — 0.53.2 selected-slice replacement
 
 ## Scope and acceptance state
 
@@ -27,3 +27,9 @@ Local Rust compilation, aggregates, releases and native process execution are de
 Public `3ba65799f9896f94b88ae7d087200a12dd8a568b`, [CI 38113209812](https://github.com/LLLLimbo/cedar-ide/actions/runs/38113209812), failed the first strict Rust compilation on both OSes: the single 41-field test receipt `serde_json::json!` exceeded the default macro recursion limit. No Rust test, process proof, release build or package ran; no GUI artifact existed. This failure is preserved.
 
 0.53.1 only splits that test receipt into a 20-field metadata object and 21 explicit true boolean fields. Duplicate insertions and an unexpected final count fail before printing success. The same exact 41 fields/types/values and strict Python validator remain required. No recursion-limit increase, lint suppression, shipping behavior, runtime budget or dependency change is introduced. Local Rust compilation remains deferred; fresh full CI and exact-package GUI are mandatory.
+
+## Preserved 0.53.1 strict-check failure
+
+Public `5f1236bf239db972a322ec942633006b8f12aa1f`, [CI 38113714668](https://github.com/LLLLimbo/cedar-ide/actions/runs/38113714668), expanded the corrected receipt macro but failed strict Clippy on both OSes: two test helpers passed an unnecessary extra reference to `admitted`. No Rust tests, process receipts, release builds or packages ran.
+
+0.53.2 removes only those two extra borrows where `app` is already a reference. The other calls borrow owned fixture values and remain unchanged. No lint allowance, assertion, shipping behavior, receipt schema or runtime budget changes. Fresh dual-platform strict checks, all tests/gates/packages and exact GUI remain required; both prior failed runs remain failed.

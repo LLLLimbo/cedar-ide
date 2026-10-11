@@ -336,13 +336,13 @@ fn preview(app: &mut CedarApp, scope: Scope) {
     let ctx = app.editor_ctx.clone();
     // Snapshot tests construct an already admitted intent. Native button
     // admission is exercised separately through frame(), including its hook.
-    app.request_replace_preview(&ctx, scope, admitted(&app, input_pass(&ctx)));
+    app.request_replace_preview(&ctx, scope, admitted(app, input_pass(&ctx)));
     app.finish_replace_frame(&ctx);
     assert!(app.replace.preview.is_some(), "{:?}", app.replace.error);
 }
 
 fn apply(app: &mut CedarApp) {
-    app.replace.action = Some(Action::Apply(admitted(&app, input_pass(&app.editor_ctx))));
+    app.replace.action = Some(Action::Apply(admitted(app, input_pass(&app.editor_ctx))));
     app.finish_replace_frame(&app.editor_ctx.clone());
 }
 
