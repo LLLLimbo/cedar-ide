@@ -2141,22 +2141,95 @@ fn search_keyboard_mouse_moved_does_not_make_enter_or_space_a_clean_key_batch() 
     }
 }
 
+fn mixed_companion_event_kinds(events: &[egui::Event]) -> Vec<&'static str> {
+    events
+        .iter()
+        .take(5)
+        .map(|event| match event {
+            egui::Event::PointerMoved(_) => "PointerMoved",
+            egui::Event::MouseMoved(_) => "MouseMoved",
+            egui::Event::PointerButton { pressed: true, .. } => "PointerButtonDown",
+            egui::Event::PointerButton { pressed: false, .. } => "PointerButtonUp",
+            egui::Event::Key { pressed: true, .. } => "KeyDown",
+            egui::Event::Key { pressed: false, .. } => "KeyUp",
+            _ => "Other",
+        })
+        .collect()
+}
+
+fn mixed_companion_focus_role(app: &CedarApp, focus: Option<egui::Id>) -> &'static str {
+    let row = |index| {
+        app.search_state
+            .accepted
+            .as_ref()
+            .map(|batch| row_id(batch, index))
+    };
+    match focus {
+        None => "none",
+        Some(focus) if Some(focus) == row(0) => "first_search_row",
+        Some(focus) if Some(focus) == row(COMPANION_TARGET) => "target_search_row",
+        Some(_) => "other",
+    }
+}
+
 fn mixed_companion_key_frame(
     app: &mut CedarApp,
-    retained: Vec<egui::Event>,
+    pointer_events: Vec<egui::Event>,
     key_to_press: egui::Key,
+    at: RawMotionAt,
 ) {
-    let mut events = retained.clone();
-    events.extend(key(key_to_press));
-    let mut input = raw(app, events);
+    let mut original = pointer_events.clone();
+    original.extend(key(key_to_press));
+    // Declare the contract from the phase, never from observed focus. The real
+    // row-2 press clears row-0 focus before a Held or Release mixed frame.
+    let (expected_focus, expected_residual, expected_len) = match at {
+        RawMotionAt::Press => (Some(id(app, 0)), pointer_events, 3),
+        RawMotionAt::Held => (None, original.clone(), 3),
+        RawMotionAt::Release => (None, original.clone(), 5),
+        RawMotionAt::None => panic!("mixed key fixture requires a pointer phase"),
+    };
+    let pre_hook_focus = focused(app);
+    let pre_hook_claimed = app.search_state.claims(key_to_press);
+    let mut input = raw(app, original.clone());
     let ctx = app.editor_ctx.clone();
     eframe::App::raw_input_hook(app, &ctx, &mut input);
-    // The row owns these key edges, but classification must see them before
-    // their removal. The remaining pointer batch cannot manufacture a ticket.
-    assert_original_pointer_events(&input.events, &retained);
-    assert_eq!(app.search_state.pointer_probe().pressed, None);
-    assert_eq!(app.search_state.pointer_probe().click, None);
+    // Diagnostics expose at most five event kinds per sequence, without their
+    // payloads, text, paths or focus IDs. Counts still expose unexpected extras.
+    let diagnostic = format!(
+        "phase={at:?} key={key_to_press:?} expected_focus_role={} pre_hook_focus_role={} original_count={} original={:?} residual_count={} residual={:?}",
+        mixed_companion_focus_role(app, expected_focus),
+        mixed_companion_focus_role(app, pre_hook_focus),
+        original.len(),
+        mixed_companion_event_kinds(&original),
+        input.events.len(),
+        mixed_companion_event_kinds(&input.events),
+    );
+    assert!(pre_hook_focus == expected_focus, "{diagnostic}");
+    assert!(!pre_hook_claimed, "initial key claim: {diagnostic}");
+    assert_eq!(expected_residual.len(), expected_len, "{diagnostic}");
+    assert_eq!(input.events.len(), expected_len, "{diagnostic}");
+    // Only Press owns/removes both key edges. Held/Release retain the original
+    // pair and pointer events in order; every phase must remain ticket-free.
+    assert!(input.events == expected_residual, "{diagnostic}");
+    assert!(!app.search_state.claims(key_to_press), "{diagnostic}");
+    assert!(
+        app.search_state.pointer_probe().pressed.is_none(),
+        "{diagnostic}"
+    );
+    assert!(
+        app.search_state.pointer_probe().click.is_none(),
+        "{diagnostic}"
+    );
     render(app, input);
+    let post_render_focus_role = mixed_companion_focus_role(app, focused(app));
+    assert!(
+        !app.search_state.claims(key_to_press),
+        "{diagnostic} post_render_focus_role={post_render_focus_role}"
+    );
+    assert!(
+        !ctx.input(|input| input.keys_down.contains(&key_to_press)),
+        "{diagnostic} post_render_focus_role={post_render_focus_role}"
+    );
 }
 
 #[test]
@@ -2171,7 +2244,7 @@ fn search_keyboard_mouse_moved_with_pointer_and_key_remains_mixed_before_filteri
             let next_request = app.next_request;
             let press = companion_pointer(pos, true);
             if at == RawMotionAt::Press {
-                mixed_companion_key_frame(&mut app, press, key_to_press);
+                mixed_companion_key_frame(&mut app, press, key_to_press, at);
             } else {
                 let down = companion_frame(&mut app, press, PointerEdge::Press, pos);
                 assert_eq!(
@@ -2184,11 +2257,12 @@ fn search_keyboard_mouse_moved_with_pointer_and_key_remains_mixed_before_filteri
                     &mut app,
                     vec![egui::Event::MouseMoved(egui::Vec2::ZERO)],
                     key_to_press,
+                    at,
                 );
             }
             let release = companion_pointer(pos, false);
             if at == RawMotionAt::Release {
-                mixed_companion_key_frame(&mut app, release, key_to_press);
+                mixed_companion_key_frame(&mut app, release, key_to_press, at);
             } else {
                 let up = companion_frame(&mut app, release, PointerEdge::Release, pos);
                 assert_no_companion_ticket(&up);

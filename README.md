@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前已验收 **0.56.1** 的工具面板显式高度保留、完整双平台 CI 与三种分发包（限定 Linux 原生 GUI 使用原始部分检查与同包窗口缩放补充检查的组合证据，原始遗漏和限制保留，见[验收范围](docs/TEST_REPORT_PHASE561_TOOLS_HEIGHT.md#final-accepted-0561-evidence)）；正在准备 **0.57.5** 的 Project Search 原始运动伴随元数据支持（0.57.4 双平台 CI、四项已到达指针诊断测试、进程证明与三种包已通过，未跑新原生检查；本轮调整发货 Search 的 MouseMoved 分类，保留真实点击所有权条件，新 CI [待验证](docs/TEST_REPORT.md)），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低本地前端负担，并把远程开发作为核心路径。当前已验收 **0.56.1** 的工具面板显式高度保留、完整双平台 CI 与三种分发包（限定 Linux 原生 GUI 使用原始部分检查与同包窗口缩放补充检查的组合证据，原始遗漏和限制保留，见[验收范围](docs/TEST_REPORT_PHASE561_TOOLS_HEIGHT.md#final-accepted-0561-evidence)）；正在准备 **0.57.6** 的 Project Search 混合指针/按键测试夹具修正（0.57.5 双平台严格检查、四项正向指针用例通过，但一项混合输入测试的残留事件预期失败，零制品且后续关卡未跑；本轮仅修正测试归属预期与有界诊断，发货逻辑不变，新 CI [待验证](docs/TEST_REPORT.md)），**不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
@@ -35,7 +35,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程。目标是降低�
 - **测试结果**：显式读取一个工作区内的 Surefire/JUnit 风格 XML 报告，按状态筛选、查看历史耗时和失败详情；筛选结果 Up/Down/Home/End 导航、详情显示与 Back to case 返回已在 0.55.4 的限定范围内验收。信任关闭可用，不运行测试或扫描目录，见[支持范围](docs/TEST_RESULTS.md)
 - **Java 编译位置**：显式提取已完成任务的英文 javac 输出，通过工作区读取边界跳转相对路径；保留脏稿，行号仅为历史提示，见[范围与限制](docs/BUILD_PROBLEMS.md)
 - **保存的命令配置**：显式加载/编辑/保存工作区 `cedar.tasks.json`，保留空参数、中文和 shell 字面量；复用编辑器版本冲突与恢复路径，加载/保存/重连都不自动运行
-- **0.57.5 指针分类候选，待验收**：项目文本搜索结果的 Up/Down/Home/End 有序导航、边界停止与自动滚动显示；Enter/Space 或点击精确结果沿用普通打开，保留脏稿与 Undo，但会把光标移到历史行并记录 Back 出发位置。查询须显式 Search；展示已提交查询与历史磁盘结果，未保存草稿不参与搜索。Git、命令和语言服务仍要求显式工作区信任
+- **0.57.6 夹具修正候选，待验收**：项目文本搜索结果的 Up/Down/Home/End 有序导航、边界停止与自动滚动显示；Enter/Space 或点击精确结果沿用普通打开，保留脏稿与 Undo，但会把光标移到历史行并记录 Back 出发位置。查询须显式 Search；展示已提交查询与历史磁盘结果，未保存草稿不参与搜索。Git、命令和语言服务仍要求显式工作区信任
 - **显式 Git 变更查看**：配置工作区主机上的 Git 2.45+，刷新结构化状态、查看单文件暂存/未暂存差异；不自动轮询，不提供提交/暂存/重置/抓取，差异不会改动草稿
 - agent 侧真实 LSP：启动、初始化、文件同步、补全/定义/悬浮请求、诊断事件、停止与重启
 - 350ms 防抖自动同步、自动诊断列表、F12 定义跳转、类型悬浮、Ctrl+Space 补全
