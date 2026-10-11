@@ -13,6 +13,18 @@ fn cursor(primary: usize, secondary: usize) -> egui::text::CCursorRange {
     }
 }
 
+fn assert_selection(actual: egui::text::CCursorRange, expected: egui::text::CCursorRange) {
+    assert_eq!(actual, expected);
+    assert_eq!(
+        actual.primary.prefer_next_row,
+        expected.primary.prefer_next_row
+    );
+    assert_eq!(
+        actual.secondary.prefer_next_row,
+        expected.secondary.prefer_next_row
+    );
+}
+
 #[test]
 fn one_uses_exact_selected_match_then_next_at_cursor_and_wraps() {
     for selection in [cursor(5, 8), cursor(8, 5)] {
@@ -115,6 +127,152 @@ fn exact_match_and_document_bounds_fail_closed_before_building_output() {
     .is_err());
 }
 
+#[test]
+fn selection_forward_and_reversed_preserve_unicode_and_outside_crlf_bytes() {
+    let prefix = "🐻x\r\n";
+    let selected = "é🐻\r\n中🐻\r\n";
+    let suffix = "🐻z\r\n";
+    let source = format!("{prefix}{selected}{suffix}");
+    let start = prefix.chars().count();
+    let end = start + selected.chars().count();
+    for range in [cursor(end, start), cursor(start, end)] {
+        let result = plan(&source, "🐻", "$1\\🦀", range, Scope::Selection).unwrap();
+        assert_eq!(
+            result.ranges,
+            vec![start + 1..start + 2, start + 5..start + 6]
+        );
+        assert_eq!(
+            result.text,
+            format!("{prefix}é$1\\🦀\r\n中$1\\🦀\r\n{suffix}")
+        );
+        assert_eq!(result.cursor_chars, start + 5);
+        let delete = plan(&source, "\r\n", "", range, Scope::Selection).unwrap();
+        assert_eq!(delete.text, format!("{prefix}é🐻中🐻{suffix}"));
+    }
+    let join = plan("éX\nend", "X", "\r", cursor(2, 1), Scope::Selection).unwrap();
+    assert_eq!(join.text, "é\r\nend");
+    assert_eq!(join.cursor_chars, 3);
+    // Selection endpoints are literal scalar boundaries, even inside CRLF.
+    // A match crossing an endpoint is excluded; outside CR/LF bytes stay exact.
+    assert!(plan("cat\r\ncat", "\r\n", "!", cursor(4, 0), Scope::Selection).is_err());
+    assert_eq!(
+        plan("cat\r\ncat", "cat", "dog", cursor(4, 0), Scope::Selection)
+            .unwrap()
+            .text,
+        "dog\r\ncat"
+    );
+    assert_eq!(
+        plan("cat\r\ncat", "cat", "dog", cursor(8, 4), Scope::Selection)
+            .unwrap()
+            .text,
+        "cat\r\ndog"
+    );
+}
+
+#[test]
+fn selection_matches_its_slice_with_literal_case_and_overlap_alignment() {
+    let result = plan("aaaaaaa", "aa", "X", cursor(6, 1), Scope::Selection).unwrap();
+    assert_eq!(result.ranges, vec![1..3, 3..5]);
+    assert_eq!(result.text, "aXXaa");
+    // Whole-file matches straddling either edge must remain untouched.
+    let result = plan(
+        "catcatcatcat",
+        "cat",
+        "dog",
+        cursor(2, 10),
+        Scope::Selection,
+    )
+    .unwrap();
+    assert_eq!(result.ranges, vec![3..6, 6..9]);
+    assert_eq!(result.text, "catdogdogcat");
+    assert!(plan("ababa", "aba", "X", cursor(4, 1), Scope::Selection).is_err());
+    let result = plan(
+        "a.a|a.a A.A a.a|a.a",
+        "a.a",
+        "$1\\x",
+        cursor(4, 15),
+        Scope::Selection,
+    )
+    .unwrap();
+    assert_eq!(result.ranges, vec![4..7, 12..15]);
+    assert_eq!(result.text, "a.a|$1\\x A.A $1\\x|a.a");
+    for range in [
+        cursor(0, 0),
+        cursor(3, 3),
+        cursor(4, 1),
+        cursor(1, usize::MAX),
+    ] {
+        assert!(plan("cat", "cat", "dog", range, Scope::Selection).is_err());
+    }
+    assert!(plan("cat", "", "dog", cursor(3, 0), Scope::Selection).is_err());
+    assert!(plan("cat", "cat", "\0", cursor(3, 0), Scope::Selection).is_err());
+}
+
+#[test]
+fn selection_exact_match_limit_counts_only_selected_slice_without_truncation() {
+    let outside = "x".repeat(model::MAX_FIND_MATCHES + 1);
+    let selected = "x".repeat(model::MAX_FIND_MATCHES);
+    let source = format!("{outside}|{selected}|{outside}");
+    let start = outside.len() + 1;
+    let result = plan(
+        &source,
+        "x",
+        "🐻",
+        cursor(start + selected.len(), start),
+        Scope::Selection,
+    )
+    .unwrap();
+    assert_eq!(result.ranges.len(), model::MAX_FIND_MATCHES);
+    assert_eq!(result.ranges.first(), Some(&(start..start + 1)));
+    assert_eq!(
+        result.ranges.last(),
+        Some(&(start + selected.len() - 1..start + selected.len()))
+    );
+    assert_eq!(
+        result.text,
+        format!(
+            "{outside}|{}|{outside}",
+            "🐻".repeat(model::MAX_FIND_MATCHES)
+        )
+    );
+    assert!(plan(
+        &source,
+        "x",
+        "y",
+        cursor(outside.len(), 0),
+        Scope::Selection
+    )
+    .unwrap_err()
+    .contains("10,000"));
+}
+
+#[test]
+fn selection_checks_full_source_replacement_and_result_byte_bounds() {
+    let source = format!("x{}", "é".repeat(MAX_FILE_BYTES / 2 - 1)) + "a";
+    assert_eq!(source.len(), MAX_FILE_BYTES);
+    let result = plan(&source, "x", "y", cursor(1, 0), Scope::Selection).unwrap();
+    assert_eq!(result.text.len(), MAX_FILE_BYTES);
+    assert_eq!(&result.text[1..], &source[1..]);
+    assert!(plan(&source, "x", "yy", cursor(1, 0), Scope::Selection).is_err());
+    assert!(plan(&(source + "a"), "x", "", cursor(1, 0), Scope::Selection).is_err());
+    let replacement = "🐻".repeat(MAX_FILE_BYTES / 4);
+    assert_eq!(
+        plan("x", "x", &replacement, cursor(1, 0), Scope::Selection)
+            .unwrap()
+            .text,
+        replacement
+    );
+    assert!(plan("xx", "x", &replacement, cursor(1, 0), Scope::Selection).is_err());
+    assert!(plan(
+        "x",
+        "x",
+        &(replacement + "a"),
+        cursor(1, 0),
+        Scope::Selection
+    )
+    .is_err());
+}
+
 fn app(text: &str) -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
     let form = ConnectForm {
@@ -170,15 +328,21 @@ fn step_history(ctx: &egui::Context, doc: &mut Document, redo: bool) -> bool {
     doc.text != before
 }
 
+fn admitted(app: &CedarApp, pass: u64) -> Option<Activation> {
+    InputOwner::capture(app, &app.editor_ctx).map(|owner| Activation { pass, owner })
+}
+
 fn preview(app: &mut CedarApp, scope: Scope) {
     let ctx = app.editor_ctx.clone();
-    app.request_replace_preview(&ctx, scope);
+    // Snapshot tests construct an already admitted intent. Native button
+    // admission is exercised separately through frame(), including its hook.
+    app.request_replace_preview(&ctx, scope, admitted(&app, input_pass(&ctx)));
     app.finish_replace_frame(&ctx);
     assert!(app.replace.preview.is_some(), "{:?}", app.replace.error);
 }
 
 fn apply(app: &mut CedarApp) {
-    app.replace.action = Some(Action::Apply);
+    app.replace.action = Some(Action::Apply(admitted(&app, input_pass(&app.editor_ctx))));
     app.finish_replace_frame(&app.editor_ctx.clone());
 }
 
@@ -253,24 +417,56 @@ fn change_snapshot(app: &mut CedarApp, change: usize) {
         6 => app.active_document = None,
         7 => app.find_query = "Cat".into(),
         8 => app.replace.replacement = "Dog".into(),
-        9 => set_cursor(app, cursor(3, 0)),
+        9 => set_cursor(app, cursor(4, 4)),
         10 => app.documents[0].jump_to = Some(4),
         11 => app.find_open = false,
         12 => app.navigation_changed(),
+        13 => {
+            app.workspace_key = Some(crate::WorkspaceKey::Local {
+                root: "/other".into(),
+            })
+        }
+        14 => app.root = "/other".into(),
+        15 => app.active_form = None,
+        16 => app.state = ConnectionState::Ready,
+        17 | 18 => {
+            let mut changed = selection(&app.editor_ctx, 1);
+            let endpoint = if change == 17 {
+                &mut changed.primary
+            } else {
+                &mut changed.secondary
+            };
+            endpoint.prefer_next_row = !endpoint.prefer_next_row;
+            set_cursor(app, changed);
+        }
+        19 => {
+            let mut state = editor_state::load(&app.editor_ctx, &mut app.documents[0]);
+            state.cursor.set_char_range(None);
+            state.store(&app.editor_ctx, egui::Id::new(("editor", 1u64)));
+        }
+        20 => app.documents[0].edit_version = u64::MAX,
         _ => unreachable!(),
     }
 }
 
 #[test]
 fn queued_preview_and_apply_reject_every_changed_snapshot_without_retargeting() {
-    for applying in [false, true] {
-        for change in 0..13 {
+    for (applying, scope) in [false, true].into_iter().flat_map(|applying| {
+        [Scope::One, Scope::All, Scope::Selection].map(|scope| (applying, scope))
+    }) {
+        for change in 0..21 {
             let (mut app, commands) = app("cat cat");
+            set_cursor(&mut app, cursor(3, 0));
             if applying {
-                preview(&mut app, Scope::All);
-                app.replace.action = Some(Action::Apply);
+                preview(&mut app, scope);
+                app.replace.action =
+                    Some(Action::Apply(admitted(&app, input_pass(&app.editor_ctx))));
             } else {
-                app.request_replace_preview(&app.editor_ctx.clone(), Scope::All);
+                app.request_replace_preview(
+                    &app.editor_ctx.clone(),
+                    scope,
+                    admitted(&app, input_pass(&app.editor_ctx)),
+                );
             }
             change_snapshot(&mut app, change);
             let before = app.documents[0].text.clone();
@@ -278,11 +474,11 @@ fn queued_preview_and_apply_reject_every_changed_snapshot_without_retargeting() 
             app.finish_replace_frame(&app.editor_ctx.clone());
             assert!(
                 app.replace.preview.is_none(),
-                "applying={applying}, change={change}"
+                "applying={applying}, scope={scope:?}, change={change}"
             );
             assert_eq!(
                 app.documents[0].text, before,
-                "applying={applying}, change={change}"
+                "applying={applying}, scope={scope:?}, change={change}"
             );
             assert_eq!(app.documents[0].edit_version, version);
             assert!(commands.try_recv().is_err());
@@ -291,20 +487,30 @@ fn queued_preview_and_apply_reject_every_changed_snapshot_without_retargeting() 
 }
 
 fn frame(app: &mut CedarApp, time: f64, events: Vec<egui::Event>) -> egui::FullOutput {
+    frame_with_hook(app, time, events, true)
+}
+
+fn frame_with_hook(
+    app: &mut CedarApp,
+    time: f64,
+    events: Vec<egui::Event>,
+    capture: bool,
+) -> egui::FullOutput {
     let ctx = app.editor_ctx.clone();
     let mut frame = eframe::Frame::_new_kittest();
-    let output = ctx.run(
-        egui::RawInput {
-            time: Some(time),
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(780.0, 540.0),
-            )),
-            events,
-            ..Default::default()
-        },
-        |ctx| eframe::App::update(app, ctx, &mut frame),
-    );
+    let mut input = egui::RawInput {
+        time: Some(time),
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(780.0, 540.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    if capture {
+        eframe::App::raw_input_hook(app, &ctx, &mut input);
+    }
+    let output = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut frame));
     assert!(output
         .shapes
         .iter()
@@ -365,6 +571,442 @@ fn click(app: &mut CedarApp, time: f64, label: &str) {
     }
 }
 
+fn pointer(at: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+fn selection_app() -> (CedarApp, Receiver<Command>) {
+    let (mut app, commands) = app("cat cat cat");
+    frame(&mut app, 0.0, vec![]);
+    editor_state::move_selection(&app.editor_ctx, &mut app.documents[0], cursor(7, 4));
+    frame(&mut app, 0.1, vec![]);
+    (app, commands)
+}
+
+#[test]
+fn selection_actual_pointer_buttons_reject_same_batch_and_split_mixed_input() {
+    for applying in [false, true] {
+        for split in [false, true] {
+            for focus in [FIND_INPUT, REPLACE_INPUT, "editor"] {
+                for extra in [
+                    vec![egui::Event::Paste("!".into())],
+                    vec![egui::Event::Text("!".into())],
+                    vec![egui::Event::Ime(egui::ImeEvent::Commit("!".into()))],
+                    key(egui::Key::Z, egui::Modifiers::COMMAND),
+                    key(egui::Key::ArrowRight, egui::Modifiers::NONE),
+                ] {
+                    let (mut app, commands) = selection_app();
+                    if applying {
+                        click(&mut app, 1.0, "Preview selection");
+                    }
+                    let label = if applying {
+                        "Apply"
+                    } else {
+                        "Preview selection"
+                    };
+                    let output = frame(&mut app, 2.0, vec![]);
+                    let at = text_rect(&output, label).unwrap().center();
+                    frame(&mut app, 2.1, vec![egui::Event::PointerMoved(at)]);
+                    let id = if focus == "editor" {
+                        egui::Id::new(("editor", 1u64))
+                    } else {
+                        egui::Id::new(focus)
+                    };
+                    app.editor_ctx.memory_mut(|memory| memory.request_focus(id));
+                    let mut events = vec![pointer(at, true)];
+                    if !split {
+                        events.push(pointer(at, false));
+                    }
+                    events.extend(extra);
+                    frame(&mut app, 3.0, events);
+                    if split {
+                        frame(&mut app, 3.1, vec![pointer(at, false)]);
+                    }
+                    assert!(
+                        !app.documents[0].text.contains("dog"),
+                        "applying={applying}, split={split}, focus={focus}"
+                    );
+                    assert!(
+                        app.replace.preview.is_none(),
+                        "applying={applying}, split={split}, focus={focus}"
+                    );
+                    assert!(commands.try_recv().is_err());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn selection_actual_owned_enter_and_space_buttons_do_not_leak_activation_text() {
+    for key_name in [egui::Key::Enter, egui::Key::Space] {
+        for space_text in [false, true] {
+            if key_name != egui::Key::Space && space_text {
+                continue;
+            }
+            let (mut app, commands) = selection_app();
+            for (time, name) in [(1.0, "replace_preview_selection"), (2.0, "replace_apply")] {
+                frame(&mut app, time, vec![]);
+                let id = crate::workspace_access_tests::recorded_response(&app, name).id;
+                app.editor_ctx.memory_mut(|memory| memory.request_focus(id));
+                let mut events = key(key_name, egui::Modifiers::NONE);
+                if space_text {
+                    events.push(egui::Event::Text(" ".into()));
+                }
+                frame(&mut app, time + 0.1, events);
+                if name == "replace_preview_selection" {
+                    assert!(app.replace.preview.is_some(), "{:?}", app.replace.error);
+                    assert_eq!(app.documents[0].text, "cat cat cat");
+                }
+            }
+            frame(&mut app, 3.0, vec![]);
+            assert_eq!(app.documents[0].text, "cat dog cat");
+            assert_eq!(app.documents[0].edit_version, 1);
+            frame(&mut app, 4.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
+            assert_eq!(app.documents[0].text, "cat cat cat");
+            assert_selection(selection(&app.editor_ctx, 1), cursor(7, 4));
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn selection_actual_keyboard_buttons_reject_competing_or_unowned_activation() {
+    for applying in [false, true] {
+        for (key_name, extra) in [
+            (egui::Key::Enter, vec![egui::Event::Text("\n".into())]),
+            (egui::Key::Enter, vec![egui::Event::Paste("!".into())]),
+            (
+                egui::Key::Enter,
+                vec![egui::Event::Ime(egui::ImeEvent::Enabled)],
+            ),
+            (egui::Key::Space, vec![egui::Event::Text("  ".into())]),
+            (
+                egui::Key::Space,
+                vec![egui::Event::Text(" ".into()), egui::Event::Text(" ".into())],
+            ),
+            (
+                egui::Key::Space,
+                vec![key(egui::Key::ArrowRight, egui::Modifiers::NONE)
+                    .pop()
+                    .unwrap()],
+            ),
+        ] {
+            let (mut app, commands) = selection_app();
+            if applying {
+                click(&mut app, 1.0, "Preview selection");
+            }
+            let name = if applying {
+                "replace_apply"
+            } else {
+                "replace_preview_selection"
+            };
+            frame(&mut app, 2.0, vec![]);
+            let id = crate::workspace_access_tests::recorded_response(&app, name).id;
+            app.editor_ctx.memory_mut(|memory| memory.request_focus(id));
+            let mut events = key(key_name, egui::Modifiers::NONE);
+            events.extend(extra);
+            frame(&mut app, 3.0, events);
+            assert!(app.replace.preview.is_none(), "applying={applying}");
+            assert_eq!(app.documents[0].text, "cat cat cat");
+            assert_eq!(app.documents[0].edit_version, 0);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn selection_actual_buttons_refuse_missing_stale_capture_and_held_key_repeat() {
+    for applying in [false, true] {
+        for missing in [false, true] {
+            let (mut app, commands) = selection_app();
+            if applying {
+                click(&mut app, 1.0, "Preview selection");
+            }
+            let output = frame(&mut app, 2.0, vec![]);
+            let at = text_rect(
+                &output,
+                if applying {
+                    "Apply"
+                } else {
+                    "Preview selection"
+                },
+            )
+            .unwrap()
+            .center();
+            if missing {
+                app.replace.selection_input = None;
+            }
+            frame_with_hook(
+                &mut app,
+                3.0,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    pointer(at, true),
+                    pointer(at, false),
+                ],
+                false,
+            );
+            assert!(app.replace.preview.is_none());
+            assert_eq!(app.documents[0].text, "cat cat cat");
+            assert!(commands.try_recv().is_err());
+        }
+    }
+    let (mut app, commands) = selection_app();
+    let id = crate::workspace_access_tests::recorded_response(&app, "replace_preview_selection").id;
+    app.editor_ctx.memory_mut(|memory| memory.request_focus(id));
+    frame(
+        &mut app,
+        1.0,
+        vec![key(egui::Key::Enter, egui::Modifiers::NONE).remove(0)],
+    );
+    assert!(app.replace.preview.is_some());
+    frame(&mut app, 2.0, vec![]);
+    let id = crate::workspace_access_tests::recorded_response(&app, "replace_apply").id;
+    app.editor_ctx.memory_mut(|memory| memory.request_focus(id));
+    // Native InputState enriches this second raw repeat=false into repeat=true.
+    frame(
+        &mut app,
+        3.0,
+        vec![key(egui::Key::Enter, egui::Modifiers::NONE).remove(0)],
+    );
+    assert!(app.replace.preview.is_none());
+    assert_eq!(app.documents[0].text, "cat cat cat");
+    assert_eq!(app.documents[0].edit_version, 0);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn selection_clean_same_batch_pointer_actions_survive_sizing_retries() {
+    let (mut app, commands) = selection_app();
+    app.editor_ctx
+        .options_mut(|options| options.max_passes = 2.try_into().unwrap());
+    for (time, label) in [(1.0, "Preview selection"), (2.0, "Apply")] {
+        let output = frame(&mut app, time, vec![]);
+        let at = text_rect(&output, label).unwrap().center();
+        let ctx = app.editor_ctx.clone();
+        let mut input = egui::RawInput {
+            time: Some(time + 0.1),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(780.0, 540.0),
+            )),
+            events: vec![
+                egui::Event::PointerMoved(at),
+                pointer(at, true),
+                pointer(at, false),
+            ],
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+        let mut native = eframe::Frame::_new_kittest();
+        let mut passes = 0;
+        let _ = ctx.run(input, |ctx| {
+            eframe::App::update(&mut app, ctx, &mut native);
+            passes += 1;
+            if passes == 1 {
+                ctx.request_discard("exercise selection activation sizing retry");
+            }
+        });
+        assert_eq!(passes, 2);
+        if label == "Preview selection" {
+            assert!(app.replace.preview.is_some(), "{:?}", app.replace.error);
+            assert_eq!(app.documents[0].edit_version, 0);
+        }
+    }
+    assert_eq!(app.documents[0].text, "cat dog cat");
+    assert_eq!(app.documents[0].edit_version, 1);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn selection_press_cannot_retarget_after_snapshot_change_or_late_hook_mutation() {
+    for after_hook in [false, true] {
+        for change in [0, 1, 2, 3, 4, 7, 8, 9, 13, 14, 15, 16, 17, 18] {
+            let (mut app, commands) = selection_app();
+            let output = frame(&mut app, 1.0, vec![]);
+            let at = text_rect(&output, "Preview selection").unwrap().center();
+            frame(
+                &mut app,
+                1.1,
+                vec![egui::Event::PointerMoved(at), pointer(at, true)],
+            );
+            assert!(app.replace.selection_press.is_some());
+            // A quiet repaint during a held clean gesture must not lose its
+            // press ownership or allocate another full-source snapshot.
+            frame(&mut app, 1.2, vec![]);
+            assert!(app.replace.selection_press.is_some());
+            assert!(app
+                .replace
+                .selection_input
+                .as_ref()
+                .unwrap()
+                .owner
+                .is_none());
+            let ctx = app.editor_ctx.clone();
+            let mut input = egui::RawInput {
+                time: Some(2.0),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(780.0, 540.0),
+                )),
+                events: vec![pointer(at, false)],
+                ..Default::default()
+            };
+            if after_hook {
+                eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+            }
+            change_snapshot(&mut app, change);
+            let text = app.documents[0].text.clone();
+            let version = app.documents[0].edit_version;
+            if !after_hook {
+                eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+            }
+            let mut native = eframe::Frame::_new_kittest();
+            let _ = ctx.run(input, |ctx| eframe::App::update(&mut app, ctx, &mut native));
+            assert!(
+                app.replace.preview.is_none(),
+                "after_hook={after_hook}, change={change}"
+            );
+            assert_eq!(app.documents[0].text, text);
+            assert_eq!(app.documents[0].edit_version, version);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn selection_capture_does_not_copy_editor_typing_or_unbounded_inputs() {
+    let (mut app, _) = selection_app();
+    for open in [false, true] {
+        app.find_open = open;
+        app.editor_ctx
+            .memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", 1u64))));
+        let raw = egui::RawInput {
+            events: key(egui::Key::Space, egui::Modifiers::NONE),
+            ..Default::default()
+        };
+        app.capture_replace_input(&app.editor_ctx.clone(), &raw);
+        assert!(app
+            .replace
+            .selection_input
+            .as_ref()
+            .unwrap()
+            .owner
+            .is_none());
+    }
+    app.find_open = true;
+    let id = crate::workspace_access_tests::recorded_response(&app, "replace_preview_selection").id;
+    app.editor_ctx.memory_mut(|memory| memory.request_focus(id));
+    for field in 0..3 {
+        let oversized = "x".repeat(MAX_FILE_BYTES + 1);
+        match field {
+            0 => app.documents[0].text = oversized,
+            1 => {
+                app.documents[0].text = "cat cat cat".into();
+                app.find_query = oversized;
+            }
+            2 => {
+                app.find_query = "cat".into();
+                app.replace.replacement = oversized;
+            }
+            _ => unreachable!(),
+        }
+        let raw = egui::RawInput {
+            events: key(egui::Key::Enter, egui::Modifiers::NONE),
+            ..Default::default()
+        };
+        app.capture_replace_input(&app.editor_ctx.clone(), &raw);
+        assert!(app
+            .replace
+            .selection_input
+            .as_ref()
+            .unwrap()
+            .owner
+            .is_none());
+    }
+}
+
+#[test]
+fn selection_actual_pointer_rejects_previously_held_keys_and_other_buttons() {
+    for held_key in [false, true] {
+        let (mut app, commands) = selection_app();
+        let output = frame(&mut app, 1.0, vec![]);
+        let at = text_rect(&output, "Preview selection").unwrap().center();
+        let held = if held_key {
+            key(egui::Key::F8, egui::Modifiers::NONE).remove(0)
+        } else {
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Secondary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }
+        };
+        frame(&mut app, 1.1, vec![egui::Event::PointerMoved(at), held]);
+        frame(&mut app, 2.0, vec![pointer(at, true), pointer(at, false)]);
+        assert!(app.replace.preview.is_none());
+        assert_eq!(app.documents[0].text, "cat cat cat");
+        assert_eq!(app.documents[0].edit_version, 0);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn selection_native_edge_hits_and_held_release_after_layout_move_are_admitted() {
+    for move_layout in [false, true] {
+        let (mut app, commands) = selection_app();
+        for (time, name) in [(1.0, "replace_preview_selection"), (3.0, "replace_apply")] {
+            frame(&mut app, time, vec![]);
+            let response = crate::workspace_access_tests::recorded_response(&app, name);
+            let at = if move_layout {
+                response.rect.center()
+            } else {
+                egui::pos2(
+                    response.interact_rect.right() + 1.0,
+                    response.interact_rect.center().y,
+                )
+            };
+            if !move_layout {
+                assert!(!response.rect.contains(at));
+                assert!(response
+                    .interact_rect
+                    .expand(app.editor_ctx.style().interaction.interact_radius)
+                    .contains(at));
+            }
+            frame(
+                &mut app,
+                time + 0.1,
+                vec![egui::Event::PointerMoved(at), pointer(at, true)],
+            );
+            assert!(app.replace.selection_press.is_some());
+            if move_layout {
+                app.error = if app.error.is_some() {
+                    None
+                } else {
+                    Some("A layout notification appeared during the held click".into())
+                };
+                frame(&mut app, time + 0.2, vec![]);
+                let moved = crate::workspace_access_tests::recorded_response(&app, name);
+                assert!(!moved.rect.contains(at));
+                assert!(app.replace.selection_press.is_some());
+            }
+            frame(&mut app, time + 0.3, vec![pointer(at, false)]);
+            if name == "replace_preview_selection" {
+                assert!(app.replace.preview.is_some(), "{:?}", app.replace.error);
+            }
+        }
+        assert_eq!(app.documents[0].text, "cat dog cat");
+        assert_eq!(app.documents[0].edit_version, 1);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
 #[test]
 fn actual_frames_click_preview_apply_cancel_and_atomic_undo_redo() {
     let (mut app, commands) = app("cat é🐻\r\ncat\r\n");
@@ -392,6 +1034,149 @@ fn actual_frames_click_preview_apply_cancel_and_atomic_undo_redo() {
     assert_eq!(app.documents[0].text, "dog é🐻\r\ndog\r\n");
     assert_eq!(app.documents[0].saved_text, "cat é🐻\r\ncat\r\n");
     assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn selection_actual_buttons_cancel_apply_and_undo_restore_direction_and_both_affinities() {
+    let source = "cat|é🐻\r\ncat🐻\r\n|cat";
+    for (primary, secondary) in [(4, 14), (14, 4)] {
+        for primary_affinity in [false, true] {
+            for secondary_affinity in [false, true] {
+                let (mut app, commands) = app(source);
+                app.find_query = "🐻".into();
+                app.replace.replacement = "🦀🦀".into();
+                frame(&mut app, 0.0, vec![]);
+                let mut before = cursor(primary, secondary);
+                before.primary.prefer_next_row = primary_affinity;
+                before.secondary.prefer_next_row = secondary_affinity;
+                // Retain a native checkpoint with the same indices but stale
+                // affinities. Apply must refresh its precise before-selection.
+                let mut stale = before;
+                stale.primary.prefer_next_row = !primary_affinity;
+                stale.secondary.prefer_next_row = !secondary_affinity;
+                editor_state::move_selection(&app.editor_ctx, &mut app.documents[0], stale);
+                set_cursor(&mut app, before);
+                click(&mut app, 1.0, "Preview selection");
+                let reviewed = app.replace.preview.as_ref().unwrap();
+                assert_eq!(reviewed.scope, Scope::Selection);
+                assert_eq!(reviewed.plan.ranges, vec![5..6, 11..12]);
+                assert_selection(reviewed.selection, before);
+                assert_eq!(app.documents[0].text, source);
+                click(&mut app, 2.0, "Cancel");
+                assert!(app.replace.preview.is_none());
+                assert_eq!(app.documents[0].edit_version, 0);
+                assert_selection(selection(&app.editor_ctx, 1), before);
+                click(&mut app, 3.0, "Preview selection");
+                click(&mut app, 4.0, "Apply");
+                assert_eq!(app.documents[0].text, "cat|é🦀🦀\r\ncat🦀🦀\r\n|cat");
+                assert_eq!(app.documents[0].edit_version, 1);
+                assert_selection(selection(&app.editor_ctx, 1), cursor(7, 7));
+                assert_eq!(app.documents[0].saved_text, source);
+                frame(&mut app, 5.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
+                assert_eq!(app.documents[0].text, source);
+                assert_eq!(app.documents[0].edit_version, 2);
+                assert_selection(selection(&app.editor_ctx, 1), before);
+                frame(&mut app, 6.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
+                assert_eq!(app.documents[0].text, source);
+                assert_eq!(app.documents[0].edit_version, 2);
+                frame(&mut app, 7.0, key(egui::Key::Y, egui::Modifiers::COMMAND));
+                assert_eq!(app.documents[0].text, "cat|é🦀🦀\r\ncat🦀🦀\r\n|cat");
+                assert_eq!(app.documents[0].edit_version, 3);
+                assert_selection(selection(&app.editor_ctx, 1), cursor(7, 7));
+                assert!(commands.try_recv().is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn selection_no_op_actual_field_and_buttons_preserve_version_selection_and_entire_redo() {
+    let source = "cat cat cat";
+    let (mut app, commands) = app(source);
+    frame(&mut app, 0.0, vec![]);
+    for text in ["cat newer", "cat newest"] {
+        editor_state::commit(&app.editor_ctx, &mut app.documents[0], text.into(), 4);
+    }
+    for _ in 0..2 {
+        assert!(step_history(&app.editor_ctx, &mut app.documents[0], false));
+    }
+    let mut before = cursor(7, 4);
+    before.primary.prefer_next_row = true;
+    editor_state::move_selection(&app.editor_ctx, &mut app.documents[0], before);
+    app.editor_ctx
+        .memory_mut(|memory| memory.request_focus(egui::Id::new(REPLACE_INPUT)));
+    let mut events = key(egui::Key::A, egui::Modifiers::COMMAND);
+    events.push(egui::Event::Text("cat".into()));
+    frame(&mut app, 1.0, events);
+    assert_eq!(app.replace.replacement, "cat");
+    let version = app.documents[0].edit_version;
+    click(&mut app, 2.0, "Preview selection");
+    assert_eq!(
+        app.replace.preview.as_ref().unwrap().plan.ranges,
+        vec![4..7]
+    );
+    click(&mut app, 3.0, "Apply");
+    assert_eq!(app.documents[0].text, source);
+    assert_eq!(app.documents[0].edit_version, version);
+    assert_selection(selection(&app.editor_ctx, 1), before);
+    app.editor_ctx
+        .memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", 1u64))));
+    for (time, text) in [(4.0, "cat newer"), (5.0, "cat newest")] {
+        frame(&mut app, time, key(egui::Key::Y, egui::Modifiers::COMMAND));
+        assert_eq!(app.documents[0].text, text);
+    }
+    for time in [6.0, 7.0] {
+        frame(&mut app, time, key(egui::Key::Z, egui::Modifiers::COMMAND));
+    }
+    assert_eq!(app.documents[0].text, source);
+    assert_selection(selection(&app.editor_ctx, 1), before);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn selection_preview_refuses_missing_empty_out_of_range_and_exhausted_state() {
+    for malformed in 0..5 {
+        let (mut app, commands) = app("cat cat");
+        match malformed {
+            0 => editor_state::forget(&app.editor_ctx, 1),
+            1 => change_snapshot(&mut app, 19),
+            2 => set_cursor(&mut app, cursor(4, 4)),
+            3 => set_cursor(&mut app, cursor(8, 0)),
+            4 => {
+                set_cursor(&mut app, cursor(3, 0));
+                app.documents[0].edit_version = u64::MAX;
+            }
+            _ => unreachable!(),
+        }
+        let version = app.documents[0].edit_version;
+        app.request_replace_preview(
+            &app.editor_ctx.clone(),
+            Scope::Selection,
+            admitted(&app, input_pass(&app.editor_ctx)),
+        );
+        app.finish_replace_frame(&app.editor_ctx.clone());
+        assert!(app.replace.preview.is_none(), "malformed={malformed}");
+        assert!(app.replace.error.is_some(), "malformed={malformed}");
+        assert_eq!(app.documents[0].text, "cat cat");
+        assert_eq!(app.documents[0].edit_version, version);
+        assert!(commands.try_recv().is_err());
+    }
+    let (mut app, _) = app("cat cat");
+    set_cursor(&mut app, cursor(3, 0));
+    app.documents[0].edit_version = u64::MAX - 1;
+    preview(&mut app, Scope::Selection);
+    apply(&mut app);
+    assert_eq!(app.documents[0].text, "dog cat");
+    assert_eq!(app.documents[0].edit_version, u64::MAX);
+    set_cursor(&mut app, cursor(7, 4));
+    app.request_replace_preview(
+        &app.editor_ctx.clone(),
+        Scope::Selection,
+        admitted(&app, input_pass(&app.editor_ctx)),
+    );
+    app.finish_replace_frame(&app.editor_ctx.clone());
+    assert!(app.replace.preview.is_none());
+    assert_eq!(app.documents[0].text, "dog cat");
 }
 
 #[test]
@@ -466,16 +1251,26 @@ fn actual_frames_find_open_type_enter_escape_and_navigation_do_not_leak_source_i
 
 #[test]
 fn actual_frames_typing_or_cursor_movement_expires_preview_before_queued_apply() {
-    for events in [
-        vec![egui::Event::Text("!".into())],
-        key(egui::Key::ArrowRight, egui::Modifiers::NONE),
-    ] {
+    for (scope, events) in [Scope::All, Scope::Selection]
+        .into_iter()
+        .flat_map(|scope| {
+            [
+                vec![egui::Event::Text("!".into())],
+                key(egui::Key::ArrowRight, egui::Modifiers::NONE),
+            ]
+            .map(|events| (scope, events))
+        })
+    {
         let (mut app, _) = app("cat cat");
         frame(&mut app, 0.0, vec![]);
-        preview(&mut app, Scope::All);
+        set_cursor(&mut app, cursor(3, 0));
+        preview(&mut app, scope);
         app.editor_ctx
             .memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", 1u64))));
-        app.replace.action = Some(Action::Apply);
+        app.replace.action = Some(Action::Apply(admitted(
+            &app,
+            app.editor_ctx.cumulative_pass_nr(),
+        )));
         frame(&mut app, 1.0, events);
         assert!(app.replace.preview.is_none());
         assert!(!app.documents[0].text.contains("dog"));
@@ -494,13 +1289,20 @@ fn bounded_preview_excerpts_escape_controls_without_altering_literal_plan() {
 
 #[test]
 fn actual_frames_find_or_replacement_input_expires_queued_apply() {
-    for input in [FIND_INPUT, REPLACE_INPUT] {
+    for (scope, input) in [Scope::All, Scope::Selection]
+        .into_iter()
+        .flat_map(|scope| [FIND_INPUT, REPLACE_INPUT].map(|input| (scope, input)))
+    {
         let (mut app, commands) = app("cat cat");
         frame(&mut app, 0.0, vec![]);
-        preview(&mut app, Scope::All);
+        set_cursor(&mut app, cursor(3, 0));
+        preview(&mut app, scope);
         app.editor_ctx
             .memory_mut(|memory| memory.request_focus(egui::Id::new(input)));
-        app.replace.action = Some(Action::Apply);
+        app.replace.action = Some(Action::Apply(admitted(
+            &app,
+            app.editor_ctx.cumulative_pass_nr(),
+        )));
         frame(&mut app, 1.0, vec![egui::Event::Text("!".into())]);
         assert!(app.replace.preview.is_none());
         assert_eq!(app.documents[0].text, "cat cat");
@@ -511,36 +1313,62 @@ fn actual_frames_find_or_replacement_input_expires_queued_apply() {
 
 #[test]
 fn minimum_window_keeps_apply_and_cancel_visible_for_expanded_control_excerpts() {
-    let source = "\u{0001}".repeat(PREVIEW_CHARS * 3);
-    let (mut app, _) = app(&source);
-    app.find_query = "\u{0001}".repeat(PREVIEW_CHARS);
-    app.replace.replacement = "\u{0002}".repeat(PREVIEW_CHARS * 3);
-    frame(&mut app, 0.0, vec![]);
-    preview(&mut app, Scope::All);
-    let output = frame(&mut app, 1.0, vec![]);
-    for label in ["Apply", "Cancel"] {
-        let rect = text_rect(&output, label).unwrap();
-        assert!(
-            rect.top() > 0.0 && rect.bottom() < 510.0,
-            "{label}: {rect:?}"
+    for scope in [Scope::All, Scope::Selection] {
+        let source = "\u{0001}".repeat(PREVIEW_CHARS * 3);
+        let (mut app, _) = app(&source);
+        app.find_query = "\u{0001}".repeat(PREVIEW_CHARS);
+        app.replace.replacement = "\u{0002}".repeat(PREVIEW_CHARS * 3);
+        let output = frame(&mut app, 0.0, vec![]);
+        for label in ["Preview one", "Preview all", "Preview selection"] {
+            let rect = text_rect(&output, label).unwrap();
+            assert!(
+                rect.top() > 0.0 && rect.bottom() < 510.0,
+                "{label}: {rect:?}"
+            );
+        }
+        set_cursor(&mut app, cursor(source.chars().count(), 0));
+        preview(&mut app, scope);
+        let output = frame(&mut app, 1.0, vec![]);
+        for label in ["Apply", "Cancel"] {
+            let rect = text_rect(&output, label).unwrap();
+            assert!(
+                rect.top() > 0.0 && rect.bottom() < 510.0,
+                "{label}: {rect:?}"
+            );
+        }
+        assert_eq!(
+            app.replace.preview.as_ref().unwrap().plan.text,
+            "\u{0002}".repeat(PREVIEW_CHARS * 9)
         );
+        if scope == Scope::Selection {
+            let label = format!(
+                "Selected range: line 1, column 1 to line 1, column {} (end exclusive)",
+                source.chars().count() + 1
+            );
+            assert!(text_rect(&output, &label).is_some());
+        }
     }
-    assert_eq!(
-        app.replace.preview.as_ref().unwrap().plan.text,
-        "\u{0002}".repeat(PREVIEW_CHARS * 9)
-    );
 }
 
 #[test]
 fn late_recovery_and_run_modals_block_pending_preview_and_apply() {
-    for applying in [false, true] {
+    for (applying, scope) in [false, true]
+        .into_iter()
+        .flat_map(|applying| [Scope::All, Scope::Selection].map(|scope| (applying, scope)))
+    {
         for recovery in [false, true] {
             let (mut app, commands) = app("cat cat");
+            set_cursor(&mut app, cursor(3, 0));
             if applying {
-                preview(&mut app, Scope::All);
-                app.replace.action = Some(Action::Apply);
+                preview(&mut app, scope);
+                app.replace.action =
+                    Some(Action::Apply(admitted(&app, input_pass(&app.editor_ctx))));
             } else {
-                app.request_replace_preview(&app.editor_ctx.clone(), Scope::All);
+                app.request_replace_preview(
+                    &app.editor_ctx.clone(),
+                    scope,
+                    admitted(&app, input_pass(&app.editor_ctx)),
+                );
             }
             // These states can arise after the editor and navigation frame
             // checks, so the final transaction barrier must inspect them too.

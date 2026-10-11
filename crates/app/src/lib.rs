@@ -82,6 +82,8 @@ mod save_close_process_tests;
 #[cfg(test)]
 mod save_close_tests;
 #[cfg(test)]
+mod selection_replace_process_tests;
+#[cfg(test)]
 mod sidebar_layout_tests;
 #[cfg(test)]
 mod ssh_preflight_process_tests;
@@ -3034,6 +3036,7 @@ impl CedarApp {
 
 impl eframe::App for CedarApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.capture_replace_input(ctx, raw_input);
         self.navigation.begin_input_frame(ctx, raw_input);
         self.capture_tab_close_focus_input(ctx, raw_input);
         self.enter_input = enter_indent::capture(ctx, raw_input, self.active()).filter(|_| {
