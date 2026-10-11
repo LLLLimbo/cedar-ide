@@ -1182,6 +1182,7 @@ fn scrolled_pointer_app() -> (CedarApp, Receiver<Command>) {
 struct PointerFrame {
     case: RawMotionAt,
     edge: PointerEdge,
+    target_index: usize,
     target_id: egui::Id,
     edge_pointer: egui::Pos2,
     pre_hook_previous_render_target: Option<PointerRow>,
@@ -1301,7 +1302,7 @@ impl std::fmt::Debug for PointerRow {
 
 impl std::fmt::Debug for PointerFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let target = SCROLLED_COUNT - 2;
+        let target = self.target_index;
         writeln!(
             f,
             "case={:?} edge={:?} target_index={target} target_id={:?} edge_pointer={:?}",
@@ -1417,11 +1418,11 @@ fn observe_pointer_frame(
         ctx.data(|data| data.get_temp::<PointerRow>(probe.with("previous_target")));
     let pre_hook_previous_pointer = ctx.input(|input| input.pointer.interact_pos());
     let pre_hook_scroll = PointerScroll::load(&ctx);
+    let target_index = (0..app.search_results.len())
+        .find(|index| id(app, *index) == target_id)
+        .unwrap();
     eframe::App::raw_input_hook(app, &ctx, &mut input);
-    assert_eq!(
-        input.events, original,
-        "the hook must preserve pointer input for egui"
-    );
+    assert_original_pointer_events(&input.events, &original);
     let captured = app.search_state.pointer_probe();
     let mut native = eframe::Frame::_new_kittest();
     let mut passes = Vec::new();
@@ -1455,6 +1456,7 @@ fn observe_pointer_frame(
     PointerFrame {
         case,
         edge,
+        target_index,
         target_id,
         edge_pointer,
         pre_hook_previous_render_target,
@@ -1462,6 +1464,22 @@ fn observe_pointer_frame(
         pre_hook_scroll,
         captured,
         passes,
+    }
+}
+
+fn assert_original_pointer_events(actual: &[egui::Event], original: &[egui::Event]) {
+    assert_eq!(actual.len(), original.len());
+    for (index, (actual, original)) in actual.iter().zip(original).enumerate() {
+        // NaN is not equal to itself. Compare the untouched raw companion's
+        // bits; this asserts preservation, not sanitization or vector validity.
+        let same = match (actual, original) {
+            (egui::Event::MouseMoved(actual), egui::Event::MouseMoved(original)) => {
+                actual.x.to_bits() == original.x.to_bits()
+                    && actual.y.to_bits() == original.y.to_bits()
+            }
+            _ => actual == original,
+        };
+        assert!(same, "the hook changed pointer-batch event {index}");
     }
 }
 
@@ -1571,7 +1589,7 @@ fn pointer_editor_history(app: &CedarApp) -> Vec<(u64, PointerSelection, Pointer
         .collect()
 }
 
-fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
+fn assert_scrolled_pointer_companion(raw_motion: RawMotionAt) {
     let (mut app, commands) = scrolled_pointer_app();
     let target = SCROLLED_COUNT - 2;
     let target_id = id(&app, target);
@@ -1744,14 +1762,7 @@ fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
     // failure must retain the earlier press offset/delta without another frame.
     eprintln!("{down:?}");
     assert_pointer_owners(&down, target_id, pos, true, false, false);
-    assert_eq!(
-        down.captured.pressed,
-        if raw_motion == RawMotionAt::Press {
-            None
-        } else {
-            ticket
-        }
-    );
+    assert_eq!(down.captured.pressed, ticket);
     assert_eq!(down.captured.click, None);
     for pass in &down.passes {
         assert!(pass.input_pointer == Some(pos), "{down:?}");
@@ -1777,7 +1788,7 @@ fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
         );
         eprintln!("{held:?}");
         assert_pointer_owners(&held, target_id, pos, true, false, false);
-        assert_eq!(held.captured.pressed, None);
+        assert_eq!(held.captured.pressed, ticket);
         assert_eq!(held.captured.click, None);
         for pass in &held.passes {
             assert_eq!(
@@ -1804,11 +1815,10 @@ fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
         target_id,
         release_pos,
     );
-    let admitted = raw_motion == RawMotionAt::None;
     eprintln!("{up:?}");
-    assert_pointer_owners(&up, target_id, release_pos, false, true, admitted);
+    assert_pointer_owners(&up, target_id, release_pos, false, true, true);
     assert_eq!(up.captured.pressed, None);
-    assert_eq!(up.captured.click, if admitted { ticket } else { None });
+    assert_eq!(up.captured.click, ticket);
     for pass in &up.passes {
         assert_eq!(pass.consumed.pressed, None, "pass {}: {up:?}", pass.number);
         assert_eq!(
@@ -1817,15 +1827,9 @@ fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
             pass.number
         );
     }
-    assert_eq!(app.navigation_epoch, before + u64::from(admitted));
-    assert_eq!(
-        app.active().unwrap().cursor,
-        (if admitted { 96 } else { 97 }, 1)
-    );
-    assert_eq!(
-        app.location_history.back.len(),
-        if admitted { 2 } else { 1 }
-    );
+    assert_eq!(app.navigation_epoch, before + 1);
+    assert_eq!(app.active().unwrap().cursor, (96, 1));
+    assert_eq!(app.location_history.back.len(), 2);
     assert!(app.location_history.forward.is_empty());
     assert!(app.location_history.pending.is_none());
     let retained_departure = app.location_history.back[0];
@@ -1839,16 +1843,14 @@ fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
         retained_departure.selection,
         original_departure.selection
     ));
-    if admitted {
-        let departure = app.location_history.back[1];
-        assert_eq!(departure.document, 2);
-        assert_eq!(departure.generation, app.generation);
-        assert_eq!(departure.edit_version, edit_version);
-        assert!(location_history::same_selection(
-            departure.selection,
-            selection
-        ));
-    }
+    let departure = app.location_history.back[1];
+    assert_eq!(departure.document, 2);
+    assert_eq!(departure.generation, app.generation);
+    assert_eq!(departure.edit_version, edit_version);
+    assert!(location_history::same_selection(
+        departure.selection,
+        selection
+    ));
     assert_eq!(app.documents.len(), 2);
     assert_eq!(app.documents[0].text, dirty);
     assert_eq!(app.documents[0].saved_text, saved);
@@ -1863,30 +1865,452 @@ fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
 
 #[test]
 fn search_keyboard_scrolled_open_completion_then_pointer_has_both_owners() {
-    assert_scrolled_pointer_characterization(RawMotionAt::None);
+    assert_scrolled_pointer_companion(RawMotionAt::None);
 }
 
 #[test]
-fn search_keyboard_scrolled_mouse_moved_on_press_has_egui_click_without_cedar_ticket() {
-    // A controlled classifier negative, not evidence that the failed native
-    // click contained MouseMoved or that rejecting such input is desired.
+fn search_keyboard_scrolled_mouse_moved_on_press_preserves_both_owners() {
+    // Controlled companion admission, not evidence that the failed native
+    // click contained MouseMoved or that this correction fixes that failure.
     // Pinned source: emilk/egui tag 0.31.1, crates/eframe/src/native/
     // glow_integration.rs:433-447 forwards DeviceEvent::MouseMotion;
     // crates/egui-winit/src/lib.rs:529-530 appends MouseMoved independently of
     // CursorMoved (591-621). These cached files match the Cargo.lock .crates.
     // These variants deliberately choose frame grouping; native grouping is
     // absent from the failed receipt and is not reconstructed by this fixture.
-    assert_scrolled_pointer_characterization(RawMotionAt::Press);
+    assert_scrolled_pointer_companion(RawMotionAt::Press);
 }
 
 #[test]
-fn search_keyboard_scrolled_mouse_moved_while_held_cancels_cedar_ticket_only() {
-    assert_scrolled_pointer_characterization(RawMotionAt::Held);
+fn search_keyboard_scrolled_mouse_moved_while_held_preserves_both_owners() {
+    assert_scrolled_pointer_companion(RawMotionAt::Held);
 }
 
 #[test]
-fn search_keyboard_scrolled_mouse_moved_on_release_cancels_cedar_ticket_only() {
-    assert_scrolled_pointer_characterization(RawMotionAt::Release);
+fn search_keyboard_scrolled_mouse_moved_on_release_preserves_both_owners() {
+    assert_scrolled_pointer_companion(RawMotionAt::Release);
+}
+
+const COMPANION_TARGET: usize = 2;
+
+fn companion_app() -> (CedarApp, Receiver<Command>, egui::Pos2) {
+    let (mut app, commands) = app(8);
+    let pos = clipped_center(&app, "search_row:2");
+    frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+    assert_visible(&app, COMPANION_TARGET);
+    (app, commands, pos)
+}
+
+fn companion_pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+    let mut events = pointer(pos, pressed);
+    events.insert(1, egui::Event::MouseMoved(egui::vec2(1.0, -1.0)));
+    events
+}
+
+fn companion_frame(
+    app: &mut CedarApp,
+    events: Vec<egui::Event>,
+    edge: PointerEdge,
+    pos: egui::Pos2,
+) -> PointerFrame {
+    let target_id = id(app, COMPANION_TARGET);
+    let case = match edge {
+        PointerEdge::Arrival => RawMotionAt::None,
+        PointerEdge::Press => RawMotionAt::Press,
+        PointerEdge::Held => RawMotionAt::Held,
+        PointerEdge::Release => RawMotionAt::Release,
+    };
+    observe_pointer_frame(app, events, case, edge, target_id, pos)
+}
+
+fn assert_no_companion_ticket(frame: &PointerFrame) {
+    assert_eq!(frame.captured.pressed, None, "{frame:?}");
+    assert_eq!(frame.captured.click, None, "{frame:?}");
+    for pass in &frame.passes {
+        assert_eq!(pass.consumed, frame.captured, "{frame:?}");
+        assert!(
+            pass.rows.iter().all(|row| row.cedar_click.is_none()),
+            "{frame:?}"
+        );
+    }
+}
+
+fn assert_companion_quiet(
+    app: &CedarApp,
+    commands: &Receiver<Command>,
+    epoch: u64,
+    next_request: u64,
+) {
+    assert_eq!(app.navigation_epoch, epoch);
+    assert_eq!(app.next_request, next_request);
+    assert_eq!(app.active_document, Some(1));
+    assert_eq!(app.documents.len(), 1);
+    assert_eq!(app.documents[0].text, "saved Ω😀\r\nsecond\n");
+    assert_eq!(app.documents[0].saved_text, app.documents[0].text);
+    assert!(app.pending.is_empty());
+    assert!(app.location_history.back.is_empty());
+    assert!(app.location_history.forward.is_empty());
+    assert!(app.location_history.pending.is_none());
+    assert!(commands.try_recv().is_err());
+}
+
+fn tab_to_first_search_row(app: &mut CedarApp) {
+    click_control(app, "search_query");
+    for expected in [recorded_response(app, "search_submit").id, id(app, 0)] {
+        frame(app, key(egui::Key::Tab));
+        assert_eq!(focused(app), Some(expected));
+    }
+}
+
+#[test]
+fn search_keyboard_mouse_moved_cannot_manufacture_an_absolute_target_or_owned_press() {
+    // The vector is non-authoritative metadata, including zero, very large and
+    // non-finite values. These are ownership tests, not egui numeric guarantees.
+    for delta in [
+        egui::Vec2::ZERO,
+        egui::vec2(1.0e30, -1.0e30),
+        egui::vec2(f32::NAN, 0.0),
+        egui::vec2(f32::INFINITY, f32::NEG_INFINITY),
+    ] {
+        for sequence in 0..4 {
+            let (mut app, commands, pos) = if sequence == 0 {
+                let (app, commands) = app(8);
+                let pos = clipped_center(&app, "search_row:2");
+                assert!(app
+                    .editor_ctx
+                    .input(|input| input.pointer.interact_pos().is_none()));
+                (app, commands, pos)
+            } else {
+                companion_app()
+            };
+            let epoch = app.navigation_epoch;
+            let next_request = app.next_request;
+            let previous_pos = app.editor_ctx.input(|input| input.pointer.interact_pos());
+            let mut events = vec![egui::Event::MouseMoved(delta)];
+            match sequence {
+                0 => {}
+                1 => events.insert(0, egui::Event::PointerMoved(pos)),
+                2 => events.extend(pointer(pos, false)),
+                _ => {
+                    for pressed in [true, false] {
+                        events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Secondary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                }
+            }
+            let observed = companion_frame(&mut app, events, PointerEdge::Held, pos);
+            assert_no_companion_ticket(&observed);
+            assert!(observed
+                .passes
+                .iter()
+                .flat_map(|pass| &pass.rows)
+                .all(|row| !row.clicked));
+            assert_eq!(
+                app.editor_ctx.input(|input| input.pointer.interact_pos()),
+                previous_pos
+            );
+            assert_companion_quiet(&app, &commands, epoch, next_request);
+        }
+    }
+}
+
+#[test]
+fn search_keyboard_mouse_moved_does_not_exempt_mixed_batches_from_pointer_vetoes() {
+    for noise in [
+        egui::Event::Text(String::new()),
+        egui::Event::Text("text".into()),
+        egui::Event::Paste(String::new()),
+        egui::Event::Paste("paste".into()),
+        egui::Event::Ime(egui::ImeEvent::Preedit(String::new())),
+        egui::Event::Ime(egui::ImeEvent::Preedit("preedit".into())),
+        egui::Event::Ime(egui::ImeEvent::Commit(String::new())),
+        egui::Event::Ime(egui::ImeEvent::Commit("commit".into())),
+        egui::Event::PointerGone,
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::Vec2::ZERO,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ] {
+        for at in [RawMotionAt::Press, RawMotionAt::Held, RawMotionAt::Release] {
+            let (mut app, commands, pos) = companion_app();
+            let epoch = app.navigation_epoch;
+            let next_request = app.next_request;
+            let mut press = companion_pointer(pos, true);
+            if at == RawMotionAt::Press {
+                press.push(noise.clone());
+            }
+            let down = companion_frame(&mut app, press, PointerEdge::Press, pos);
+            if at == RawMotionAt::Press {
+                assert_no_companion_ticket(&down);
+            } else {
+                assert_eq!(
+                    down.captured.pressed,
+                    Some((COMPANION_TARGET, id(&app, COMPANION_TARGET))),
+                    "{down:?}"
+                );
+                assert_eq!(down.captured.click, None);
+            }
+            if at == RawMotionAt::Held {
+                let held = companion_frame(
+                    &mut app,
+                    vec![egui::Event::MouseMoved(egui::Vec2::ZERO), noise.clone()],
+                    PointerEdge::Held,
+                    pos,
+                );
+                assert_no_companion_ticket(&held);
+            }
+            let mut release = companion_pointer(pos, false);
+            if at == RawMotionAt::Release {
+                release.push(noise.clone());
+            }
+            let up = companion_frame(&mut app, release, PointerEdge::Release, pos);
+            assert_no_companion_ticket(&up);
+            assert_companion_quiet(&app, &commands, epoch, next_request);
+        }
+    }
+}
+
+#[test]
+fn search_keyboard_mouse_moved_cannot_end_prior_composition_or_override_button_modifiers() {
+    for veto in 0..4 {
+        let (mut app, commands, pos) = companion_app();
+        let epoch = app.navigation_epoch;
+        let next_request = app.next_request;
+        let mut press = companion_pointer(pos, true);
+        if veto < 2 {
+            frame(
+                &mut app,
+                vec![egui::Event::Ime(egui::ImeEvent::Preedit(
+                    if veto == 0 { "" } else { "preedit" }.into(),
+                ))],
+            );
+            press.push(egui::Event::Ime(egui::ImeEvent::Disabled));
+        } else if let egui::Event::PointerButton {
+            button, modifiers, ..
+        } = press.last_mut().unwrap()
+        {
+            if veto == 2 {
+                *modifiers = egui::Modifiers::SHIFT;
+            } else {
+                *button = egui::PointerButton::Secondary;
+            }
+        }
+        let down = companion_frame(&mut app, press, PointerEdge::Press, pos);
+        assert_no_companion_ticket(&down);
+        let up = companion_frame(
+            &mut app,
+            companion_pointer(pos, false),
+            PointerEdge::Release,
+            pos,
+        );
+        assert_no_companion_ticket(&up);
+        assert_companion_quiet(&app, &commands, epoch, next_request);
+    }
+}
+
+#[test]
+fn search_keyboard_mouse_moved_does_not_make_enter_or_space_a_clean_key_batch() {
+    for key_to_press in [egui::Key::Enter, egui::Key::Space] {
+        let (mut app, commands, _) = companion_app();
+        tab_to_first_search_row(&mut app);
+        let epoch = app.navigation_epoch;
+        let next_request = app.next_request;
+        let mut events = key(key_to_press);
+        events.insert(1, egui::Event::MouseMoved(egui::vec2(1.0, -1.0)));
+        if key_to_press == egui::Key::Space {
+            events.insert(2, egui::Event::Text(" ".into()));
+        }
+        assert_eq!(clean_key(&events), None);
+        let ctx = app.editor_ctx.clone();
+        let mut input = raw(&app, events);
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+        assert!(input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::MouseMoved(delta) if *delta == egui::vec2(1.0, -1.0))));
+        render(&mut app, input);
+        assert_eq!(focused(&app), Some(id(&app, 0)));
+        assert_eq!(app.search_state.pointer_probe().pressed, None);
+        assert_eq!(app.search_state.pointer_probe().click, None);
+        assert_companion_quiet(&app, &commands, epoch, next_request);
+    }
+}
+
+fn mixed_companion_key_frame(
+    app: &mut CedarApp,
+    retained: Vec<egui::Event>,
+    key_to_press: egui::Key,
+) {
+    let mut events = retained.clone();
+    events.extend(key(key_to_press));
+    let mut input = raw(app, events);
+    let ctx = app.editor_ctx.clone();
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    // The row owns these key edges, but classification must see them before
+    // their removal. The remaining pointer batch cannot manufacture a ticket.
+    assert_original_pointer_events(&input.events, &retained);
+    assert_eq!(app.search_state.pointer_probe().pressed, None);
+    assert_eq!(app.search_state.pointer_probe().click, None);
+    render(app, input);
+}
+
+#[test]
+fn search_keyboard_mouse_moved_with_pointer_and_key_remains_mixed_before_filtering() {
+    for key_to_press in [egui::Key::Enter, egui::Key::Space] {
+        for at in [RawMotionAt::Press, RawMotionAt::Held, RawMotionAt::Release] {
+            let (mut app, commands, _) = companion_app();
+            tab_to_first_search_row(&mut app);
+            let pos = clipped_center(&app, "search_row:2");
+            frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+            let epoch = app.navigation_epoch;
+            let next_request = app.next_request;
+            let press = companion_pointer(pos, true);
+            if at == RawMotionAt::Press {
+                mixed_companion_key_frame(&mut app, press, key_to_press);
+            } else {
+                let down = companion_frame(&mut app, press, PointerEdge::Press, pos);
+                assert_eq!(
+                    down.captured.pressed,
+                    Some((COMPANION_TARGET, id(&app, COMPANION_TARGET)))
+                );
+            }
+            if at == RawMotionAt::Held {
+                mixed_companion_key_frame(
+                    &mut app,
+                    vec![egui::Event::MouseMoved(egui::Vec2::ZERO)],
+                    key_to_press,
+                );
+            }
+            let release = companion_pointer(pos, false);
+            if at == RawMotionAt::Release {
+                mixed_companion_key_frame(&mut app, release, key_to_press);
+            } else {
+                let up = companion_frame(&mut app, release, PointerEdge::Release, pos);
+                assert_no_companion_ticket(&up);
+            }
+            assert_companion_quiet(&app, &commands, epoch, next_request);
+        }
+    }
+}
+
+#[test]
+fn search_keyboard_mouse_moved_foreign_key_release_cannot_become_pointer_only_after_filtering() {
+    let (mut app, commands, _) = companion_app();
+    load_other_surfaces(&mut app, &commands);
+    let explorer_id = explorer_tree::row_id("");
+    let explorer_pos = app
+        .editor_ctx
+        .read_response(explorer_id)
+        .unwrap()
+        .rect
+        .center();
+    frame(&mut app, vec![egui::Event::PointerMoved(explorer_pos)]);
+    frame(&mut app, pointer(explorer_pos, true));
+    frame(&mut app, pointer(explorer_pos, false));
+    assert_eq!(focused(&app), Some(explorer_id));
+    frame(&mut app, vec![edge(egui::Key::ArrowDown, true, false)]);
+    assert!(app.explorer.claims(egui::Key::ArrowDown));
+    assert!(!app.search_state.claims(egui::Key::ArrowDown));
+    let epoch = app.navigation_epoch;
+    let next_request = app.next_request;
+    let pos = clipped_center(&app, "search_row:2");
+    frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+    let down = companion_frame(
+        &mut app,
+        companion_pointer(pos, true),
+        PointerEdge::Press,
+        pos,
+    );
+    assert_no_companion_ticket(&down);
+    let ctx = app.editor_ctx.clone();
+    let retained = companion_pointer(pos, false);
+    let mut original = retained.clone();
+    original.insert(0, edge(egui::Key::ArrowDown, false, false));
+    let mut input = raw(&app, original);
+    eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+    assert_original_pointer_events(&input.events, &retained);
+    assert_eq!(app.search_state.pointer_probe().pressed, None);
+    assert_eq!(app.search_state.pointer_probe().click, None);
+    assert!(!app.explorer.claims(egui::Key::ArrowDown));
+    render(&mut app, input);
+    assert_companion_quiet(&app, &commands, epoch, next_request);
+}
+
+#[test]
+fn search_keyboard_mouse_moved_cannot_reuse_a_press_after_view_change_or_outside_release() {
+    for change in 0..6 {
+        let (mut app, commands, pos) = companion_app();
+        let epoch = app.navigation_epoch;
+        let next_request = app.next_request;
+        let down = companion_frame(
+            &mut app,
+            companion_pointer(pos, true),
+            PointerEdge::Press,
+            pos,
+        );
+        assert_eq!(
+            down.captured.pressed,
+            Some((COMPANION_TARGET, id(&app, COMPANION_TARGET)))
+        );
+        let mut release_pos = pos;
+        match change {
+            0 => app.search_query.push('x'),
+            1 => app.search_request += 1,
+            2 => app.generation += 1,
+            3 => app.new_file = true,
+            4 => app.tools_open = false,
+            _ => release_pos = clipped_center(&app, "search_row:3"),
+        }
+        let up = companion_frame(
+            &mut app,
+            companion_pointer(release_pos, false),
+            PointerEdge::Release,
+            release_pos,
+        );
+        assert_no_companion_ticket(&up);
+        assert_companion_quiet(&app, &commands, epoch, next_request);
+    }
+}
+
+#[test]
+fn search_keyboard_mouse_moved_click_still_requires_current_view_at_render_and_raw_hook() {
+    for change in 0..5 {
+        let (mut app, commands, pos) = companion_app();
+        let epoch = app.navigation_epoch;
+        let next_request = app.next_request;
+        let down = companion_frame(
+            &mut app,
+            companion_pointer(pos, true),
+            PointerEdge::Press,
+            pos,
+        );
+        assert!(down.captured.pressed.is_some());
+        let ctx = app.editor_ctx.clone();
+        let events = companion_pointer(pos, false);
+        let mut input = raw(&app, events.clone());
+        if change < 4 {
+            eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+            assert_original_pointer_events(&input.events, &events);
+            assert_eq!(
+                app.search_state.pointer_probe().click,
+                Some((COMPANION_TARGET, id(&app, COMPANION_TARGET)))
+            );
+            match change {
+                0 => app.search_query.push('x'),
+                1 => app.search_request += 1,
+                2 => app.generation += 1,
+                _ => app.new_file = true,
+            }
+        }
+        render(&mut app, input);
+        assert_eq!(app.search_state.pointer_probe().click, None);
+        assert_companion_quiet(&app, &commands, epoch, next_request);
+    }
 }
 
 #[test]

@@ -20,7 +20,7 @@ The optional argument prefills the local workspace field. Select **Connect works
 - Directory navigation, new-file drafts, up to 32 tabs, and path-based quick open
 - UTF-8 editing, line numbers, Java/Kotlin/Rust lexical colors, and case-sensitive find
 - Revision-checked saves, disk-version inspection, and explicit confirmation before discarding a dirty tab or quitting
-- Explicit project text search with historical line results; 0.57.4 narrows the test-only click fixture to a pointer already arrived over the target; retained 0.57.0 navigation is unchanged; native acceptance remains incomplete
+- Explicit project text search with historical line results; 0.57.5 allows raw mouse-motion companion metadata in otherwise valid Search pointer input; absolute button positions and full click ownership remain required; fresh CI and native acceptance remain incomplete
 - Trusted-workspace Git status and explicit executable commands with literal argument rows, cancellable task output, and saved project profiles in `cedar.tasks.json`
 
 Shortcuts:
@@ -62,7 +62,7 @@ CI and all three packages passed; bounded Linux native acceptance combines the
 original partial run with a separate same-package shrink/regrow check. Original
 misses and limits remain in the [0.56.1 report](../../docs/TEST_REPORT_PHASE561_TOOLS_HEIGHT.md#final-accepted-0561-evidence).
 
-## Project Search keyboard navigation (0.57.4 fixture candidate)
+## Project Search keyboard navigation (0.57.5 pointer-classification candidate)
 
 0.57.1 passed both platform CI jobs, its process proofs and all three package
 audits, but the native Linux check failed when clicking the preceding result at
@@ -77,15 +77,25 @@ Its bounded witnesses recorded a controlled ScrollArea drag when pointer arrival
 and press shared a frame; the next retained target row lay outside the clip.
 Partial clicked/ticket witnesses did not reach the final cursor/history/request
 assertions. No packages or downstream runtime results were produced.
-0.57.4 inserts exactly one test-only PointerMoved arrival frame before the old
-press, explicitly narrowing the click criterion to an already-arrived pointer.
-Arrival must preserve geometry, offset, editor/history, tickets and requests;
-the following press must have zero pointer delta. Existing containment, ownership,
-final-outcome assertions and all three MouseMoved variants remain. The old combined
-arrival/press evidence stays archived as a controlled drag characterization.
-Shipping Search and shared input behavior are unchanged. This does not establish
-arbitrary coalesced-input behavior or explain/fix the native failure. Fresh CI
-must complete before any separate decision on another GUI run.
+0.57.4 inserted one test-only PointerMoved arrival frame before the old press,
+explicitly narrowing the click criterion to an already-arrived pointer. Both OS
+CI jobs, all retained process gates and all three package audits passed. Each OS
+passed all four diagnostics, 25 Search and 19 report tests, and the exact
+14-case/57-field/12-request Search proof. No native GUI run occurred. The old
+combined arrival/press evidence stays archived as a controlled drag characterization.
+
+0.57.5 changes shipping Search's pointer-only allowlist to admit MouseMoved(_) as
+ignored companion metadata. It never reads or validates the vector, including
+finiteness, or derives position or geometry from it. It does not consume or replay
+the event. Actual Primary-button absolute positions, matching capture/view/release/
+current-frame ownership and the row's actual egui clicked_by(Primary) response
+remain mandatory. The three formerly rejected press/held/release companion cases
+now require successful exact-row navigation, while new negatives protect unowned,
+mixed-input and stale-view boundaries. Keyboard, Tests/report, Explorer and shared
+raw-input consumption rules are unchanged. The already-arrived fixture keeps its
+arrival invariants, zero-delta press and containment checks. Fresh CI must verify
+these cases before any separate decision on another native GUI run; they do not
+establish arbitrary coalesced-input behavior or explain/fix the native failure.
 0.56.1 remains the latest fully accepted checkpoint.
 
 Enter a case-sensitive literal query and explicitly select **Search**, or press
@@ -113,9 +123,9 @@ Query/batch changes, hidden or switched tools, modals and competing input cancel
 unfinished row intent; continue with a fresh valid key or pointer action. The frontend keeps at
 most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
 oversized batches are rejected whole. No automatic search, new engine, protocol,
-capability or workspace operation is added. 0.57.4 fixture CI, process proofs
-and packages remain [pending](../../docs/TEST_REPORT.md); no automatic native rerun
-or production-fix claim follows from the fixture.
+capability or workspace operation is added. 0.57.5 CI, process proofs and packages
+remain [pending](../../docs/TEST_REPORT.md). The shipping classification change
+does not establish the historical native cause or authorize an automatic GUI rerun.
 
 ## Agent capabilities and trust
 

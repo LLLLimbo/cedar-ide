@@ -363,10 +363,14 @@ impl CedarApp {
         } else {
             None
         };
+        // Raw relative motion is an untouched companion. Only the absolute
+        // primary-button positions below can create or resolve row ownership;
+        // the current-frame egui response must still own the actual click.
         let pointer_only = input.events.iter().all(|event| {
             matches!(
                 event,
                 egui::Event::PointerMoved(_)
+                    | egui::Event::MouseMoved(_)
                     | egui::Event::PointerButton {
                         button: egui::PointerButton::Primary,
                         ..

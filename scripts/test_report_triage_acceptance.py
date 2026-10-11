@@ -102,7 +102,7 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual([item["phase"] for item in expected["operation_ledger"]],
                          ["setup"] * 4 + ["refresh"] * 3 + ["reconnect"] * 3)
         self.assertEqual(len(expected), 54)
-        self.assertEqual(expected["source_version"], "0.57.4")
+        self.assertEqual(expected["source_version"], "0.57.5")
         self.assertEqual((expected["requests"], expected["connections"], expected["agents_reaped"]),
                          (10, 2, 2))
         self.assertEqual((expected["setup_requests"], expected["refresh_requests"],
@@ -249,13 +249,13 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
                             b'[workspace]\npackage = false',
                             b'[workspace.package]\nversion = 54',
                             b'[workspace.package]\nversion = "0.53.4"',
-                            b'[workspace.package]\nversion = "0.57.4-extra"',
-                            b'[workspace.package]\nversion = "0.57.4"\nversion = "0.57.4"',
+                            b'[workspace.package]\nversion = "0.57.5-extra"',
+                            b'[workspace.package]\nversion = "0.57.5"\nversion = "0.57.5"',
                             b" " * (64 * 1024 + 1)):
                 path.write_bytes(invalid)
                 with self.subTest(data=invalid[:60]), self.assertRaises(proof.AcceptanceError):
                     proof.validate_source_version(root)
-            path.write_text('[workspace.package]\nversion = "0.57.4"\n')
+            path.write_text('[workspace.package]\nversion = "0.57.5"\n')
             proof.validate_source_version(root)
 
     def test_agent_digest_is_exact_nonempty_bounded_and_detects_same_size_change(self):
@@ -289,7 +289,7 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
 
 class DriverTests(unittest.TestCase):
     def exercise(self, platform="linux", *, failure=None, selection=None, runtime=None,
-                 missing_agent=False, invalid_artifact=False, source_version="0.57.4",
+                 missing_agent=False, invalid_artifact=False, source_version="0.57.5",
                  changed_agent=False, changed_source=False):
         with tempfile.TemporaryDirectory(prefix="cedar-triage-lines-driver-") as directory:
             root = Path(directory).resolve()
