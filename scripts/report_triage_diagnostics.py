@@ -5,18 +5,25 @@ only fixed metadata, reviewed native Check messages, and verified relative Rust
 locations can enter the bounded diagnostic artifact. No child output is echoed.
 """
 import json
+import math
 import os
 from pathlib import Path
 import re
 import subprocess
 import time
 
-from copy_draft_acceptance import AcceptanceError, require
+from copy_draft_acceptance import AcceptanceError, require, strict_json
 
 REAP_TIMEOUT = 5
 MAX_ARTIFACT_BYTES = 64 * 1024
 MAX_DIAGNOSTICS = 32
 ARTIFACT_NAME = "REPORT_TRIAGE_FAILURE.json"
+GEOMETRY_PREFIX = "report_triage_geometry "
+MAX_GEOMETRY_BYTES = 4096
+GEOMETRY_BOUND = 100000
+GEOMETRY_KEYS = {"schema", "case_ordinal", "reason", "target", "row_index", "phase",
+                 "geometry_state", "rect", "clip", "scroll"}
+GEOMETRY_TARGETS = {"case", "back", "details", "load", "filter", "path", "refresh", "suite", "other"}
 STAGES = {"compile", "selection", "runtime"}
 TEST_NAME = "report_triage_process_tests::normal_agent_report_keyboard_triage_is_local_and_revision_bound"
 CATEGORIES = {
@@ -83,6 +90,7 @@ NATIVE_ERRORS = frozenset((
     'keyboard focus did not retain the original XML row identity',
     'late old load replaced or selected the newer snapshot',
     'late ordinary Read absent',
+    'loaded report viewport does not fully contain its first row',
     'native Redo lost dirty text or complete selection',
     'native Undo lost original full selection',
     'normal agent absent',
@@ -266,6 +274,56 @@ def native_errors(root):
             if any('"' + message + '"' in line for line in lines)}
 
 
+
+def geometry_context(line):
+    """An exact typed numeric schema; unknown text and extra keys are refused."""
+    if not line.startswith(GEOMETRY_PREFIX) or len(line.encode("utf-8")) > MAX_GEOMETRY_BYTES:
+        return None
+    try:
+        value = strict_json(line[len(GEOMETRY_PREFIX):])
+    except (AcceptanceError, ValueError, RecursionError):
+        return None
+    if type(value) is not dict or set(value) != GEOMETRY_KEYS:
+        return None
+    if (type(value["schema"]) is not int or value["schema"] != 1
+            or type(value["case_ordinal"]) is not int or not 0 <= value["case_ordinal"] <= 13
+            or type(value["reason"]) is not str or value["reason"] not in {"target_visibility", "loaded_viewport"}
+            or type(value["target"]) is not str or value["target"] not in GEOMETRY_TARGETS
+            or type(value["phase"]) is not str or value["phase"] not in {"before_load", "loaded"}
+            or type(value["geometry_state"]) is not str or value["geometry_state"] not in {"finite", "invalid"}):
+        return None
+    index = value["row_index"]
+    if index is not None and (type(index) is not int or not 0 <= index <= 191):
+        return None
+    if value["target"] in {"case", "back", "details"}:
+        if index is None:
+            return None
+    elif index is not None:
+        return None
+    if value["phase"] == "before_load" and (index is not None or value["target"] in {"case", "back", "details"}):
+        return None
+    if value["reason"] == "loaded_viewport" and (value["phase"], value["target"], index) != ("loaded", "case", 0):
+        return None
+
+    def finite_array(item, length):
+        return (type(item) is list and len(item) == length
+                and all(type(number) in (int, float) and -GEOMETRY_BOUND <= number <= GEOMETRY_BOUND
+                        and math.isfinite(number) for number in item))
+
+    if value["geometry_state"] == "invalid":
+        if any(value[key] is not None for key in ("rect", "clip", "scroll")):
+            return None
+    elif (not finite_array(value["rect"], 4) or not finite_array(value["clip"], 4)
+          or (value["phase"] == "loaded" and not finite_array(value["scroll"], 2))
+          or (value["phase"] == "before_load" and value["scroll"] is not None)):
+        return None
+    # Reconstruct every approved field, never copy an unknown object wholesale.
+    return {"kind": "report_geometry", "schema": 1, "case_ordinal": value["case_ordinal"],
+            "reason": value["reason"], "target": value["target"], "row_index": index,
+            "phase": value["phase"], "geometry_state": value["geometry_state"],
+            "rect": value["rect"], "clip": value["clip"], "scroll": value["scroll"]}
+
+
 def sanitize_output(data, root, stage):
     """Reconstruct allowlisted facts; no original output line is copied."""
     diagnostics, seen, suppressed, clipped = [], set(), 0, False
@@ -295,6 +353,12 @@ def sanitize_output(data, root, stage):
         accepted = False
         if stage == "runtime":
             line = line.removeprefix("test " + TEST_NAME + " ... ")
+            if line.startswith(GEOMETRY_PREFIX) and len(line.encode("utf-8")) > MAX_GEOMETRY_BYTES:
+                clipped = True
+            geometry = geometry_context(line)
+            if geometry is not None:
+                add(geometry)
+                accepted = True
         native = re.fullmatch(r'Error: "([^"\r\n]+)"', line)
         if native and native[1] in known:
             item = {"kind": "native_check", "message": native[1],

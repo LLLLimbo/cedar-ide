@@ -192,16 +192,7 @@ impl Harness {
         let mut app = CedarApp::empty();
         app.open_form = false;
         app.form.local_root = canonical_root.to_string_lossy().into_owned();
-        // An ordinary persisted panel height keeps the report viewport useful;
-        // row and detail scrolling still come from production keyboard frames.
-        app.editor_ctx.data_mut(|data| {
-            data.insert_persisted(
-                egui::Id::new("tools"),
-                egui::containers::panel::PanelState {
-                    rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 480.0)),
-                },
-            );
-        });
+        set_report_panel_height(&app);
         let cancellation = ConnectionCancellation::new();
         let cancel_on_expiry = cancellation.clone();
         let (stop, stopped) = mpsc::channel();
@@ -374,7 +365,7 @@ impl Harness {
             "generated fixture root or form requires unsupported CJK font probing",
         )?;
         require(
-            env!("CARGO_PKG_VERSION") == "0.55.2"
+            env!("CARGO_PKG_VERSION") == "0.55.3"
                 && self.app.agent_info.as_ref().is_some_and(|info| {
                     info.version == env!("CARGO_PKG_VERSION")
                         && info.os == if cfg!(windows) { "windows" } else { "linux" }
@@ -730,6 +721,19 @@ fn key(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
         })
         .collect()
 }
+fn set_report_panel_height(app: &CedarApp) {
+    // This is an ordinary persisted layout setting, not report navigation or
+    // scroll state. The native window remains 1000 by 820 points.
+    app.editor_ctx.data_mut(|data| {
+        data.insert_persisted(
+            egui::Id::new("tools"),
+            egui::containers::panel::PanelState {
+                rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 480.0)),
+            },
+        );
+    });
+}
+
 fn source_label(path: &str) -> &'static str {
     match path {
         "" => "root",
@@ -802,18 +806,100 @@ impl Harness {
         self.focus_probe(&format!("test_report_case:{index}"))
     }
 
+    fn visibility_context(&self, name: &str, initial: bool, rect: egui::Rect, clip: egui::Rect) {
+        let (target, row_index) = match name {
+            "test_report_back" => (
+                "back",
+                self.app.test_report.selected.filter(|index| *index < ROWS),
+            ),
+            "test_report_details" => (
+                "details",
+                self.app.test_report.selected.filter(|index| *index < ROWS),
+            ),
+            "test_report_load" => ("load", None),
+            "test_report_filter" => ("filter", None),
+            "test_report_path" => ("path", None),
+            "test_report_refresh" => ("refresh", None),
+            "test_report_suite" => ("suite", None),
+            _ => name
+                .strip_prefix("test_report_case:")
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|index| *index < ROWS)
+                .map_or(("other", None), |index| ("case", Some(index))),
+        };
+        let loaded = self.app.test_report.snapshot.is_some();
+        // An absent report must not reuse an earlier snapshot's scroll probe.
+        let scroll = if loaded {
+            self.app.editor_ctx.data(|data| {
+                data.get_temp::<(egui::Id, egui::Vec2)>(egui::Id::new(
+                    "workspace_access_report_scroll",
+                ))
+                .map(|(_, offset)| [offset.x, offset.y])
+            })
+        } else {
+            None
+        };
+        let rect = [rect.min.x, rect.min.y, rect.max.x, rect.max.y];
+        let clip = [clip.min.x, clip.min.y, clip.max.x, clip.max.y];
+        let bounded = |values: &[f32]| {
+            values
+                .iter()
+                .all(|value| value.is_finite() && value.abs() <= 100_000.0)
+        };
+        let finite = bounded(&rect)
+            && bounded(&clip)
+            && (!loaded || scroll.as_ref().is_some_and(|values| bounded(values)));
+        let context = serde_json::json!({
+            "schema": 1,
+            "case_ordinal": self.cases.len().min(CASES.len() - 1),
+            "reason": if initial { "loaded_viewport" } else { "target_visibility" },
+            "target": target,
+            "row_index": if loaded { row_index } else { None },
+            "phase": if loaded { "loaded" } else { "before_load" },
+            "geometry_state": if finite { "finite" } else { "invalid" },
+            "rect": if finite { Some(rect) } else { None },
+            "clip": if finite { Some(clip) } else { None },
+            "scroll": if finite { scroll } else { None },
+        });
+        println!("report_triage_geometry {context}");
+    }
+
     fn visible_probe(&self, name: &str) -> Check<()> {
         let rect = workspace_access_tests::recorded_rect(&self.app, name);
         let clip = workspace_access_tests::recorded_clip(&self.app, name);
+        let visible = rect.is_finite()
+            && clip.is_finite()
+            && rect.height() > 0.0
+            && rect.width() > 0.0
+            && rect.min.y >= clip.min.y - 1.0
+            && rect.max.y <= clip.max.y + 1.0
+            && rect.intersect(clip).width() > 0.0;
+        if !visible {
+            self.visibility_context(name, false, rect, clip);
+        }
         require(
-            rect.is_finite()
-                && clip.is_finite()
-                && rect.height() > 0.0
-                && rect.width() > 0.0
-                && rect.min.y >= clip.min.y - 1.0
-                && rect.max.y <= clip.max.y + 1.0
-                && rect.intersect(clip).width() > 0.0,
+            visible,
             "focused report target was not revealed in its real viewport",
+        )
+    }
+
+    fn loaded_viewport(&self) -> Check<()> {
+        let name = "test_report_case:0";
+        let rect = workspace_access_tests::recorded_rect(&self.app, name);
+        let clip = workspace_access_tests::recorded_clip(&self.app, name);
+        let ready = rect.is_finite()
+            && clip.is_finite()
+            && rect.width() > 0.0
+            && rect.height() > 0.0
+            && clip.width() > 0.0
+            && clip.height() > rect.height()
+            && clip.contains_rect(rect);
+        if !ready {
+            self.visibility_context(name, true, rect, clip);
+        }
+        require(
+            ready,
+            "loaded report viewport does not fully contain its first row",
         )
     }
 
@@ -893,7 +979,12 @@ impl Harness {
         self.click_probe("test_report_load", true)?;
         let event = self.read_report_command()?;
         self.app.apply_event(event);
-        self.settle()
+        self.source()?;
+        // Empty-panel frames can persist a smaller actual height. Reestablish
+        // the same fixture geometry after the real report has been accepted.
+        set_report_panel_height(&self.app);
+        self.settle()?;
+        self.loaded_viewport()
     }
 
     fn explicit_refresh_reply(&mut self) -> Check<Event> {

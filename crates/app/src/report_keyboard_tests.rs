@@ -32,6 +32,11 @@ fn snapshot(id: u64, count: usize) -> Snapshot {
 }
 
 fn app(count: usize) -> (CedarApp, Receiver<Command>) {
+    assert!(!system_fonts::contains_cjk(&xml(count)));
+    app_with_snapshot(Some(snapshot(1, count)))
+}
+
+fn app_with_snapshot(initial_snapshot: Option<Snapshot>) -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
     let form = ConnectForm {
         local_root: "/workspace".into(),
@@ -55,17 +60,9 @@ fn app(count: usize) -> (CedarApp, Receiver<Command>) {
     app.active_document = Some(1);
     app.next_document = 2;
     app.test_report.path = PATH.into();
-    app.test_report.snapshot = Some(snapshot(1, count));
-    assert!(!system_fonts::contains_cjk(&xml(count)));
+    app.test_report.snapshot = initial_snapshot;
     assert!(!app.documents[0].has_cjk);
-    app.editor_ctx.data_mut(|data| {
-        data.insert_persisted(
-            egui::Id::new("tools"),
-            egui::containers::panel::PanelState {
-                rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE.x, 480.0)),
-            },
-        )
-    });
+    prepare_report_viewport(&app);
     let (worker, commands) = Worker::recording();
     app.worker = Some(worker);
     settle(&mut app);
@@ -74,6 +71,17 @@ fn app(count: usize) -> (CedarApp, Receiver<Command>) {
         "geometry fixture must not start optional font I/O"
     );
     (app, commands)
+}
+
+fn prepare_report_viewport(app: &CedarApp) {
+    app.editor_ctx.data_mut(|data| {
+        data.insert_persisted(
+            egui::Id::new("tools"),
+            egui::containers::panel::PanelState {
+                rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE.x, 480.0)),
+            },
+        )
+    });
 }
 
 fn raw(app: &CedarApp, events: Vec<egui::Event>) -> egui::RawInput {
@@ -314,6 +322,71 @@ fn report_keyboard_space_companion_is_exact_and_mixed_ime_input_vetoes() {
     enter.push(egui::Event::Text(" ".into()));
     assert_eq!(clean_key(&enter), None);
     assert_eq!(clean_key(&[egui::Event::Text(" ".into())]), None);
+}
+
+#[test]
+fn report_keyboard_empty_then_explicit_read_prepares_real_viewport_before_navigation() {
+    let (mut app, commands) = app_with_snapshot(None);
+    assert!(app.test_report.snapshot.is_none());
+    assert!(commands.try_recv().is_err());
+    // The empty panel has no report ScrollArea to fill the seeded height.
+    // egui persists its actual content rect, so the initial 480 is not retained.
+    let empty_rect =
+        egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("tools"))
+            .unwrap()
+            .rect;
+    assert!(empty_rect.is_finite());
+    assert!(empty_rect.height() >= 150.0 && empty_rect.height() < 480.0);
+
+    click(&mut app, "test_report_load");
+    let command = commands.try_recv().unwrap();
+    assert!(matches!(&command.op, Operation::Read { path } if path == PATH));
+    let load = match app.pending.get(&command.id) {
+        Some(Job::TestReportRead(load)) => load.clone(),
+        _ => panic!("rendered Load must own the queued report Read"),
+    };
+    assert_eq!(app.test_report.loading.as_ref(), Some(&load));
+    assert_eq!(load.generation, app.generation);
+    assert_eq!(load.path, PATH);
+    assert!(commands.try_recv().is_err());
+    let text = xml(192);
+    let revision = format!("{:x}", Sha256::digest(text.as_bytes()));
+    app.apply_event(Event {
+        generation: app.generation,
+        id: command.id,
+        connected: true,
+        result: Ok(Payload::File {
+            path: PATH.into(),
+            revision: revision.clone(),
+            text,
+        }),
+    });
+    assert!(!app.pending.contains_key(&command.id));
+    assert!(app.test_report.loading.is_none());
+    let snapshot = app.test_report.snapshot.as_ref().unwrap();
+    assert_eq!(snapshot.source, load);
+    assert_eq!(snapshot.revision, revision);
+    assert_eq!(snapshot.report.cases.len(), 192);
+
+    // Prepare the same ordinary panel size only after the accepted Read exists.
+    // Focus and scroll offsets still come exclusively from production frames.
+    prepare_report_viewport(&app);
+    settle(&mut app);
+    let row = recorded_rect(&app, "test_report_case:0");
+    let clip = recorded_clip(&app, "test_report_case:0");
+    assert!(row.is_finite() && clip.is_finite());
+    assert!(row.width() > 0.0 && row.height() > 0.0 && clip.height() > row.height());
+    assert!(row.intersect(clip).width() > 0.0);
+    assert_visible(&app, "test_report_case:0");
+    focus(&mut app, "test_report_case:0");
+    for (key_value, index) in [(egui::Key::End, 191), (egui::Key::Home, 0)] {
+        frame(&mut app, key(key_value));
+        settle(&mut app);
+        assert_eq!(focused(&app), Some(case_id(&app, index)));
+        assert_visible(&app, &format!("test_report_case:{index}"));
+    }
+    assert!(app.test_report.selected.is_none());
+    assert!(commands.try_recv().is_err());
 }
 
 #[test]

@@ -102,7 +102,7 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual([item["phase"] for item in expected["operation_ledger"]],
                          ["setup"] * 4 + ["refresh"] * 3 + ["reconnect"] * 3)
         self.assertEqual(len(expected), 54)
-        self.assertEqual(expected["source_version"], "0.55.2")
+        self.assertEqual(expected["source_version"], "0.55.3")
         self.assertEqual((expected["requests"], expected["connections"], expected["agents_reaped"]),
                          (10, 2, 2))
         self.assertEqual((expected["setup_requests"], expected["refresh_requests"],
@@ -249,13 +249,13 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
                             b'[workspace]\npackage = false',
                             b'[workspace.package]\nversion = 54',
                             b'[workspace.package]\nversion = "0.53.4"',
-                            b'[workspace.package]\nversion = "0.55.2-extra"',
-                            b'[workspace.package]\nversion = "0.55.2"\nversion = "0.55.2"',
+                            b'[workspace.package]\nversion = "0.55.3-extra"',
+                            b'[workspace.package]\nversion = "0.55.3"\nversion = "0.55.3"',
                             b" " * (64 * 1024 + 1)):
                 path.write_bytes(invalid)
                 with self.subTest(data=invalid[:60]), self.assertRaises(proof.AcceptanceError):
                     proof.validate_source_version(root)
-            path.write_text('[workspace.package]\nversion = "0.55.2"\n')
+            path.write_text('[workspace.package]\nversion = "0.55.3"\n')
             proof.validate_source_version(root)
 
     def test_agent_digest_is_exact_nonempty_bounded_and_detects_same_size_change(self):
@@ -289,7 +289,7 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
 
 class DriverTests(unittest.TestCase):
     def exercise(self, platform="linux", *, failure=None, selection=None, runtime=None,
-                 missing_agent=False, invalid_artifact=False, source_version="0.55.2",
+                 missing_agent=False, invalid_artifact=False, source_version="0.55.3",
                  changed_agent=False, changed_source=False):
         with tempfile.TemporaryDirectory(prefix="cedar-triage-lines-driver-") as directory:
             root = Path(directory).resolve()
@@ -717,6 +717,140 @@ class DiagnosticEdgeTests(unittest.TestCase):
             self.assertIn("steps.report_triage_" + platform + ".outcome == 'failure'", workflow)
         self.assertEqual(workflow.count("path: ${{ runner.temp }}/cedar-report-triage-diagnostic/REPORT_TRIAGE_FAILURE.json"), 2)
         self.assertNotIn("cedar-report-triage-diagnostic/*", workflow)
+
+
+class GeometryDiagnosticTests(unittest.TestCase):
+    def context(self, **changes):
+        value = {"schema": 1, "case_ordinal": 3, "reason": "target_visibility",
+                 "target": "case", "row_index": 190, "phase": "loaded", "geometry_state": "finite",
+                 "rect": [320.0, 350.0, 975.0, 368.0],
+                 "clip": [300.0, 340.0, 980.0, 780.0], "scroll": [0.0, 2500.0]}
+        value.update(changes)
+        return value
+
+    def line(self, value):
+        import report_triage_diagnostics as diagnostic
+        return diagnostic.GEOMETRY_PREFIX + json.dumps(value, ensure_ascii=True, allow_nan=True)
+
+    def test_exact_loaded_geometry_and_native_prefix_survive_sanitization(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        value = self.context()
+        expected = {"kind": "report_geometry", **value}
+        self.assertEqual(diagnostic.geometry_context(self.line(value)), expected)
+        for prefix in ("", "test " + proof.TEST_NAME + " ... "):
+            items, suppressed, clipped = diagnostic.sanitize_output(
+                (prefix + self.line(value)).encode(), root, "runtime")
+            self.assertEqual(items, [expected])
+            self.assertEqual(suppressed, 0)
+            self.assertFalse(clipped)
+        self.assertEqual(diagnostic.sanitize_output(self.line(value).encode(), root, "compile")[0], [])
+
+    def test_before_load_is_explicit_and_has_no_row_or_stale_scroll(self):
+        import report_triage_diagnostics as diagnostic
+        value = self.context(case_ordinal=0, target="load", row_index=None,
+                             phase="before_load", scroll=None)
+        self.assertEqual(diagnostic.geometry_context(self.line(value)), {"kind": "report_geometry", **value})
+        for changes in ({"row_index": 0}, {"scroll": [0, 0]}, {"target": "case"},
+                        {"reason": "loaded_viewport"}):
+            self.assertIsNone(diagnostic.geometry_context(self.line({**value, **changes})))
+
+    def test_nonfinite_geometry_uses_explicit_invalid_state_with_no_numeric_payload(self):
+        import report_triage_diagnostics as diagnostic
+        value = self.context(geometry_state="invalid", rect=None, clip=None, scroll=None)
+        self.assertEqual(diagnostic.geometry_context(self.line(value)), {"kind": "report_geometry", **value})
+        before = {**value, "case_ordinal": 0, "phase": "before_load", "target": "load", "row_index": None}
+        self.assertIsNotNone(diagnostic.geometry_context(self.line(before)))
+        for key, values in (("rect", [0, 0, 1, 1]), ("clip", [0, 0, 1, 1]), ("scroll", [0, 0])):
+            self.assertIsNone(diagnostic.geometry_context(self.line({**value, key: values})))
+
+    def test_rejects_wrong_keys_types_roles_ordinals_indices_and_private_strings(self):
+        import report_triage_diagnostics as diagnostic
+        bad = [None, [], "SECRET", {**self.context(), "path": "/private/SECRET"},
+               {key: value for key, value in self.context().items() if key != "phase"}]
+        for key, values in {
+            "schema": [True, 1.0, 2, "1"],
+            "case_ordinal": [True, -1, 14, 3.0, "3"],
+            "row_index": [None, True, -1, 192, 190.0, "190"],
+            "target": [[], "SECRET", "case:private", 1],
+            "phase": [[], "SECRET", "beforeLoad", True],
+            "geometry_state": [[], "NaN", "SECRET", False],
+            "reason": [[], "SECRET", "visibility", 1],
+            "rect": [None, [], [1, 2, 3], [1, 2, 3, 4, 5], "SECRET"],
+            "clip": [None, "SECRET"],
+            "scroll": [None, [], [0, 0, 0], "SECRET"],
+        }.items():
+            bad.extend(self.context(**{key: value}) for value in values)
+        bad.extend((self.context(target="load"), self.context(reason="loaded_viewport"),
+                    self.context(target="back", row_index=None),
+                    self.context(target="details", row_index=None)))
+        for value in bad:
+            with self.subTest(value=value):
+                self.assertIsNone(diagnostic.geometry_context(self.line(value)))
+
+    def test_rejects_boolean_nonfinite_huge_and_out_of_range_coordinates(self):
+        import report_triage_diagnostics as diagnostic
+        for key, count in (("rect", 4), ("clip", 4), ("scroll", 2)):
+            for number in (True, False, "SECRET", None, [], float("nan"), float("inf"),
+                           -float("inf"), 100001, -100001, 10 ** 1000):
+                values = [0] * count
+                values[0] = number
+                with self.subTest(key=key, number_type=type(number)):
+                    self.assertIsNone(diagnostic.geometry_context(self.line(self.context(**{key: values}))))
+        boundary = self.context(rect=[-100000, 0, 100000, 1], scroll=[100000, -100000])
+        self.assertIsNotNone(diagnostic.geometry_context(self.line(boundary)))
+
+    def test_duplicate_keys_malformed_and_oversized_context_are_rejected(self):
+        import report_triage_diagnostics as diagnostic
+        good = self.line(self.context())
+        for bad in (good.replace('"schema": 1', '"schema": 1, "schema": 1'),
+                    good.replace("320.0", "1e309", 1),
+                    good[:-1], good + "SECRET", good.replace(diagnostic.GEOMETRY_PREFIX, "wrong ", 1),
+                    diagnostic.GEOMETRY_PREFIX + " " * diagnostic.MAX_GEOMETRY_BYTES + "{}"):
+            self.assertIsNone(diagnostic.geometry_context(bad))
+        root = Path(__file__).resolve().parent.parent
+        oversized = diagnostic.GEOMETRY_PREFIX + " " * diagnostic.MAX_GEOMETRY_BYTES + "{}"
+        self.assertEqual(diagnostic.sanitize_output(oversized.encode(), root, "runtime"), ([], 1, True))
+
+    def test_loaded_viewport_context_is_only_exact_first_row(self):
+        import report_triage_diagnostics as diagnostic
+        value = self.context(reason="loaded_viewport", row_index=0)
+        self.assertIsNotNone(diagnostic.geometry_context(self.line(value)))
+        for changes in ({"row_index": 1}, {"row_index": None}, {"target": "back"},
+                        {"phase": "before_load"}):
+            self.assertIsNone(diagnostic.geometry_context(self.line({**value, **changes})))
+
+    def test_failure_artifact_contains_no_unknown_geometry_payload(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        data = (self.line(self.context()) + "\n" + self.line(self.context(rect=["SECRET", 0, 0, 0]))
+                + '\nError: "focused report target was not revealed in its real viewport"\n'
+                  'fixture document SECRET path=/private/SECRET\n').encode()
+        failure = diagnostic.CapturedFailure("subprocess_nonzero", data, returncode=1, eof=True, cleanup="reaped")
+        item = diagnostic.failure_artifact(diagnostic.StageFailure("runtime", failure, root, 90, 256 * 1024))
+        self.assertEqual([entry["kind"] for entry in item["diagnostics"]], ["report_geometry", "native_check"])
+        self.assertEqual(item["suppressed_lines"], 2)
+        self.assertNotIn("SECRET", json.dumps(item))
+        self.assertNotIn("/private", json.dumps(item))
+        self.assertLess(len(json.dumps(item).encode()), diagnostic.MAX_ARTIFACT_BYTES)
+
+    def test_fixture_reestablishes_height_only_after_accepted_read_without_added_frames(self):
+        root = Path(__file__).resolve().parent.parent
+        source = (root / "crates/app/src/report_triage_process_tests.rs").read_text()
+        start = source.index("    fn load_report_control(")
+        end = source.index("    fn explicit_refresh_reply(", start)
+        helper = source[start:end]
+        ordered = ["self.read_report_command()?", "self.app.apply_event(event)", "self.source()?",
+                   "set_report_panel_height(&self.app)", "self.settle()?", "self.loaded_viewport()"]
+        self.assertEqual([helper.index(part) for part in ordered], sorted(helper.index(part) for part in ordered))
+        self.assertEqual(helper.count("self.settle()"), 1)
+        self.assertNotIn("self.frame(", helper)
+        viewport = source[source.index("    fn loaded_viewport("):source.index("    fn expect_row(")]
+        self.assertIn("clip.height() > rect.height()", viewport)
+        self.assertIn("clip.contains_rect(rect)", viewport)
+        self.assertIn('let name = "test_report_case:0";', viewport)
+        self.assertIn("egui::vec2(1000.0, 480.0)", source)
+        self.assertIn("egui::vec2(1000.0, 820.0)", source)
 
 
 if __name__ == "__main__":
