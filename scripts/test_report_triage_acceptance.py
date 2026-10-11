@@ -77,7 +77,7 @@ class ReceiptTests(unittest.TestCase):
                         payload(platform=platform).replace(b"\n", ending), platform),
                         proof.expected_receipt(platform))
 
-    def test_fixed_ten_request_ledger_and_fourteen_cases(self):
+    def test_fixed_ten_request_ledger_and_fifteen_cases(self):
         expected = proof.expected_receipt("linux")
         self.assertEqual(expected["cases"], [
             'explicit_trust_off_report_read',
@@ -93,16 +93,19 @@ class ReceiptTests(unittest.TestCase):
             'stale_session_capture_rejected',
             'fresh_reconnect_navigation',
             'dirty_full_selection_native_undo_redo',
+            'automatic_height_reset_preserves_report_and_draft',
             'exact_ledger_disk_and_owner_cleanup',
         ])
-        self.assertEqual(len(set(expected["cases"])), 14)
+        self.assertEqual(len(set(expected["cases"])), 15)
+        self.assertEqual(expected["cases_executed"], 15)
+        self.assertIs(expected["automatic_height_reset_preserved_state"], True)
         self.assertEqual(len(expected["operation_ledger"]), 10)
         self.assertEqual([item["op"] for item in expected["operation_ledger"]],
                          ["Hello", "List", "Read", "Read", "Read", "Read", "Read", "Hello", "List", "Read"])
         self.assertEqual([item["phase"] for item in expected["operation_ledger"]],
                          ["setup"] * 4 + ["refresh"] * 3 + ["reconnect"] * 3)
-        self.assertEqual(len(expected), 54)
-        self.assertEqual(expected["source_version"], "0.57.6")
+        self.assertEqual(len(expected), 55)
+        self.assertEqual(expected["source_version"], "0.58.0")
         self.assertEqual((expected["requests"], expected["connections"], expected["agents_reaped"]),
                          (10, 2, 2))
         self.assertEqual((expected["setup_requests"], expected["refresh_requests"],
@@ -122,6 +125,25 @@ class ReceiptTests(unittest.TestCase):
             {"source": "draft", "sha256": "5383e74c2ab999d8eae0978d725ca7eba35344ae9f370c74c688679dcf3b3db1"},
             {"source": "report", "sha256": "bc24e7e96e0badbbd9bebce5e5a0da12062fdd9880c0074855bdd213d1ef09e9"},
         ])
+
+    def test_old_receipt_and_unexecuted_or_extra_reset_case_are_rejected(self):
+        for platform in ("linux", "windows"):
+            expected = proof.expected_receipt(platform)
+            legacy = copy.deepcopy(expected)
+            legacy["cases"].remove("automatic_height_reset_preserves_report_and_draft")
+            legacy["cases_executed"] = 14
+            del legacy["automatic_height_reset_preserved_state"]
+            for changes in (
+                legacy,
+                {**expected, "cases_executed": 14},
+                {**expected, "cases_executed": 16},
+                {**expected, "automatic_height_reset_preserved_state": False},
+                {**expected, "automatic_height_reset_preserved_state": 1},
+                {**expected, "cases": expected["cases"][:13] + expected["cases"][14:]},
+                {**expected, "cases": expected["cases"] + [expected["cases"][13]]},
+            ):
+                with self.subTest(platform=platform, receipt=changes), self.assertRaises(proof.AcceptanceError):
+                    proof.validate_execution(payload(changes, platform), platform)
 
     def test_every_value_key_type_and_nested_ledger_is_exact(self):
         expected = proof.expected_receipt("linux")
@@ -199,6 +221,12 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(source.count("#[test]"), 1)
         case_block = source[source.index("const CASES"):source.index("type Check")]
         self.assertEqual(re.findall(r'    "([a-z_]+)",', case_block), list(proof.CASES))
+        self.assertIn("const CASES: [&str; 15]", source)
+        self.assertEqual(re.findall(r'h\.case\(CASES\[(\d+)\]\)\?', source),
+                         [str(index) for index in range(15)])
+        self.assertIn('"cases_executed": 15', source)
+        self.assertIn('"automatic_height_reset_preserved_state",', source)
+        self.assertIn('require(fields.len() == 55, "receipt field count differed")', source)
         self.assertIn("CEDAR_REPORT_TRIAGE_AGENT_BIN", source)
         self.assertIn('eframe::App::raw_input_hook(&mut self.app, &ctx, &mut input);', source)
         self.assertIn('mod report_triage_process_tests;',
@@ -249,13 +277,13 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
                             b'[workspace]\npackage = false',
                             b'[workspace.package]\nversion = 54',
                             b'[workspace.package]\nversion = "0.53.4"',
-                            b'[workspace.package]\nversion = "0.57.6-extra"',
-                            b'[workspace.package]\nversion = "0.57.6"\nversion = "0.57.6"',
+                            b'[workspace.package]\nversion = "0.58.0-extra"',
+                            b'[workspace.package]\nversion = "0.58.0"\nversion = "0.58.0"',
                             b" " * (64 * 1024 + 1)):
                 path.write_bytes(invalid)
                 with self.subTest(data=invalid[:60]), self.assertRaises(proof.AcceptanceError):
                     proof.validate_source_version(root)
-            path.write_text('[workspace.package]\nversion = "0.57.6"\n')
+            path.write_text('[workspace.package]\nversion = "0.58.0"\n')
             proof.validate_source_version(root)
 
     def test_agent_digest_is_exact_nonempty_bounded_and_detects_same_size_change(self):
@@ -289,7 +317,7 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
 
 class DriverTests(unittest.TestCase):
     def exercise(self, platform="linux", *, failure=None, selection=None, runtime=None,
-                 missing_agent=False, invalid_artifact=False, source_version="0.57.6",
+                 missing_agent=False, invalid_artifact=False, source_version="0.58.0",
                  changed_agent=False, changed_source=False):
         with tempfile.TemporaryDirectory(prefix="cedar-triage-lines-driver-") as directory:
             root = Path(directory).resolve()
@@ -355,7 +383,7 @@ class DriverTests(unittest.TestCase):
                 self.assertEqual([limit for _, _, limit in calls],
                                  [4 * 1024 * 1024, 16 * 1024, 256 * 1024])
                 self.assertEqual(output.count(proof.PREFIX), 1)
-                self.assertIn("14 cases, 10 explicit requests, 0 navigation requests, 2 agents reaped", output)
+                self.assertIn("15 cases, 10 explicit requests, 0 navigation requests, 2 agents reaped", output)
 
     def test_preparation_failure_never_starts_runtime(self):
         for changes, expected_calls in (({"missing_agent": True}, 0), ({"source_version": "0.53.4"}, 0),
@@ -591,6 +619,42 @@ class DiagnosticPrivacyTests(unittest.TestCase):
         for private in ("SECRET", "/private", "report-body", str(root)):
             self.assertNotIn(private, json.dumps(item))
 
+    def test_automatic_height_checks_are_fixed_source_literals_without_private_payloads(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        messages = (
+            "Automatic height control did not clear the manual preference",
+            "Automatic height control was not enabled",
+            "Automatic height preference was restored after settling",
+            "Automatic height reset changed the operation ledger",
+            "Automatic height reset changed the report snapshot or selection",
+            "Automatic height reset did not start with a manual report height",
+            "Automatic height reset lost native Redo state",
+            "Automatic height reset lost native Undo selection",
+        )
+        source = (root / "crates/app/src/report_triage_process_tests.rs").read_text().splitlines()
+        known = diagnostic.native_errors(root)
+        for message in messages:
+            self.assertIn(message, diagnostic.NATIVE_ERRORS)
+            self.assertEqual(known[message], [line for line, text in enumerate(source, 1)
+                                              if '"' + message + '"' in text])
+            self.assertEqual(len(known[message]), 1)
+        data = b"".join(f'Error: "{message}"\n'.encode() for message in messages)
+        data += (b'Error: "Automatic height reset changed the operation ledger SECRET"\n'
+                 b'Error: "SECRET fixture content"\n/private/SECRET report-body=SECRET\n')
+        failure = diagnostic.CapturedFailure("subprocess_nonzero", data, returncode=1, eof=True, cleanup="reaped")
+        item = diagnostic.failure_artifact(diagnostic.StageFailure("runtime", failure, root, 90, 256 * 1024))
+        self.assertEqual(item["diagnostics"], [
+            {"kind": "native_check", "message": message,
+             "source": "crates/app/src/report_triage_process_tests.rs", "line": known[message][0]}
+            for message in messages])
+        self.assertEqual(item["suppressed_lines"], 3)
+        self.assertFalse(item["diagnostics_truncated"])
+        self.assertEqual(item["raw_output_omitted_bytes"], len(data))
+        self.assertEqual(item["native_cleanup"], "unverified")
+        for private in ("SECRET", "/private", "report-body", str(root)):
+            self.assertNotIn(private, json.dumps(item))
+
     def test_panic_keeps_only_verified_relative_location(self):
         import report_triage_diagnostics as diagnostic
         root = Path(__file__).resolve().parent.parent
@@ -784,6 +848,14 @@ class GeometryDiagnosticTests(unittest.TestCase):
             self.assertFalse(clipped)
         self.assertEqual(diagnostic.sanitize_output(self.line(value).encode(), root, "compile")[0], [])
 
+    def test_fifteen_case_geometry_ordinals_remain_exact_and_bounded(self):
+        import report_triage_diagnostics as diagnostic
+        for ordinal in range(15):
+            value = self.context(case_ordinal=ordinal)
+            self.assertEqual(diagnostic.geometry_context(self.line(value)), {"kind": "report_geometry", **value})
+        for ordinal in (-1, 15, True, 14.0, "14"):
+            self.assertIsNone(diagnostic.geometry_context(self.line(self.context(case_ordinal=ordinal))))
+
     def test_before_load_is_explicit_and_has_no_row_or_stale_scroll(self):
         import report_triage_diagnostics as diagnostic
         value = self.context(case_ordinal=0, target="load", row_index=None,
@@ -808,7 +880,7 @@ class GeometryDiagnosticTests(unittest.TestCase):
                {key: value for key, value in self.context().items() if key != "phase"}]
         for key, values in {
             "schema": [True, 1.0, 2, "1"],
-            "case_ordinal": [True, -1, 14, 3.0, "3"],
+            "case_ordinal": [True, -1, 15, 3.0, "3"],
             "row_index": [None, True, -1, 192, 190.0, "190"],
             "target": [[], "SECRET", "case:private", 1],
             "phase": [[], "SECRET", "beforeLoad", True],
@@ -871,6 +943,43 @@ class GeometryDiagnosticTests(unittest.TestCase):
         self.assertNotIn("SECRET", json.dumps(item))
         self.assertNotIn("/private", json.dumps(item))
         self.assertLess(len(json.dumps(item).encode()), diagnostic.MAX_ARTIFACT_BYTES)
+
+    def test_reset_case_uses_real_header_frames_before_unchanged_cleanup(self):
+        root = Path(__file__).resolve().parent.parent
+        source = (root / "crates/app/src/report_triage_process_tests.rs").read_text()
+        start = source.index("    h.case(CASES[12])?;")
+        end = source.index("    let expected = serde_json::json!([", start)
+        reset = source[start:end]
+        ordered = ["h.focus_row(190)?", "h.details(190, false)?", "h.resized_report_panel()?",
+                   "h.app.tools_height.is_some_and", "let reset_snapshot", "let reset_report_state",
+                   "let reset_buffers = h.buffers()", "let reset_selection = h.selection(draft)?",
+                   "let reset_history = h.history(draft)?", "let reset_ledger = h.ledger.ordered.clone()",
+                   'h.click_probe("tools_automatic_height", false)?', "h.app.tools_height.is_none()",
+                   "h.settle()?", "h.app.tools_height.is_none()",
+                   "h.preserved(&reset_buffers, draft, reset_selection, &reset_history)?",
+                   "snapshot.source == reset_snapshot.0", "snapshot.revision == reset_snapshot.1",
+                   "snapshot.report == reset_snapshot.2", ") == reset_report_state",
+                   "h.ledger.ordered == reset_ledger && h.ledger.counts() == reset_counts",
+                   "h.undo(false, DRAFT, DRAFT_BASE)?", "h.undo(true, DRAFT, DRAFT_TEXT)?",
+                   "h.history(draft)? == reset_history", "h.case(CASES[13])?"]
+        cursor = 0
+        for part in ordered:
+            cursor = reset.index(part, cursor) + len(part)
+        for forbidden in ("tools_height =", "reset_tools_height", "insert_persisted", "PanelState {",
+                          "Operation::", "load_test_report", "load_report_control", "exchange(",
+                          "std::process", "Command::new"):
+            self.assertNotIn(forbidden, reset)
+        self.assertEqual(source.count('h.click_probe("tools_automatic_height", false)?'), 1)
+        self.assertLess(source.index("    h.case(CASES[13])?;"), source.index("    h.reap()?;"))
+        self.assertIn("    h.case(CASES[14])?;\n    h.stop_watchdog()?;", source)
+        click = source[source.index("    fn click_probe("):source.index("    fn click_label(")]
+        self.assertIn("self.visible_probe(name)?", click)
+        self.assertIn("self.click_at(at, request)", click)
+        pointer = source[source.index("    fn click_at("):source.index("    fn click_probe(")]
+        self.assertIn("for pressed in [true, false]", pointer)
+        self.assertIn("egui::Event::PointerButton", pointer)
+        self.assertIn("button: egui::PointerButton::Primary", pointer)
+        self.assertIn("self.frame(events)?", pointer)
 
     def test_fixture_native_resize_precedes_load_and_survives_read_without_reseeding(self):
         root = Path(__file__).resolve().parent.parent

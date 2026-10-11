@@ -12,6 +12,44 @@ pub(super) fn native_resize_id() -> egui::Id {
     panel_id().with("__resize")
 }
 
+/// A reset cannot recapture the drag that was already in progress.
+#[derive(Default)]
+pub(super) struct ResetGuard {
+    block_frame: bool,
+    waiting_for_release: bool,
+}
+
+impl ResetGuard {
+    /// Observe each original native batch once, even while tools are hidden.
+    /// Release opens the next batch; every layout pass in this one stays blocked.
+    pub(super) fn begin_input_frame(&mut self, input: &egui::RawInput) {
+        self.block_frame = self.waiting_for_release;
+        if input.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    ..
+                }
+            )
+        }) {
+            self.waiting_for_release = false;
+        }
+    }
+
+    pub(super) fn reset(&mut self, primary_down: bool) {
+        self.block_frame = true;
+        // Focus loss or PointerGone can clear egui's held state without a real
+        // release. Repeated resets must still wait for that release event.
+        self.waiting_for_release |= primary_down;
+    }
+
+    pub(super) fn capture_allowed(&self) -> bool {
+        !self.block_frame
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct ResizePass {
     reserve: bool,
@@ -52,7 +90,11 @@ fn display_height(preferred: f32, available: f32) -> f32 {
     preferred.clamp(150.0, 500.0).min(available.max(0.0))
 }
 
-pub(super) fn prepare(ctx: &egui::Context, preferred: Option<f32>) -> ResizePass {
+pub(super) fn prepare(
+    ctx: &egui::Context,
+    preferred: Option<f32>,
+    reset: &ResetGuard,
+) -> ResizePass {
     let response = ctx.read_response(native_resize_id());
     let (origin, primary_only) = ctx.input(|input| {
         let primary_only = input.pointer.primary_down()
@@ -66,7 +108,8 @@ pub(super) fn prepare(ctx: &egui::Context, preferred: Option<f32>) -> ResizePass
             .any(|button| input.pointer.button_down(*button));
         (input.pointer.press_origin(), primary_only)
     });
-    let owned_primary_drag = primary_only
+    let owned_primary_drag = reset.capture_allowed()
+        && primary_only
         && response
             .as_ref()
             .is_some_and(|response| response.dragged_by(egui::PointerButton::Primary));
@@ -105,6 +148,102 @@ impl ResizePass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn primary(pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: egui::pos2(100.0, 100.0),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn input(events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            events,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reset_without_a_held_primary_blocks_only_the_current_input_frame() {
+        let mut guard = ResetGuard::default();
+        assert!(guard.capture_allowed());
+        guard.reset(false);
+        for _ in 0..3 {
+            assert!(
+                !guard.capture_allowed(),
+                "all remaining passes stay blocked"
+            );
+        }
+        guard.begin_input_frame(&input(vec![]));
+        assert!(guard.capture_allowed());
+    }
+
+    #[test]
+    fn held_reset_blocks_the_whole_release_and_repress_batch() {
+        for events in [
+            vec![primary(false)],
+            vec![primary(false), primary(true)],
+            vec![primary(true), primary(false)],
+        ] {
+            let mut guard = ResetGuard::default();
+            guard.reset(true);
+            guard.begin_input_frame(&input(vec![]));
+            assert!(!guard.capture_allowed());
+            guard.begin_input_frame(&input(events));
+            for _ in 0..3 {
+                assert!(!guard.capture_allowed(), "release cannot reopen this batch");
+            }
+            guard.begin_input_frame(&input(vec![]));
+            assert!(guard.capture_allowed(), "a later native drag may capture");
+        }
+    }
+
+    #[test]
+    fn missing_release_survives_focus_loss_pointer_gone_and_repeated_resets() {
+        let mut guard = ResetGuard::default();
+        guard.reset(true);
+        for event in [
+            egui::Event::WindowFocused(false),
+            egui::Event::PointerGone,
+            egui::Event::WindowFocused(true),
+            egui::Event::PointerButton {
+                pos: egui::pos2(100.0, 100.0),
+                button: egui::PointerButton::Secondary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ] {
+            guard.begin_input_frame(&input(vec![event]));
+            assert!(!guard.capture_allowed());
+            guard.reset(false);
+            guard.begin_input_frame(&input(vec![]));
+            assert!(
+                !guard.capture_allowed(),
+                "no actual primary release arrived"
+            );
+        }
+        // If the original release was lost, a later physical press and release
+        // recovers the guard. That gesture itself cannot create a preference.
+        guard.begin_input_frame(&input(vec![primary(true)]));
+        assert!(!guard.capture_allowed());
+        guard.begin_input_frame(&input(vec![primary(false)]));
+        assert!(!guard.capture_allowed());
+        guard.begin_input_frame(&input(vec![]));
+        assert!(guard.capture_allowed());
+    }
+
+    #[test]
+    fn a_new_reset_after_an_observed_release_needs_no_extra_release() {
+        let mut guard = ResetGuard::default();
+        guard.reset(true);
+        guard.begin_input_frame(&input(vec![primary(false)]));
+        guard.reset(false);
+        assert!(!guard.capture_allowed());
+        guard.begin_input_frame(&input(vec![]));
+        assert!(guard.capture_allowed());
+    }
 
     #[test]
     fn only_owned_primary_vertical_intent_enters_explicit_mode() {

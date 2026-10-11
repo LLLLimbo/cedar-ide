@@ -384,6 +384,7 @@ pub struct CedarApp {
     tools_open: bool,
     // Runtime-only preference, established by a deliberate native-edge drag.
     tools_height: Option<f32>,
+    tools_height_reset: tools_resize::ResetGuard,
     search_query: String,
     search_results: Vec<SearchMatch>,
     search_truncated: bool,
@@ -495,6 +496,7 @@ impl CedarApp {
             tool: Tool::Search,
             tools_open: false,
             tools_height: None,
+            tools_height_reset: tools_resize::ResetGuard::default(),
             search_query: String::new(),
             search_results: Vec::new(),
             search_truncated: false,
@@ -2404,7 +2406,8 @@ impl CedarApp {
             return;
         }
         let mut close_tools = None;
-        let resize = tools_resize::prepare(ctx, self.tools_height);
+        let mut automatic_height = false;
+        let resize = tools_resize::prepare(ctx, self.tools_height, &self.tools_height_reset);
         let frame = egui::Frame::new().fill(PANEL).inner_margin(12.0);
         egui::TopBottomPanel::bottom("tools")
             .default_height(245.0)
@@ -2434,6 +2437,34 @@ impl CedarApp {
                             self.tool = tool;
                         }
                     }
+                    // A nested non-wrapping row does not wrap with its parent.
+                    // Match small Button sizing: Body text, horizontal frame
+                    // padding, and an inside stroke that adds no layout width.
+                    let button_padding = if ui.visuals().button_frame {
+                        2.0 * ui.spacing().button_padding.x
+                    } else {
+                        0.0
+                    };
+                    let controls_width = ["x", "Automatic height"]
+                        .into_iter()
+                        .map(|label| {
+                            egui::WidgetText::from(label)
+                                .text_style(egui::TextStyle::Body)
+                                .into_galley(
+                                    ui,
+                                    Some(egui::TextWrapMode::Extend),
+                                    f32::INFINITY,
+                                    egui::TextStyle::Button,
+                                )
+                                .size()
+                                .x
+                                + button_padding
+                        })
+                        .sum::<f32>()
+                        + ui.spacing().item_spacing.x;
+                    if controls_width > ui.available_size_before_wrap().x {
+                        ui.end_row();
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let close = ui
                             .small_button("x")
@@ -2443,6 +2474,18 @@ impl CedarApp {
                         if close.clicked() {
                             close_tools = Some(close);
                         }
+                        let reset = ui
+                            .push_id("tools_automatic_height", |ui| {
+                                ui.add_enabled(
+                                    self.tools_height.is_some(),
+                                    egui::Button::new("Automatic height").small(),
+                                )
+                            })
+                            .inner
+                            .on_hover_text("Let tool content determine the panel height");
+                        #[cfg(test)]
+                        workspace_access_tests::record(ui, "tools_automatic_height", &reset);
+                        automatic_height |= reset.clicked();
                     });
                 });
                 ui.separator();
@@ -2454,6 +2497,12 @@ impl CedarApp {
                     Tool::Tests => self.test_report_panel(ui),
                 }
             });
+        if automatic_height {
+            self.tools_height = None;
+            self.tools_height_reset
+                .reset(ctx.input(|input| input.pointer.primary_down()));
+            ctx.request_repaint();
+        }
         if let Some(response) = close_tools {
             self.close_tools(ctx, &response);
         }
@@ -3093,6 +3142,7 @@ impl CedarApp {
 impl eframe::App for CedarApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.duplicate_input = self.capture_duplicate_input(ctx, raw_input);
+        self.tools_height_reset.begin_input_frame(raw_input);
         self.capture_replace_input(ctx, raw_input);
         self.navigation.begin_input_frame(ctx, raw_input);
         self.capture_tab_close_focus_input(ctx, raw_input);

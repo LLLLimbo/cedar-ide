@@ -20,7 +20,7 @@ The optional argument prefills the local workspace field. Select **Connect works
 - Directory navigation, new-file drafts, up to 32 tabs, and path-based quick open
 - UTF-8 editing, line numbers, Java/Kotlin/Rust lexical colors, and case-sensitive find
 - Revision-checked saves, disk-version inspection, and explicit confirmation before discarding a dirty tab or quitting
-- Explicit project text search with historical line results; 0.57.6 corrects a mixed-input test fixture while retaining 0.57.5 raw mouse-motion companion classification and full click ownership; fresh CI and native acceptance remain incomplete
+- Explicit project text search with historical line results; 0.57.6 passed complete dual-platform CI, all three packages and bounded Linux native acceptance, with an exact inactive-row pointer-hit limitation retained
 - Trusted-workspace Git status and explicit executable commands with literal argument rows, cancellable task output, and saved project profiles in `cedar.tasks.json`
 
 Shortcuts:
@@ -62,56 +62,38 @@ CI and all three packages passed; bounded Linux native acceptance combines the
 original partial run with a separate same-package shrink/regrow check. Original
 misses and limits remain in the [0.56.1 report](../../docs/TEST_REPORT_PHASE561_TOOLS_HEIGHT.md#final-accepted-0561-evidence).
 
-## Project Search keyboard navigation (0.57.6 mixed-input fixture correction candidate)
+The 0.58.0 candidate adds **Automatic height** in the tools header. It explicitly
+clears the runtime height preference after the current panel pass and requests a
+repaint using the existing automatic content-sizing behavior. A later genuine
+divider drag can establish an explicit height again. It does not persist settings
+or send a workspace request. Fresh 0.58.0 CI, package and native validation remain
+pending; the command-output banner remains backlog only.
 
-0.57.1 passed both platform CI jobs, its process proofs and all three package
-audits, but the native Linux check failed when clicking the preceding result at
-line 96 after Space opened the last result at line 97. The visible position stayed
-at line 97. Tool acknowledgement and hover do not prove raw event delivery or
-egui clicked ownership; the cause remains unknown and no retry was made.
-0.57.2 passed strict checks on both platforms, but all four new scrolled-pointer
-tests failed the target rectangle/clip containment assertion without frame-edge or
-geometry context. It produced no artifacts; release, process and package gates did
-not run. 0.57.3 also passed both strict checks, but the same four tests failed.
-Its bounded witnesses recorded a controlled ScrollArea drag when pointer arrival
-and press shared a frame; the next retained target row lay outside the clip.
-Partial clicked/ticket witnesses did not reach the final cursor/history/request
-assertions. No packages or downstream runtime results were produced.
-0.57.4 inserted one test-only PointerMoved arrival frame before the old press,
-explicitly narrowing the click criterion to an already-arrived pointer. Both OS
-CI jobs, all retained process gates and all three package audits passed. Each OS
-passed all four diagnostics, 25 Search and 19 report tests, and the exact
-14-case/57-field/12-request Search proof. No native GUI run occurred. The old
-combined arrival/press evidence stays archived as a controlled drag characterization.
+## Project Search keyboard navigation (0.57.6 bounded acceptance)
 
-0.57.5 changed shipping Search's pointer-only allowlist to admit MouseMoved(_) as
-ignored companion metadata. It never reads or validates the vector, including
-finiteness, or derives position or geometry from it. It does not consume or replay
-the event. Actual Primary-button absolute positions, matching capture/view/release/
-current-frame ownership and the row's actual egui clicked_by(Primary) response
-remain mandatory. The three formerly rejected press/held/release companion cases
-now require successful exact-row navigation, while new negatives protect unowned,
-mixed-input and stale-view boundaries. Keyboard, Tests/report, Explorer and shared
-raw-input consumption rules are unchanged. The already-arrived fixture keeps its
-arrival invariants, zero-delta press and containment checks. 0.57.5 passed both strict
-checks, all four composed positive cases, 32 of 33 Search tests and all 19 report
-keyboard tests, but one new mixed pointer/key test failed its residual event-count
-assertion (3 actual versus 1 expected). Linux app recorded 1,166/1/50 and Windows
-1,169/1/54 passed/failed/ignored; neither log identified the key/edge iteration.
-Zero artifacts were produced, and release, downstream process, package and new
-native gates did not run.
+0.57.6 is the latest accepted checkpoint: complete dual-platform CI, all retained
+process gates and all three packages passed. Both platforms passed 33 Search and
+19 report-keyboard tests and the exact 14-case/57-field/12-request Search proof.
+A fresh exact-package cloud Linux native run observed Space opening line 97 and
+an isolated preceding-row click reaching line 96, plus historical-query display,
+fresh-query reactivation and reconnect followed by explicit re-search.
 
-0.57.6 only corrects that test's key-ownership expectation and adds bounded
-key/edge/focus/claim diagnostics. The normal row-2 press clears row-0 focus:
-Press begins with Some(row0) and retains three pointer events after the owned key
-pair is consumed; Held/Release begin with None and preserve the original key pair,
-leaving three/five events. No pre-existing or final key claim, exact residual
-order/payload and the unchanged no-activation checks are required. There are no
-added frames, forced focus or shipping logic changes. This explanation comes from
-source review; the old logs did not expose the failing iteration. Fresh exact-commit
-CI remains required before any separate decision on another native GUI run. These
-deterministic cases do not establish arbitrary coalesced-input behavior or explain
-the historical native failure. 0.56.1 remains the latest fully accepted checkpoint.
+The edited-query inactive rows were visibly disabled, and an attempted click
+produced no navigation. Their roughly 20-pixel layout shift prevents an exact
+inactive-widget hit claim; that guard is established by CI/process proofs. The
+native run does not establish raw event batches, backend request counts or
+owned-agent reaping. It does not explain the preserved 0.57.1 native failure or
+claim Windows GUI acceptance. The [final 0.57.6 evidence](../../docs/TEST_REPORT_PHASE576_SEARCH_MIXED_INPUT.md#final-accepted-0576-evidence)
+retains each original failed verdict and the exact-package native limits.
+
+Shipping Search retains the 0.57.5 classification: MouseMoved(_) is ignored
+companion metadata, never read or validated for finiteness, and never used as a
+position or geometry source, consumed or replayed. Actual Primary-button absolute
+positions, matching capture/view/release/current-frame ownership and the row's
+actual egui clicked_by(Primary) response remain mandatory. The 0.57.6 correction
+changes only a mixed-input test's focus/key-ownership expectation and bounded
+diagnostics, with no added frames, forced focus or shipping change. Deterministic
+already-arrived-pointer cases do not guarantee arbitrary merged native input.
 
 Enter a case-sensitive literal query and explicitly select **Search**, or press
 Enter in its query field. The accepted result batch labels the submitted query.
@@ -138,9 +120,8 @@ Query/batch changes, hidden or switched tools, modals and competing input cancel
 unfinished row intent; continue with a fresh valid key or pointer action. The frontend keeps at
 most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
 oversized batches are rejected whole. No automatic search, new engine, protocol,
-capability or workspace operation is added. 0.57.6 CI, process proofs and packages
-remain [pending](../../docs/TEST_REPORT.md). The retained shipping classification
-does not establish the historical native cause or authorize an automatic GUI rerun.
+capability or workspace operation is added. The 0.58.0 Automatic height candidate
+requires fresh validation described in the [current report](../../docs/TEST_REPORT.md).
 
 ## Agent capabilities and trust
 

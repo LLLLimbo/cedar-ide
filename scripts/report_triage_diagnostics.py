@@ -43,6 +43,14 @@ CATEGORIES = {
 # Reviewed static errors from the generated-fixture process proof. Unknown
 # assertion text, compiler prose, source snippets, and fixture values are omitted.
 NATIVE_ERRORS = frozenset((
+    'Automatic height control did not clear the manual preference',
+    'Automatic height control was not enabled',
+    'Automatic height preference was restored after settling',
+    'Automatic height reset changed the operation ledger',
+    'Automatic height reset changed the report snapshot or selection',
+    'Automatic height reset did not start with a manual report height',
+    'Automatic height reset lost native Redo state',
+    'Automatic height reset lost native Undo selection',
     'Open operation ledger differed',
     'Tools panel did not retain the native 480-point resize',
     'activation did not select exact duplicate-name row and focus Back',
@@ -295,7 +303,7 @@ def geometry_context(line):
     if type(value) is not dict or set(value) != GEOMETRY_KEYS:
         return None
     if (type(value["schema"]) is not int or value["schema"] != 1
-            or type(value["case_ordinal"]) is not int or not 0 <= value["case_ordinal"] <= 13
+            or type(value["case_ordinal"]) is not int or not 0 <= value["case_ordinal"] <= 14
             or type(value["reason"]) is not str or value["reason"] not in {"target_visibility", "loaded_viewport"}
             or type(value["target"]) is not str or value["target"] not in GEOMETRY_TARGETS
             or type(value["phase"]) is not str or value["phase"] not in {"before_load", "loaded"}

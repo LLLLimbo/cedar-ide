@@ -32,7 +32,7 @@ PREFIX = "report_triage_acceptance "
 COMPILE_TIMEOUT = 120
 SELECTION_TIMEOUT = 15
 RUNTIME_TIMEOUT = 90
-SOURCE_VERSION = "0.57.6"
+SOURCE_VERSION = "0.58.0"
 MAX_AGENT_BYTES = 256 * 1024 * 1024
 DRAFT_BASE = "saved α😀e\u0301 café\r\nsecond Ω\r\n"
 ROWS = 192
@@ -50,6 +50,7 @@ CASES = (
     'stale_session_capture_rejected',
     'fresh_reconnect_navigation',
     'dirty_full_selection_native_undo_redo',
+    'automatic_height_reset_preserves_report_and_draft',
     'exact_ledger_disk_and_owner_cleanup',
 )
 
@@ -70,7 +71,7 @@ def expected_receipt(platform):
     return {
         "schema": 1, "acceptance": "report_triage", "success": True, "os": platform,
         "source_version": SOURCE_VERSION, "source_agent_version_match": True,
-        "cases": list(CASES), "cases_executed": 14,
+        "cases": list(CASES), "cases_executed": 15,
         "operation_ledger": [
             {"session": 1, "phase": "setup", "op": "Hello"},
             {"session": 1, "phase": "setup", "op": "List", "source": "root"},
@@ -109,6 +110,7 @@ def expected_receipt(platform):
         "full_selection_affinity_preserved": True,
         "complete_native_history_preserved": True,
         "native_undo_redo_preserved": True,
+        "automatic_height_reset_preserved_state": True,
         "source_disk_unchanged": True,
         "exact_operation_ledger_verified": True,
         "shared_watchdog_seconds": 60, "total_budget_seconds": 65,
@@ -208,7 +210,7 @@ def run(root):
     validate_source_version(root)
     require(agent_digest(binary) == original_agent, "release_agent_changed")
     print(PREFIX + json.dumps(receipt, ensure_ascii=True, sort_keys=True, allow_nan=False))
-    print("Report keyboard triage acceptance passed: 14 cases, 10 explicit requests, 0 navigation requests, 2 agents reaped.")
+    print("Report keyboard triage acceptance passed: 15 cases, 10 explicit requests, 0 navigation requests, 2 agents reaped.")
     return receipt
 
 

@@ -20,7 +20,7 @@ const DRAFT_BASE: &str = "saved α😀e\u{301} café\r\nsecond Ω\r\n";
 const DRAFT_TEXT: &str = "dirty α😀e\u{301} café\r\nsecond Ω\r\n";
 const ROWS: usize = 192;
 const REPORT_PANEL_HEIGHT: f32 = 480.0;
-const CASES: [&str; 14] = [
+const CASES: [&str; 15] = [
     "explicit_trust_off_report_read",
     "filtered_xml_order_duplicate_identity",
     "arrow_boundary_clamp",
@@ -34,6 +34,7 @@ const CASES: [&str; 14] = [
     "stale_session_capture_rejected",
     "fresh_reconnect_navigation",
     "dirty_full_selection_native_undo_redo",
+    "automatic_height_reset_preserves_report_and_draft",
     "exact_ledger_disk_and_owner_cleanup",
 ];
 type Check<T> = Result<T, &'static str>;
@@ -365,7 +366,7 @@ impl Harness {
             "generated fixture root or form requires unsupported CJK font probing",
         )?;
         require(
-            env!("CARGO_PKG_VERSION") == "0.57.6"
+            env!("CARGO_PKG_VERSION") == "0.58.0"
                 && self.app.agent_info.as_ref().is_some_and(|info| {
                     info.version == env!("CARGO_PKG_VERSION")
                         && info.os == if cfg!(windows) { "windows" } else { "linux" }
@@ -1306,6 +1307,91 @@ fn normal_agent_report_keyboard_triage_is_local_and_revision_bound() -> Check<()
     )?;
     h.case(CASES[12])?;
 
+    // Retain a real selected detail, its full parsed snapshot, and the dirty
+    // editor's complete state across the rendered header button's pointer frames.
+    h.focus_row(190)?;
+    h.details(190, false)?;
+    h.resized_report_panel()?;
+    require(
+        h.app.tools_height.is_some_and(|height| {
+            height.is_finite() && (height - REPORT_PANEL_HEIGHT).abs() <= 1.0
+        }),
+        "Automatic height reset did not start with a manual report height",
+    )?;
+    let report = h
+        .app
+        .test_report
+        .snapshot
+        .as_ref()
+        .ok_or("report snapshot absent")?;
+    let reset_snapshot = (
+        report.source.clone(),
+        report.revision.clone(),
+        report.report.clone(),
+    );
+    let reset_report_state = (
+        h.app.test_report.path.clone(),
+        h.app.test_report.loading.clone(),
+        h.app.test_report.message.clone(),
+        h.app.test_report.filter,
+        h.app.test_report.name_filter.clone(),
+        h.app.test_report.selected,
+        h.app.test_report.visible_cases(),
+    );
+    let reset_buffers = h.buffers();
+    let reset_selection = h.selection(draft)?;
+    let reset_history = h.history(draft)?;
+    let reset_ledger = h.ledger.ordered.clone();
+    let reset_counts = h.ledger.counts();
+    require(
+        workspace_access_tests::recorded_response(&h.app, "tools_automatic_height").enabled(),
+        "Automatic height control was not enabled",
+    )?;
+    h.click_probe("tools_automatic_height", false)?;
+    require(
+        h.app.tools_height.is_none(),
+        "Automatic height control did not clear the manual preference",
+    )?;
+    h.settle()?;
+    require(
+        h.app.tools_height.is_none(),
+        "Automatic height preference was restored after settling",
+    )?;
+    h.preserved(&reset_buffers, draft, reset_selection, &reset_history)?;
+    require(
+        h.app.test_report.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.source == reset_snapshot.0
+                && snapshot.revision == reset_snapshot.1
+                && snapshot.report == reset_snapshot.2
+        }) && (
+            h.app.test_report.path.clone(),
+            h.app.test_report.loading.clone(),
+            h.app.test_report.message.clone(),
+            h.app.test_report.filter,
+            h.app.test_report.name_filter.clone(),
+            h.app.test_report.selected,
+            h.app.test_report.visible_cases(),
+        ) == reset_report_state,
+        "Automatic height reset changed the report snapshot or selection",
+    )?;
+    require(
+        h.ledger.ordered == reset_ledger && h.ledger.counts() == reset_counts,
+        "Automatic height reset changed the operation ledger",
+    )?;
+    h.undo(false, DRAFT, DRAFT_BASE)?;
+    require(
+        selection_key(h.selection(draft)?) == selection_key(range(2, 10)),
+        "Automatic height reset lost native Undo selection",
+    )?;
+    h.undo(true, DRAFT, DRAFT_TEXT)?;
+    require(
+        selection_key(h.selection(draft)?) == selection_key(reset_selection)
+            && h.document(DRAFT)?.dirty()
+            && h.history(draft)? == reset_history,
+        "Automatic height reset lost native Redo state",
+    )?;
+    h.case(CASES[13])?;
+
     let expected = serde_json::json!([
         {"session": 1, "phase": "setup", "op": "Hello"},
         {"session": 1, "phase": "setup", "op": "List", "source": "root"},
@@ -1336,7 +1422,7 @@ fn normal_agent_report_keyboard_triage_is_local_and_revision_bound() -> Check<()
         h.connections == 2 && h.reaped == 2 && !h.cleanup_uncertain,
         "both owned normal agents were not observed reaped",
     )?;
-    h.case(CASES[13])?;
+    h.case(CASES[14])?;
     h.stop_watchdog()?;
     h.app.worker = None;
     require(
@@ -1355,7 +1441,7 @@ fn normal_agent_report_keyboard_triage_is_local_and_revision_bound() -> Check<()
         "schema": 1, "acceptance": "report_triage", "success": true,
         "os": if cfg!(windows) { "windows" } else { "linux" },
         "source_version": env!("CARGO_PKG_VERSION"), "source_agent_version_match": true,
-        "cases": h.cases, "cases_executed": 14, "operation_ledger": h.ledger.ordered,
+        "cases": h.cases, "cases_executed": 15, "operation_ledger": h.ledger.ordered,
         "source_hashes": source_hashes,
     });
     let fields = receipt.as_object_mut().ok_or("receipt object absent")?;
@@ -1378,6 +1464,7 @@ fn normal_agent_report_keyboard_triage_is_local_and_revision_bound() -> Check<()
         "full_selection_affinity_preserved",
         "complete_native_history_preserved",
         "native_undo_redo_preserved",
+        "automatic_height_reset_preserved_state",
         "source_disk_unchanged",
         "exact_operation_ledger_verified",
         "owned_children_reaped",
@@ -1421,7 +1508,7 @@ fn normal_agent_report_keyboard_triage_is_local_and_revision_bound() -> Check<()
             "duplicate receipt field",
         )?;
     }
-    require(fields.len() == 54, "receipt field count differed")?;
+    require(fields.len() == 55, "receipt field count differed")?;
     println!("report_triage_acceptance {receipt}");
     Ok(())
 }
