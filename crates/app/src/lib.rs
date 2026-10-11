@@ -46,6 +46,8 @@ mod language_sync;
 mod language_ui;
 #[cfg(test)]
 mod linux_local_tests;
+#[cfg(test)]
+mod loaded_file_process_tests;
 mod location_history;
 #[cfg(test)]
 mod location_history_process_tests;

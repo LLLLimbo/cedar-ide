@@ -125,6 +125,49 @@ jobs:
               for key, value in expected.items()
           ):
               sys.exit("Enter process acceptance receipt did not match its fixed contract.")
+      - name: Loaded Explorer file chooser (normal agent, no scanning)
+        timeout-minutes: 3
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          agent = pathlib.Path("target/release/cedar-agent" + (".exe" if os.name == "nt" else "")).resolve()
+          if not agent.is_file():
+              sys.exit("The normal release agent is missing.")
+          result = subprocess.run(
+              ["cargo", "test", "-p", "cedar-app", "--lib",
+               "loaded_file_process_tests::normal_agent_loaded_files_chooser_is_local_bounded_and_preserves_dirty_editor",
+               "--locked", "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"],
+              env=dict(os.environ, CEDAR_LOADED_FILES_AGENT_BIN=str(agent)),
+              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+              text=True, encoding="utf-8", errors="replace", timeout=150,
+          )
+          print(result.stdout, end="")
+          if result.returncode:
+              sys.exit(result.returncode)
+          if result.stdout.count("test result: ok. 1 passed; 0 failed; 0 ignored;") != 1:
+              sys.exit("Exactly one loaded-files process acceptance must execute.")
+          receipts = []
+          for line in result.stdout.splitlines():
+              opening = line.find("{")
+              if opening < 0:
+                  continue
+              try:
+                  receipt = json.loads(line[opening:])
+              except json.JSONDecodeError:
+                  continue
+              if isinstance(receipt, dict) and receipt.get("acceptance") == "loaded_files":
+                  receipts.append(receipt)
+          expected = {'acceptance': 'loaded_files', 'success': True, 'cases_executed': 10, 'lists': 6, 'reads': 2, 'writes': 0, 'other_operations': 0, 'connections': 2, 'agents_reaped': 2, 'source_hashes_verified': 5, 'setup_lists': 6, 'setup_reads': 1, 'chooser_reads': 1, 'chooser_lists': 0, 'dirty_buffer_reads': 0, 'watchdog_seconds': 60, 'cleanup_observation_seconds': 5, 'trust_off': True, 'explicit_branch_ledger_verified': True, 'current_scope_default': True, 'keyboard_scope_filter_enter': True, 'scope_and_filter_dispatched_nothing': True, 'unloaded_descendant_not_scanned': True, 'no_match_enter_did_not_read': True, 'late_cache_did_not_retarget': True, 'collapsed_candidate_did_not_read': True, 'mode_change_rejected_old_dialog': True, 'reconnect_rejected_old_dialog': True, 'dirty_document_and_full_selection_retained': True, 'undo_redo_retained': True, 'fixture_removed': True, 'watchdog_joined': True, 'cleanup_verified': True, 'optional_font_probe_untriggered': True}
+          if len(receipts) != 1 or receipts[0].keys() != expected.keys() or any(
+              type(receipts[0].get(key)) is not type(value) or receipts[0].get(key) != value
+              for key, value in expected.items()
+          ):
+              sys.exit("Loaded-files process receipt did not match its fixed contract.")
       - name: Explicit test-report reads (Unix)
         timeout-minutes: 3
         if: runner.os != 'Windows'

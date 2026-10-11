@@ -76,7 +76,7 @@ fn key(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
 
 fn file_selection(app: &CedarApp) -> Option<&str> {
     match &app.navigation.dialog.as_ref().unwrap().kind {
-        Kind::Files { selected } => selected.as_deref(),
+        Kind::Files { selected, .. } => selected.as_deref(),
         _ => panic!("expected file chooser"),
     }
 }
@@ -109,14 +109,14 @@ fn candidates_are_bounded_open_first_literal_deduplicated_and_deterministic() {
     let result = candidates(&documents, &entries, "");
     assert_eq!(result.items.len(), MAX_RESULTS);
     assert!(result.truncated);
-    assert_eq!(result.items[0].path, "z.rs");
-    assert_eq!(result.items[1].path, "中文\\é.rs ");
-    assert_eq!(result.items[2].path, "00.rs");
+    assert_eq!(result.items[0].path.as_ref(), "z.rs");
+    assert_eq!(result.items[1].path.as_ref(), "中文\\é.rs ");
+    assert_eq!(result.items[2].path.as_ref(), "00.rs");
     assert!(result.items[..2].iter().all(|item| item.open));
     assert!(result.items[2..].iter().all(|item| !item.open));
     let result = candidates(&documents, &entries, "中文\\É");
     assert_eq!(result.items.len(), 1);
-    assert_eq!(result.items[0].path, "中文\\é.rs ");
+    assert_eq!(result.items[0].path.as_ref(), "中文\\é.rs ");
     assert!(!result.truncated);
     assert!(candidates(&documents, &entries, "folder").items.is_empty());
 }
@@ -586,4 +586,536 @@ fn chooser_read_ready_on_closing_modal_idle_frame_completes_and_admits() {
     assert_eq!(app.active().unwrap().path, "next.rs");
     assert_eq!(app.location_history.back.len(), 1);
     assert!(app.location_history.pending.is_none());
+}
+
+fn list_reply(app: &mut CedarApp, command: Command, entries: Vec<Entry>) {
+    app.apply_event(Event {
+        generation: app.generation,
+        id: command.id,
+        connected: true,
+        result: Ok(Payload::Entries { entries }),
+    });
+}
+
+fn admit_flat(app: &mut CedarApp, commands: &Receiver<Command>, entries: Vec<Entry>) {
+    app.list(String::new());
+    list_reply(app, commands.try_recv().unwrap(), entries);
+}
+
+fn admit_tree(app: &mut CedarApp, commands: &Receiver<Command>) {
+    app.explorer_set_mode(Mode::Tree);
+    app.explorer_expand("");
+    list_reply(
+        app,
+        commands.try_recv().unwrap(),
+        vec![entry("left", true), entry("right", true)],
+    );
+    for path in ["left", "right"] {
+        app.explorer_expand(path);
+        list_reply(
+            app,
+            commands.try_recv().unwrap(),
+            vec![entry(&format!("{path}/雪.rs"), false)],
+        );
+    }
+}
+
+fn enter_loaded(app: &mut CedarApp, time: f64) {
+    frame(app, time, key(egui::Key::Tab, egui::Modifiers::SHIFT));
+    // egui deliberately applies backward Tab focus on the next pass.
+    frame(app, time + 0.01, vec![]);
+    assert!(app
+        .editor_ctx
+        .memory(|memory| memory.has_focus(egui::Id::new("navigation_scope_loaded"))));
+    let before = app.navigation.query.clone();
+    let mut events = key(egui::Key::Space, egui::Modifiers::NONE);
+    events.push(egui::Event::Text(" ".into()));
+    frame(app, time + 0.1, events);
+    assert_eq!(app.navigation.query, before);
+    assert!(app.navigation.loaded_scope());
+    assert!(app
+        .editor_ctx
+        .memory(|memory| memory.has_focus(egui::Id::new(FILE_INPUT))));
+}
+
+fn chooser_error(app: &CedarApp) -> Option<&str> {
+    match &app.navigation.dialog.as_ref().unwrap().kind {
+        Kind::Files { error, .. } => error.as_deref(),
+        _ => panic!("expected file chooser"),
+    }
+}
+
+fn pointer(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+#[test]
+fn loaded_snapshot_has_checked_whole_source_budgets_and_shared_exact_paths() {
+    let documents = vec![Document::new(
+        1,
+        "雪/é.rs ".into(),
+        String::new(),
+        "r".into(),
+    )];
+    let files = vec![
+        LoadedFile {
+            path: "z.rs",
+            admission: FileAdmission(1),
+        },
+        LoadedFile {
+            path: "雪/é.rs ",
+            admission: FileAdmission(2),
+        },
+        LoadedFile {
+            path: "A.rs",
+            admission: FileAdmission(3),
+        },
+        LoadedFile {
+            path: "a.rs",
+            admission: FileAdmission(4),
+        },
+    ];
+    let snapshot = loaded_snapshot(&documents, &files).unwrap();
+    assert_eq!(
+        snapshot
+            .iter()
+            .map(|item| item.path.as_ref())
+            .collect::<Vec<_>>(),
+        ["雪/é.rs ", "A.rs", "a.rs", "z.rs"]
+    );
+    assert_eq!(snapshot[0].source, Source::Buffer(1));
+    let result = snapshot_matches(&snapshot, "雪/É");
+    assert_eq!(result.items.len(), 1);
+    assert!(Arc::ptr_eq(&result.items[0].path, &snapshot[0].path));
+    let maximum: Vec<_> = (0..MAX_CACHED_PATHS)
+        .map(|_| LoadedFile {
+            path: "duplicate",
+            admission: FileAdmission(1),
+        })
+        .collect();
+    assert_eq!(loaded_snapshot(&[], &maximum).unwrap().len(), 1);
+    let mut excessive = maximum;
+    excessive.push(LoadedFile {
+        path: "one more",
+        admission: FileAdmission(1),
+    });
+    assert!(loaded_snapshot(&[], &excessive)
+        .unwrap_err()
+        .contains("whole snapshot"));
+    let huge = "é".repeat(MAX_SNAPSHOT_PATH_BYTES / 2);
+    let maximum = [LoadedFile {
+        path: &huge,
+        admission: FileAdmission(1),
+    }];
+    assert!(loaded_snapshot(&[], &maximum).is_ok());
+    assert!(loaded_snapshot(&documents, &maximum).is_err());
+    let too_many: Vec<_> = (0..=MAX_BUFFERS)
+        .map(|id| Document::new(id as u64, format!("{id}"), String::new(), "r".into()))
+        .collect();
+    assert!(loaded_snapshot(&too_many, &[]).is_err());
+    let paths: Vec<_> = (0..100).map(|index| format!("{index:03}.rs")).collect();
+    let files: Vec<_> = paths
+        .iter()
+        .map(|path| LoadedFile {
+            path,
+            admission: FileAdmission(1),
+        })
+        .collect();
+    let snapshot = loaded_snapshot(&[], &files).unwrap();
+    let result = snapshot_matches(&snapshot, ".rs");
+    assert_eq!(result.items.len(), 64);
+    assert!(result.truncated);
+    assert_eq!(
+        snapshot_matches(&snapshot, "099").items[0].path.as_ref(),
+        "099.rs"
+    );
+}
+
+#[test]
+fn loaded_scope_is_keyboard_accessible_local_and_defaults_current_on_new_dialog() {
+    let (mut app, commands) = app();
+    admit_tree(&mut app, &commands);
+    frame(&mut app, 0.0, key(egui::Key::P, egui::Modifiers::COMMAND));
+    assert!(!app.navigation.loaded_scope());
+    assert_eq!(app.navigation.visible_paths(), ["first.rs"]);
+    let history = app.location_history.back.len();
+    enter_loaded(&mut app, 1.0);
+    assert_eq!(
+        app.navigation.visible_paths(),
+        ["first.rs", "left/雪.rs", "right/雪.rs"]
+    );
+    frame(&mut app, 2.0, key(egui::Key::P, egui::Modifiers::COMMAND));
+    assert!(app.navigation.loaded_scope());
+    assert_eq!(app.location_history.back.len(), history);
+    frame(&mut app, 3.0, key(egui::Key::Escape, egui::Modifiers::NONE));
+    frame(&mut app, 4.0, key(egui::Key::P, egui::Modifiers::COMMAND));
+    assert!(!app.navigation.loaded_scope());
+    assert_eq!(app.location_history.back.len(), history);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn loaded_flat_requires_current_admission_not_retained_display_rows() {
+    let (mut app, commands) = app();
+    app.entries = vec![entry("never-admitted.rs", false)];
+    assert!(app.explorer_loaded_files().unwrap().is_empty());
+    assert_eq!(app.explorer_loaded_directory_count(), 0);
+    admit_flat(&mut app, &commands, vec![]);
+    assert!(app.explorer_loaded_files().unwrap().is_empty());
+    assert_eq!(app.explorer_loaded_directory_count(), 1);
+    admit_flat(&mut app, &commands, vec![entry("accepted.rs", false)]);
+    assert_eq!(app.explorer_loaded_files().unwrap()[0].path, "accepted.rs");
+    app.explorer_set_mode(Mode::Tree);
+    app.explorer_set_mode(Mode::Flat);
+    assert!(!app.entries.is_empty());
+    assert!(app.explorer_loaded_files().unwrap().is_empty());
+    assert_eq!(app.explorer_loaded_directory_count(), 0);
+    admit_flat(&mut app, &commands, vec![entry("new.rs", false)]);
+    app.explorer.reset_connection();
+    assert!(!app.entries.is_empty());
+    assert!(app.explorer_loaded_files().unwrap().is_empty());
+    assert_eq!(app.explorer_loaded_directory_count(), 0);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn loaded_snapshot_stays_frozen_and_enter_never_uses_unmatched_filter_as_path() {
+    let (mut app, commands) = app();
+    admit_flat(&mut app, &commands, vec![entry("before.rs", false)]);
+    app.navigation.query = "after".into();
+    app.show_file_chooser();
+    frame(&mut app, 0.0, vec![]);
+    enter_loaded(&mut app, 1.0);
+    assert!(app.navigation.visible_paths().is_empty());
+    admit_flat(&mut app, &commands, vec![entry("after.rs", false)]);
+    frame(&mut app, 2.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert!(app.navigation.visible_paths().is_empty());
+    assert!(app.navigation.dialog_open());
+    assert!(commands.try_recv().is_err());
+    frame(
+        &mut app,
+        3.0,
+        key(egui::Key::Enter, egui::Modifiers::COMMAND),
+    );
+    assert!(matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "after"));
+}
+
+#[test]
+fn loaded_selection_revalidates_collapse_refresh_retype_and_document_identity() {
+    for action in ["collapse", "refresh", "retype", "closed-buffer"] {
+        let (mut app, commands) = app();
+        admit_tree(&mut app, &commands);
+        if action == "closed-buffer" {
+            app.documents.push(Document::new(
+                2,
+                "left/雪.rs".into(),
+                "dirty".into(),
+                "r".into(),
+            ));
+        }
+        app.navigation.query = "left/".into();
+        app.show_file_chooser();
+        frame(&mut app, 0.0, vec![]);
+        enter_loaded(&mut app, 1.0);
+        assert_eq!(file_selection(&app), Some("left/雪.rs"));
+        match action {
+            "collapse" => app.explorer_collapse("left"),
+            "refresh" | "retype" => {
+                app.explorer_refresh("left");
+                list_reply(
+                    &mut app,
+                    commands.try_recv().unwrap(),
+                    vec![entry("left/雪.rs", action == "retype")],
+                );
+            }
+            _ => {
+                app.documents.retain(|doc| doc.id != 2);
+                app.documents.push(Document::new(
+                    3,
+                    "left/雪.rs".into(),
+                    "replacement".into(),
+                    "r".into(),
+                ));
+            }
+        }
+        frame(&mut app, 2.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+        assert!(app.navigation.dialog_open(), "{action}");
+        assert!(
+            chooser_error(&app).unwrap().contains("canceled"),
+            "{action}"
+        );
+        assert_eq!(app.active_document, Some(1));
+        assert!(commands.try_recv().is_err());
+        assert!(app.location_history.back.is_empty());
+    }
+}
+
+#[test]
+fn stale_admitted_listing_is_selectable_but_new_success_has_a_new_identity() {
+    let (mut app, commands) = app();
+    admit_flat(&mut app, &commands, vec![entry("stale.rs", false)]);
+    let original = app.explorer_loaded_files().unwrap()[0].admission;
+    app.list(String::new());
+    let refresh = commands.try_recv().unwrap();
+    app.apply_event(Event {
+        generation: app.generation,
+        id: refresh.id,
+        connected: true,
+        result: Err("refresh failed".into()),
+    });
+    let files = app.explorer_loaded_files().unwrap();
+    assert_eq!(
+        app.explorer_loaded_file_stale(files[0].path, files[0].admission),
+        Some(true)
+    );
+    assert_eq!(files[0].admission, original);
+    app.navigation.query = "stale.rs".into();
+    app.show_file_chooser();
+    frame(&mut app, 0.0, vec![]);
+    enter_loaded(&mut app, 1.0);
+    frame(&mut app, 2.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert!(
+        matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "stale.rs")
+    );
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn current_enter_uses_displayed_identity_when_listing_changes_in_acceptance_frame() {
+    let (mut app, commands) = app();
+    app.entries = vec![entry("old.rs", false)];
+    app.navigation.query = ".rs".into();
+    app.show_file_chooser();
+    frame(&mut app, 0.0, vec![]);
+    frame(
+        &mut app,
+        1.0,
+        key(egui::Key::ArrowDown, egui::Modifiers::NONE),
+    );
+    assert_eq!(file_selection(&app), Some("old.rs"));
+    app.entries = vec![entry("replacement.rs", false)];
+    frame(&mut app, 2.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert!(chooser_error(&app).unwrap().contains("canceled"));
+    assert_eq!(app.active_document, Some(1));
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn captured_click_removed_row_cancels_visibly_without_retargeting() {
+    let (mut app, commands) = app();
+    app.entries = vec![entry("old.rs", false)];
+    app.navigation.query = "old".into();
+    app.show_file_chooser();
+    frame(&mut app, 0.0, vec![]);
+    frame(&mut app, 0.1, vec![]);
+    let pos = crate::workspace_access_tests::recorded_rect(&app, "navigation_file:old.rs").center();
+    frame(
+        &mut app,
+        1.0,
+        vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
+    );
+    app.entries = vec![entry("old-replacement.rs", false)];
+    frame(&mut app, 1.1, vec![pointer(pos, false)]);
+    assert!(chooser_error(&app).unwrap().contains("canceled"));
+    assert_eq!(app.active_document, Some(1));
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn captured_pointer_requires_real_click_and_yields_to_competing_input() {
+    for action in ["drag", "text", "explicit", "focus"] {
+        let (mut app, commands) = app();
+        app.entries = vec![entry("old.rs", false)];
+        app.navigation.query = "old".into();
+        app.show_file_chooser();
+        frame(&mut app, 0.0, vec![]);
+        frame(&mut app, 0.1, vec![]);
+        let pos =
+            crate::workspace_access_tests::recorded_rect(&app, "navigation_file:old.rs").center();
+        frame(
+            &mut app,
+            1.0,
+            vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
+        );
+        if action == "drag" {
+            frame(
+                &mut app,
+                1.05,
+                vec![egui::Event::PointerMoved(pos + egui::vec2(100.0, 0.0))],
+            );
+        }
+        let mut events = vec![egui::Event::PointerMoved(pos), pointer(pos, false)];
+        match action {
+            "text" => events.push(egui::Event::Text("new".into())),
+            "explicit" => events.extend(key(egui::Key::Enter, egui::Modifiers::COMMAND)),
+            "focus" => events.push(egui::Event::WindowFocused(false)),
+            _ => {}
+        }
+        frame(&mut app, 1.1, events);
+        if action == "explicit" {
+            assert!(
+                matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "old")
+            );
+        } else {
+            assert!(app.navigation.dialog_open(), "{action}");
+        }
+        assert_eq!(app.active_document, Some(1));
+        assert!(commands.try_recv().is_err(), "{action}");
+    }
+}
+
+#[test]
+fn scope_enter_activation_preserves_query_and_refusal_is_visible_until_scope_exit() {
+    let (mut app, commands) = app();
+    app.navigation.query = "unchanged".into();
+    app.documents[0].path = "é".repeat(MAX_SNAPSHOT_PATH_BYTES / 2 + 1);
+    app.show_file_chooser();
+    frame(&mut app, 0.0, vec![]);
+    frame(&mut app, 1.0, key(egui::Key::Tab, egui::Modifiers::SHIFT));
+    frame(&mut app, 1.1, vec![]);
+    frame(&mut app, 2.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert!(app.navigation.loaded_scope());
+    assert_eq!(app.navigation.query, "unchanged");
+    assert!(app.navigation.visible_paths().is_empty());
+    assert!(chooser_error(&app).unwrap().contains("whole snapshot"));
+    frame(&mut app, 3.0, vec![egui::Event::Text("x".into())]);
+    assert!(chooser_error(&app).unwrap().contains("whole snapshot"));
+    assert!(commands.try_recv().is_err());
+    frame(
+        &mut app,
+        4.0,
+        key(egui::Key::Enter, egui::Modifiers::COMMAND),
+    );
+    assert!(
+        matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "unchangedx")
+    );
+}
+
+#[test]
+fn pending_refresh_failure_updates_stale_label_without_replacing_snapshot_identity() {
+    for tree in [false, true] {
+        let (mut app, commands) = app();
+        let path = if tree {
+            admit_tree(&mut app, &commands);
+            "left/雪.rs"
+        } else {
+            admit_flat(&mut app, &commands, vec![entry("cached.rs", false)]);
+            "cached.rs"
+        };
+        app.explorer_refresh(if tree { "left" } else { "" });
+        let refresh = commands.try_recv().unwrap();
+        app.navigation.query = path.into();
+        app.show_file_chooser();
+        frame(&mut app, 0.0, vec![]);
+        enter_loaded(&mut app, 1.0);
+        let before = match &app.navigation.dialog.as_ref().unwrap().kind {
+            Kind::Files { snapshot, .. } => snapshot
+                .iter()
+                .find(|item| item.path.as_ref() == path)
+                .unwrap()
+                .clone(),
+            _ => unreachable!(),
+        };
+        assert!(!app.navigation_candidate_label(&before).contains("stale"));
+        app.apply_event(Event {
+            generation: app.generation,
+            id: refresh.id,
+            connected: true,
+            result: Err("refresh failed after capture".into()),
+        });
+        assert!(app.navigation_candidate_current(&before));
+        assert!(app
+            .navigation_candidate_label(&before)
+            .contains("stale listing"));
+        frame(&mut app, 2.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+        assert!(
+            matches!(commands.try_recv().unwrap().op, Operation::Read { path: opened } if opened == path)
+        );
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn loaded_mode_or_generation_change_visibly_cancels_without_opening() {
+    for generation in [false, true] {
+        let (mut app, commands) = app();
+        admit_flat(&mut app, &commands, vec![entry("cached.rs", false)]);
+        app.navigation.query = "cached".into();
+        app.show_file_chooser();
+        frame(&mut app, 0.0, vec![]);
+        enter_loaded(&mut app, 1.0);
+        if generation {
+            app.generation += 1;
+        } else {
+            app.explorer_set_mode(Mode::Tree);
+        }
+        frame(&mut app, 2.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+        assert!(!app.navigation.dialog_open());
+        assert!(app
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("File chooser canceled"));
+        assert_eq!(app.documents[0].edit_version, 0);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn loaded_unopened_offline_refuses_but_dirty_open_buffer_preserves_editor_state() {
+    let (mut app, commands) = app();
+    admit_flat(&mut app, &commands, vec![entry("cached.rs", false)]);
+    app.navigation.query = "cached".into();
+    app.show_file_chooser();
+    frame(&mut app, 0.0, vec![]);
+    enter_loaded(&mut app, 1.0);
+    app.state = ConnectionState::Disconnected;
+    frame(&mut app, 2.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert!(chooser_error(&app).unwrap().contains("Connect"));
+    assert!(commands.try_recv().is_err());
+    frame(&mut app, 3.0, key(egui::Key::Escape, egui::Modifiers::NONE));
+    let mut doc = Document::new(2, "draft.rs".into(), "baseline".into(), "revision".into());
+    doc.text = "dirty draft".into();
+    doc.edit_version = 3;
+    app.documents.push(doc);
+    app.navigation.query = "draft".into();
+    app.show_file_chooser();
+    frame(&mut app, 4.0, vec![]);
+    enter_loaded(&mut app, 5.0);
+    frame(&mut app, 6.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert_eq!(app.active_document, Some(2));
+    assert_eq!(app.documents[1].text, "dirty draft");
+    assert_eq!(app.documents[1].saved_text, "baseline");
+    assert_eq!(app.documents[1].revision.as_deref(), Some("revision"));
+    assert_eq!(app.documents[1].edit_version, 3);
+    assert_eq!(app.location_history.back.len(), 1);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn explicit_typed_path_still_owns_command_enter_while_scope_control_is_focused() {
+    let (mut app, commands) = app();
+    app.navigation.query = "typed.rs".into();
+    app.show_file_chooser();
+    frame(&mut app, 0.0, vec![]);
+    frame(&mut app, 1.0, key(egui::Key::Tab, egui::Modifiers::SHIFT));
+    frame(&mut app, 1.1, vec![]);
+    assert!(app
+        .editor_ctx
+        .memory(|memory| memory.has_focus(egui::Id::new("navigation_scope_loaded"))));
+    frame(
+        &mut app,
+        2.0,
+        key(egui::Key::Enter, egui::Modifiers::COMMAND),
+    );
+    assert!(!app.navigation.dialog_open());
+    assert!(
+        matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "typed.rs")
+    );
+    assert!(commands.try_recv().is_err());
 }

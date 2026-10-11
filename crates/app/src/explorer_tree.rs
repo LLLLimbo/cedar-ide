@@ -32,6 +32,9 @@ pub(crate) struct Ticket {
 #[derive(Default)]
 struct Branch {
     epoch: u64,
+    // Separate from the request epoch: a failed refresh keeps this accepted
+    // snapshot selectable, while replacing it invalidates captured choices.
+    admission: u64,
     entries: Option<Vec<Entry>>,
     stale: bool,
     error: Option<String>,
@@ -47,6 +50,7 @@ pub(crate) struct Explorer {
     pub selected: String,
     pub message: Option<String>,
     flat_loaded: bool,
+    flat_admission: Option<(u64, String)>,
     flat_error: Option<String>,
     flat_failed_path: Option<String>,
     key_intent: Option<KeyIntent>,
@@ -76,6 +80,14 @@ pub(crate) struct Row {
     pub stale: bool,
     pub error: Option<String>,
     pub loading: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FileAdmission(pub u64);
+
+pub(crate) struct LoadedFile<'a> {
+    pub path: &'a str,
+    pub admission: FileAdmission,
 }
 
 pub(crate) fn row_id(path: &str) -> egui::Id {
@@ -379,6 +391,7 @@ impl Explorer {
             .get_mut(path)
             .expect("current ticket has a branch");
         branch.entries = Some(entries);
+        branch.admission = self.epoch;
         branch.stale = false;
         branch.error = None;
         if !self
@@ -693,6 +706,8 @@ impl CedarApp {
         self.explorer.mode = mode;
         self.explorer.mode_epoch = epoch;
         self.explorer.branches.clear();
+        self.explorer.flat_loaded = false;
+        self.explorer.flat_admission = None;
         self.explorer.selected.clear();
         self.explorer.message = None;
         self.explorer.retry_path = None;
@@ -757,6 +772,114 @@ impl CedarApp {
             .branches
             .get(&self.explorer_scope())
             .is_some_and(|branch| branch.entries.is_some())
+    }
+
+    /// Only accepted snapshots from this mode/session are sources. Retained
+    /// flat display rows after a reset or mode switch are deliberately absent.
+    pub(crate) fn explorer_loaded_files(&self) -> Result<Vec<LoadedFile<'_>>, String> {
+        let mut files = Vec::new();
+        if self.explorer.mode == Mode::Flat {
+            let Some((admission, path)) = &self.explorer.flat_admission else {
+                return Ok(files);
+            };
+            if path != &self.directory {
+                return Err(
+                    "Loaded Explorer files are unavailable: the accepted directory changed".into(),
+                );
+            }
+            validate_entries(path, &self.entries, false)?;
+            files.extend(
+                self.entries
+                    .iter()
+                    .filter(|entry| !entry.is_dir)
+                    .map(|entry| LoadedFile {
+                        path: &entry.path,
+                        admission: FileAdmission(*admission),
+                    }),
+            );
+        } else {
+            let Some((snapshots, rows, bytes)) = self.explorer.usage() else {
+                return Err("Loaded Explorer files are unavailable: cache size overflowed".into());
+            };
+            if snapshots > MAX_SNAPSHOTS || rows > MAX_ROWS || bytes > MAX_TEXT_BYTES {
+                return Err("Loaded Explorer files refused the whole snapshot: Explorer exceeds 64 directories, 4,096 rows, or 512 KiB".into());
+            }
+            for branch in self.explorer.branches.values() {
+                if let Some(entries) = &branch.entries {
+                    files.extend(entries.iter().filter(|entry| !entry.is_dir).map(|entry| {
+                        LoadedFile {
+                            path: &entry.path,
+                            admission: FileAdmission(branch.admission),
+                        }
+                    }));
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    pub(crate) fn explorer_loaded_directory_count(&self) -> usize {
+        if self.explorer.mode == Mode::Flat {
+            usize::from(
+                self.explorer
+                    .flat_admission
+                    .as_ref()
+                    .is_some_and(|(_, path)| path == &self.directory),
+            )
+        } else {
+            self.explorer
+                .branches
+                .values()
+                .filter(|branch| branch.entries.is_some())
+                .count()
+        }
+    }
+
+    pub(crate) fn explorer_loaded_file_current(
+        &self,
+        path: &str,
+        admission: FileAdmission,
+    ) -> bool {
+        if self.explorer.mode == Mode::Flat {
+            self.explorer
+                .flat_admission
+                .as_ref()
+                .is_some_and(|(current, directory)| {
+                    *current == admission.0
+                        && directory == &self.directory
+                        && self
+                            .entries
+                            .iter()
+                            .any(|entry| entry.path == path && !entry.is_dir)
+                })
+        } else {
+            self.explorer
+                .branches
+                .get(&parent_path(path))
+                .is_some_and(|branch| {
+                    branch.admission == admission.0
+                        && branch.entries.as_ref().is_some_and(|entries| {
+                            entries
+                                .iter()
+                                .any(|entry| entry.path == path && !entry.is_dir)
+                        })
+                })
+        }
+    }
+
+    pub(crate) fn explorer_loaded_file_stale(
+        &self,
+        path: &str,
+        admission: FileAdmission,
+    ) -> Option<bool> {
+        if !self.explorer_loaded_file_current(path, admission) {
+            return None;
+        }
+        Some(if self.explorer.mode == Mode::Flat {
+            self.explorer.flat_error.is_some()
+        } else {
+            self.explorer.branches.get(&parent_path(path))?.stale
+        })
     }
 
     pub(crate) fn explorer_new_file(&mut self) {
@@ -994,6 +1117,7 @@ impl CedarApp {
                     self.directory = path;
                     self.entries = entries;
                     self.explorer.flat_loaded = true;
+                    self.explorer.flat_admission = Some((ticket.request, self.directory.clone()));
                     self.explorer.flat_error = None;
                     self.explorer.flat_failed_path = None;
                 }
