@@ -106,7 +106,245 @@ pub(super) struct Submission {
     token: interrupted_save::InterruptedSave,
 }
 
+#[derive(Default)]
+pub(super) struct FocusReturn {
+    ticket: Option<FocusTicket>,
+    frame: u64,
+    quiet: bool,
+    clean_click: bool,
+    clean_key: Option<(egui::Key, bool)>,
+    input_focus: Option<egui::Id>,
+}
+
+struct FocusTicket {
+    document: u64,
+    path: String,
+    workspace: Option<[u8; 32]>,
+    generation: u64,
+    navigation: u64,
+    version: u64,
+    focused: Option<egui::Id>,
+    armed_frame: u64,
+    release_tail: Option<egui::Key>,
+}
+
 impl CedarApp {
+    /// Inspect the original native batch before any shortcut/widget can remove
+    /// events. Keep only classification bits, never keys to replay later.
+    pub(super) fn capture_tab_close_focus_input(
+        &mut self,
+        ctx: &egui::Context,
+        raw: &egui::RawInput,
+    ) {
+        let state = &mut self.tab_close_focus;
+        state.frame = state.frame.wrapping_add(1);
+        let mut events = raw.events.iter().filter(|event| {
+            !matches!(
+                event,
+                egui::Event::PointerMoved(_)
+                    | egui::Event::MouseMoved(_)
+                    | egui::Event::PointerGone
+            )
+        });
+        let first = events.next();
+        let second = events.next();
+        let third = events.next();
+        state.quiet = raw.focused && first.is_none();
+        state.input_focus = ctx.memory(|memory| memory.focused());
+        state.clean_key = None;
+        if raw.focused {
+            if let Some(egui::Event::Key {
+                key: key @ (egui::Key::Enter | egui::Key::Space),
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            }) = first.filter(|event| matches!(event, egui::Event::Key { .. }))
+            {
+                let mut releases = 0;
+                let mut spaces = 0;
+                let clean = modifiers.is_none()
+                    && [second, third]
+                        .into_iter()
+                        .flatten()
+                        .all(|event| match event {
+                            egui::Event::Key {
+                                key: released,
+                                pressed: false,
+                                repeat: false,
+                                modifiers,
+                                ..
+                            } if released == key && modifiers.is_none() && releases == 0 => {
+                                releases += 1;
+                                true
+                            }
+                            egui::Event::Text(text)
+                                if *key == egui::Key::Space && text == " " && spaces == 0 =>
+                            {
+                                spaces += 1;
+                                true
+                            }
+                            _ => false,
+                        })
+                    && events.next().is_none();
+                if clean {
+                    state.clean_key = Some((*key, releases == 1));
+                }
+            }
+        }
+        // A native click may arrive as a release of an earlier captured press,
+        // or press+release together. Any mixed key/text/IME batch vetoes arming.
+        state.clean_click = raw.focused
+            && third.is_none()
+            && matches!((first, second),
+                (Some(egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed: false, modifiers, .. }), None)
+                    if modifiers.is_none()
+            )
+            || raw.focused
+                && third.is_none()
+                && matches!((first, second),
+                    (Some(egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed: true, modifiers: down, .. }),
+                     Some(egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed: false, modifiers: up, .. }))
+                        if down.is_none() && up.is_none()
+                );
+        // Only the one matching key-up that completes a captured keyboard
+        // activation can accompany release repaints, within the same bound.
+        if raw.focused && second.is_none() {
+            if let (
+                Some(ticket),
+                Some(egui::Event::Key {
+                    key,
+                    pressed: false,
+                    repeat: false,
+                    modifiers,
+                    ..
+                }),
+            ) = (&mut state.ticket, first)
+            {
+                let age = state.frame.wrapping_sub(ticket.armed_frame);
+                if age <= 2 && ticket.release_tail == Some(*key) && modifiers.is_none() {
+                    ticket.release_tail = None;
+                    state.quiet = true;
+                }
+            }
+        }
+        if !state.quiet {
+            state.ticket = None;
+        }
+    }
+
+    pub(super) fn begin_tab_close_focus_frame(&mut self, ctx: &egui::Context) {
+        // Native raw input can leave repeat=false for egui to enrich during
+        // begin_pass. Recheck before any widget consumes the activation key.
+        if ctx.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        pressed: true,
+                        repeat: true,
+                        ..
+                    }
+                )
+            })
+        }) {
+            self.tab_close_focus.clean_key = None;
+        }
+    }
+
+    fn arm_tab_close_focus(&mut self, ctx: &egui::Context, release_tail: Option<egui::Key>) {
+        let Some(doc) = self.active() else {
+            return;
+        };
+        self.tab_close_focus.ticket = Some(FocusTicket {
+            document: doc.id,
+            path: doc.path.clone(),
+            workspace: workspace(self),
+            generation: self.generation,
+            navigation: self.navigation_epoch,
+            version: doc.edit_version,
+            focused: ctx.memory(|memory| memory.focused()),
+            armed_frame: self.tab_close_focus.frame,
+            release_tail,
+        });
+        ctx.request_repaint();
+    }
+
+    /// Only explicit Keep editing arms this one-shot return. Give egui at most
+    /// two following native frames to retire its old modal; no input is saved.
+    pub(super) fn finish_tab_close_focus_frame(&mut self, ctx: &egui::Context) {
+        let Some(ticket) = self.tab_close_focus.ticket.take() else {
+            return;
+        };
+        let age = self.tab_close_focus.frame.wrapping_sub(ticket.armed_frame);
+        if age == 0 {
+            self.tab_close_focus.ticket = Some(ticket);
+            ctx.request_repaint();
+            return;
+        }
+        let modal = ctx.memory(|memory| memory.top_modal_layer());
+        let own_modal = egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("discard_confirmation"),
+        );
+        let editor = egui::Id::new(("editor", ticket.document));
+        let current = age <= 2
+            && self.tab_close_focus.quiet
+            && self.active().is_some_and(|doc| {
+                doc.id == ticket.document
+                    && doc.path == ticket.path
+                    && doc.edit_version == ticket.version
+            })
+            && workspace(self) == ticket.workspace
+            && self.generation == ticket.generation
+            && self.navigation_epoch == ticket.navigation
+            && self.confirm.is_none()
+            && !self.copy_draft.is_open()
+            && !self.navigation.dialog_open()
+            && !self.navigation.restore_focus
+            && !self.open_form
+            && !self.new_file
+            && !self.find_focus
+            && self.close_tab_requested.is_none()
+            && !self.close_after_language_stop
+            && self.close_snapshot.is_none()
+            && !self.allow_close
+            && !self.run_state.transition_pending()
+            && self.recovery.remove_confirmation.is_none()
+            && self.recovery.closing.is_none()
+            && !self.recovery.resuming()
+            && self.recovery.restoring_generation.is_none()
+            && self.recovery.pending_restore.is_none()
+            && modal.is_none_or(|layer| layer == own_modal)
+            && ctx.memory(|memory| {
+                memory
+                    .focused()
+                    .is_none_or(|focus| Some(focus) == ticket.focused || focus == editor)
+            });
+        if !current {
+            return;
+        }
+        if modal.is_some() || self.navigation.blocks_editor() {
+            if age < 2 {
+                self.tab_close_focus.ticket = Some(ticket);
+                ctx.request_repaint();
+            }
+            return;
+        }
+        if let Some(response) = ctx
+            .read_response(editor)
+            .filter(|response| response.enabled())
+        {
+            response.request_focus();
+            ctx.request_repaint();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn tab_close_focus_pending(&self) -> bool {
+        self.tab_close_focus.ticket.is_some()
+    }
+
     pub(super) fn save_close_write_pending(&self) -> bool {
         self.tab_close_submission.is_some()
     }
@@ -164,6 +402,7 @@ impl CedarApp {
     }
 
     pub(super) fn cancel_tab_close(&mut self) {
+        self.tab_close_focus.ticket = None;
         if let Some(intent) = self.tab_close.take() {
             self.notice = if matches!(intent.phase, Phase::Waiting(_)) {
                 "Close cancelled. The submitted save may still finish; your tab stays open."
@@ -412,6 +651,8 @@ impl CedarApp {
         let mut save = false;
         let mut discard = false;
         let mut cancel = false;
+        let mut return_focus = false;
+        let mut release_tail = None;
         let modal = egui::Modal::new(egui::Id::new("discard_confirmation")).show(ctx, |ui| {
             ui.set_max_width(465.0);
             ui.heading(if waiting { "Saving before closing" } else { "Close unsaved tab?" });
@@ -427,6 +668,14 @@ impl CedarApp {
                 #[cfg(test)]
                 workspace_access_tests::record(ui, "save_close_tab_cancel", &response);
                 cancel = response.clicked();
+                let keyboard = response.clicked()
+                    && self.tab_close_focus.input_focus == Some(response.id)
+                    && self.tab_close_focus.clean_key.is_some();
+                return_focus = response.clicked_by(egui::PointerButton::Primary)
+                    && self.tab_close_focus.clean_click || keyboard;
+                if keyboard {
+                    release_tail = self.tab_close_focus.clean_key.and_then(|(key, released)| (!released).then_some(key));
+                }
                 let response = ui.add_enabled(!waiting && self.tab_close.is_some(), egui::Button::new(RichText::new("Discard and close").color(RED)));
                 #[cfg(test)]
                 workspace_access_tests::record(ui, "save_close_tab_discard", &response);
@@ -437,6 +686,9 @@ impl CedarApp {
         crate::replace::discard_keyboard(ctx);
         if cancel {
             self.cancel_tab_close();
+            if return_focus {
+                self.arm_tab_close_focus(ctx, release_tail);
+            }
         } else if save {
             self.queue_save_close_tab();
         } else if discard {

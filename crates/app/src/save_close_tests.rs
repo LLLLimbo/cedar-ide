@@ -89,18 +89,17 @@ fn acknowledge(app: &mut CedarApp, command: &Command) {
 fn frame(app: &mut CedarApp, time: f64, events: Vec<egui::Event>) {
     let ctx = app.editor_ctx.clone();
     let mut native = eframe::Frame::_new_kittest();
-    let _ = ctx.run(
-        egui::RawInput {
-            time: Some(time),
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1280.0, 900.0),
-            )),
-            events,
-            ..Default::default()
-        },
-        |ctx| eframe::App::update(app, ctx, &mut native),
-    );
+    let mut raw = egui::RawInput {
+        time: Some(time),
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 900.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut raw);
+    let _ = ctx.run(raw, |ctx| eframe::App::update(app, ctx, &mut native));
 }
 
 fn key(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
@@ -259,25 +258,435 @@ fn newer_text_paste_undo_and_profile_changes_after_ack_prevent_removal() {
     }
 }
 
+fn click_keep_editing(app: &mut CedarApp, time: f64, extra: Vec<egui::Event>) {
+    let point = workspace_access_tests::recorded_rect(app, "save_close_tab_cancel").center();
+    let mut events = vec![egui::Event::PointerMoved(point)];
+    events.extend(
+        [true, false]
+            .into_iter()
+            .map(|pressed| egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }),
+    );
+    events.extend(extra);
+    frame(app, time, events);
+}
+
+fn release_close_modal(app: &mut CedarApp, time: f64) {
+    // Model the automatic repaints requested by the explicit Keep editing click.
+    // New keys before release cancel the ticket; only the captured activation's
+    // single matching key-up is allowed. No input is ever replayed.
+    frame(app, time, vec![]);
+    frame(app, time + 0.1, vec![]);
+    assert!(!app.tab_close_focus_pending());
+}
+
+fn focus_keep_editing_by_tab(app: &mut CedarApp) {
+    for index in 0..8 {
+        let id = workspace_access_tests::recorded_response(app, "save_close_tab_cancel").id;
+        if app.editor_ctx.memory(|memory| memory.has_focus(id)) {
+            return;
+        }
+        frame(
+            app,
+            0.3 + f64::from(index) * 0.05,
+            key(egui::Key::Tab, egui::Modifiers::NONE),
+        );
+        // Pinned egui applies some Tab focus changes on the following pass.
+        frame(app, 0.31 + f64::from(index) * 0.05, vec![]);
+    }
+    panic!("native Tab navigation must reach Keep editing");
+}
+
+fn held_close_modal_frame(app: &mut CedarApp, time: f64) {
+    let ctx = app.editor_ctx.clone();
+    let mut native = eframe::Frame::_new_kittest();
+    let mut raw = egui::RawInput {
+        time: Some(time),
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 900.0),
+        )),
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut raw);
+    let _ = ctx.run(raw, |ctx| {
+        // Hold only egui's layer, without introducing any app confirmation.
+        egui::Modal::new(egui::Id::new("discard_confirmation")).show(ctx, |_| {});
+        eframe::App::update(app, ctx, &mut native);
+    });
+}
+
 #[test]
-fn cancelling_close_does_not_cancel_write_and_preserves_undo_after_ack() {
+fn native_keep_editing_restores_focus_then_undo_redo_without_reselection() {
+    for submitted in [false, true] {
+        let (mut app, commands) = connected();
+        frame(&mut app, 0.0, vec![]);
+        let command = if submitted {
+            Some(submit(&mut app, &commands))
+        } else {
+            app.close_tab(1);
+            None
+        };
+        frame(&mut app, 0.1, vec![]);
+        frame(&mut app, 0.2, vec![]);
+        let before_selection = selection(&app, 1);
+        click_keep_editing(&mut app, 1.0, vec![]);
+        assert!(!app.save_close_tab_busy());
+        assert!(app.tab_close_focus_pending());
+        if let Some(command) = &command {
+            assert!(app.documents[0].saving);
+            assert!(app.pending.contains_key(&command.id));
+            assert!(app.save_close_write_pending());
+            assert!(app.notice.contains("may still finish"));
+            app.result_tx
+                .send(WorkerEvent::Response(written(&app, command)))
+                .unwrap();
+        }
+        release_close_modal(&mut app, 1.1);
+        assert!(app
+            .editor_ctx
+            .memory(|memory| memory.has_focus(egui::Id::new(("editor", 1u64)))));
+        assert_eq!(selection(&app, 1), before_selection);
+        assert_eq!(app.documents[0].text, DRAFT);
+        assert_eq!(
+            app.documents[0].saved_text,
+            if submitted { DRAFT } else { BASE }
+        );
+        frame(&mut app, 1.3, key(egui::Key::Z, egui::Modifiers::COMMAND));
+        assert_eq!(app.documents[0].text, BASE);
+        frame(
+            &mut app,
+            1.4,
+            key(
+                egui::Key::Z,
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            ),
+        );
+        assert_eq!(app.documents[0].text, DRAFT);
+        assert_eq!(app.documents.len(), 1);
+        assert!(!app.save_close_tab_busy());
+        idle(&commands);
+    }
+}
+
+#[test]
+fn native_tab_focused_keep_editing_enter_space_and_keyup_return_to_undo_redo() {
+    for activation in [egui::Key::Enter, egui::Key::Space] {
+        for split_release in [false, true] {
+            let (mut app, commands) = connected();
+            frame(&mut app, 0.0, vec![]);
+            app.close_tab(1);
+            frame(&mut app, 0.1, vec![]);
+            frame(&mut app, 0.2, vec![]);
+            focus_keep_editing_by_tab(&mut app);
+            let mut events = key(activation, egui::Modifiers::NONE);
+            if split_release {
+                events.pop();
+            }
+            if activation == egui::Key::Space {
+                events.push(egui::Event::Text(" ".into()));
+            }
+            frame(&mut app, 1.0, events);
+            assert!(!app.save_close_tab_busy());
+            assert!(app.tab_close_focus_pending());
+            if split_release {
+                let release = key(activation, egui::Modifiers::NONE).pop().unwrap();
+                frame(&mut app, 1.1, vec![release]);
+                frame(&mut app, 1.2, vec![]);
+            } else {
+                release_close_modal(&mut app, 1.1);
+            }
+            assert!(!app.tab_close_focus_pending());
+            assert!(app
+                .editor_ctx
+                .memory(|memory| memory.has_focus(egui::Id::new(("editor", 1u64)))));
+            assert_eq!(
+                app.documents[0].text, DRAFT,
+                "Space activation is never draft text"
+            );
+            frame(&mut app, 1.3, key(egui::Key::Z, egui::Modifiers::COMMAND));
+            assert_eq!(app.documents[0].text, BASE);
+            frame(
+                &mut app,
+                1.4,
+                key(
+                    egui::Key::Z,
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                ),
+            );
+            assert_eq!(app.documents[0].text, DRAFT);
+            idle(&commands);
+        }
+    }
+}
+
+#[test]
+fn mixed_keyboard_keep_editing_activation_never_arms_focus_return() {
+    for (activation, extra) in [
+        (egui::Key::Enter, vec![egui::Event::Text(" ".into())]),
+        (egui::Key::Space, vec![egui::Event::Text("  ".into())]),
+        (
+            egui::Key::Space,
+            key(egui::Key::Z, egui::Modifiers::COMMAND),
+        ),
+        (
+            egui::Key::Enter,
+            vec![egui::Event::Ime(egui::ImeEvent::Preedit(
+                "composition".into(),
+            ))],
+        ),
+    ] {
+        let (mut app, commands) = connected();
+        frame(&mut app, 0.0, vec![]);
+        app.close_tab(1);
+        frame(&mut app, 0.1, vec![]);
+        frame(&mut app, 0.2, vec![]);
+        focus_keep_editing_by_tab(&mut app);
+        let mut events = key(activation, egui::Modifiers::NONE);
+        events.extend(extra);
+        frame(&mut app, 1.0, events);
+        assert!(!app.tab_close_focus_pending());
+        release_close_modal(&mut app, 1.1);
+        assert_eq!(app.documents[0].text, DRAFT);
+        idle(&commands);
+    }
+}
+
+#[test]
+fn mismatched_activation_keyup_cancels_pending_focus_return() {
     let (mut app, commands) = connected();
     frame(&mut app, 0.0, vec![]);
-    let command = submit(&mut app, &commands);
-    app.cancel_tab_close();
-    assert!(app.notice.contains("may still finish"));
-    assert!(app.documents[0].saving);
-    assert!(app.pending.contains_key(&command.id));
-    assert!(app.save_close_write_pending());
-    acknowledge(&mut app, &command);
-    finish(&mut app);
-    assert_eq!(app.documents.len(), 1);
-    assert_eq!(app.documents[0].saved_text, DRAFT);
-    app.editor_ctx
-        .memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", 1u64))));
-    frame(&mut app, 2.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
-    assert_eq!(app.documents[0].text, BASE);
-    assert!(app.documents[0].dirty());
+    app.close_tab(1);
+    frame(&mut app, 0.1, vec![]);
+    frame(&mut app, 0.2, vec![]);
+    focus_keep_editing_by_tab(&mut app);
+    frame(
+        &mut app,
+        1.0,
+        vec![key(egui::Key::Enter, egui::Modifiers::NONE).remove(0)],
+    );
+    assert!(app.tab_close_focus_pending());
+    frame(
+        &mut app,
+        1.1,
+        vec![key(egui::Key::Space, egui::Modifiers::NONE).pop().unwrap()],
+    );
+    assert!(!app.tab_close_focus_pending());
+    frame(&mut app, 1.2, vec![]);
+    assert_eq!(app.documents[0].text, DRAFT);
+    idle(&commands);
+}
+
+#[test]
+fn matching_keyup_after_focus_ticket_expiry_cannot_rearm_it() {
+    let (mut app, commands) = connected();
+    frame(&mut app, 0.0, vec![]);
+    app.close_tab(1);
+    frame(&mut app, 0.1, vec![]);
+    frame(&mut app, 0.2, vec![]);
+    focus_keep_editing_by_tab(&mut app);
+    frame(
+        &mut app,
+        1.0,
+        vec![key(egui::Key::Enter, egui::Modifiers::NONE).remove(0)],
+    );
+    assert!(app.tab_close_focus_pending());
+    held_close_modal_frame(&mut app, 1.1);
+    held_close_modal_frame(&mut app, 1.2);
+    assert!(!app.tab_close_focus_pending());
+    frame(
+        &mut app,
+        1.3,
+        vec![key(egui::Key::Enter, egui::Modifiers::NONE).pop().unwrap()],
+    );
+    frame(&mut app, 1.4, vec![]);
+    assert!(!app.tab_close_focus_pending());
+    assert_eq!(app.documents[0].text, DRAFT);
+    idle(&commands);
+}
+
+#[test]
+fn keep_editing_returns_to_active_editor_when_closing_inactive_tab() {
+    let (mut app, commands) = connected();
+    app.documents.push(Document::new(
+        2,
+        "other.txt".into(),
+        BASE.into(),
+        revision(BASE),
+    ));
+    app.active_document = Some(2);
+    editor_state::commit(&app.editor_ctx, &mut app.documents[1], NEWER.into(), 3);
+    frame(&mut app, 0.0, vec![]);
+    app.close_tab(1);
+    frame(&mut app, 0.1, vec![]);
+    frame(&mut app, 0.2, vec![]);
+    click_keep_editing(&mut app, 1.0, vec![]);
+    release_close_modal(&mut app, 1.1);
+    assert!(app
+        .editor_ctx
+        .memory(|memory| memory.has_focus(egui::Id::new(("editor", 2u64)))));
+    assert_eq!(app.active_document, Some(2));
+    frame(&mut app, 1.3, key(egui::Key::Z, egui::Modifiers::COMMAND));
+    assert_eq!(app.documents[1].text, BASE);
+    assert_eq!(app.documents[0].text, DRAFT);
+    idle(&commands);
+}
+
+#[test]
+fn focus_return_expires_for_new_tab_path_session_workspace_navigation_or_modal() {
+    for changed in 0..7 {
+        let (mut app, commands) = connected();
+        frame(&mut app, 0.0, vec![]);
+        app.close_tab(1);
+        frame(&mut app, 0.1, vec![]);
+        frame(&mut app, 0.2, vec![]);
+        click_keep_editing(&mut app, 1.0, vec![]);
+        assert!(app.tab_close_focus_pending());
+        match changed {
+            0 => {
+                app.documents.push(Document::new(
+                    2,
+                    "other.txt".into(),
+                    BASE.into(),
+                    revision(BASE),
+                ));
+                app.active_document = Some(2);
+            }
+            1 => app.documents[0].path = "renamed.txt".into(),
+            2 => app.generation += 1,
+            3 => app.root = "/another-workspace".into(),
+            4 => app.navigation_epoch += 1,
+            5 => app.confirm = Some(Confirm::CloseWindow),
+            6 => app.show_file_chooser(),
+            _ => unreachable!(),
+        }
+        frame(&mut app, 1.1, vec![]);
+        assert!(!app.tab_close_focus_pending(), "case {changed}");
+        frame(&mut app, 1.2, vec![]);
+        assert!(!app.tab_close_focus_pending());
+        assert_eq!(app.documents[0].text, DRAFT);
+        idle(&commands);
+    }
+}
+
+#[test]
+fn newer_input_before_modal_release_cancels_focus_return_without_replay() {
+    for events in [
+        key(egui::Key::Z, egui::Modifiers::COMMAND),
+        vec![egui::Event::Text("new text".into())],
+        vec![egui::Event::Paste("new paste".into())],
+        vec![egui::Event::Ime(egui::ImeEvent::Preedit(
+            "composition".into(),
+        ))],
+        vec![egui::Event::PointerButton {
+            pos: egui::pos2(10.0, 10.0),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    ] {
+        let (mut app, commands) = connected();
+        frame(&mut app, 0.0, vec![]);
+        app.close_tab(1);
+        frame(&mut app, 0.1, vec![]);
+        frame(&mut app, 0.2, vec![]);
+        click_keep_editing(&mut app, 1.0, vec![]);
+        assert!(app.tab_close_focus_pending());
+        frame(&mut app, 1.1, events);
+        assert!(!app.tab_close_focus_pending());
+        frame(&mut app, 1.2, vec![]);
+        frame(&mut app, 1.3, vec![]);
+        assert_eq!(app.documents[0].text, DRAFT);
+        idle(&commands);
+    }
+}
+
+#[test]
+fn mixed_keep_editing_click_and_keyboard_text_or_ime_cannot_arm_later_focus() {
+    for events in [
+        key(egui::Key::Z, egui::Modifiers::COMMAND),
+        vec![egui::Event::Text("mixed text".into())],
+        vec![egui::Event::Paste("mixed paste".into())],
+        vec![egui::Event::Ime(egui::ImeEvent::Preedit(
+            "mixed composition".into(),
+        ))],
+    ] {
+        let (mut app, commands) = connected();
+        frame(&mut app, 0.0, vec![]);
+        app.close_tab(1);
+        frame(&mut app, 0.1, vec![]);
+        frame(&mut app, 0.2, vec![]);
+        click_keep_editing(&mut app, 1.0, events);
+        assert!(!app.save_close_tab_busy());
+        assert!(!app.tab_close_focus_pending());
+        release_close_modal(&mut app, 1.1);
+        assert_eq!(app.documents[0].text, DRAFT);
+        idle(&commands);
+    }
+}
+
+#[test]
+fn automatic_stale_close_and_escape_do_not_arm_focus_return() {
+    for escape in [false, true] {
+        let (mut app, commands) = connected();
+        frame(&mut app, 0.0, vec![]);
+        app.close_tab(1);
+        frame(&mut app, 0.1, vec![]);
+        frame(&mut app, 0.2, vec![]);
+        if escape {
+            frame(&mut app, 1.0, key(egui::Key::Escape, egui::Modifiers::NONE));
+        } else {
+            app.documents[0].text.push_str("newer draft");
+            frame(&mut app, 1.0, vec![]);
+        }
+        assert!(!app.tab_close_focus_pending());
+        assert!(!app.save_close_tab_busy());
+        release_close_modal(&mut app, 1.1);
+        assert!(!app.tab_close_focus_pending());
+        assert_eq!(app.documents.len(), 1);
+        idle(&commands);
+    }
+}
+
+#[test]
+fn keep_editing_focus_ticket_does_not_override_new_find_focus() {
+    let (mut app, commands) = connected();
+    frame(&mut app, 0.0, vec![]);
+    app.close_tab(1);
+    frame(&mut app, 0.1, vec![]);
+    frame(&mut app, 0.2, vec![]);
+    click_keep_editing(&mut app, 1.0, vec![]);
+    app.find_open = true;
+    app.find_focus = true;
+    release_close_modal(&mut app, 1.1);
+    let find = egui::Id::new(replace::FIND_INPUT);
+    assert!(app.editor_ctx.memory(|memory| memory.has_focus(find)));
+    frame(&mut app, 1.3, vec![]);
+    assert!(app.editor_ctx.memory(|memory| memory.has_focus(find)));
+    assert_eq!(app.documents[0].text, DRAFT);
+    idle(&commands);
+}
+
+#[test]
+fn focus_ticket_expires_when_own_modal_release_exceeds_two_native_frames() {
+    let (mut app, commands) = connected();
+    frame(&mut app, 0.0, vec![]);
+    app.close_tab(1);
+    frame(&mut app, 0.1, vec![]);
+    frame(&mut app, 0.2, vec![]);
+    click_keep_editing(&mut app, 1.0, vec![]);
+    for index in 0..2 {
+        held_close_modal_frame(&mut app, 1.1 + f64::from(index) * 0.1);
+        assert_eq!(app.tab_close_focus_pending(), index == 0);
+    }
+    frame(&mut app, 1.4, vec![]);
+    frame(&mut app, 1.5, vec![]);
+    assert!(!app.tab_close_focus_pending());
+    assert_eq!(app.documents[0].text, DRAFT);
     idle(&commands);
 }
 

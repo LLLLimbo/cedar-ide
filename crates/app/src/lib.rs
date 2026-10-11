@@ -347,6 +347,7 @@ pub struct CedarApp {
     close_tab_requested: Option<u64>,
     tab_close: Option<tab_close::Intent>,
     tab_close_submission: Option<tab_close::Submission>,
+    tab_close_focus: tab_close::FocusReturn,
     directory: String,
     entries: Vec<Entry>,
     directory_request: u64,
@@ -454,6 +455,7 @@ impl CedarApp {
             close_tab_requested: None,
             tab_close: None,
             tab_close_submission: None,
+            tab_close_focus: tab_close::FocusReturn::default(),
             directory: String::new(),
             entries: Vec::new(),
             directory_request: 0,
@@ -3006,6 +3008,7 @@ impl CedarApp {
 
 impl eframe::App for CedarApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.capture_tab_close_focus_input(ctx, raw_input);
         self.enter_input = enter_indent::capture(ctx, raw_input, self.active()).filter(|_| {
             self.editor_indent_eligible(ctx)
                 && self.active().is_some_and(|doc| doc.jump_to.is_none())
@@ -3014,6 +3017,7 @@ impl eframe::App for CedarApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.begin_tab_close_focus_frame(ctx);
         let enter_input = self.enter_input.take();
         self.workspace_access = workspace_access::Access::default();
         #[cfg(test)]
@@ -3095,6 +3099,7 @@ impl eframe::App for CedarApp {
         self.finish_save_all_frame(ctx);
         self.finish_copy_draft_frame(ctx);
         self.finish_save_close_tab_frame(ctx);
+        self.finish_tab_close_focus_frame(ctx);
     }
 }
 
