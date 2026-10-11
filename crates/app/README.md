@@ -20,7 +20,7 @@ The optional argument prefills the local workspace field. Select **Connect works
 - Directory navigation, new-file drafts, up to 32 tabs, and path-based quick open
 - UTF-8 editing, line numbers, Java/Kotlin/Rust lexical colors, and case-sensitive find
 - Revision-checked saves, disk-version inspection, and explicit confirmation before discarding a dirty tab or quitting
-- Explicit project text search with historical line results; 0.57.1 retains the 0.57.0 ordered keyboard navigation, pending fresh acceptance
+- Explicit project text search with historical line results; 0.57.2 adds test-only pointer diagnostics for the retained 0.57.0 navigation; native acceptance remains incomplete
 - Trusted-workspace Git status and explicit executable commands with literal argument rows, cancellable task output, and saved project profiles in `cedar.tasks.json`
 
 Shortcuts:
@@ -62,13 +62,17 @@ CI and all three packages passed; bounded Linux native acceptance combines the
 original partial run with a separate same-package shrink/regrow check. Original
 misses and limits remain in the [0.56.1 report](../../docs/TEST_REPORT_PHASE561_TOOLS_HEIGHT.md#final-accepted-0561-evidence).
 
-## Project Search keyboard navigation (0.57.1 pending acceptance)
+## Project Search keyboard navigation (0.57.2 diagnostic candidate)
 
-0.57.1 only corrects the new cross-surface tests' report fixture: both testcase
-elements now include the parser-required zero-valued time attribute. The 0.57.0
-shipping Search and shared-input implementation is unchanged. The failed fixture
-did not establish cross-surface ownership behavior; fresh acceptance remains
-required.
+0.57.1 passed both platform CI jobs, its process proofs and all three package
+audits, but the native Linux check failed when clicking the preceding result at
+line 96 after Space opened the last result at line 97. The visible position stayed
+at line 97. Tool acknowledgement and hover do not prove raw event delivery or
+egui clicked ownership; the cause remains unknown and no retry was made.
+0.57.2 adds only deterministic pointer diagnostics for that composed sequence and
+MouseMoved event shapes. Shipping Search and shared-input behavior stays unchanged.
+Fresh diagnostic CI must complete before any separate decision on another GUI run.
+0.56.1 remains the latest fully accepted checkpoint.
 
 Enter a case-sensitive literal query and explicitly select **Search**, or press
 Enter in its query field. The accepted result batch labels the submitted query.
@@ -95,8 +99,9 @@ Query/batch changes, hidden or switched tools, modals and competing input cancel
 unfinished row intent; continue with a fresh valid key or pointer action. The frontend keeps at
 most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
 oversized batches are rejected whole. No automatic search, new engine, protocol,
-capability or workspace operation is added. Fresh CI, process proof, packages and
-native GUI checks remain [pending](../../docs/TEST_REPORT.md).
+capability or workspace operation is added. 0.57.2 diagnostic CI, process proofs
+and packages remain [pending](../../docs/TEST_REPORT.md); no automatic native rerun
+or production-fix claim follows from the diagnostics.
 
 ## Agent capabilities and trust
 

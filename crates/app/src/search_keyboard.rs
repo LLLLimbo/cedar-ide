@@ -42,10 +42,26 @@ pub(super) struct Search {
     keyboard: Keyboard,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PointerProbe {
+    pub pressed: Option<(usize, egui::Id)>,
+    pub click: Option<(usize, egui::Id)>,
+}
+
 impl Search {
     #[cfg(test)]
     pub(super) fn claims(&self, key: egui::Key) -> bool {
         self.keyboard.claimed.contains(&key)
+    }
+
+    #[cfg(test)]
+    pub(super) fn pointer_probe(&self) -> PointerProbe {
+        let row = |pointer: &Pointer| (pointer.source.index, pointer.source.id);
+        PointerProbe {
+            pressed: self.keyboard.pressed.as_ref().map(row),
+            click: self.keyboard.click.as_ref().map(row),
+        }
     }
 
     pub(super) fn clear_owned(&mut self) {
@@ -608,6 +624,10 @@ impl CedarApp {
                                 ui,
                                 &format!("search_row:{index}"),
                                 &response,
+                            );
+                            #[cfg(test)]
+                            crate::search_keyboard_tests::record_pointer_response(
+                                ui, index, &response, click,
                             );
                             if click == Some(index)
                                 && response.clicked_by(egui::PointerButton::Primary)

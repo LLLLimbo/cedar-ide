@@ -992,6 +992,503 @@ fn search_keyboard_pointer_allows_only_inactive_ime_lifecycle_notifications() {
     }
 }
 
+// This composes the route missing from the small-row pointer fixtures: native
+// focus traversal, End scrolling, asynchronous Open completion, then a click on
+// the preceding visible row. It is controlled egui input, not a native trace.
+const SCROLLED_DRAFT: &str = "a-draft.txt";
+const SCROLLED_UNOPENED: &str = "b-unopened.txt";
+const SCROLLED_COUNT: usize = 192;
+
+fn scrolled_text(path: &str) -> String {
+    let mut text = format!("{path} header α😀 e\u{301} café Ω\r\n");
+    for index in 0..96 {
+        text.push_str(&format!("needle {index:03} α😀 e\u{301} café Ω\r\n"));
+    }
+    assert!(text.len() < 1024 * 1024);
+    text
+}
+
+fn command_modifiers() -> egui::Modifiers {
+    egui::Modifiers {
+        ctrl: true,
+        command: true,
+        ..egui::Modifiers::NONE
+    }
+}
+
+fn clipped_center(app: &CedarApp, probe: &str) -> egui::Pos2 {
+    let rect = recorded_rect(app, probe);
+    let clip = recorded_clip(app, probe);
+    let visible = rect.intersect(clip);
+    assert!(visible.is_finite() && visible.width() > 0.0 && visible.height() > 0.0);
+    visible.center()
+}
+
+fn click_control(app: &mut CedarApp, probe: &str) {
+    let pos = clipped_center(app, probe);
+    frame(app, pointer(pos, true));
+    frame(app, pointer(pos, false));
+}
+
+fn prepare_scrolled_viewport(app: &mut CedarApp) {
+    // Establish a real user-chosen height while Search is still empty. Never
+    // write tools_height, ScrollArea state, or PanelState in this reproducer.
+    let handle_id = tools_resize::native_resize_id();
+    let handle = app.editor_ctx.read_response(handle_id).unwrap();
+    assert!(handle.enabled() && handle.sense.senses_drag());
+    let start = handle.rect.center();
+    let panel = egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("tools"))
+        .unwrap()
+        .rect;
+    let target = egui::pos2(start.x, panel.bottom() - 480.0);
+    frame(app, pointer(start, true));
+    frame(app, vec![egui::Event::PointerMoved(target)]);
+    frame(app, pointer(target, false));
+    assert!(app
+        .tools_height
+        .is_some_and(|height| (height - 480.0).abs() <= 1.0));
+    frame(app, vec![]);
+}
+
+fn scrolled_pointer_app() -> (CedarApp, Receiver<Command>) {
+    let mut app = CedarApp::empty();
+    let form = ConnectForm {
+        local_root: "/workspace".into(),
+        allow_run: false,
+        ..Default::default()
+    };
+    app.workspace_key = Some(form.key());
+    app.active_form = Some(form);
+    app.root = "/workspace".into();
+    app.agent_info = Some(agent_support::full_test_agent());
+    app.state = ConnectionState::Ready;
+    app.open_form = false;
+    let saved = scrolled_text(SCROLLED_DRAFT);
+    app.documents.push(Document::new(
+        1,
+        SCROLLED_DRAFT.into(),
+        saved.clone(),
+        "a".repeat(64),
+    ));
+    app.active_document = Some(1);
+    app.next_document = 2;
+    let (worker, commands) = Worker::recording();
+    app.worker = Some(worker);
+    settle(&mut app);
+
+    click_control(&mut app, "editor");
+    assert_eq!(focused(&app), Some(egui::Id::new(("editor", 1_u64))));
+    frame(&mut app, modified_key(egui::Key::Home, command_modifiers()));
+    frame(
+        &mut app,
+        modified_key(egui::Key::End, egui::Modifiers::SHIFT),
+    );
+    frame(&mut app, modified_key(egui::Key::D, command_modifiers()));
+    let header = saved.split_inclusive('\n').next().unwrap();
+    assert_eq!(app.documents[0].text, format!("{header}{saved}"));
+    assert_eq!(app.documents[0].saved_text, saved);
+    assert!(app.documents[0].dirty());
+    assert!(app.documents[0]
+        .text
+        .lines()
+        .nth(2)
+        .unwrap()
+        .starts_with("needle 000"));
+    frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+    assert!(app.tools_open && app.tool == Tool::Search);
+    settle(&mut app);
+    prepare_scrolled_viewport(&mut app);
+    click_control(&mut app, "search_query");
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, "search_query").id)
+    );
+    frame(&mut app, vec![egui::Event::Text("needle".into())]);
+    frame(&mut app, key(egui::Key::Enter));
+    let search = commands.try_recv().unwrap();
+    assert!(matches!(&search.op, Operation::Search { query, limit: 500 } if query == "needle"));
+    assert!(commands.try_recv().is_err());
+    let matches = [SCROLLED_DRAFT, SCROLLED_UNOPENED]
+        .into_iter()
+        .flat_map(|path| {
+            (0..96).map(move |index| SearchMatch {
+                path: path.into(),
+                line: index + 2,
+                text: format!("needle {index:03} α😀 e\u{301} café Ω"),
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(matches.len(), SCROLLED_COUNT);
+    assert!(validate(&matches).is_ok());
+    reply(
+        &mut app,
+        search.id,
+        Ok(Payload::Matches {
+            matches,
+            truncated: false,
+        }),
+        true,
+    );
+    frame(&mut app, vec![]);
+
+    click_control(&mut app, "search_query");
+    for expected in [
+        recorded_response(&app, "search_submit").id,
+        recorded_scroll_id(&app).with("area"),
+        id(&app, 0),
+    ] {
+        frame(&mut app, key(egui::Key::Tab));
+        assert_eq!(focused(&app), Some(expected));
+    }
+    frame(&mut app, key(egui::Key::End));
+    assert_eq!(focused(&app), Some(id(&app, SCROLLED_COUNT - 1)));
+    // End's reveal is applied by the ScrollArea on the following layout frame.
+    frame(&mut app, vec![]);
+    assert_visible(&app, SCROLLED_COUNT - 1);
+    assert_visible(&app, SCROLLED_COUNT - 2);
+    let mut space = key(egui::Key::Space);
+    space.insert(1, egui::Event::Text(" ".into()));
+    frame(&mut app, space);
+    let read = commands.try_recv().unwrap();
+    assert!(matches!(&read.op, Operation::Read { path } if path == SCROLLED_UNOPENED));
+    assert!(commands.try_recv().is_err());
+    assert_eq!(app.documents.len(), 1);
+    reply(
+        &mut app,
+        read.id,
+        Ok(Payload::File {
+            path: SCROLLED_UNOPENED.into(),
+            text: scrolled_text(SCROLLED_UNOPENED),
+            revision: "b".repeat(64),
+        }),
+        true,
+    );
+    // This is the actual Open completion frame; the next frame is the press.
+    frame(&mut app, vec![]);
+    assert_eq!(app.documents.len(), 2);
+    assert_eq!(app.active().unwrap().path, SCROLLED_UNOPENED);
+    assert_eq!(app.active().unwrap().cursor, (97, 1));
+    assert!(app.active().unwrap().jump_to.is_none());
+    assert!(!app.navigation.restore_focus);
+    assert!(app.location_history.pending.is_none());
+    assert_eq!(app.location_history.back.len(), 1);
+    assert_eq!(focused(&app), Some(egui::Id::new(("editor", 2_u64))));
+    assert!(app.search_rows_active());
+    assert_visible(&app, SCROLLED_COUNT - 2);
+    assert!(commands.try_recv().is_err());
+    (app, commands)
+}
+
+#[derive(Debug)]
+struct PointerFrame {
+    captured: search_keyboard::PointerProbe,
+    passes: Vec<PointerPass>,
+}
+
+#[derive(Debug)]
+struct PointerPass {
+    number: u64,
+    consumed: search_keyboard::PointerProbe,
+    rows: Vec<PointerRow>,
+}
+
+const POINTER_RESPONSE_PROBE: &str = "search_pointer_response_probe";
+
+#[derive(Clone, Debug)]
+struct PointerRow {
+    pass: u64,
+    sizing: bool,
+    index: usize,
+    id: egui::Id,
+    rect: egui::Rect,
+    clip: egui::Rect,
+    enabled: bool,
+    down: bool,
+    clicked: bool,
+    cedar_click: Option<usize>,
+}
+
+// Called next to the actual row_control response and before its click gate.
+// Snapshot values here: Context::read_response would reconstruct the response
+// later and can change focus, while clicked_by consults live per-frame input.
+pub(super) fn record_pointer_response(
+    ui: &egui::Ui,
+    index: usize,
+    response: &egui::Response,
+    cedar_click: Option<usize>,
+) {
+    let probe = egui::Id::new(POINTER_RESPONSE_PROBE);
+    if !ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(probe).unwrap_or(false))
+    {
+        return;
+    }
+    let row = PointerRow {
+        pass: ui.ctx().cumulative_pass_nr(),
+        sizing: ui.is_sizing_pass(),
+        index,
+        id: response.id,
+        rect: response.rect,
+        clip: ui.clip_rect(),
+        enabled: response.enabled(),
+        down: response.is_pointer_button_down_on(),
+        clicked: response.clicked_by(egui::PointerButton::Primary),
+        cedar_click,
+    };
+    ui.ctx().data_mut(|data| {
+        data.get_temp_mut_or_default::<Vec<PointerRow>>(probe.with("rows"))
+            .push(row);
+    });
+}
+
+fn observe_pointer_frame(app: &mut CedarApp, original: Vec<egui::Event>) -> PointerFrame {
+    // The independent original survives the hook unchanged. Neither the probe
+    // nor this helper inserts Cedar tickets or mutates egui focus/ownership.
+    let mut input = raw(app, original.clone());
+    let ctx = app.editor_ctx.clone();
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    assert_eq!(
+        input.events, original,
+        "the hook must preserve pointer input for egui"
+    );
+    let captured = app.search_state.pointer_probe();
+    let mut native = eframe::Frame::_new_kittest();
+    let mut passes = Vec::new();
+    let probe = egui::Id::new(POINTER_RESPONSE_PROBE);
+    ctx.data_mut(|data| data.insert_temp(probe, true));
+    let _ = ctx.run(input, |ctx| {
+        ctx.data_mut(|data| data.insert_temp(probe.with("rows"), Vec::<PointerRow>::new()));
+        eframe::App::update(app, ctx, &mut native);
+        passes.push(PointerPass {
+            number: ctx.cumulative_pass_nr(),
+            consumed: app.search_state.pointer_probe(),
+            rows: ctx.data_mut(|data| data.remove_temp(probe.with("rows")).unwrap()),
+        });
+    });
+    ctx.data_mut(|data| data.remove::<bool>(probe));
+    assert!(!passes.is_empty());
+    assert!(passes
+        .windows(2)
+        .all(|pair| pair[0].number < pair[1].number));
+    PointerFrame { captured, passes }
+}
+
+fn assert_pointer_owners(
+    frame: &PointerFrame,
+    target_id: egui::Id,
+    pos: egui::Pos2,
+    down: bool,
+    clicked: bool,
+    cedar_click: bool,
+) {
+    let target = SCROLLED_COUNT - 2;
+    for pass in &frame.passes {
+        for row in &pass.rows {
+            assert_eq!(row.pass, pass.number);
+            assert!(
+                !row.down || (down && row.index == target),
+                "unexpected press owner: {row:?}"
+            );
+            assert!(
+                !row.clicked || (clicked && row.index == target),
+                "unexpected click owner: {row:?}"
+            );
+            assert!(
+                row.cedar_click.is_none() || (cedar_click && row.cedar_click == Some(target)),
+                "unexpected Cedar click admission: {row:?}"
+            );
+        }
+    }
+    assert_eq!(
+        frame.passes.iter().flat_map(|pass| &pass.rows).any(|row| {
+            !row.sizing && row.index == target && row.clicked && row.cedar_click == Some(target)
+        }),
+        cedar_click,
+        "the actual response and Cedar click ticket must coincide in one pass: {frame:?}"
+    );
+    // A discarded/sizing pass alone cannot satisfy the ownership witness.
+    let retained = frame.passes.last().unwrap();
+    let rows = retained
+        .rows
+        .iter()
+        .filter(|row| !row.sizing)
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), SCROLLED_COUNT);
+    let row = rows.into_iter().find(|row| row.index == target).unwrap();
+    assert_eq!(row.id, target_id);
+    assert!(row.enabled);
+    assert!(row.rect.intersect(row.clip).contains(pos));
+    assert_eq!(row.down, down, "retained-pass press ownership: {row:?}");
+    assert_eq!(
+        row.clicked, clicked,
+        "retained-pass click ownership: {row:?}"
+    );
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RawMotionAt {
+    None,
+    Press,
+    Held,
+    Release,
+}
+
+fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
+    let (mut app, commands) = scrolled_pointer_app();
+    let target = SCROLLED_COUNT - 2;
+    let target_id = id(&app, target);
+    let ticket = Some((target, target_id));
+    let pos = clipped_center(&app, &format!("search_row:{target}"));
+    let before = app.navigation_epoch;
+    let dirty = app.documents[0].text.clone();
+    let saved = app.documents[0].saved_text.clone();
+    let original_departure = app.location_history.back[0];
+    let selection = egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 2_u64)))
+        .unwrap()
+        .cursor
+        .char_range()
+        .unwrap();
+    assert_eq!(
+        selection.primary.index,
+        line_start(&app.active().unwrap().text, 97)
+    );
+    assert_eq!(selection.secondary.index, selection.primary.index);
+    let edit_version = app.active().unwrap().edit_version;
+    let mut press = pointer(pos, true);
+    if raw_motion == RawMotionAt::Press {
+        press.insert(1, egui::Event::MouseMoved(egui::vec2(1.0, -1.0)));
+    }
+    let down = observe_pointer_frame(&mut app, press);
+    assert_pointer_owners(&down, target_id, pos, true, false, false);
+    assert_eq!(
+        down.captured.pressed,
+        if raw_motion == RawMotionAt::Press {
+            None
+        } else {
+            ticket
+        }
+    );
+    assert_eq!(down.captured.click, None);
+    for pass in &down.passes {
+        assert_eq!(
+            pass.consumed, down.captured,
+            "pass {}: {down:?}",
+            pass.number
+        );
+    }
+    assert_eq!(app.navigation_epoch, before);
+    assert_eq!(app.active().unwrap().cursor, (97, 1));
+    if raw_motion == RawMotionAt::Held {
+        let held = observe_pointer_frame(
+            &mut app,
+            vec![egui::Event::MouseMoved(egui::vec2(1.0, -1.0))],
+        );
+        assert_pointer_owners(&held, target_id, pos, true, false, false);
+        assert_eq!(held.captured.pressed, None);
+        assert_eq!(held.captured.click, None);
+        for pass in &held.passes {
+            assert_eq!(
+                pass.consumed, held.captured,
+                "pass {}: {held:?}",
+                pass.number
+            );
+        }
+        assert_eq!(app.navigation_epoch, before);
+        assert_eq!(app.active().unwrap().cursor, (97, 1));
+    }
+    // Recompute from this presentation, rather than trusting pre-press geometry.
+    let release_pos = clipped_center(&app, &format!("search_row:{target}"));
+    assert_eq!(release_pos, pos);
+    let mut release = pointer(release_pos, false);
+    if raw_motion == RawMotionAt::Release {
+        release.insert(1, egui::Event::MouseMoved(egui::vec2(1.0, -1.0)));
+    }
+    let up = observe_pointer_frame(&mut app, release);
+    let admitted = raw_motion == RawMotionAt::None;
+    assert_pointer_owners(&up, target_id, release_pos, false, true, admitted);
+    assert_eq!(up.captured.pressed, None);
+    assert_eq!(up.captured.click, if admitted { ticket } else { None });
+    for pass in &up.passes {
+        assert_eq!(pass.consumed.pressed, None, "pass {}: {up:?}", pass.number);
+        assert_eq!(
+            pass.consumed.click, None,
+            "click ticket must be consumed in pass {}: {up:?}",
+            pass.number
+        );
+    }
+    assert_eq!(app.navigation_epoch, before + u64::from(admitted));
+    assert_eq!(
+        app.active().unwrap().cursor,
+        (if admitted { 96 } else { 97 }, 1)
+    );
+    assert_eq!(
+        app.location_history.back.len(),
+        if admitted { 2 } else { 1 }
+    );
+    assert!(app.location_history.forward.is_empty());
+    assert!(app.location_history.pending.is_none());
+    let retained_departure = app.location_history.back[0];
+    assert_eq!(retained_departure.document, original_departure.document);
+    assert_eq!(retained_departure.generation, original_departure.generation);
+    assert_eq!(
+        retained_departure.edit_version,
+        original_departure.edit_version
+    );
+    assert!(location_history::same_selection(
+        retained_departure.selection,
+        original_departure.selection
+    ));
+    if admitted {
+        let departure = app.location_history.back[1];
+        assert_eq!(departure.document, 2);
+        assert_eq!(departure.generation, app.generation);
+        assert_eq!(departure.edit_version, edit_version);
+        assert!(location_history::same_selection(
+            departure.selection,
+            selection
+        ));
+    }
+    assert_eq!(app.documents.len(), 2);
+    assert_eq!(app.documents[0].text, dirty);
+    assert_eq!(app.documents[0].saved_text, saved);
+    assert!(app.documents[0].dirty());
+    assert_eq!(app.active().unwrap().text, scrolled_text(SCROLLED_UNOPENED));
+    assert_eq!(app.active().unwrap().path, SCROLLED_UNOPENED);
+    assert!(
+        commands.try_recv().is_err(),
+        "the already-open target must issue no second Read or other operation"
+    );
+}
+
+#[test]
+fn search_keyboard_scrolled_open_completion_then_pointer_has_both_owners() {
+    assert_scrolled_pointer_characterization(RawMotionAt::None);
+}
+
+#[test]
+fn search_keyboard_scrolled_mouse_moved_on_press_has_egui_click_without_cedar_ticket() {
+    // A controlled classifier negative, not evidence that the failed native
+    // click contained MouseMoved or that rejecting such input is desired.
+    // Pinned source: emilk/egui tag 0.31.1, crates/eframe/src/native/
+    // glow_integration.rs:433-447 forwards DeviceEvent::MouseMotion;
+    // crates/egui-winit/src/lib.rs:529-530 appends MouseMoved independently of
+    // CursorMoved (591-621). These cached files match the Cargo.lock .crates.
+    // These variants deliberately choose frame grouping; native grouping is
+    // absent from the failed receipt and is not reconstructed by this fixture.
+    assert_scrolled_pointer_characterization(RawMotionAt::Press);
+}
+
+#[test]
+fn search_keyboard_scrolled_mouse_moved_while_held_cancels_cedar_ticket_only() {
+    assert_scrolled_pointer_characterization(RawMotionAt::Held);
+}
+
+#[test]
+fn search_keyboard_scrolled_mouse_moved_on_release_cancels_cedar_ticket_only() {
+    assert_scrolled_pointer_characterization(RawMotionAt::Release);
+}
+
 #[test]
 fn search_keyboard_workspace_changing_hello_preserves_held_lifetime_until_release() {
     for held in [egui::Key::Enter, egui::Key::Space] {
