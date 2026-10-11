@@ -102,7 +102,7 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual([item["phase"] for item in expected["operation_ledger"]],
                          ["setup"] * 4 + ["refresh"] * 3 + ["reconnect"] * 3)
         self.assertEqual(len(expected), 54)
-        self.assertEqual(expected["source_version"], "0.55.4")
+        self.assertEqual(expected["source_version"], "0.56.0")
         self.assertEqual((expected["requests"], expected["connections"], expected["agents_reaped"]),
                          (10, 2, 2))
         self.assertEqual((expected["setup_requests"], expected["refresh_requests"],
@@ -249,13 +249,13 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
                             b'[workspace]\npackage = false',
                             b'[workspace.package]\nversion = 54',
                             b'[workspace.package]\nversion = "0.53.4"',
-                            b'[workspace.package]\nversion = "0.55.4-extra"',
-                            b'[workspace.package]\nversion = "0.55.4"\nversion = "0.55.4"',
+                            b'[workspace.package]\nversion = "0.56.0-extra"',
+                            b'[workspace.package]\nversion = "0.56.0"\nversion = "0.56.0"',
                             b" " * (64 * 1024 + 1)):
                 path.write_bytes(invalid)
                 with self.subTest(data=invalid[:60]), self.assertRaises(proof.AcceptanceError):
                     proof.validate_source_version(root)
-            path.write_text('[workspace.package]\nversion = "0.55.4"\n')
+            path.write_text('[workspace.package]\nversion = "0.56.0"\n')
             proof.validate_source_version(root)
 
     def test_agent_digest_is_exact_nonempty_bounded_and_detects_same_size_change(self):
@@ -289,7 +289,7 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
 
 class DriverTests(unittest.TestCase):
     def exercise(self, platform="linux", *, failure=None, selection=None, runtime=None,
-                 missing_agent=False, invalid_artifact=False, source_version="0.55.4",
+                 missing_agent=False, invalid_artifact=False, source_version="0.56.0",
                  changed_agent=False, changed_source=False):
         with tempfile.TemporaryDirectory(prefix="cedar-triage-lines-driver-") as directory:
             root = Path(directory).resolve()
@@ -552,6 +552,44 @@ class DiagnosticPrivacyTests(unittest.TestCase):
         self.assertNotIn(str(root), json.dumps(items))
         value["message"]["code"]["code"] = "E0308 SECRET"
         self.assertEqual(diagnostic.sanitize_output(json.dumps(value).encode(), root, "compile")[0], [])
+
+    def test_native_divider_checks_match_source_and_omit_unknown_prose_and_paths(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        messages = (
+            "Tools panel did not retain the native 480-point resize",
+            "initial Tools resize must precede the explicit report Read",
+            "native Tools resize handle absent",
+            "native Tools resize handle did not own the drag",
+            "native Tools resize handle did not receive the primary press",
+            "native Tools resize handle did not receive the primary release",
+            "native Tools resize handle invalid",
+            "rendered Tools panel geometry invalid",
+            "rendered Tools panel state absent",
+        )
+        source = (root / "crates/app/src/report_triage_process_tests.rs").read_text().splitlines()
+        known = diagnostic.native_errors(root)
+        for message in messages:
+            self.assertIn(message, diagnostic.NATIVE_ERRORS)
+            self.assertEqual(known[message], [line for line, text in enumerate(source, 1)
+                                              if '"' + message + '"' in text])
+            self.assertEqual(len(known[message]), 1)
+        data = b"".join(f'Error: "{message}"\n'.encode() for message in messages)
+        data += (b'Error: "native Tools resize handle invalid SECRET"\n'
+                 b'Error: "SECRET fixture content"\n/private/SECRET report-body=SECRET\n')
+        failure = diagnostic.CapturedFailure("subprocess_nonzero", data, returncode=1, eof=True, cleanup="reaped")
+        item = diagnostic.failure_artifact(diagnostic.StageFailure("runtime", failure, root, 90, 256 * 1024))
+        self.assertEqual(item["diagnostics"], [
+            {"kind": "native_check", "message": message,
+             "source": "crates/app/src/report_triage_process_tests.rs", "line": known[message][0]}
+            for message in messages])
+        self.assertEqual(item["suppressed_lines"], 3)
+        self.assertFalse(item["diagnostics_truncated"])
+        self.assertEqual(item["raw_output_omitted_bytes"], len(data))
+        self.assertEqual(item["native_cleanup"], "unverified")
+        self.assertLess(len(json.dumps(item).encode()), diagnostic.MAX_ARTIFACT_BYTES)
+        for private in ("SECRET", "/private", "report-body", str(root)):
+            self.assertNotIn(private, json.dumps(item))
 
     def test_panic_keeps_only_verified_relative_location(self):
         import report_triage_diagnostics as diagnostic
@@ -834,22 +872,50 @@ class GeometryDiagnosticTests(unittest.TestCase):
         self.assertNotIn("/private", json.dumps(item))
         self.assertLess(len(json.dumps(item).encode()), diagnostic.MAX_ARTIFACT_BYTES)
 
-    def test_fixture_reestablishes_height_only_after_accepted_read_without_added_frames(self):
+    def test_fixture_native_resize_precedes_load_and_survives_read_without_reseeding(self):
         root = Path(__file__).resolve().parent.parent
         source = (root / "crates/app/src/report_triage_process_tests.rs").read_text()
+        start = source.index("    fn resize_report_panel(")
+        end = source.index("    fn source(", start)
+        resize = source[start:end]
+        ordered = ['egui::Id::new("tools").with("__resize")', "handle.rect.center()",
+                   "self.report_panel_rect()?.bottom() - REPORT_PANEL_HEIGHT", "pressed: true",
+                   "response.is_pointer_button_down_on()", "egui::Event::PointerMoved(target)",
+                   "response.dragged_by(egui::PointerButton::Primary)", "pressed: false",
+                   "response.drag_stopped_by(egui::PointerButton::Primary)",
+                   "self.settle()?", "self.resized_report_panel()"]
+        self.assertEqual([resize.index(part) for part in ordered], sorted(resize.index(part) for part in ordered))
+        self.assertIn("self.app.test_report.snapshot.is_none()", resize)
+        self.assertEqual(source.count("h.resize_report_panel()?"), 1)
+        self.assertIn("h.resize_report_panel()?;\n    h.load_report_control()?;", source)
+        self.assertEqual(source.count("h.load_report_control()?"), 2)
+        self.assertNotIn("set_report_panel_height", source)
+        self.assertNotIn("insert_persisted", source)
+        self.assertNotIn("PanelState {", source)
         start = source.index("    fn load_report_control(")
         end = source.index("    fn explicit_refresh_reply(", start)
         helper = source[start:end]
-        ordered = ["self.read_report_command()?", "self.app.apply_event(event)", "self.source()?",
-                   "set_report_panel_height(&self.app)", "self.settle()?", "self.loaded_viewport()"]
-        self.assertEqual([helper.index(part) for part in ordered], sorted(helper.index(part) for part in ordered))
+        ordered = ["self.resized_report_panel()?", 'self.click_probe("test_report_load", true)?',
+                   "self.resized_report_panel()?", "self.read_report_command()?",
+                   "self.app.apply_event(event)", "self.source()?", "self.settle()?",
+                   "self.resized_report_panel()?", "self.loaded_viewport()"]
+        cursor = 0
+        for part in ordered:
+            cursor = helper.index(part, cursor) + len(part)
         self.assertEqual(helper.count("self.settle()"), 1)
         self.assertNotIn("self.frame(", helper)
+        self.assertNotIn("resize_report_panel(", helper)
+        settle = source[source.index("    fn settle("):source.index("    fn local(")]
+        self.assertIn("for _ in 0..3", settle)
+        self.assertEqual(settle.count("self.frame(vec![])?"), 1)
         viewport = source[source.index("    fn loaded_viewport("):source.index("    fn expect_row(")]
+        self.assertIn("rect.width() > 0.0", viewport)
+        self.assertIn("rect.height() > 0.0", viewport)
+        self.assertIn("clip.width() > 0.0", viewport)
         self.assertIn("clip.height() > rect.height()", viewport)
         self.assertIn("clip.contains_rect(rect)", viewport)
         self.assertIn('let name = "test_report_case:0";', viewport)
-        self.assertIn("egui::vec2(1000.0, 480.0)", source)
+        self.assertIn("const REPORT_PANEL_HEIGHT: f32 = 480.0;", source)
         self.assertIn("egui::vec2(1000.0, 820.0)", source)
 
 

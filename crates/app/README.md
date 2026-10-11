@@ -49,6 +49,18 @@ paste or another action. Holding the shortcut does not repeatedly toggle tools.
 These shortcuts provide an alternative at small window heights; expanded forms
 and crowded center controls still have separate responsive-layout limitations.
 
+The 0.56.0 candidate retains an explicit tools-panel height only after an actual
+primary-button vertical drag on its native top divider. Until then, content can
+still shrink the panel automatically. The explicit choice lasts through empty,
+loading, loaded and cleared reports, hide/show, tool changes and reconnects in
+this frontend process. Later drags can enlarge or reduce it. Window constraints
+may temporarily limit the displayed height without replacing the preference;
+window growth restores it when space permits. Restarting the app returns to
+automatic sizing. The existing 245-point default and 150–500 range remain, but
+neither a hard content cap nor room for the editor is guaranteed. Fresh CI and
+native GUI acceptance for this changed behavior remain pending; see the
+[current report](../../docs/TEST_REPORT.md).
+
 ## Agent capabilities and trust
 
 Each accepted connection retains the first validated handshake. The status bar shows the agent-reported version and OS/architecture; its tooltip summarizes feature support and the separate trust setting. These are unverified support claims, not identity or permission. Support follows the workspace agent's advertised operations, never the frontend OS or the SSH/local transport.
@@ -97,8 +109,9 @@ Definitions support ordinary Location and LocationLink responses. Every target f
 
 With execution trust off, use **Tests** to explicitly **Load report**, **Refresh report**
 or **Clear report** for one relative XML path. Results describe the bytes read at the
-shown revision; they do not run tests or validate unsaved drafts. The pending 0.55
-workflow adds Up/Down/Home/End traversal of filtered rows in original XML order.
+shown revision; they do not run tests or validate unsaved drafts. The bounded
+[0.55.4 acceptance](../../docs/TEST_REPORT_PHASE554_QUICK_DIAGNOSTICS.md#final-accepted-0554-evidence)
+covers Up/Down/Home/End traversal of filtered rows in original XML order.
 Enter/Space reveals the focused row's exact details; **Back to case** returns to
 that row. It preserves native Tab/filter controls and keeps duplicate names
 separate. See the [report format and limits](../../docs/TEST_RESULTS.md).

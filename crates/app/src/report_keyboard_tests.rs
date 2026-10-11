@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 const PATH: &str = "target/TEST-keyboard.xml";
 const SIZE: egui::Vec2 = egui::vec2(1200.0, 900.0);
+const REPORT_PANEL_HEIGHT: f32 = 480.0;
 
 fn xml(count: usize) -> String {
     let cases = (0..count).map(|index| {
@@ -62,10 +63,10 @@ fn app_with_snapshot(initial_snapshot: Option<Snapshot>) -> (CedarApp, Receiver<
     app.test_report.path = PATH.into();
     app.test_report.snapshot = initial_snapshot;
     assert!(!app.documents[0].has_cjk);
-    prepare_report_viewport(&app);
     let (worker, commands) = Worker::recording();
     app.worker = Some(worker);
     settle(&mut app);
+    prepare_report_viewport(&mut app);
     assert!(
         app.system_fonts.needs_probe(),
         "geometry fixture must not start optional font I/O"
@@ -73,15 +74,44 @@ fn app_with_snapshot(initial_snapshot: Option<Snapshot>) -> (CedarApp, Receiver<
     (app, commands)
 }
 
-fn prepare_report_viewport(app: &CedarApp) {
-    app.editor_ctx.data_mut(|data| {
-        data.insert_persisted(
-            egui::Id::new("tools"),
-            egui::containers::panel::PanelState {
-                rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE.x, 480.0)),
-            },
-        )
-    });
+fn report_panel_rect(app: &CedarApp) -> egui::Rect {
+    let rect = egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("tools"))
+        .unwrap()
+        .rect;
+    assert!(rect.is_finite() && rect.width() > 0.0 && rect.height() > 0.0);
+    rect
+}
+
+fn prepare_report_viewport(app: &mut CedarApp) {
+    let id = egui::Id::new("tools").with("__resize");
+    let handle = app.editor_ctx.read_response(id).unwrap();
+    assert!(handle.enabled() && handle.sense.senses_drag());
+    assert!(handle.rect.is_finite() && handle.rect.width() > 0.0 && handle.rect.height() > 0.0);
+    let start = handle.rect.center();
+    let target = egui::pos2(
+        start.x,
+        report_panel_rect(app).bottom() - REPORT_PANEL_HEIGHT,
+    );
+    frame_after(app, pointer_events(start, true), 0.25);
+    assert!(app
+        .editor_ctx
+        .read_response(id)
+        .unwrap()
+        .is_pointer_button_down_on());
+    frame_after(app, vec![egui::Event::PointerMoved(target)], 0.25);
+    assert!(app
+        .editor_ctx
+        .read_response(id)
+        .unwrap()
+        .dragged_by(egui::PointerButton::Primary));
+    frame_after(app, pointer_events(target, false), 0.25);
+    assert!(app
+        .editor_ctx
+        .read_response(id)
+        .unwrap()
+        .drag_stopped_by(egui::PointerButton::Primary));
+    settle(app);
+    assert!((report_panel_rect(app).height() - REPORT_PANEL_HEIGHT).abs() <= 1.0);
 }
 
 fn raw(app: &CedarApp, events: Vec<egui::Event>) -> egui::RawInput {
@@ -325,18 +355,13 @@ fn report_keyboard_space_companion_is_exact_and_mixed_ime_input_vetoes() {
 }
 
 #[test]
-fn report_keyboard_empty_then_explicit_read_prepares_real_viewport_before_navigation() {
+fn report_keyboard_native_resize_survives_explicit_read_before_navigation() {
     let (mut app, commands) = app_with_snapshot(None);
     assert!(app.test_report.snapshot.is_none());
     assert!(commands.try_recv().is_err());
-    // The empty panel has no report ScrollArea to fill the seeded height.
-    // egui persists its actual content rect, so the initial 480 is not retained.
-    let empty_rect =
-        egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("tools"))
-            .unwrap()
-            .rect;
-    assert!(empty_rect.is_finite());
-    assert!(empty_rect.height() >= 150.0 && empty_rect.height() < 480.0);
+    // The native divider was dragged while the report panel was still empty.
+    let empty_rect = report_panel_rect(&app);
+    assert!((empty_rect.height() - REPORT_PANEL_HEIGHT).abs() <= 1.0);
 
     click(&mut app, "test_report_load");
     let command = commands.try_recv().unwrap();
@@ -348,6 +373,8 @@ fn report_keyboard_empty_then_explicit_read_prepares_real_viewport_before_naviga
     assert_eq!(app.test_report.loading.as_ref(), Some(&load));
     assert_eq!(load.generation, app.generation);
     assert_eq!(load.path, PATH);
+    settle(&mut app);
+    assert_eq!(report_panel_rect(&app), empty_rect);
     assert!(commands.try_recv().is_err());
     let text = xml(192);
     let revision = format!("{:x}", Sha256::digest(text.as_bytes()));
@@ -368,15 +395,14 @@ fn report_keyboard_empty_then_explicit_read_prepares_real_viewport_before_naviga
     assert_eq!(snapshot.revision, revision);
     assert_eq!(snapshot.report.cases.len(), 192);
 
-    // Prepare the same ordinary panel size only after the accepted Read exists.
-    // Focus and scroll offsets still come exclusively from production frames.
-    prepare_report_viewport(&app);
     settle(&mut app);
+    assert_eq!(report_panel_rect(&app), empty_rect);
     let row = recorded_rect(&app, "test_report_case:0");
     let clip = recorded_clip(&app, "test_report_case:0");
     assert!(row.is_finite() && clip.is_finite());
-    assert!(row.width() > 0.0 && row.height() > 0.0 && clip.height() > row.height());
-    assert!(row.intersect(clip).width() > 0.0);
+    assert!(row.width() > 0.0 && row.height() > 0.0);
+    assert!(clip.width() > 0.0 && clip.height() > row.height());
+    assert!(clip.contains_rect(row));
     assert_visible(&app, "test_report_case:0");
     focus(&mut app, "test_report_case:0");
     for (key_value, index) in [(egui::Key::End, 191), (egui::Key::Home, 0)] {

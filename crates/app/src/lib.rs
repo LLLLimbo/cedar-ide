@@ -108,6 +108,9 @@ mod test_report_ui;
 mod test_report_ui_tests;
 mod test_reports;
 pub mod text_edits;
+mod tools_resize;
+#[cfg(test)]
+mod tools_resize_tests;
 #[cfg(test)]
 mod unavailable_recovery_process_tests;
 mod worker;
@@ -374,6 +377,8 @@ pub struct CedarApp {
     notice: String,
     tool: Tool,
     tools_open: bool,
+    // Runtime-only preference, established by a deliberate native-edge drag.
+    tools_height: Option<f32>,
     search_query: String,
     search_results: Vec<SearchMatch>,
     search_truncated: bool,
@@ -483,6 +488,7 @@ impl CedarApp {
             notice: "Ready when you are".into(),
             tool: Tool::Search,
             tools_open: false,
+            tools_height: None,
             search_query: String::new(),
             search_results: Vec::new(),
             search_truncated: false,
@@ -2366,8 +2372,13 @@ impl CedarApp {
             return;
         }
         let mut close_tools = None;
+        let resize = tools_resize::prepare(ctx, self.tools_height);
+        let frame = egui::Frame::new().fill(PANEL).inner_margin(12.0);
         egui::TopBottomPanel::bottom("tools").default_height(245.0).height_range(150.0..=500.0).resizable(true)
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0)).show(ctx, |ui| {
+            .frame(frame).show(ctx, |ui| {
+                if let Some(height) = resize.reserve_and_capture(ui, &frame) {
+                    self.tools_height = Some(height);
+                }
                 ui.horizontal_wrapped(|ui| {
                     for (tool, label) in [(Tool::Search, "PROJECT SEARCH"), (Tool::Git, "GIT CHANGES"), (Tool::Run, "COMMANDS"), (Tool::Language, "LANGUAGE"), (Tool::Tests, "TEST RESULTS")] {
                         let response = ui.selectable_label(self.tool == tool, label).on_hover_text("Ctrl/Cmd+J hides tools or returns to the selected tool");

@@ -19,6 +19,7 @@ const REPORT: &str = "triage 😀/TEST-duplicate.xml";
 const DRAFT_BASE: &str = "saved α😀e\u{301} café\r\nsecond Ω\r\n";
 const DRAFT_TEXT: &str = "dirty α😀e\u{301} café\r\nsecond Ω\r\n";
 const ROWS: usize = 192;
+const REPORT_PANEL_HEIGHT: f32 = 480.0;
 const CASES: [&str; 14] = [
     "explicit_trust_off_report_read",
     "filtered_xml_order_duplicate_identity",
@@ -192,7 +193,6 @@ impl Harness {
         let mut app = CedarApp::empty();
         app.open_form = false;
         app.form.local_root = canonical_root.to_string_lossy().into_owned();
-        set_report_panel_height(&app);
         let cancellation = ConnectionCancellation::new();
         let cancel_on_expiry = cancellation.clone();
         let (stop, stopped) = mpsc::channel();
@@ -365,7 +365,7 @@ impl Harness {
             "generated fixture root or form requires unsupported CJK font probing",
         )?;
         require(
-            env!("CARGO_PKG_VERSION") == "0.55.4"
+            env!("CARGO_PKG_VERSION") == "0.56.0"
                 && self.app.agent_info.as_ref().is_some_and(|info| {
                     info.version == env!("CARGO_PKG_VERSION")
                         && info.os == if cfg!(windows) { "windows" } else { "linux" }
@@ -721,19 +721,6 @@ fn key(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
         })
         .collect()
 }
-fn set_report_panel_height(app: &CedarApp) {
-    // This is an ordinary persisted layout setting, not report navigation or
-    // scroll state. The native window remains 1000 by 820 points.
-    app.editor_ctx.data_mut(|data| {
-        data.insert_persisted(
-            egui::Id::new("tools"),
-            egui::containers::panel::PanelState {
-                rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 480.0)),
-            },
-        );
-    });
-}
-
 fn source_label(path: &str) -> &'static str {
     match path {
         "" => "root",
@@ -782,6 +769,90 @@ fn text_rect(output: &egui::FullOutput, expected: &str) -> Check<egui::Rect> {
 }
 
 impl Harness {
+    fn report_panel_rect(&self) -> Check<egui::Rect> {
+        let rect =
+            egui::containers::panel::PanelState::load(&self.app.editor_ctx, egui::Id::new("tools"))
+                .ok_or("rendered Tools panel state absent")?
+                .rect;
+        require(
+            rect.is_finite() && rect.width() > 0.0 && rect.height() > 0.0,
+            "rendered Tools panel geometry invalid",
+        )?;
+        Ok(rect)
+    }
+
+    fn resized_report_panel(&self) -> Check<()> {
+        require(
+            (self.report_panel_rect()?.height() - REPORT_PANEL_HEIGHT).abs() <= 1.0,
+            "Tools panel did not retain the native 480-point resize",
+        )
+    }
+
+    fn resize_report_panel(&mut self) -> Check<()> {
+        require(
+            self.app.test_report.snapshot.is_none(),
+            "initial Tools resize must precede the explicit report Read",
+        )?;
+        let id = egui::Id::new("tools").with("__resize");
+        let handle = self
+            .app
+            .editor_ctx
+            .read_response(id)
+            .ok_or("native Tools resize handle absent")?;
+        require(
+            handle.enabled()
+                && handle.sense.senses_drag()
+                && handle.rect.is_finite()
+                && handle.rect.width() > 0.0
+                && handle.rect.height() > 0.0,
+            "native Tools resize handle invalid",
+        )?;
+        let start = handle.rect.center();
+        let target = egui::pos2(
+            start.x,
+            self.report_panel_rect()?.bottom() - REPORT_PANEL_HEIGHT,
+        );
+        self.frame(vec![
+            egui::Event::PointerMoved(start),
+            egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ])?;
+        require(
+            self.app
+                .editor_ctx
+                .read_response(id)
+                .is_some_and(|response| response.is_pointer_button_down_on()),
+            "native Tools resize handle did not receive the primary press",
+        )?;
+        self.frame(vec![egui::Event::PointerMoved(target)])?;
+        require(
+            self.app
+                .editor_ctx
+                .read_response(id)
+                .is_some_and(|response| response.dragged_by(egui::PointerButton::Primary)),
+            "native Tools resize handle did not own the drag",
+        )?;
+        self.frame(vec![egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }])?;
+        require(
+            self.app
+                .editor_ctx
+                .read_response(id)
+                .is_some_and(|response| response.drag_stopped_by(egui::PointerButton::Primary)),
+            "native Tools resize handle did not receive the primary release",
+        )?;
+        self.settle()?;
+        self.resized_report_panel()
+    }
+
     fn source(&self) -> Check<test_report_ui::Load> {
         self.app
             .test_report
@@ -976,14 +1047,14 @@ impl Harness {
     }
 
     fn load_report_control(&mut self) -> Check<()> {
+        self.resized_report_panel()?;
         self.click_probe("test_report_load", true)?;
+        self.resized_report_panel()?;
         let event = self.read_report_command()?;
         self.app.apply_event(event);
         self.source()?;
-        // Empty-panel frames can persist a smaller actual height. Reestablish
-        // the same fixture geometry after the real report has been accepted.
-        set_report_panel_height(&self.app);
         self.settle()?;
+        self.resized_report_panel()?;
         self.loaded_viewport()
     }
 
@@ -1062,6 +1133,7 @@ fn normal_agent_report_keyboard_triage_is_local_and_revision_bound() -> Check<()
     h.app.test_report.path = REPORT.into();
     h.app.test_report.path_edited();
     h.settle()?;
+    h.resize_report_panel()?;
     h.load_report_control()?;
     require(
         h.ledger.counts() == (1, 2, 0, 0)
