@@ -20,7 +20,7 @@ The optional argument prefills the local workspace field. Select **Connect works
 - Directory navigation, new-file drafts, up to 32 tabs, and path-based quick open
 - UTF-8 editing, line numbers, Java/Kotlin/Rust lexical colors, and case-sensitive find
 - Revision-checked saves, disk-version inspection, and explicit confirmation before discarding a dirty tab or quitting
-- Explicit project text search with historical line results; 0.57.0 adds ordered keyboard navigation, pending fresh acceptance
+- Explicit project text search with historical line results; 0.57.1 retains the 0.57.0 ordered keyboard navigation, pending fresh acceptance
 - Trusted-workspace Git status and explicit executable commands with literal argument rows, cancellable task output, and saved project profiles in `cedar.tasks.json`
 
 Shortcuts:
@@ -62,7 +62,13 @@ CI and all three packages passed; bounded Linux native acceptance combines the
 original partial run with a separate same-package shrink/regrow check. Original
 misses and limits remain in the [0.56.1 report](../../docs/TEST_REPORT_PHASE561_TOOLS_HEIGHT.md#final-accepted-0561-evidence).
 
-## Project Search keyboard navigation (0.57.0 pending acceptance)
+## Project Search keyboard navigation (0.57.1 pending acceptance)
+
+0.57.1 only corrects the new cross-surface tests' report fixture: both testcase
+elements now include the parser-required zero-valued time attribute. The 0.57.0
+shipping Search and shared-input implementation is unchanged. The failed fixture
+did not establish cross-surface ownership behavior; fresh acceptance remains
+required.
 
 Enter a case-sensitive literal query and explicitly select **Search**, or press
 Enter in its query field. The accepted result batch labels the submitted query.

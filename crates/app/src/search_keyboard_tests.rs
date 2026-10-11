@@ -736,16 +736,53 @@ fn search_keyboard_owned_space_release_keeps_new_editor_space_and_unrelated_inpu
     assert!(commands.try_recv().is_err());
 }
 
+const CROSS_SURFACE_REPORT_XML: &str = "<testsuite name='Rows' tests='2' failures='0' errors='0' skipped='0'><testcase name='first' time='0'/><testcase name='second' time='0'/></testsuite>";
+
+fn cross_surface_report() -> test_reports::TestReport {
+    let report = test_reports::parse_report(CROSS_SURFACE_REPORT_XML)
+        .expect("cross-surface fixture must satisfy the strict report parser before input testing");
+    assert_eq!(report.suite_name, "Rows");
+    assert_eq!(
+        report.counts,
+        test_reports::TestCounts {
+            total: 2,
+            passed: 2,
+            failed: 0,
+            errors: 0,
+            skipped: 0,
+            unsupported: 0,
+        }
+    );
+    assert_eq!(report.cases.len(), 2);
+    for (case, name) in report.cases.iter().zip(["first", "second"]) {
+        assert_eq!(case.name, name);
+        assert_eq!(case.status, test_reports::TestStatus::Passed);
+        assert_eq!(case.duration_seconds, 0.0);
+    }
+    report
+}
+
+#[test]
+fn search_keyboard_cross_surface_report_fixture_is_strict_and_complete() {
+    cross_surface_report();
+    // The testcase duration is mandatory independently of the suite counters.
+    let missing_time = CROSS_SURFACE_REPORT_XML.replacen(" time='0'", "", 1);
+    assert_eq!(
+        test_reports::parse_report(&missing_time),
+        Err(test_reports::ReportError::InvalidStructure(
+            "required attribute missing"
+        ))
+    );
+}
+
 fn load_other_surfaces(app: &mut CedarApp, commands: &Receiver<Command>) {
-    let xml = "<testsuite name='Rows' tests='2' failures='0' errors='0' skipped='0'><testcase name='first'/><testcase name='second'/></testsuite>";
+    let report = cross_surface_report();
     let load = test_report_ui::Load {
         generation: app.generation,
         id: 999,
         path: "TEST.xml".into(),
     };
     app.test_report.path = load.path.clone();
-    let report = test_reports::parse_report(xml).unwrap();
-    assert_eq!(report.cases.len(), 2);
     app.test_report.snapshot = Some(test_report_ui::Snapshot {
         source: load,
         revision: "a".repeat(64),
