@@ -30,6 +30,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: python scripts/test_public_export.py
       - run: python scripts/test_capability_smoke.py
+      - run: python scripts/test_column_navigation_acceptance.py
       - run: python scripts/test_copy_draft_acceptance.py
       - run: python scripts/test_save_close_acceptance.py
       - run: python scripts/test_linux_java_acceptance.py
@@ -170,6 +171,9 @@ jobs:
               for key, value in expected.items()
           ):
               sys.exit("Loaded-files process receipt did not match its fixed contract.")
+      - name: Current-buffer line and column navigation (normal agent, both platforms)
+        timeout-minutes: 5
+        run: python scripts/column_navigation_acceptance.py
       - name: Copy to new draft and explicit absence-only Save (both platforms)
         timeout-minutes: 6
         run: python scripts/copy_draft_acceptance.py

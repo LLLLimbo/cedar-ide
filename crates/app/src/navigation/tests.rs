@@ -43,18 +43,17 @@ fn app() -> (CedarApp, Receiver<Command>) {
 fn frame(app: &mut CedarApp, time: f64, events: Vec<egui::Event>) {
     let ctx = app.editor_ctx.clone();
     let mut frame = eframe::Frame::_new_kittest();
-    let output = ctx.run(
-        egui::RawInput {
-            time: Some(time),
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(780.0, 540.0),
-            )),
-            events,
-            ..Default::default()
-        },
-        |ctx| eframe::App::update(app, ctx, &mut frame),
-    );
+    let mut input = egui::RawInput {
+        time: Some(time),
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(780.0, 540.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let output = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut frame));
     assert!(output
         .shapes
         .iter()
@@ -134,6 +133,743 @@ fn line_validation_counts_empty_trailing_and_crlf_lines_and_rejects_overflow() {
     assert_eq!(parse_line(" 2 ", "é🐻\r\nlast\n"), Ok(2));
     assert_eq!(crate::model::line_start("é🐻\r\nlast\n", 2), 4);
     assert_eq!(typed_path(" src\\main.rs "), "src/main.rs");
+}
+
+#[test]
+fn coordinate_parser_counts_scalars_and_only_excludes_crlf_terminators() {
+    let text = "a\t😀e\u{301}\r\n\r\nx\ry\r\nz\r\n";
+    for (input, index) in [
+        ("1:1", 0),
+        ("1:2", 1),
+        ("1:3", 2),
+        ("1:4", 3),
+        ("1:5", 4),
+        ("1:6", 5),
+        ("2:1", 7),
+        ("3:2", 10),
+        ("3:4", 12),
+        ("4:2", 15),
+        ("5:1", 17),
+        (" 03:04 ", 12),
+    ] {
+        assert_eq!(
+            parse_destination(input, text),
+            Ok(Destination::Coordinate(index)),
+            "{input}"
+        );
+    }
+    for input in ["1:7", "2:2", "3:5", "4:3", "5:2", "6:1"] {
+        assert!(parse_destination(input, text).is_err(), "{input}");
+    }
+    assert_eq!(parse_destination("1:1", ""), Ok(Destination::Coordinate(0)));
+    assert_eq!(
+        parse_destination("1:3", "x\r"),
+        Ok(Destination::Coordinate(2))
+    );
+    assert!(parse_destination("1:3", "x\r\n").is_err());
+    assert_eq!(
+        parse_destination("2:1", "x\r\n"),
+        Ok(Destination::Coordinate(3))
+    );
+    assert_eq!(
+        parse_destination("\u{2000}1:2\u{2000}", "é"),
+        Ok(Destination::Coordinate(1))
+    );
+}
+
+#[test]
+fn coordinate_parser_rejects_invalid_numbers_and_bounds_only_coordinate_text() {
+    for input in [
+        "",
+        "0",
+        "0:1",
+        "1:0",
+        ":1",
+        "1:",
+        "1:2:3",
+        "1::2",
+        "+1:1",
+        "1:+1",
+        "-1:1",
+        "1:-1",
+        "1.0:1",
+        "1:1.0",
+        "1 :1",
+        "1: 1",
+        "1\n:1",
+        "١:1",
+        "1:１",
+        "184467440737095516160:1",
+        "1:184467440737095516160",
+    ] {
+        assert!(
+            parse_destination(input, "a\n").is_err(),
+            "accepted {input:?}"
+        );
+    }
+    let exact = format!("{}1:1", "0".repeat(MAX_LINE_INPUT_CHARS - 3));
+    assert_eq!(
+        parse_destination(&exact, "a"),
+        Ok(Destination::Coordinate(0))
+    );
+    assert!(parse_destination(&format!(" {exact}"), "a").is_err());
+    assert!(parse_destination(&format!("{}1", " ".repeat(MAX_LINE_INPUT_CHARS)), "a").is_err());
+    let mut text = "a".repeat(MAX_COORDINATE_TEXT_BYTES - 1);
+    text.push('\n');
+    assert_eq!(
+        parse_destination("2:1", &text),
+        Ok(Destination::Coordinate(MAX_COORDINATE_TEXT_BYTES))
+    );
+    text.push('é');
+    assert!(parse_destination("2:1", &text).is_err());
+    assert_eq!(parse_destination(" 2 ", &text), Ok(Destination::Line(2)));
+    assert_eq!(
+        crate::model::line_start(&text, 2),
+        MAX_COORDINATE_TEXT_BYTES
+    );
+}
+
+fn selection_at(app: &CedarApp, id: egui::Id) -> egui::text::CCursorRange {
+    egui::TextEdit::load_state(&app.editor_ctx, id)
+        .unwrap()
+        .cursor
+        .char_range()
+        .unwrap()
+}
+
+fn editor_selection(app: &CedarApp) -> egui::text::CCursorRange {
+    selection_at(app, egui::Id::new(("editor", app.active_document.unwrap())))
+}
+
+fn dialog_history(app: &CedarApp) -> Vec<Vec<(String, usize, usize, bool, bool)>> {
+    let state = egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(LINE_INPUT)).unwrap();
+    let current = (
+        state.cursor.char_range().unwrap(),
+        app.navigation.line_input().unwrap().to_owned(),
+    );
+    [false, true]
+        .into_iter()
+        .map(|redo| {
+            let mut history = state.undoer();
+            let mut current = current.clone();
+            let mut states = Vec::new();
+            // The dialog's native undo limit is 100; include its in-flux state.
+            for _ in 0..128 {
+                let next = if redo {
+                    history.redo(&current)
+                } else {
+                    history.undo(&current)
+                };
+                let Some(next) = next.cloned() else {
+                    return states;
+                };
+                states.push((
+                    next.1.clone(),
+                    next.0.primary.index,
+                    next.0.secondary.index,
+                    next.0.primary.prefer_next_row,
+                    next.0.secondary.prefer_next_row,
+                ));
+                current = next;
+            }
+            panic!("dialog undo exceeded its native bound");
+        })
+        .collect()
+}
+
+fn set_editor_selection(app: &mut CedarApp, range: egui::text::CCursorRange) {
+    let document = app.active_document.unwrap();
+    let doc = app
+        .documents
+        .iter_mut()
+        .find(|doc| doc.id == document)
+        .unwrap();
+    let mut state = editor_state::load(&app.editor_ctx, doc);
+    state.cursor.set_char_range(Some(range));
+    state.store(&app.editor_ctx, egui::Id::new(("editor", document)));
+    doc.cursor = crate::model::cursor_location(&doc.text, range.primary.index);
+}
+
+fn choose_coordinate(app: &mut CedarApp, time: f64, input: &str) {
+    let mut events = key(egui::Key::G, egui::Modifiers::COMMAND);
+    events.push(egui::Event::Paste(input.into()));
+    frame(app, time, events);
+    frame(
+        app,
+        time + 0.1,
+        key(egui::Key::Enter, egui::Modifiers::NONE),
+    );
+    assert!(!app.navigation.dialog_open());
+    assert!(app.navigation.coordinate_jump_pending());
+    assert!(app.active().unwrap().jump_to.is_none());
+    assert!(app.location_history.pending.is_none());
+}
+
+#[test]
+fn coordinate_frames_restore_reversed_departure_affinity_through_back_forward() {
+    use egui::text::{CCursor, CCursorRange};
+    let (mut app, commands) = app();
+    frame(&mut app, 0.0, vec![]);
+    let mut departure = CCursorRange::two(CCursor::new(8), CCursor::new(1));
+    departure.primary.prefer_next_row = true;
+    departure.secondary.prefer_next_row = false;
+    set_editor_selection(&mut app, departure);
+    let source = app.documents[0].text.clone();
+    choose_coordinate(&mut app, 1.0, " 2:4 ");
+    assert!(crate::location_history::same_selection(
+        editor_selection(&app),
+        departure
+    ));
+    assert!(app.location_history.back.is_empty());
+    frame(&mut app, 2.0, vec![]);
+    assert!(app.navigation.coordinate_jump_pending());
+    frame(&mut app, 3.0, vec![]);
+    assert!(!app.navigation.coordinate_jump_pending());
+    assert_eq!(editor_selection(&app).primary.index, 7);
+    assert_eq!(app.documents[0].cursor, (2, 4));
+    assert_eq!(app.location_history.back.len(), 1);
+    assert!(crate::location_history::same_selection(
+        app.location_history.back[0].selection,
+        departure
+    ));
+    let destination = editor_selection(&app);
+    frame(
+        &mut app,
+        4.0,
+        key(egui::Key::OpenBracket, egui::Modifiers::COMMAND),
+    );
+    assert!(crate::location_history::same_selection(
+        editor_selection(&app),
+        departure
+    ));
+    frame(
+        &mut app,
+        5.0,
+        key(egui::Key::CloseBracket, egui::Modifiers::COMMAND),
+    );
+    assert!(crate::location_history::same_selection(
+        editor_selection(&app),
+        destination
+    ));
+    assert_eq!(app.documents[0].text, source);
+    assert_eq!(app.documents[0].saved_text, source);
+    assert_eq!(app.documents[0].edit_version, 0);
+    assert_eq!(app.documents[0].revision.as_deref(), Some("r0"));
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn coordinate_opening_typing_and_enter_can_share_sizing_frame_without_replay() {
+    for single_pass in [false, true] {
+        let (mut app, commands) = app();
+        if single_pass {
+            app.editor_ctx
+                .options_mut(|options| options.max_passes = 1.try_into().unwrap());
+        }
+        frame(&mut app, 0.0, vec![]);
+        let mut events = key(egui::Key::G, egui::Modifiers::COMMAND);
+        events.push(egui::Event::Paste("1:3".into()));
+        events.extend(key(egui::Key::Enter, egui::Modifiers::NONE));
+        events.push(egui::Event::Paste("oversized ignored suffix".repeat(200)));
+        frame(&mut app, 1.0, events);
+        for time in [2.0, 3.0, 4.0] {
+            frame(&mut app, time, vec![]);
+        }
+        assert!(!app.navigation.dialog_open());
+        assert!(!app.navigation.coordinate_jump_pending());
+        assert_eq!(app.documents[0].cursor, (1, 3));
+        assert_eq!(editor_selection(&app).primary.index, 2);
+        assert_eq!(app.location_history.back.len(), 1);
+        assert_eq!(app.documents[0].edit_version, 0);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn oversized_go_to_batches_restore_input_selection_and_block_enter() {
+    for opening in [false, true] {
+        for single_pass in [false, true] {
+            for payload in [
+                "9".repeat(33),
+                format!("1:1{}", " ".repeat(30)),
+                format!("{}1:1", " ".repeat(MAX_QUERY_CHARS + 1)),
+                "é".repeat(33),
+            ] {
+                let (mut app, commands) = app();
+                if single_pass {
+                    app.editor_ctx
+                        .options_mut(|options| options.max_passes = 1.try_into().unwrap());
+                }
+                frame(&mut app, 0.0, vec![]);
+                let departure = editor_selection(&app);
+                if !opening {
+                    frame(&mut app, 1.0, key(egui::Key::G, egui::Modifiers::COMMAND));
+                    frame(&mut app, 1.1, vec![]);
+                }
+                let before = app
+                    .navigation
+                    .line_input()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| app.active().unwrap().cursor.0.to_string());
+                let mut events = if opening {
+                    key(egui::Key::G, egui::Modifiers::COMMAND)
+                } else {
+                    key(egui::Key::A, egui::Modifiers::COMMAND)
+                };
+                events.push(egui::Event::Paste(payload));
+                events.extend(key(egui::Key::Backspace, egui::Modifiers::NONE));
+                events.extend(key(egui::Key::Enter, egui::Modifiers::NONE));
+                frame(&mut app, 2.0, events);
+                frame(&mut app, 3.0, vec![]);
+                assert_eq!(app.navigation.line_input(), Some(before.as_str()));
+                assert_eq!(app.navigation.line_error(), Some(LINE_INPUT_REFUSAL));
+                assert!(!app.navigation.coordinate_jump_pending());
+                assert!(app.active().unwrap().jump_to.is_none());
+                assert!(crate::location_history::same_selection(
+                    editor_selection(&app),
+                    departure
+                ));
+                assert!(app.location_history.back.is_empty());
+                frame(&mut app, 4.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+                assert!(app.navigation.dialog_open());
+                let mut correction = key(egui::Key::A, egui::Modifiers::COMMAND);
+                correction.push(egui::Event::Text("1:2".into()));
+                frame(&mut app, 5.0, correction);
+                frame(&mut app, 6.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+                frame(&mut app, 7.0, vec![]);
+                frame(&mut app, 8.0, vec![]);
+                assert_eq!(app.documents[0].cursor, (1, 2));
+                assert_eq!(app.documents[0].edit_version, 0);
+                assert!(commands.try_recv().is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn cumulative_coordinate_overflow_rolls_back_selection_and_dialog_undo_redo() {
+    let (mut app, commands) = app();
+    frame(&mut app, 0.0, key(egui::Key::G, egui::Modifiers::COMMAND));
+    frame(&mut app, 1.0, vec![egui::Event::Text("2:3".into())]);
+    frame(&mut app, 2.0, vec![]);
+    frame(&mut app, 3.0, key(egui::Key::A, egui::Modifiers::COMMAND));
+    let selected = selection_at(&app, egui::Id::new(LINE_INPUT));
+    let history = dialog_history(&app);
+    let mut events = vec![
+        egui::Event::Text("0".repeat(20)),
+        egui::Event::Paste("0".repeat(12)),
+        egui::Event::Text("1:1".into()),
+    ];
+    events.extend(key(egui::Key::Enter, egui::Modifiers::NONE));
+    frame(&mut app, 4.0, events);
+    assert_eq!(app.navigation.line_input(), Some("2:3"));
+    assert!(crate::location_history::same_selection(
+        selection_at(&app, egui::Id::new(LINE_INPUT)),
+        selected
+    ));
+    assert_eq!(app.navigation.line_error(), Some(LINE_INPUT_REFUSAL));
+    assert_eq!(dialog_history(&app), history);
+    assert!(app.location_history.back.is_empty());
+    assert_eq!(app.documents[0].edit_version, 0);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn coordinate_ticket_refuses_every_exact_identity_change_before_or_after_modal_release() {
+    for after_release in [false, true] {
+        for change in [
+            "document",
+            "path",
+            "version",
+            "workspace",
+            "root",
+            "generation",
+            "navigation",
+            "saturated",
+            "foreign_modal",
+        ] {
+            let (mut app, commands) = app();
+            frame(&mut app, 0.0, vec![]);
+            choose_coordinate(&mut app, 1.0, "2:4");
+            if after_release {
+                frame(&mut app, 2.0, vec![]);
+                assert!(app.navigation.coordinate_jump_pending());
+            }
+            match change {
+                "document" => {
+                    app.documents[0].id = 2;
+                    app.active_document = Some(2);
+                }
+                "path" => app.documents[0].path = "renamed.rs".into(),
+                "version" => {
+                    let ctx = app.editor_ctx.clone();
+                    editor_state::commit(
+                        &ctx,
+                        &mut app.documents[0],
+                        "edited\nnewer draft".into(),
+                        1,
+                    );
+                }
+                "workspace" => app.workspace_key = None,
+                "root" => app.root = "/different-root".into(),
+                "generation" => app.generation += 1,
+                "navigation" => app.navigation_changed(),
+                "saturated" => app.documents[0].edit_version = u64::MAX,
+                "foreign_modal" => app.confirm = Some(crate::Confirm::CloseWindow),
+                _ => unreachable!(),
+            }
+            frame(&mut app, 3.0, vec![]);
+            frame(&mut app, 4.0, vec![]);
+            assert!(!app.navigation.coordinate_jump_pending(), "{change}");
+            assert!(app.navigation.message.is_some(), "{change}");
+            assert_ne!(app.documents[0].cursor, (2, 4), "{change}");
+            assert!(app.location_history.back.is_empty(), "{change}");
+            assert!(app.location_history.forward.is_empty(), "{change}");
+            assert!(app.location_history.pending.is_none(), "{change}");
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn newer_input_on_either_release_frame_cancels_coordinate_without_history() {
+    for after_release in [false, true] {
+        for input in [
+            key(egui::Key::ArrowLeft, egui::Modifiers::NONE),
+            key(egui::Key::Z, egui::Modifiers::COMMAND),
+            vec![egui::Event::Text("newer".into())],
+            vec![egui::Event::WindowFocused(false)],
+            vec![egui::Event::Ime(egui::ImeEvent::Preedit("入力".into()))],
+        ] {
+            let (mut app, commands) = app();
+            frame(&mut app, 0.0, vec![]);
+            choose_coordinate(&mut app, 1.0, "2:4");
+            if after_release {
+                frame(&mut app, 2.0, vec![]);
+                assert!(app.navigation.coordinate_jump_pending());
+            }
+            frame(&mut app, 3.0, input);
+            frame(&mut app, 4.0, vec![]);
+            assert!(!app.navigation.coordinate_jump_pending());
+            assert!(app.navigation.message.is_some());
+            assert_ne!(app.documents[0].cursor, (2, 4));
+            assert!(app.location_history.back.is_empty());
+            assert!(app.location_history.pending.is_none());
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn coordinate_repeated_jumps_preserve_text_undo_redo_and_recovery_markers() {
+    let (mut app, commands) = app();
+    frame(&mut app, 0.0, vec![]);
+    let baseline = app.documents[0].text.clone();
+    let ctx = app.editor_ctx.clone();
+    editor_state::commit(
+        &ctx,
+        &mut app.documents[0],
+        "first edit\nsecond\n".into(),
+        0,
+    );
+    frame(&mut app, 1.0, vec![]);
+    editor_state::commit(
+        &ctx,
+        &mut app.documents[0],
+        "second edit\nsecond\n".into(),
+        0,
+    );
+    frame(&mut app, 2.0, vec![]);
+    frame(&mut app, 3.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
+    assert_eq!(app.documents[0].text, "first edit\nsecond\n");
+    app.documents[0].save_outcome_unverifiable = true;
+    let version = app.documents[0].edit_version;
+    for index in 0..6 {
+        let time = 4.0 + f64::from(index) * 4.0;
+        choose_coordinate(&mut app, time, if index % 2 == 0 { "2:4" } else { "1:3" });
+        frame(&mut app, time + 1.0, vec![]);
+        frame(&mut app, time + 2.0, vec![]);
+        assert_eq!(app.documents[0].edit_version, version);
+        assert!(app.documents[0].save_outcome_unverifiable);
+        assert_eq!(app.documents[0].saved_text, baseline);
+    }
+    frame(
+        &mut app,
+        40.0,
+        key(
+            egui::Key::Z,
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        ),
+    );
+    assert_eq!(app.documents[0].text, "second edit\nsecond\n");
+    frame(&mut app, 41.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
+    assert_eq!(app.documents[0].text, "first edit\nsecond\n");
+    frame(&mut app, 42.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
+    assert_eq!(app.documents[0].text, baseline);
+    assert_eq!(app.documents[0].saved_text, baseline);
+    assert_eq!(app.documents[0].revision.as_deref(), Some("r0"));
+    assert!(app.documents[0].save_outcome_unverifiable);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn exact_length_coordinate_and_cumulative_sizing_overflow_have_distinct_outcomes() {
+    for overflow in [false, true] {
+        for single_pass in [false, true] {
+            let (mut app, commands) = app();
+            if single_pass {
+                app.editor_ctx
+                    .options_mut(|options| options.max_passes = 1.try_into().unwrap());
+            }
+            let mut events = key(egui::Key::G, egui::Modifiers::COMMAND);
+            events.push(egui::Event::Text("0".repeat(20)));
+            events.push(egui::Event::Paste("0".repeat(if overflow {
+                10
+            } else {
+                9
+            })));
+            events.push(egui::Event::Text("1:2".into()));
+            events.extend(key(egui::Key::Enter, egui::Modifiers::NONE));
+            frame(&mut app, 0.0, events);
+            for time in [1.0, 2.0, 3.0] {
+                frame(&mut app, time, vec![]);
+            }
+            if overflow {
+                assert_eq!(app.navigation.line_input(), Some("1"));
+                assert_eq!(app.navigation.line_error(), Some(LINE_INPUT_REFUSAL));
+                assert!(app.location_history.back.is_empty());
+            } else {
+                assert!(!app.navigation.dialog_open());
+                assert_eq!(app.documents[0].cursor, (1, 2));
+                assert_eq!(app.location_history.back.len(), 1);
+            }
+            assert_eq!(app.documents[0].edit_version, 0);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn coordinate_refuses_missing_raw_capture_and_preserves_prefilter_input_veto() {
+    for capture_then_filter in [false, true] {
+        let (mut app, commands) = app();
+        frame(&mut app, 0.0, vec![]);
+        choose_coordinate(&mut app, 1.0, "2:4");
+        let ctx = app.editor_ctx.clone();
+        let mut native = eframe::Frame::_new_kittest();
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(780.0, 540.0),
+            )),
+            events: key(egui::Key::ArrowDown, egui::Modifiers::NONE),
+            time: Some(2.0),
+            ..Default::default()
+        };
+        if capture_then_filter {
+            eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+        }
+        // A downstream input owner can remove the original key. The captured
+        // veto must still cancel; without any capture coordinates fail closed.
+        input.events.clear();
+        let _ = ctx.run(input, |ctx| eframe::App::update(&mut app, ctx, &mut native));
+        frame(&mut app, 3.0, vec![]);
+        assert!(!app.navigation.coordinate_jump_pending());
+        assert!(app.navigation.message.is_some());
+        assert_ne!(app.documents[0].cursor, (2, 4));
+        assert!(app.location_history.back.is_empty());
+        assert!(app.location_history.pending.is_none());
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn stale_coordinate_keeps_existing_forward_history_and_new_go_clears_its_notice() {
+    let (mut app, commands) = app();
+    frame(&mut app, 0.0, vec![]);
+    choose_coordinate(&mut app, 1.0, "1:2");
+    frame(&mut app, 2.0, vec![]);
+    frame(&mut app, 3.0, vec![]);
+    choose_coordinate(&mut app, 4.0, "2:4");
+    frame(&mut app, 5.0, vec![]);
+    frame(&mut app, 6.0, vec![]);
+    frame(
+        &mut app,
+        7.0,
+        key(egui::Key::OpenBracket, egui::Modifiers::COMMAND),
+    );
+    assert_eq!(app.location_history.forward.len(), 1);
+    let forward = app.location_history.forward[0];
+    let back = app.location_history.back.len();
+    let departure = editor_selection(&app);
+    choose_coordinate(&mut app, 8.0, "3:2");
+    app.root = "/changed".into();
+    frame(&mut app, 9.0, vec![]);
+    frame(&mut app, 10.0, vec![]);
+    assert!(app.navigation.message.is_some());
+    assert_eq!(app.location_history.back.len(), back);
+    assert_eq!(app.location_history.forward.len(), 1);
+    assert!(crate::location_history::same_selection(
+        app.location_history.forward[0].selection,
+        forward.selection
+    ));
+    assert!(crate::location_history::same_selection(
+        editor_selection(&app),
+        departure
+    ));
+    frame(&mut app, 11.0, key(egui::Key::G, egui::Modifiers::COMMAND));
+    assert!(app.navigation.message.is_none());
+    assert_eq!(app.documents[0].edit_version, 0);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn saturated_edit_version_refuses_coordinates_but_preserves_plain_line_fallback() {
+    let (mut app, commands) = app();
+    app.documents[0].edit_version = u64::MAX;
+    let mut events = key(egui::Key::G, egui::Modifiers::COMMAND);
+    events.push(egui::Event::Text("1:2".into()));
+    frame(&mut app, 0.0, events);
+    frame(&mut app, 1.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert!(app
+        .navigation
+        .line_error()
+        .is_some_and(|error| error.contains("saturated")));
+    assert!(!app.navigation.coordinate_jump_pending());
+    assert!(app.location_history.back.is_empty());
+    let mut correction = key(egui::Key::A, egui::Modifiers::COMMAND);
+    correction.push(egui::Event::Text("2".into()));
+    frame(&mut app, 2.0, correction);
+    frame(&mut app, 3.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+    frame(&mut app, 4.0, vec![]);
+    frame(&mut app, 5.0, vec![]);
+    assert_eq!(app.documents[0].cursor, (2, 1));
+    assert_eq!(app.documents[0].edit_version, u64::MAX);
+    assert!(app.location_history.back.is_empty());
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn coordinate_cancels_on_connection_loss_but_accepts_already_offline_drafts() {
+    for already_offline in [false, true] {
+        let (mut app, commands) = app();
+        frame(&mut app, 0.0, vec![]);
+        if already_offline {
+            app.disconnected("offline draft retained".into());
+        }
+        choose_coordinate(&mut app, 1.0, "2:4");
+        if !already_offline {
+            app.disconnected("connection lost after Go".into());
+        }
+        frame(&mut app, 2.0, vec![]);
+        frame(&mut app, 3.0, vec![]);
+        assert!(!app.navigation.coordinate_jump_pending());
+        if already_offline {
+            assert_eq!(app.documents[0].cursor, (2, 4));
+            assert_eq!(app.location_history.back.len(), 1);
+            assert!(app.navigation.message.is_none());
+            assert_eq!(app.error.as_deref(), Some("offline draft retained"));
+        } else {
+            assert_ne!(app.documents[0].cursor, (2, 4));
+            assert!(app.location_history.back.is_empty());
+            assert!(app.navigation.message.is_some());
+            assert_eq!(app.error.as_deref(), Some("connection lost after Go"));
+        }
+        assert_eq!(app.documents[0].edit_version, 0);
+        assert_eq!(app.documents[0].text, app.documents[0].saved_text);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn only_sizing_replay_refuses_an_oversized_event_batch() {
+    for opening in [false, true] {
+        let (mut app, commands) = app();
+        if !opening {
+            frame(&mut app, 0.0, key(egui::Key::G, egui::Modifiers::COMMAND));
+            frame(&mut app, 1.0, vec![]);
+        }
+        let mut events = if opening {
+            key(egui::Key::G, egui::Modifiers::COMMAND)
+        } else {
+            vec![]
+        };
+        for _ in 0..70 {
+            events.extend(key(egui::Key::ArrowLeft, egui::Modifiers::NONE));
+        }
+        events.extend(key(egui::Key::A, egui::Modifiers::COMMAND));
+        events.push(egui::Event::Paste("1:2".into()));
+        events.extend(key(egui::Key::Enter, egui::Modifiers::NONE));
+        frame(&mut app, 2.0, events);
+        frame(&mut app, 3.0, vec![]);
+        frame(&mut app, 4.0, vec![]);
+        if opening {
+            assert_eq!(app.navigation.line_input(), Some("1"));
+            assert_eq!(app.navigation.line_error(), Some(LINE_OPENING_REFUSAL));
+            assert!(app.location_history.back.is_empty());
+        } else {
+            assert!(!app.navigation.dialog_open());
+            assert_eq!(app.documents[0].cursor, (1, 2));
+            assert_eq!(app.location_history.back.len(), 1);
+        }
+        assert_eq!(app.documents[0].edit_version, 0);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn held_explorer_key_cannot_hide_newer_input_from_coordinate_guard() {
+    for release_frames in [0, 1] {
+        let (mut app, commands) = app();
+        app.explorer.mode = Mode::Tree;
+        app.editor_ctx.memory_mut(|memory| {
+            memory.request_focus(crate::explorer_tree::row_id(""));
+        });
+        // A real tree-owned press remains claimed until its release, even
+        // after Go to takes focus. Do not use the press+release key helper here.
+        let press = egui::Event::Key {
+            key: egui::Key::ArrowDown,
+            physical_key: Some(egui::Key::ArrowDown),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, 0.0, vec![press.clone()]);
+        let selection = editor_selection(&app);
+        choose_coordinate(&mut app, 1.0, "2:4");
+        if release_frames == 1 {
+            frame(&mut app, 2.0, vec![]);
+            assert!(app.navigation.coordinate_jump_pending());
+        }
+        let ctx = app.editor_ctx.clone();
+        let mut native = eframe::Frame::_new_kittest();
+        let mut input = egui::RawInput {
+            time: Some(3.0),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(780.0, 540.0),
+            )),
+            events: vec![press],
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+        assert!(
+            input.events.is_empty(),
+            "Explorer must consume its held key"
+        );
+        let _ = ctx.run(input, |ctx| eframe::App::update(&mut app, ctx, &mut native));
+        frame(&mut app, 4.0, vec![]);
+        assert!(!app.navigation.coordinate_jump_pending());
+        assert!(app.navigation.message.is_some());
+        assert!(crate::location_history::same_selection(
+            editor_selection(&app),
+            selection
+        ));
+        assert!(app.location_history.back.is_empty());
+        assert!(app.location_history.pending.is_none());
+        assert_eq!(app.documents[0].edit_version, 0);
+        assert!(commands.try_recv().is_err());
+    }
 }
 
 #[test]
@@ -327,7 +1063,7 @@ fn accept_uses_only_input_before_enter_and_discards_later_text_or_paste() {
 }
 
 #[test]
-fn chooser_and_line_pastes_have_finite_limits() {
+fn chooser_paste_is_bounded_and_oversized_line_paste_is_refused_atomically() {
     let (mut app, _) = app();
     let mut events = key(egui::Key::P, egui::Modifiers::COMMAND);
     events.push(egui::Event::Paste("é".repeat(MAX_QUERY_CHARS + 1)));
@@ -336,9 +1072,12 @@ fn chooser_and_line_pastes_have_finite_limits() {
     let mut events = key(egui::Key::G, egui::Modifiers::COMMAND);
     events.push(egui::Event::Paste("9".repeat(100)));
     frame(&mut app, 1.0, events);
-    assert!(
-        matches!(&app.navigation.dialog.as_ref().unwrap().kind, Kind::Line { input, .. } if input.len() == 20)
-    );
+    assert_eq!(app.navigation.line_input(), Some("1"));
+    assert_eq!(app.navigation.line_error(), Some(LINE_INPUT_REFUSAL));
+    frame(&mut app, 2.0, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert!(app.navigation.dialog_open());
+    assert!(app.documents[0].jump_to.is_none());
+    assert!(!app.navigation.coordinate_jump_pending());
 }
 
 #[test]

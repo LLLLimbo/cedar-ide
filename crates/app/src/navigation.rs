@@ -2,7 +2,7 @@
 use crate::{
     explorer_tree::{FileAdmission, LoadedFile, Mode},
     model::Document,
-    CedarApp, MUTED, RED,
+    CedarApp, WorkspaceKey, MUTED, RED,
 };
 use cedar_protocol::Entry;
 use eframe::egui::{self, RichText};
@@ -15,6 +15,12 @@ const MAX_BUFFERS: usize = 32;
 const MAX_SNAPSHOT_PATH_BYTES: usize = 1024 * 1024;
 const FILE_INPUT: &str = "navigation_file_query";
 const LINE_INPUT: &str = "navigation_line_query";
+const MAX_LINE_INPUT_CHARS: usize = 32;
+const MAX_COORDINATE_TEXT_BYTES: usize = 1024 * 1024;
+const LINE_INPUT_REFUSAL: &str =
+    "Go to input is limited to 32 characters; the whole input change was refused.";
+const LINE_OPENING_REFUSAL: &str = "Go to received too much input while opening; the whole input change was refused. Enter the location again.";
+const COORDINATE_CANCELED: &str = "Go to line:column canceled: the draft, connection, workspace, or newer input changed. Open Go to again to choose a current location.";
 
 #[derive(Default)]
 pub(super) struct Navigation {
@@ -23,6 +29,33 @@ pub(super) struct Navigation {
     query: String,
     pub restore_focus: bool,
     blocked_frame: bool,
+    coordinate_jump: Option<CoordinateJump>,
+    frame: u64,
+    input_competing: bool,
+    input_pass: Option<u64>,
+    pub message: Option<&'static str>,
+}
+
+// Coordinates are local, finite and tied to the exact draft that was reviewed.
+// Keep them separate from the existing Open/LSP/plain-line jump machinery.
+struct CoordinateJump {
+    document: u64,
+    path: String,
+    edit_version: u64,
+    workspace: Option<WorkspaceKey>,
+    root: String,
+    connection: crate::ConnectionState,
+    generation: u64,
+    navigation: u64,
+    frame: u64,
+    index: usize,
+    departure: Option<crate::location_history::Location>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Destination {
+    Line(usize),
+    Coordinate(usize),
 }
 
 struct Dialog {
@@ -33,6 +66,7 @@ struct Dialog {
     serial: u64,
     focus: bool,
     deferred_input: Vec<egui::Event>,
+    deferred_line_refusal: Option<&'static str>,
     kind: Kind,
 }
 
@@ -51,6 +85,7 @@ enum Kind {
     Line {
         input: String,
         error: Option<String>,
+        refused: bool,
     },
 }
 
@@ -87,6 +122,56 @@ struct Candidates {
 }
 
 impl Navigation {
+    pub(super) fn cancel_coordinate_jump(&mut self) {
+        if self.coordinate_jump.take().is_some() {
+            self.message = Some(COORDINATE_CANCELED);
+        }
+    }
+
+    pub(super) fn begin_input_frame(&mut self, ctx: &egui::Context, input: &egui::RawInput) {
+        self.frame = self.frame.wrapping_add(1);
+        self.input_pass = Some(ctx.cumulative_pass_nr());
+        // Capture only fixed metadata before Explorer or other raw hooks can
+        // filter the original events. Never retain text/paste/IME bodies.
+        let pointer_down = ctx.input(|input| input.pointer.any_down());
+        self.input_competing = !input.focused
+            || input
+                .events
+                .iter()
+                .any(|event| coordinate_event_competes(event, pointer_down));
+    }
+
+    fn input_frame_current(&self, ctx: &egui::Context) -> bool {
+        // egui 0.31 increments its cumulative counter per pass. The completed
+        // passes in this run identify its first pass, including sizing retries.
+        // Keep this provenance check separate from our native frame counter.
+        self.input_pass
+            == Some(
+                ctx.cumulative_pass_nr()
+                    .saturating_sub(ctx.output(|output| output.num_completed_passes) as u64),
+            )
+    }
+
+    pub(super) fn coordinate_jump_pending(&self) -> bool {
+        self.coordinate_jump.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn line_input(&self) -> Option<&str> {
+        match &self.dialog.as_ref()?.kind {
+            Kind::Line { input, .. } => Some(input),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn line_error(&self) -> Option<&str> {
+        match &self.dialog.as_ref()?.kind {
+            Kind::Line { error, .. } => error.as_deref(),
+            _ => None,
+        }
+    }
+
     pub fn dialog_open(&self) -> bool {
         self.dialog.is_some()
     }
@@ -308,6 +393,163 @@ fn parse_line(input: &str, text: &str) -> Result<usize, String> {
     Err(format!("Enter a whole line number from 1 to {count}"))
 }
 
+fn parse_destination(input: &str, text: &str) -> Result<Destination, String> {
+    if input.chars().take(MAX_LINE_INPUT_CHARS + 1).count() > MAX_LINE_INPUT_CHARS {
+        return Err(LINE_INPUT_REFUSAL.into());
+    }
+    let input = input.trim();
+    let Some((line, column)) = input.split_once(':') else {
+        return parse_line(input, text).map(Destination::Line);
+    };
+    if text.len() > MAX_COORDINATE_TEXT_BYTES {
+        return Err("Line:column is available for drafts up to 1 MiB. Enter a line number to navigate this larger draft.".into());
+    }
+    let positive = |value: &str| {
+        (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| value.parse::<usize>().ok())
+            .flatten()
+            .filter(|value| *value > 0)
+    };
+    let (Some(line), Some(column)) = (positive(line), positive(column)) else {
+        return Err("Enter line:column using positive whole numbers (for example, 12:4).".into());
+    };
+    let mut char_start = 0;
+    let mut byte_start = 0;
+    for (row, content) in text.split('\n').enumerate() {
+        if row + 1 == line {
+            // A CR belongs to the separator only when immediately followed by
+            // LF. A final/lone CR is ordinary content and has its own column.
+            let logical = if byte_start + content.len() < text.len() {
+                content.strip_suffix('\r').unwrap_or(content)
+            } else {
+                content
+            };
+            let end_column = logical.chars().count() + 1;
+            return if column <= end_column {
+                Ok(Destination::Coordinate(char_start + column - 1))
+            } else {
+                Err(format!(
+                    "Column must be from 1 to {end_column} on line {line}."
+                ))
+            };
+        }
+        char_start += content.chars().count() + 1;
+        byte_start += content.len() + 1;
+    }
+    Err(format!("Line must be from 1 to {}.", line_count(text)))
+}
+
+// TextEdit deletes a selection before attempting an insertion. The caller
+// restores the whole input and TextEdit state when this buffer refuses, so a
+// rejected paste cannot delete the selected text or leave an accepted prefix.
+struct LineInput<'a> {
+    text: &'a mut String,
+    refused: bool,
+}
+
+impl egui::TextBuffer for LineInput<'_> {
+    fn is_mutable(&self) -> bool {
+        true
+    }
+    fn as_str(&self) -> &str {
+        self.text
+    }
+    fn insert_text(&mut self, text: &str, char_index: usize) -> usize {
+        if self.refused {
+            return 0;
+        }
+        let added = text.chars().take(MAX_LINE_INPUT_CHARS + 1).count();
+        if self.text.chars().count() + added > MAX_LINE_INPUT_CHARS {
+            self.refused = true;
+            return 0;
+        }
+        egui::TextBuffer::insert_text(self.text, text, char_index)
+    }
+    fn delete_char_range(&mut self, range: std::ops::Range<usize>) {
+        if !self.refused {
+            egui::TextBuffer::delete_char_range(self.text, range);
+        }
+    }
+}
+
+fn input_body(event: &egui::Event) -> Option<&str> {
+    match event {
+        egui::Event::Text(text)
+        | egui::Event::Paste(text)
+        | egui::Event::Ime(egui::ImeEvent::Preedit(text) | egui::ImeEvent::Commit(text)) => {
+            Some(text)
+        }
+        _ => None,
+    }
+}
+
+fn finishes_line_input(event: &egui::Event) -> bool {
+    matches!(event, egui::Event::Key { key, pressed: true, modifiers, .. }
+        if (*key == egui::Key::Escape && modifiers.is_none())
+            || (*key == egui::Key::Enter && (modifiers.is_none()
+                || modifiers.matches_logically(egui::Modifiers::COMMAND))))
+}
+
+fn reject_oversized_line_batch(ctx: &egui::Context, deferring: bool) -> Option<&'static str> {
+    let oversized = ctx.input(|input| {
+        let mut count = 0;
+        input
+            .events
+            .iter()
+            .take_while(|event| !finishes_line_input(event))
+            .find_map(|event| {
+                count += usize::from(is_keyboard(event));
+                if input_body(event).is_some_and(|text| {
+                    text.chars().take(MAX_LINE_INPUT_CHARS + 1).count() > MAX_LINE_INPUT_CHARS
+                }) {
+                    Some(LINE_INPUT_REFUSAL)
+                } else if deferring && count > 128 {
+                    Some(LINE_OPENING_REFUSAL)
+                } else {
+                    None
+                }
+            })
+    });
+    if oversized.is_some() {
+        // Never copy an oversized body into the initial sizing-pass queue.
+        // Keep Enter/Escape handling, while the sticky refusal blocks Go.
+        ctx.input_mut(|input| input.events.retain(|event| input_body(event).is_none()));
+    }
+    oversized
+}
+
+fn coordinate_event_competes(event: &egui::Event, pointer_down: bool) -> bool {
+    match event {
+        egui::Event::Key { pressed: true, .. }
+        | egui::Event::PointerButton { .. }
+        | egui::Event::MouseWheel { .. }
+        | egui::Event::Zoom(_)
+        | egui::Event::Text(_)
+        | egui::Event::Paste(_)
+        | egui::Event::Copy
+        | egui::Event::Cut
+        | egui::Event::Touch { .. }
+        | egui::Event::WindowFocused(false) => true,
+        egui::Event::Ime(egui::ImeEvent::Preedit(text) | egui::ImeEvent::Commit(text)) => {
+            !text.is_empty()
+        }
+        egui::Event::PointerMoved(_) => pointer_down,
+        _ => false,
+    }
+}
+
+fn coordinate_competing_input(ctx: &egui::Context) -> bool {
+    ctx.input(|input| {
+        !input.focused
+            || input
+                .raw
+                .events
+                .iter()
+                .chain(&input.events)
+                .any(|event| coordinate_event_competes(event, input.pointer.any_down()))
+    })
+}
+
 fn typed_path(input: &str) -> String {
     // This normalization belongs only to the explicitly typed-path action.
     input.trim().replace('\\', "/")
@@ -366,6 +608,83 @@ fn defer_initial_input(ctx: &egui::Context) -> Vec<egui::Event> {
 }
 
 impl CedarApp {
+    fn coordinate_jump_current(&self, jump: &CoordinateJump) -> bool {
+        jump.generation == self.generation
+            && jump.navigation == self.navigation_epoch
+            && jump.workspace == self.workspace_key
+            && jump.root == self.root
+            && jump.connection == self.state
+            && self.active_document == Some(jump.document)
+            && !self.open_form
+            && !self.new_file
+            && !self.find_focus
+            && self.close_tab_requested.is_none()
+            && !self.close_after_language_stop
+            && !self.allow_close
+            && jump.edit_version != u64::MAX
+            && self.active().is_some_and(|doc| {
+                doc.id == jump.document
+                    && doc.path == jump.path
+                    && doc.edit_version == jump.edit_version
+                    && doc.text.len() <= MAX_COORDINATE_TEXT_BYTES
+                    && jump.index <= doc.text.chars().count()
+                    && doc.jump_to.is_none()
+            })
+    }
+
+    fn queue_coordinate_jump(&mut self, index: usize) {
+        let departure = self.history_departure();
+        self.navigation_changed();
+        let Some(doc) = self.active() else {
+            return;
+        };
+        if doc.edit_version == u64::MAX || doc.text.len() > MAX_COORDINATE_TEXT_BYTES {
+            return;
+        }
+        let jump = CoordinateJump {
+            document: doc.id,
+            path: doc.path.clone(),
+            edit_version: doc.edit_version,
+            workspace: self.workspace_key.clone(),
+            root: self.root.clone(),
+            connection: self.state,
+            generation: self.generation,
+            navigation: self.navigation_epoch,
+            frame: self.navigation.frame,
+            index,
+            departure,
+        };
+        // This explicit local destination supersedes an older line/open jump.
+        if let Some(doc) = self
+            .documents
+            .iter_mut()
+            .find(|doc| doc.id == jump.document)
+        {
+            doc.jump_to = None;
+        }
+        self.navigation.coordinate_jump = Some(jump);
+        self.navigation.message = None;
+    }
+
+    pub(super) fn take_coordinate_jump(&mut self, ctx: &egui::Context) -> Option<usize> {
+        let jump = self.navigation.coordinate_jump.take()?;
+        if !self.coordinate_jump_current(&jump)
+            || !self.navigation.input_frame_current(ctx)
+            || self.navigation.blocks_editor()
+            || self.foreign_modal_owns_input(ctx)
+            || (jump.frame != self.navigation.frame
+                && (self.navigation.input_competing || coordinate_competing_input(ctx)))
+        {
+            self.navigation.message = Some(COORDINATE_CANCELED);
+            return None;
+        }
+        // Admission starts only after the final guard, retaining the complete
+        // immutable departure captured at Go. Refused tickets create no entry.
+        self.history_begin(jump.departure, false);
+        self.history_wait_for_selection(jump.document);
+        Some(jump.index)
+    }
+
     fn foreign_modal_pending(&self) -> bool {
         self.confirm.is_some()
             || self.copy_draft.is_open()
@@ -394,6 +713,21 @@ impl CedarApp {
     }
 
     pub(super) fn begin_navigation_frame(&mut self, ctx: &egui::Context) {
+        if self
+            .navigation
+            .coordinate_jump
+            .as_ref()
+            .is_some_and(|jump| {
+                !self.coordinate_jump_current(jump)
+                    || !self.navigation.input_frame_current(ctx)
+                    || self.foreign_modal_owns_input(ctx)
+                    || (jump.frame != self.navigation.frame
+                        && (self.navigation.input_competing || coordinate_competing_input(ctx)))
+            })
+        {
+            self.navigation.cancel_coordinate_jump();
+            self.navigation.restore_focus = false;
+        }
         // egui keeps the previous frame's modal layer through this frame. Wait
         // for its release before focusing the editor or consuming a cursor jump.
         let old_modal = ctx.memory(|memory| memory.top_modal_layer().is_some());
@@ -452,6 +786,7 @@ impl CedarApp {
             serial: self.navigation_epoch,
             focus: true,
             deferred_input: Vec::new(),
+            deferred_line_refusal: None,
             kind: Kind::Files {
                 selected: None,
                 scope: FileScope::Current,
@@ -468,6 +803,7 @@ impl CedarApp {
     }
 
     fn show_line_chooser(&mut self) {
+        self.navigation.message = None;
         if let Some(Dialog {
             kind: Kind::Line { .. },
             focus,
@@ -482,6 +818,7 @@ impl CedarApp {
         };
         let input = document.cursor.0.to_string();
         self.navigation_changed();
+        self.navigation.message = None;
         self.navigation.restore_focus = false;
         self.navigation.dialog = Some(Dialog {
             document: self.active_document,
@@ -491,7 +828,12 @@ impl CedarApp {
             serial: self.navigation_epoch,
             focus: true,
             deferred_input: Vec::new(),
-            kind: Kind::Line { input, error: None },
+            deferred_line_refusal: None,
+            kind: Kind::Line {
+                input,
+                error: None,
+                refused: false,
+            },
         });
         self.navigation.blocked_frame = true;
     }
@@ -563,8 +905,21 @@ impl CedarApp {
         }
         let sizing = egui::AreaState::load(ctx, egui::Id::new("navigation_modal"))
             .is_none_or(|state| state.size.is_none());
+        let oversized_batch = if matches!(dialog.kind, Kind::Line { .. }) {
+            reject_oversized_line_batch(ctx, sizing)
+        } else {
+            None
+        };
+        let refused_batch = std::mem::take(&mut dialog.deferred_line_refusal).or(oversized_batch);
+        if let Some(message) = refused_batch {
+            if let Kind::Line { error, refused, .. } = &mut dialog.kind {
+                *error = Some(message.into());
+                *refused = true;
+            }
+        }
         if sizing {
             dialog.deferred_input = defer_initial_input(ctx);
+            dialog.deferred_line_refusal = refused_batch;
             discard_keyboard(ctx);
         }
         let mut escape = false;
@@ -622,7 +977,7 @@ impl CedarApp {
         }
         let mut open_path = None;
         let mut open_candidate = None;
-        let mut jump_line = None;
+        let mut jump_destination = None;
         let mut dismiss = escape;
         let modal = egui::Modal::new(egui::Id::new("navigation_modal")).show(ctx, |ui| {
             ui.set_width((ctx.screen_rect().width() - 64.0).clamp(240.0, 560.0));
@@ -778,12 +1133,13 @@ impl CedarApp {
                         ui.colored_label(RED, error.as_str());
                     }
                 }
-                Kind::Line { input, error } => {
-                    ui.heading("Go to line");
+                Kind::Line { input, error, refused } => {
+                    ui.heading("Go to line or line:column");
                     if let Some(doc) = self.active() {
                         ui.label(&doc.path);
                         ui.label(RichText::new(format!("Line 1–{} · Ctrl/Cmd+G", line_count(&doc.text))).small().color(MUTED));
                     }
+                    ui.label(RichText::new("Columns count Unicode scalar values; tabs count as one. Line end is allowed.").small().color(MUTED));
                     let id = egui::Id::new(LINE_INPUT);
                     if dialog.focus && !ui.is_sizing_pass() {
                         ui.ctx().memory_mut(|memory| memory.request_focus(id));
@@ -792,14 +1148,33 @@ impl CedarApp {
                         state.store(ui.ctx(), id);
                         dialog.focus = false;
                     }
-                    if ui.add(egui::TextEdit::singleline(input).id(id).char_limit(20).desired_width(f32::INFINITY)).changed() {
+                    let previous_input = input.clone();
+                    let mut previous_state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+                    let previous_undo = previous_state.undoer();
+                    let mut bounded = LineInput { text: &mut *input, refused: refused_batch.is_some() };
+                    let response = ui.add(egui::TextEdit::singleline(&mut bounded).id(id).hint_text("12 or 12:4").desired_width(f32::INFINITY));
+                    if bounded.refused {
+                        *bounded.text = previous_input;
+                        previous_state.set_undoer(previous_undo);
+                        previous_state.store(ui.ctx(), id);
+                        *error = Some(refused_batch.unwrap_or(LINE_INPUT_REFUSAL).into());
+                        *refused = true;
+                        ui.ctx().request_repaint();
+                    } else if response.changed() {
                         *error = None;
+                        *refused = false;
                     }
                     ui.horizontal(|ui| {
-                        if ui.button("Go").clicked() || enter || explicit {
+                        if (ui.button("Go").clicked() || enter || explicit) && !*refused {
                             if let Some(doc) = self.active() {
-                                match parse_line(input, &doc.text) {
-                                    Ok(line) => jump_line = Some(line),
+                                match parse_destination(input, &doc.text) {
+                                    Ok(Destination::Coordinate(_)) if !self.navigation.input_frame_current(ctx) => {
+                                        *error = Some("Line:column input could not be verified in this frame. Reopen Go to and try again.".into());
+                                    }
+                                    Ok(Destination::Coordinate(_)) if doc.edit_version == u64::MAX => {
+                                        *error = Some("Line:column is unavailable because this draft's edit version is saturated. Enter a line number instead.".into());
+                                    }
+                                    Ok(destination) => jump_destination = Some(destination),
                                     Err(message) => *error = Some(message),
                                 }
                             }
@@ -867,8 +1242,11 @@ impl CedarApp {
                 self.dismiss_navigation();
                 self.open(candidate.path.to_string(), None);
             }
-        } else if let Some(line) = jump_line {
-            self.history_go_to_line(line);
+        } else if let Some(destination) = jump_destination {
+            match destination {
+                Destination::Line(line) => self.history_go_to_line(line),
+                Destination::Coordinate(index) => self.queue_coordinate_jump(index),
+            }
         }
         if self.navigation.restore_focus
             && self.navigation.dialog.is_none()

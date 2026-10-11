@@ -29,7 +29,7 @@ IntelliJ IDEA 的完整替代品。请从本项目对应提交的 GitHub Actions
    点击 **Connect workspace**。初次试用可先选择一份测试文件的副本。
 3. 保持 **Trust this workspace for Git, language servers, and commands** 关闭。
    浏览、编辑、搜索和保存文件不需要执行信任。点击目录中的文本文件打开，
-   Ctrl+S 保存，Ctrl+Z 撤销，Ctrl+P 选择已打开标签或当前目录文件，Ctrl+G 跳到行，Ctrl+F 在文件内查找。
+   Ctrl+S 保存，Ctrl+Z 撤销，Ctrl+P 选择已打开标签或当前目录文件，Ctrl+G 跳到行或行:列（[列计数规则](EXPLORER_TREE.md#跳到当前草稿的行和列)），Ctrl+F 在文件内查找。
    文件选择器用上下箭头选择、Enter 打开、Escape 取消；也可点 **Open typed path**
    或 Ctrl+Enter 打开输入的相对路径。仅使用已加载的当前目录和打开标签，最多显示64项匹配，
    不递归扫描整个项目。行号从1开始，必须在当前草稿范围内；跳转不会改写文件。

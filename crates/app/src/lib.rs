@@ -8,6 +8,8 @@ mod build_problem_process_tests;
 #[cfg(test)]
 mod build_problem_ui_tests;
 mod build_problems;
+#[cfg(test)]
+mod column_navigation_process_tests;
 pub mod completion;
 #[cfg(test)]
 mod connection_cancel_tests;
@@ -674,6 +676,7 @@ impl CedarApp {
 
     fn navigation_changed(&mut self) {
         self.location_history.cancel_pending();
+        self.navigation.cancel_coordinate_jump();
         self.replace.invalidate();
         self.dismiss_navigation();
         self.dismiss_disk_review();
@@ -2811,6 +2814,9 @@ impl CedarApp {
         if let Some(message) = self.interrupted_save_check.message() {
             ui.label(RichText::new(message).small().color(AMBER));
         }
+        if let Some(message) = self.navigation.message {
+            ui.label(RichText::new(message).small().color(AMBER));
+        }
         let navigation_blocked = self.navigation.blocks_editor()
             || self.copy_draft.is_open()
             || matches!(self.confirm, Some(Confirm::CloseTab(_)));
@@ -2830,15 +2836,35 @@ impl CedarApp {
             .iter_mut()
             .find(|doc| Some(doc.id) == self.active_document)
         {
-            let editor_id = egui::Id::new(("editor", doc.id));
             editor_state::load(ui.ctx(), doc);
-            let indent_eligible = indent_eligible && doc.jump_to.is_none();
+            let indent_eligible = indent_eligible
+                && doc.jump_to.is_none()
+                && !self.navigation.coordinate_jump_pending();
             enter_indent::handle(ui.ctx(), doc, indent_eligible, enter_input);
             block_indent::handle(ui.ctx(), doc, indent_eligible);
             if !navigation_blocked {
                 editor_state::history_shortcut(ui.ctx(), doc);
             }
-            let jump_to = (!navigation_blocked).then(|| doc.jump_to.take()).flatten();
+        }
+        // Coordinate tickets are validated after editor undo handling and the
+        // modal's release, immediately before the cursor can be changed. They
+        // never enter the older unguarded Open/LSP/plain-line jump slot.
+        let coordinate_jump = if navigation_blocked {
+            None
+        } else {
+            self.take_coordinate_jump(ui.ctx())
+        };
+        if coordinate_jump.is_some() {
+            history_completion = self.history_take_jump_completion();
+        }
+        if let Some(doc) = self
+            .documents
+            .iter_mut()
+            .find(|doc| Some(doc.id) == self.active_document)
+        {
+            let editor_id = egui::Id::new(("editor", doc.id));
+            let jump_to = coordinate_jump
+                .or_else(|| (!navigation_blocked).then(|| doc.jump_to.take()).flatten());
             let scroll_to = jump_to.or_else(|| {
                 (!navigation_blocked)
                     .then(|| doc.scroll_to.take())
@@ -3008,6 +3034,7 @@ impl CedarApp {
 
 impl eframe::App for CedarApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.navigation.begin_input_frame(ctx, raw_input);
         self.capture_tab_close_focus_input(ctx, raw_input);
         self.enter_input = enter_indent::capture(ctx, raw_input, self.active()).filter(|_| {
             self.editor_indent_eligible(ctx)
