@@ -66,15 +66,15 @@ The **Automatic height** control added in 0.58.0 explicitly clears the runtime
 height preference after the current panel pass and requests a repaint using the
 existing automatic content-sizing behavior. A later genuine divider drag can
 establish an explicit height again. It does not persist settings or send a
-workspace request. Both 0.58.2 strict checks and all 23 sidebar checks passed,
-including the original exact-containment regression. Each aggregate still had
-one editor Undo assertion failure. The bounded trace shows an extra edit in the
-Tab-entry frame; the following Undo restored the original dirty text. Exact
-mutation bytes were not logged. Downstream proofs, packages and native checks
-were not reached. 0.58.3 requires positive original-batch editor ownership before
-Tab can edit, while retaining native focus traversal and unrelated global input.
-The original state assertions remain required. Fresh validation is pending;
-0.57.6 remains accepted and the command-output banner remains backlog.
+workspace request. Both 0.58.3 strict checks, all 27 resize checks and all 23
+sidebar checks passed, including the original Tools reset → native Tab → immediate
+Undo/Redo sequence. Each aggregate failed eight new cases in a shared boundary-
+button focus fixture; seven new cases passed. Native button clicks did not grant
+the keyboard focus that this fixture expected. 0.58.4 changes only that test
+setup: require no focus after the click, then use real Tab or Shift+Tab to acquire
+the exact boundary button before measuring editor entry. Shipping code is unchanged.
+Downstream proofs, packages and native checks remain pending. 0.57.6 remains
+accepted and the command-output banner remains backlog.
 
 ## Project Search keyboard navigation (0.57.6 bounded acceptance)
 
@@ -127,7 +127,7 @@ Query/batch changes, hidden or switched tools, modals and competing input cancel
 unfinished row intent; continue with a fresh valid key or pointer action. The frontend keeps at
 most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
 oversized batches are rejected whole. No automatic search, new engine, protocol,
-capability or workspace operation is added. The 0.58.3 editor Tab-ownership candidate
+capability or workspace operation is added. The 0.58.4 boundary-focus fixture candidate
 requires fresh validation described in the [current report](../../docs/TEST_REPORT.md).
 
 ## Agent capabilities and trust

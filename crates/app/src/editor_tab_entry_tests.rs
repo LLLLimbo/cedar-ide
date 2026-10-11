@@ -207,7 +207,28 @@ fn click(app: &mut CedarApp, name: &str) {
             assert!(current.clicked_by(egui::PointerButton::Primary));
         }
     }
-    assert_eq!(focused(app), Some(response.id));
+    if name == BEFORE || name == AFTER {
+        // Native buttons do not request keyboard focus when clicked. The
+        // pointer press clears the old editor focus; acquire the boundary by
+        // actual keyboard traversal before the measured editor-entry batch.
+        assert_eq!(focused(app), None, "pointer focus after boundary {name}");
+        // These buttons are the first and last focusable registrations. The
+        // editor's native ScrollArea stops are all between them. From no focus,
+        // Shift+Tab selects the previous pass's last stop without a frame delay.
+        let modifiers = if name == BEFORE {
+            egui::Modifiers::NONE
+        } else {
+            egui::Modifiers::SHIFT
+        };
+        frame(app, key(egui::Key::Tab, modifiers));
+        let acquired = workspace_access_tests::recorded_response(app, name);
+        assert_eq!(
+            acquired.id, response.id,
+            "keyboard target changed for {name}"
+        );
+        assert!(acquired.has_focus(), "keyboard focus missing for {name}");
+    }
+    assert_eq!(focused(app), Some(response.id), "final focus for {name}");
 }
 
 fn app(text: &str, selected: bool) -> CedarApp {
