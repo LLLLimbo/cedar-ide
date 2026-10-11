@@ -1127,27 +1127,52 @@ fn normal_agent_selection_replace_is_local_and_preserves_history() -> Check<()> 
         !root_path.exists() && h.started.elapsed() < TOTAL,
         "fixture removal or total cleanup budget unverified",
     )?;
-    println!(
-        "selection_replace_acceptance {}",
-        serde_json::json!({
-            "schema": 1, "acceptance": "selection_replace", "success": true,
-            "os": if cfg!(windows) { "windows" } else { "linux" },
-            "cases": h.cases, "cases_executed": 16, "operation_ledger": h.ledger.ordered,
-            "requests": 6, "hello": h.connections, "list": h.ledger.lists.len(), "read": h.ledger.reads.len(),
-            "write": h.ledger.writes, "other_operations": h.ledger.other, "measured_replacement_operations": 0,
-            "connections": h.connections, "agents_reaped": h.reaped, "source_hashes": source_hashes,
-            "trust_off": true, "no_language_session": true, "production_button_frames": true,
-            "unicode_scalar_selection": true, "lf_crlf_outside_bytes_preserved": true,
-            "forward_reversed_selection": true, "preview_cancel_preserved": true,
-            "atomic_undo_redo": true, "full_history_and_no_op_preserved": true,
-            "empty_selection_refused": true, "crossing_matches_excluded": true,
-            "dirty_baselines_preserved": true, "stale_selection_and_affinity_rejected": true,
-            "stale_edit_workspace_session_tab_rejected": true, "reconnect_rejected_old_preview": true,
-            "exact_operation_ledger_verified": true, "shared_watchdog_seconds": 60,
-            "total_budget_seconds": 65, "request_admission_seconds": 30, "cleanup_timeout_seconds": 5,
-            "owned_children_reaped": true, "watchdog_joined": true, "fixture_removed": true,
-            "optional_font_probe_untriggered": true,
-        })
-    );
+    // Keep macro nesting bounded independently of the fixed receipt size.
+    // The strict Python validator still requires the same 41 typed fields.
+    let mut receipt = serde_json::json!({
+        "schema": 1, "acceptance": "selection_replace",
+        "os": if cfg!(windows) { "windows" } else { "linux" },
+        "cases": h.cases, "cases_executed": 16, "operation_ledger": h.ledger.ordered,
+        "requests": 6, "hello": h.connections, "list": h.ledger.lists.len(), "read": h.ledger.reads.len(),
+        "write": h.ledger.writes, "other_operations": h.ledger.other, "measured_replacement_operations": 0,
+        "connections": h.connections, "agents_reaped": h.reaped, "source_hashes": source_hashes,
+        "shared_watchdog_seconds": 60, "total_budget_seconds": 65,
+        "request_admission_seconds": 30, "cleanup_timeout_seconds": 5,
+    });
+    let object = receipt
+        .as_object_mut()
+        .ok_or("receipt metadata is not an object")?;
+    for field in [
+        "success",
+        "trust_off",
+        "no_language_session",
+        "production_button_frames",
+        "unicode_scalar_selection",
+        "lf_crlf_outside_bytes_preserved",
+        "forward_reversed_selection",
+        "preview_cancel_preserved",
+        "atomic_undo_redo",
+        "full_history_and_no_op_preserved",
+        "empty_selection_refused",
+        "crossing_matches_excluded",
+        "dirty_baselines_preserved",
+        "stale_selection_and_affinity_rejected",
+        "stale_edit_workspace_session_tab_rejected",
+        "reconnect_rejected_old_preview",
+        "exact_operation_ledger_verified",
+        "owned_children_reaped",
+        "watchdog_joined",
+        "fixture_removed",
+        "optional_font_probe_untriggered",
+    ] {
+        require(
+            object
+                .insert(field.into(), serde_json::Value::Bool(true))
+                .is_none(),
+            "duplicate receipt field",
+        )?;
+    }
+    require(object.len() == 41, "receipt field count differed")?;
+    println!("selection_replace_acceptance {receipt}");
     Ok(())
 }

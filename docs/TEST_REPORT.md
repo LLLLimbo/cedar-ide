@@ -1,4 +1,4 @@
-# Verification checkpoint — 0.53.0 selected-slice replacement
+# Verification checkpoint — 0.53.1 selected-slice replacement
 
 ## Scope and acceptance state
 
@@ -21,3 +21,9 @@ Independent bounds/input/history and process-ownership reviews, pure and actual-
 The authored replacement suite contains 31 tests, including 16 additional groups, with existing one/all assertions retained and stale-state matrices expanded. Tests cover selected-slice overlap alignment, dense outside matches, literal Unicode/CRLF bytes, full-selection affinity/history, no-op redo, bounds, minimum-window controls, actual pointer/keyboard activation, mixed and split gestures, stale or missing input capture, and sizing retries. These Rust tests have not been compiled or executed locally.
 
 Local Rust compilation, aggregates, releases and native process execution are deferred to fresh CI because disk reserve is constrained. The new strict Python receipt driver passes 12 tests; its shared bounded supervisor passes 21 and the retained coordinate driver passes nine. Package tests pass 39 Linux desktop, 30 Linux agent and 36 Windows cases (one platform skip); public-export tests pass two. Structured lockfile comparison confirms only ten Cedar package versions changed, with third-party versions and dependency features unchanged. Formatting and independent source review are checked at seal. Fresh dual-platform strict compilation, aggregates, process runtime, all packages and exact GUI remain pending. Production Windows recovery policy is unchanged; the nonshipping admission investigation stays paused. Historical Git incomplete-EOF and client marker failures remain without an established root cause.
+
+## Preserved 0.53.0 first-compilation failure
+
+Public `3ba65799f9896f94b88ae7d087200a12dd8a568b`, [CI 38113209812](https://github.com/LLLLimbo/cedar-ide/actions/runs/38113209812), failed the first strict Rust compilation on both OSes: the single 41-field test receipt `serde_json::json!` exceeded the default macro recursion limit. No Rust test, process proof, release build or package ran; no GUI artifact existed. This failure is preserved.
+
+0.53.1 only splits that test receipt into a 20-field metadata object and 21 explicit true boolean fields. Duplicate insertions and an unexpected final count fail before printing success. The same exact 41 fields/types/values and strict Python validator remain required. No recursion-limit increase, lint suppression, shipping behavior, runtime budget or dependency change is introduced. Local Rust compilation remains deferred; fresh full CI and exact-package GUI are mandatory.
