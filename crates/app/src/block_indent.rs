@@ -100,13 +100,77 @@ fn tab(event: &egui::Event) -> Option<bool> {
     }
 }
 
+/// Original-batch eligibility is kept before other surfaces can consume input.
+/// It grants no ownership; the current batch is checked again by the handler.
+pub(super) fn clean_tab_batch(events: &[egui::Event]) -> bool {
+    let mut tabs = 0usize;
+    for event in events {
+        if tab(event).is_some() {
+            tabs += 1;
+            if tabs > 1 {
+                return false;
+            }
+        } else if !matches!(
+            event,
+            egui::Event::Key { pressed: false, .. }
+                | egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Disabled)
+        ) {
+            return false;
+        }
+    }
+    tabs == 1
+}
+
+fn ime_transition(event: &egui::Event) -> Option<bool> {
+    match event {
+        egui::Event::Ime(egui::ImeEvent::Preedit(text)) if text != "\n" && text != "\r" => {
+            Some(!text.is_empty())
+        }
+        egui::Event::Ime(egui::ImeEvent::Commit(text)) if text != "\n" && text != "\r" => {
+            Some(false)
+        }
+        egui::Event::Ime(egui::ImeEvent::Disabled) => Some(false),
+        _ => None,
+    }
+}
+
+/// Observe surviving events before TextEdit performs its native IME cleanup.
+/// Keep only the terminal composition bit, never text or events to replay.
+pub(super) fn composition_transition(ctx: &egui::Context) -> Option<bool> {
+    ctx.input(|input| {
+        input
+            .focused
+            .then(|| input.events.iter().rev().find_map(ime_transition))
+            .flatten()
+    })
+}
+
+/// A Tab entry can acquire focus after the block-indent hook already ran.
+/// Associate its observed composition only with the editor that actually gained
+/// focus; TextEdit retains ownership of all native IME and cursor behavior.
+pub(super) fn finish_focus_composition(
+    ctx: &egui::Context,
+    editor: egui::Id,
+    response: &egui::Response,
+    transition: Option<bool>,
+) {
+    if let Some(active) = transition.filter(|_| {
+        response.id == editor
+            && response.gained_focus()
+            && ctx.input(|input| input.focused)
+            && ctx.memory(|memory| memory.has_focus(editor))
+    }) {
+        ctx.data_mut(|data| data.insert_temp(editor.with("block_indent_composition"), active));
+    }
+}
+
 /// Refuse ambiguous event batches rather than replay native text input. Only
 /// selected Tab presses belong to us; every other event retains its ordering.
 /// Retained editor focus still owns a selected Tab when a form, jump, or focus
 /// loss prevents execution: consume it without editing rather than passing it
 /// to native selection replacement. A genuinely foreign-focused field owns all
 /// of its own input, including Tab.
-pub fn handle(ctx: &egui::Context, doc: &mut Document, eligible: bool) {
+pub fn handle(ctx: &egui::Context, doc: &mut Document, eligible: bool, tab_owned: bool) {
     let id = egui::Id::new(("editor", doc.id));
     let ime_id = id.with("block_indent_composition");
     let focused = ctx.memory(|m| m.has_focus(id));
@@ -118,21 +182,19 @@ pub fn handle(ctx: &egui::Context, doc: &mut Document, eligible: bool) {
     let mut composing = was_composing;
     ctx.input(|input| {
         for event in &input.events {
-            match event {
-                egui::Event::Ime(egui::ImeEvent::Preedit(text)) if text != "\n" && text != "\r" => {
-                    composing = !text.is_empty()
-                }
-                egui::Event::Ime(egui::ImeEvent::Commit(text)) if text != "\n" && text != "\r" => {
-                    composing = false
-                }
-                egui::Event::Ime(egui::ImeEvent::Disabled) => composing = false,
-                _ => {}
+            if let Some(active) = ime_transition(event) {
+                composing = active;
             }
         }
     });
     let viewport_focused = ctx.input(|input| input.focused);
     composing &= viewport_focused;
     ctx.data_mut(|d| d.insert_temp(ime_id, composing));
+    // Focus acquired in this pass cannot confer ownership of the original Tab.
+    // Leave every event intact for native traversal and other consumers.
+    if !tab_owned {
+        return;
+    }
     if !ctx.input(|input| input.events.iter().any(|event| tab(event).is_some())) {
         return;
     }
@@ -258,18 +320,17 @@ mod tests {
         let ctx = app.editor_ctx.clone();
         let time = ctx.input(|i| i.time) + 1.0;
         let mut native = eframe::Frame::_new_kittest();
-        let _ = ctx.run(
-            egui::RawInput {
-                time: Some(time),
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1320.0, 880.0),
-                )),
-                events,
-                ..Default::default()
-            },
-            |ctx| eframe::App::update(app, ctx, &mut native),
-        );
+        let mut input = egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1320.0, 880.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(app, &ctx, &mut input);
+        let _ = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native));
     }
 
     fn app(text: &str, range: CCursorRange) -> crate::CedarApp {
@@ -457,7 +518,7 @@ mod tests {
                 events: vec![egui::Event::Ime(egui::ImeEvent::Disabled)],
                 ..Default::default()
             },
-            |ctx| handle(ctx, &mut app.documents[0], false),
+            |ctx| handle(ctx, &mut app.documents[0], false, true),
         );
         select(&mut app, selection(1, 0));
         frame(&mut app, vec![]);
@@ -495,7 +556,7 @@ mod tests {
             },
             |ctx| {
                 ctx.memory_mut(|m| m.request_focus(egui::Id::new(("editor", 1u64))));
-                handle(ctx, &mut app.documents[0], true);
+                handle(ctx, &mut app.documents[0], true, true);
                 assert!(ctx.input(|i| i.events.is_empty()));
             },
         );
@@ -525,7 +586,7 @@ mod tests {
             },
             |ctx| {
                 ctx.memory_mut(|m| m.request_focus(id));
-                handle(ctx, &mut doc, true);
+                handle(ctx, &mut doc, true, true);
                 assert_eq!(ctx.input(|i| i.events.clone()), other);
             },
         );
@@ -544,7 +605,7 @@ mod tests {
             },
             |ctx| {
                 ctx.memory_mut(|m| m.request_focus(id));
-                handle(ctx, &mut doc, false);
+                handle(ctx, &mut doc, false, true);
                 assert_eq!(ctx.input(|i| i.events.clone()), unrelated);
             },
         );
@@ -559,7 +620,7 @@ mod tests {
             |ctx| {
                 ctx.memory_mut(|m| m.request_focus(egui::Id::new("other_field")));
                 let before = ctx.input(|i| i.events.clone());
-                handle(ctx, &mut doc, true);
+                handle(ctx, &mut doc, true, true);
                 assert_eq!(ctx.input(|i| i.events.clone()), before);
             },
         );

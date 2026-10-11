@@ -27,6 +27,9 @@ mod duplicate_lines;
 #[cfg(test)]
 mod duplicate_lines_process_tests;
 mod editor_state;
+mod editor_tab;
+#[cfg(test)]
+mod editor_tab_entry_tests;
 mod enter_indent;
 #[cfg(test)]
 mod enter_indent_process_tests;
@@ -343,6 +346,7 @@ pub struct CedarApp {
     editor_ctx: egui::Context,
     enter_input: Option<enter_indent::FrameInput>,
     duplicate_input: Option<duplicate_lines::FrameInput>,
+    editor_tab_input: Option<editor_tab::FrameInput>,
     system_fonts: system_fonts::SystemFonts,
     cjk_seen: bool,
     state: ConnectionState,
@@ -458,6 +462,7 @@ impl CedarApp {
             editor_ctx: egui::Context::default(),
             enter_input: None,
             duplicate_input: None,
+            editor_tab_input: None,
             system_fonts: system_fonts::SystemFonts::default(),
             cjk_seen: false,
             state: ConnectionState::Idle,
@@ -2962,6 +2967,11 @@ impl CedarApp {
             } else {
                 None
             };
+        let tab_context_owned = self
+            .editor_tab_input
+            .as_ref()
+            .is_some_and(|input| input.matches_context(self, ui.ctx()));
+        let mut block_had_focus = false;
         if let Some(doc) = self
             .documents
             .iter_mut()
@@ -2972,7 +2982,21 @@ impl CedarApp {
                 && doc.jump_to.is_none()
                 && !self.navigation.coordinate_jump_pending();
             enter_indent::handle(ui.ctx(), doc, indent_eligible, enter_input);
-            block_indent::handle(ui.ctx(), doc, indent_eligible);
+            block_had_focus = ui
+                .ctx()
+                .memory(|memory| memory.has_focus(egui::Id::new(("editor", doc.id))));
+            let tab_owned = tab_context_owned
+                && block_had_focus
+                && self
+                    .editor_tab_input
+                    .as_ref()
+                    .is_some_and(|input| input.matches_document(doc));
+            let block_eligible = indent_eligible
+                && self
+                    .editor_tab_input
+                    .as_ref()
+                    .is_some_and(|input| input.block_action && input.original_input_eligible());
+            block_indent::handle(ui.ctx(), doc, block_eligible, tab_owned);
             if !navigation_blocked {
                 editor_state::history_shortcut(ui.ctx(), doc);
             }
@@ -2988,6 +3012,14 @@ impl CedarApp {
         if coordinate_jump.is_some() {
             history_completion = self.history_take_jump_completion();
         }
+        let tab_context_owned = coordinate_jump.is_none()
+            && self.editor_tab_input.as_ref().is_some_and(|input| {
+                input.matches_context(self, ui.ctx()) && input.input_eligible(self, ui.ctx())
+            });
+        let composition_identity = coordinate_jump.is_none()
+            && self.editor_tab_input.as_ref().is_some_and(|input| {
+                input.matches_identity(self, ui.ctx()) && input.input_eligible(self, ui.ctx())
+            });
         if let Some(doc) = self
             .documents
             .iter_mut()
@@ -3056,17 +3088,63 @@ impl CedarApp {
                             )
                             .selectable(false),
                         );
+                        let tab_owned = tab_context_owned
+                            && jump_to.is_none()
+                            && ui.ctx().memory(|memory| memory.has_focus(editor_id))
+                            && self
+                                .editor_tab_input
+                                .as_ref()
+                                .is_some_and(|input| input.matches_document(doc));
+                        // Native traversal grants focus inside TextEdit's
+                        // interaction step. Only the original owner may turn
+                        // this same batch's Tab into an edit. Eventless sizing
+                        // retries keep the normal code-editor focus filter.
+                        let tab_fenced = editor_tab::has_tab(ui.ctx()) && !tab_owned;
+                        let composition = (tab_fenced
+                            && !block_had_focus
+                            && composition_identity
+                            && jump_to.is_none()
+                            && self
+                                .editor_tab_input
+                                .as_ref()
+                                .is_some_and(|input| input.matches_document(doc)))
+                        .then(|| block_indent::composition_transition(ui.ctx()))
+                        .flatten();
                         let output = egui::TextEdit::multiline(&mut doc.text)
                             .id(editor_id)
                             .interactive(!navigation_blocked)
                             .font(FontId::monospace(font_size))
                             .code_editor()
+                            .lock_focus(!tab_fenced)
                             .frame(false)
                             .desired_width(ui.available_width().max(600.0))
                             .desired_rows(count.max(30))
                             .margin(egui::vec2(10.0, 0.0))
                             .layouter(&mut layouter)
                             .show(ui);
+                        // IME can legitimately change text here, so recheck the
+                        // document/lifecycle identity without its edit version.
+                        let composition = composition.filter(|_| {
+                            self.active_document == Some(doc.id)
+                                && self.editor_tab_input.as_ref().is_some_and(|input| {
+                                    input.matches_document_identity(doc)
+                                        && input.matches_frame(ui.ctx())
+                                        && input.matches_lifecycle(
+                                            self.generation,
+                                            &self.workspace_key,
+                                            &self.root,
+                                            self.state,
+                                            self.language.session,
+                                            self.navigation_epoch,
+                                        )
+                                })
+                        });
+                        block_indent::finish_focus_composition(
+                            ui.ctx(),
+                            editor_id,
+                            &output.response,
+                            composition,
+                        );
                         self.workspace_access
                             .record(workspace_access::Target::Editor(doc.id), &output.response);
                         #[cfg(test)]
@@ -3165,6 +3243,7 @@ impl CedarApp {
 
 impl eframe::App for CedarApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.editor_tab_input = editor_tab::FrameInput::capture(self, ctx, raw_input);
         self.duplicate_input = self.capture_duplicate_input(ctx, raw_input);
         self.tools_height_reset.begin_input_frame(raw_input);
         self.capture_replace_input(ctx, raw_input);

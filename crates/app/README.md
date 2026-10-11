@@ -66,15 +66,14 @@ The **Automatic height** control added in 0.58.0 explicitly clears the runtime
 height preference after the current panel pass and requests a repaint using the
 existing automatic content-sizing behavior. A later genuine divider drag can
 establish an explicit height again. It does not persist settings or send a
-workspace request. Both 0.58.0 and 0.58.1 passed strict checks but failed both
-aggregates, with two app-test failures on each platform. In 0.58.1 the editor
-visibility helper passed, then Undo retained dirty text instead of saved text;
-the sidebar trace measured Search extending 0.125 points below the actual
-viewport while inside its expanded paint clip. Downstream process gates,
-packages and native validation were not reached in either run.
-0.58.2 narrowly corrects footer reveal targets against the actual sidebar viewport
-and adds bounded observations around the unchanged editor Tab/Undo sequence.
-The exact sidebar and editor state assertions remain. Fresh validation is pending;
+workspace request. Both 0.58.2 strict checks and all 23 sidebar checks passed,
+including the original exact-containment regression. Each aggregate still had
+one editor Undo assertion failure. The bounded trace shows an extra edit in the
+Tab-entry frame; the following Undo restored the original dirty text. Exact
+mutation bytes were not logged. Downstream proofs, packages and native checks
+were not reached. 0.58.3 requires positive original-batch editor ownership before
+Tab can edit, while retaining native focus traversal and unrelated global input.
+The original state assertions remain required. Fresh validation is pending;
 0.57.6 remains accepted and the command-output banner remains backlog.
 
 ## Project Search keyboard navigation (0.57.6 bounded acceptance)
@@ -128,7 +127,7 @@ Query/batch changes, hidden or switched tools, modals and competing input cancel
 unfinished row intent; continue with a fresh valid key or pointer action. The frontend keeps at
 most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
 oversized batches are rejected whole. No automatic search, new engine, protocol,
-capability or workspace operation is added. The 0.58.2 footer-reveal/diagnostics candidate
+capability or workspace operation is added. The 0.58.3 editor Tab-ownership candidate
 requires fresh validation described in the [current report](../../docs/TEST_REPORT.md).
 
 ## Agent capabilities and trust

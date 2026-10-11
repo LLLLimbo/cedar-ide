@@ -1492,6 +1492,7 @@ fn tools_automatic_height_preserves_dirty_selection_undo_redo_and_results_withou
         editor_state_diagnostic(&app, "BeforeTabTraversal", &before_tab, saved, dirty, later);
     let mut tab_input = EditorInputDiagnostic::default();
     tab_to_diagnostic(&mut app, SIZE, "editor", Some(&mut tab_input));
+    let after_tab_witness = editor_witness(&app);
     let after_tab_state =
         editor_state_diagnostic(&app, "AfterTab", &before_tab, saved, dirty, later);
     let before_undo_state =
@@ -1512,6 +1513,10 @@ fn tools_automatic_height_preserves_dirty_selection_undo_redo_and_results_withou
             "editor_focus_tab_input": tab_input,
             "undo_input": undo_input,
         })
+    );
+    assert!(
+        after_tab_witness == before_tab,
+        "native Tab entry changed editor text, selection or history"
     );
     assert_eq!(app.documents[0].text, saved);
     frame(&mut app, SIZE, key(egui::Key::Y, egui::Modifiers::COMMAND));
