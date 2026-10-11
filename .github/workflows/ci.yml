@@ -433,9 +433,20 @@ jobs:
           cargo build --release -p cedar-app -p cedar-agent --bin cedar --bin cedar-agent --locked
           sha256sum target/release/cedar target/release/cedar-agent > "$RUNNER_TEMP/cedar-linux-default-pair.sha256"
       - name: Report keyboard triage (Linux default agent, trust off)
+        id: report_triage_linux
         timeout-minutes: 5
         if: runner.os == 'Linux'
+        env:
+          CEDAR_REPORT_TRIAGE_DIAGNOSTIC_DIR: ${{ runner.temp }}/cedar-report-triage-diagnostic
         run: python -B scripts/report_triage_acceptance.py
+      - name: Report keyboard triage sanitized failure evidence (Linux)
+        if: ${{ always() && runner.os == 'Linux' && steps.report_triage_linux.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-triage-diagnostic-${{ matrix.os }}
+          path: ${{ runner.temp }}/cedar-report-triage-diagnostic/REPORT_TRIAGE_FAILURE.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Shipping Linux Save All (normal agent, trust off)
         timeout-minutes: 3
         if: runner.os == 'Linux'
@@ -520,9 +531,20 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.release_build.outcome == 'success' }}
         run: cargo build --release -p cedar-app -p cedar-agent --bin cedar --bin cedar-agent --locked
       - name: Report keyboard triage (Windows default agent, trust off)
+        id: report_triage_windows
         timeout-minutes: 5
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.windows_shipping.outcome == 'success' }}
+        env:
+          CEDAR_REPORT_TRIAGE_DIAGNOSTIC_DIR: ${{ runner.temp }}/cedar-report-triage-diagnostic
         run: python -B scripts/report_triage_acceptance.py
+      - name: Report keyboard triage sanitized failure evidence (Windows)
+        if: ${{ always() && runner.os == 'Windows' && steps.report_triage_windows.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-triage-diagnostic-${{ matrix.os }}
+          path: ${{ runner.temp }}/cedar-report-triage-diagnostic/REPORT_TRIAGE_FAILURE.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Shipping Windows Save All (normal agent, trust off)
         timeout-minutes: 3
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.windows_shipping.outcome == 'success' }}

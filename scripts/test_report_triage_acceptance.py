@@ -102,7 +102,7 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual([item["phase"] for item in expected["operation_ledger"]],
                          ["setup"] * 4 + ["refresh"] * 3 + ["reconnect"] * 3)
         self.assertEqual(len(expected), 54)
-        self.assertEqual(expected["source_version"], "0.55.1")
+        self.assertEqual(expected["source_version"], "0.55.2")
         self.assertEqual((expected["requests"], expected["connections"], expected["agents_reaped"]),
                          (10, 2, 2))
         self.assertEqual((expected["setup_requests"], expected["refresh_requests"],
@@ -249,13 +249,13 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
                             b'[workspace]\npackage = false',
                             b'[workspace.package]\nversion = 54',
                             b'[workspace.package]\nversion = "0.53.4"',
-                            b'[workspace.package]\nversion = "0.55.1-extra"',
-                            b'[workspace.package]\nversion = "0.55.1"\nversion = "0.55.1"',
+                            b'[workspace.package]\nversion = "0.55.2-extra"',
+                            b'[workspace.package]\nversion = "0.55.2"\nversion = "0.55.2"',
                             b" " * (64 * 1024 + 1)):
                 path.write_bytes(invalid)
                 with self.subTest(data=invalid[:60]), self.assertRaises(proof.AcceptanceError):
                     proof.validate_source_version(root)
-            path.write_text('[workspace.package]\nversion = "0.55.1"\n')
+            path.write_text('[workspace.package]\nversion = "0.55.2"\n')
             proof.validate_source_version(root)
 
     def test_agent_digest_is_exact_nonempty_bounded_and_detects_same_size_change(self):
@@ -289,7 +289,7 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
 
 class DriverTests(unittest.TestCase):
     def exercise(self, platform="linux", *, failure=None, selection=None, runtime=None,
-                 missing_agent=False, invalid_artifact=False, source_version="0.55.1",
+                 missing_agent=False, invalid_artifact=False, source_version="0.55.2",
                  changed_agent=False, changed_source=False):
         with tempfile.TemporaryDirectory(prefix="cedar-triage-lines-driver-") as directory:
             root = Path(directory).resolve()
@@ -381,6 +381,342 @@ class DriverTests(unittest.TestCase):
                 self.assertIsNotNone(error)
                 self.assertEqual(len(calls), 3)
                 self.assertEqual(output, "")
+
+
+class DiagnosticSupervisorTests(unittest.TestCase):
+    def exercise(self, chunks, *, returncode=0, timeout=10, limit=64,
+                 cleanup_error=None, close_error=None):
+        import report_triage_diagnostics as diagnostic
+        process = mock.Mock()
+        process.stdout.fileno.return_value = 42
+        process.stdout.close.side_effect = close_error
+        process.returncode = returncode
+        process.poll.side_effect = lambda: process.returncode
+        process.kill.side_effect = lambda: setattr(process, "returncode", -9)
+        process.wait.side_effect = cleanup_error
+        tick = [0.0]
+
+        def now():
+            tick[0] += 0.01
+            return tick[0]
+
+        def read(_fd, count):
+            value = chunks.pop(0) if chunks else BlockingIOError()
+            if isinstance(value, Exception):
+                raise value
+            self.assertLessEqual(len(value), count)
+            return value
+
+        with mock.patch.object(diagnostic.subprocess, "Popen", return_value=process) as launch, \
+                mock.patch.object(diagnostic.os, "set_blocking"), \
+                mock.patch.object(diagnostic.os, "read", side_effect=read), \
+                mock.patch.object(diagnostic.time, "monotonic", side_effect=now), \
+                mock.patch.object(diagnostic.time, "sleep"):
+            output, error = None, None
+            try:
+                output = diagnostic.bounded_process(["synthetic, never launched"], Path("."), {}, timeout, limit)
+            except diagnostic.CapturedFailure as caught:
+                error = caught
+        launch.assert_called_once()
+        process.stdout.close.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+        return output, error, process
+
+    def test_complete_output_retains_identical_success_contract(self):
+        output, error, process = self.exercise([BlockingIOError(), b"one\n", b"two\n", b""])
+        self.assertEqual(output, b"one\ntwo\n")
+        self.assertIsNone(error)
+        process.kill.assert_not_called()
+
+    def test_nonzero_retains_bounded_merged_output_and_eof_reap_metadata(self):
+        output, error, process = self.exercise([b"stdout\nstderr\n", b""], returncode=7)
+        self.assertIsNone(output)
+        self.assertEqual(str(error), "subprocess_nonzero")
+        self.assertEqual(error.output, b"stdout\nstderr\n")
+        self.assertEqual((error.returncode, error.eof, error.cleanup, error.truncated),
+                         (7, True, "reaped", False))
+        self.assertNotIn("stdout", str(error))
+        process.kill.assert_not_called()
+
+    def test_cap_is_exact_and_overflow_prefix_is_bounded(self):
+        output, error, _ = self.exercise([b"12345678", b""], limit=8)
+        self.assertEqual(output, b"12345678")
+        self.assertIsNone(error)
+        output, error, process = self.exercise([b"1234567", b"89"], limit=8, returncode=None)
+        self.assertIsNone(output)
+        self.assertEqual(str(error), "subprocess_output_limit")
+        self.assertEqual(error.output, b"12345678")
+        self.assertEqual((error.returncode, error.eof, error.cleanup, error.truncated),
+                         (-9, False, "reaped", True))
+        process.kill.assert_called_once()
+
+    def test_timeout_covers_eof_after_exit_and_capture_is_incomplete(self):
+        import report_triage_diagnostics as diagnostic
+        for code in (None, 0):
+            _, error, process = self.exercise([b"partial"], returncode=code, timeout=0.1)
+            self.assertEqual(str(error), "subprocess_timeout")
+            self.assertEqual(error.output, b"partial")
+            self.assertFalse(error.eof)
+            metadata = diagnostic.failure_artifact(diagnostic.StageFailure(
+                "runtime", error, Path(__file__).resolve().parent.parent, 90, 256 * 1024))
+            self.assertFalse(metadata["capture_complete"])
+            self.assertEqual(process.kill.call_count, int(code is None))
+
+    def test_failed_reap_overrides_failure_without_losing_output(self):
+        import subprocess
+        _, error, _ = self.exercise([b"private input", b""], returncode=7,
+                                   cleanup_error=subprocess.TimeoutExpired("never echoed", 5))
+        self.assertEqual(str(error), "child_cleanup_unverified")
+        self.assertEqual(error.output, b"private input")
+        self.assertEqual(error.cleanup, "unverified")
+        self.assertTrue(error.eof)
+
+    def test_close_and_read_errors_keep_capture_and_real_reap_status(self):
+        for changes in ({"close_error": OSError("private detail")}, {}):
+            chunks = [b"partial", b""] if changes else [b"partial", OSError("private detail")]
+            _, error, _ = self.exercise(chunks, **changes)
+            self.assertEqual(str(error), "subprocess_io_error")
+            self.assertEqual(error.output, b"partial")
+            self.assertEqual(error.cleanup, "reaped")
+            self.assertNotIn("private", str(error))
+
+    def test_launch_failure_is_not_started_and_never_leaks_exception(self):
+        import report_triage_diagnostics as diagnostic
+        with mock.patch.object(diagnostic.subprocess, "Popen", side_effect=OSError("secret /private/path")):
+            with self.assertRaises(diagnostic.CapturedFailure) as caught:
+                diagnostic.bounded_process(["never launched"], Path("."), {}, 90, 256 * 1024)
+        self.assertEqual(str(caught.exception), "subprocess_launch_error")
+        self.assertEqual(caught.exception.cleanup, "not_started")
+        self.assertEqual(caught.exception.output, b"")
+        self.assertIsNone(caught.exception.returncode)
+
+
+class DiagnosticPrivacyTests(unittest.TestCase):
+    def test_each_stage_nonzero_is_named_once_without_retry_or_raw_console(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        for stage, timeout, limit in (("compile", 120, 4 * 1024 * 1024),
+                                      ("selection", 15, 16 * 1024),
+                                      ("runtime", 90, 256 * 1024)):
+            failure = diagnostic.CapturedFailure("subprocess_nonzero", b"SECRET fixture /private/file",
+                                                 returncode=9, eof=True, cleanup="reaped")
+            runner = mock.Mock(side_effect=failure)
+            with self.assertRaises(diagnostic.StageFailure) as caught:
+                diagnostic.run_stage(stage, root, ["never launched"], {}, timeout, limit,
+                                     mock.Mock(), runner)
+            runner.assert_called_once()
+            self.assertEqual(str(caught.exception), stage + ":subprocess_nonzero")
+            item = diagnostic.failure_artifact(caught.exception)
+            self.assertEqual((item["stage"], item["returncode"], item["capture_limit_bytes"],
+                              item["timeout_seconds"], item["native_cleanup"]),
+                             (stage, 9, limit, timeout, "unverified"))
+            self.assertTrue(item["capture_complete"])
+            self.assertNotIn("SECRET", json.dumps(item))
+            self.assertNotIn("/private", json.dumps(item))
+
+    def test_allowlisted_native_check_retains_only_reviewed_message_and_location(self):
+        import hashlib
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        data = (b'Error: "expected rendered label absent"\n'
+                b'Error: "SECRET fixture content"\nprivate password=SECRET /home/private/file\n')
+        failure = diagnostic.CapturedFailure("subprocess_nonzero", data, returncode=1, eof=True, cleanup="reaped")
+        item = diagnostic.failure_artifact(diagnostic.StageFailure("runtime", failure, root, 90, 256 * 1024))
+        self.assertEqual(item["diagnostics"], [{"kind": "native_check", "message": "expected rendered label absent",
+                                              "source": "crates/app/src/report_triage_process_tests.rs",
+                                              "line": diagnostic.native_errors(root)["expected rendered label absent"][0]}])
+        self.assertEqual(item["raw_output_omitted_bytes"], len(data))
+        self.assertEqual(item["raw_output_omitted_sha256"], hashlib.sha256(data).hexdigest())
+        safe = json.dumps(item["diagnostics"], ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+        self.assertEqual(item["sanitized_diagnostic_bytes"], len(safe))
+        self.assertEqual(item["suppressed_lines"], 2)
+        for secret in ("SECRET", "password", "/home/private"):
+            self.assertNotIn(secret, json.dumps(item))
+
+    def test_compiler_prose_source_and_private_spans_are_omitted(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        source = root / "crates/app/src/lib.rs"
+        value = {"reason": "compiler-message", "message": {
+            "level": "error", "code": {"code": "E0308"}, "message": "SECRET document text",
+            "rendered": "private token=SECRET", "spans": [
+                {"file_name": str(source), "line_start": 7, "column_start": 3,
+                 "text": [{"text": "private source SECRET"}]},
+                {"file_name": "/home/private/secret.rs", "line_start": 1, "column_start": 1},
+                {"file_name": "../crates/app/src/lib.rs", "line_start": 1, "column_start": 1},
+            ]}}
+        items, _, _ = diagnostic.sanitize_output(json.dumps(value).encode(), root, "compile")
+        self.assertEqual(items, [{"kind": "compiler_error", "code": "E0308", "locations": [
+            {"source": "crates/app/src/lib.rs", "line": 7, "column": 3}]}])
+        self.assertNotIn("SECRET", json.dumps(items))
+        self.assertNotIn(str(root), json.dumps(items))
+        value["message"]["code"]["code"] = "E0308 SECRET"
+        self.assertEqual(diagnostic.sanitize_output(json.dumps(value).encode(), root, "compile")[0], [])
+
+    def test_panic_keeps_only_verified_relative_location(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        data = (f"thread 'SECRET' panicked at {root}/crates/app/src/lib.rs:9:4:\n"
+                "assertion failed: SECRET /home/private\n").encode()
+        self.assertEqual(diagnostic.sanitize_output(data, root, "runtime")[0], [
+            {"kind": "panic_location", "source": "crates/app/src/lib.rs", "line": 9, "column": 4}])
+
+    def test_location_rejects_missing_nonrust_traversal_symlink_and_invalid_numbers(self):
+        import report_triage_diagnostics as diagnostic
+        with tempfile.TemporaryDirectory(prefix="triage-diagnostic-source-") as directory:
+            root = Path(directory).resolve()
+            source = root / "crates/app/src/lib.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text("synthetic source, never compiled")
+            for name, line, column in (("crates/app/src/missing.rs", 1, 1),
+                                       ("crates/app/src/lib.txt", 1, 1),
+                                       ("crates/app/src/../src/lib.rs", 1, 1),
+                                       ("crates/app/src/lib.rs", True, 1),
+                                       ("crates/app/src/lib.rs", 0, 1),
+                                       ("crates/app/src/lib.rs", 1, 100001)):
+                self.assertIsNone(diagnostic.source_location(root, name, line, column))
+            link = source.parent / "link.rs"
+            try:
+                link.symlink_to(source)
+            except OSError:
+                return
+            self.assertIsNone(diagnostic.source_location(root, str(link), 1, 1))
+
+    def test_diagnostic_count_and_artifact_bytes_are_bounded(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        data = b"\n".join(f'Error: "{message}"'.encode() for message in sorted(diagnostic.NATIVE_ERRORS))
+        failure = diagnostic.CapturedFailure("subprocess_nonzero", data, returncode=1, eof=True, cleanup="reaped")
+        error = diagnostic.StageFailure("runtime", failure, root, 90, 256 * 1024)
+        item = diagnostic.failure_artifact(error)
+        self.assertEqual(len(item["diagnostics"]), 32)
+        self.assertTrue(item["diagnostics_truncated"])
+        self.assertLess(len(json.dumps(item).encode()), diagnostic.MAX_ARTIFACT_BYTES)
+
+    def test_artifact_exclusive_creation_disabled_default_and_no_raw_dump(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        error = diagnostic.StageFailure("runtime", diagnostic.CapturedFailure(
+            "subprocess_nonzero", b"SECRET raw body", returncode=1, eof=True, cleanup="reaped"), root, 90, 256 * 1024)
+        self.assertEqual(diagnostic.write_failure_artifact(error, None), "disabled")
+        self.assertEqual(diagnostic.write_failure_artifact(error, "relative"), "unavailable")
+        with tempfile.TemporaryDirectory(prefix="triage-safe-diagnostic-") as directory:
+            folder = Path(directory).resolve() / "evidence"
+            self.assertEqual(diagnostic.write_failure_artifact(error, str(folder)), "written")
+            self.assertEqual([path.name for path in folder.iterdir()], [diagnostic.ARTIFACT_NAME])
+            before = (folder / diagnostic.ARTIFACT_NAME).read_bytes()
+            self.assertNotIn(b"SECRET", before)
+            self.assertEqual(diagnostic.write_failure_artifact(error, str(folder)), "unavailable")
+            self.assertEqual((folder / diagnostic.ARTIFACT_NAME).read_bytes(), before)
+
+    def test_actual_compiler_validation_categories_stay_fixed(self):
+        import report_triage_diagnostics as diagnostic
+        for category in ("invalid_test_artifact", "unexpected_test_source", "unexpected_test_binary"):
+            self.assertEqual(str(diagnostic.CapturedFailure(category)), category)
+        self.assertEqual(str(diagnostic.CapturedFailure("SECRET private error")), "unclassified_failure")
+
+
+class DiagnosticEdgeTests(unittest.TestCase):
+    def test_exact_native_test_prefix_and_other_prefixes(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        self.assertEqual(diagnostic.TEST_NAME, proof.TEST_NAME)
+        message = b'Error: "expected rendered label absent"'
+        expected = diagnostic.sanitize_output(message, root, "runtime")[0]
+        self.assertTrue(expected)
+        prefixed = ("test " + proof.TEST_NAME + " ... ").encode() + message
+        self.assertEqual(diagnostic.sanitize_output(prefixed, root, "runtime")[0], expected)
+        for bad in (b"test other ... " + message, b"private-prefix " + message,
+                    b"Error: \"expected rendered label absent SECRET\""):
+            self.assertEqual(diagnostic.sanitize_output(bad, root, "runtime")[0], [])
+
+    def test_validator_exceptions_retain_stage_output_and_known_process_status(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        for error, category in ((OSError("SECRET"), "output_validation_io_error"),
+                                (ValueError("SECRET"), "output_validation_error"),
+                                (RecursionError("SECRET"), "output_validation_error")):
+            runner = mock.Mock(return_value=b"private output")
+            with self.assertRaises(diagnostic.StageFailure) as caught:
+                diagnostic.run_stage("compile", root, ["never launched"], {}, 120, 4 * 1024 * 1024,
+                                     mock.Mock(side_effect=error), runner)
+            self.assertEqual(str(caught.exception), "compile:" + category)
+            item = diagnostic.failure_artifact(caught.exception)
+            self.assertEqual((item["returncode"], item["eof_observed"], item["direct_child_cleanup"]),
+                             (0, True, "reaped"))
+            self.assertNotIn("SECRET", json.dumps(item))
+            self.assertNotIn("private output", json.dumps(item))
+
+    def test_location_and_line_caps_report_diagnostic_truncation(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        for count in (5, 33):
+            value = {"reason": "compiler-message", "message": {
+                "level": "error", "code": {"code": "E0308"}, "spans": [
+                    {"file_name": "crates/app/src/lib.rs", "line_start": index + 1, "column_start": 1}
+                    for index in range(count)]}}
+            items, suppressed, clipped = diagnostic.sanitize_output(json.dumps(value).encode(), root, "compile")
+            self.assertEqual(len(items[0]["locations"]), 4)
+            self.assertTrue(clipped)
+            self.assertEqual(suppressed, 0)
+        self.assertEqual(diagnostic.sanitize_output(b"x" * 65537, root, "runtime"), ([], 1, True))
+
+    def test_native_whitelist_is_current_source_only_and_never_source_derived_prose(self):
+        import report_triage_diagnostics as diagnostic
+        with tempfile.TemporaryDirectory(prefix="triage-diagnostic-native-") as directory:
+            root = Path(directory).resolve()
+            source = root / "crates/app/src/report_triage_process_tests.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text('"SECRET source prose"\n"expected rendered label absent"\n')
+            known = diagnostic.native_errors(root)
+            self.assertEqual(known, {"expected rendered label absent": [2]})
+            source.write_bytes(b"x" * (256 * 1024 + 1))
+            self.assertEqual(diagnostic.native_errors(root), {})
+
+    def test_artifact_folder_symlink_is_refused_without_writing(self):
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        error = diagnostic.StageFailure("runtime", diagnostic.CapturedFailure("subprocess_nonzero"),
+                                        root, 90, 256 * 1024)
+        with tempfile.TemporaryDirectory(prefix="triage-diagnostic-link-") as directory:
+            base = Path(directory).resolve()
+            destination, link = base / "destination", base / "alias"
+            destination.mkdir()
+            try:
+                link.symlink_to(destination, target_is_directory=True)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+            self.assertEqual(diagnostic.write_failure_artifact(error, str(link)), "unavailable")
+            self.assertEqual(list(destination.iterdir()), [])
+
+    def test_main_failure_reports_only_fixed_category_and_artifact_status(self):
+        from contextlib import redirect_stderr
+        import report_triage_diagnostics as diagnostic
+        root = Path(__file__).resolve().parent.parent
+        error = diagnostic.StageFailure("runtime", diagnostic.CapturedFailure(
+            "subprocess_nonzero", b'Error: "expected rendered label absent"\nSECRET private document',
+            returncode=1, eof=True, cleanup="reaped"), root, 90, 256 * 1024)
+        capture = io.StringIO()
+        with tempfile.TemporaryDirectory(prefix="triage-diagnostic-main-") as directory:
+            folder = Path(directory).resolve() / "evidence"
+            with mock.patch.object(proof, "run", side_effect=error), \
+                    mock.patch.object(proof.sys, "argv", ["report_triage_acceptance.py"]), \
+                    mock.patch.dict(proof.os.environ, {"CEDAR_REPORT_TRIAGE_DIAGNOSTIC_DIR": str(folder)}), \
+                    redirect_stderr(capture):
+                self.assertEqual(proof.main(), 1)
+            self.assertEqual(capture.getvalue(),
+                             "Report keyboard triage acceptance failed: runtime:subprocess_nonzero; sanitized_diagnostic=written\n")
+            self.assertTrue((folder / diagnostic.ARTIFACT_NAME).is_file())
+            self.assertNotIn("SECRET", (folder / diagnostic.ARTIFACT_NAME).read_text())
+
+    def test_ci_upload_is_exact_failure_artifact_for_both_platforms(self):
+        root = Path(__file__).resolve().parent.parent
+        workflow = (root / ".github/workflows/ci.yml").read_text()
+        for platform in ("linux", "windows"):
+            self.assertIn("id: report_triage_" + platform, workflow)
+            self.assertIn("steps.report_triage_" + platform + ".outcome == 'failure'", workflow)
+        self.assertEqual(workflow.count("path: ${{ runner.temp }}/cedar-report-triage-diagnostic/REPORT_TRIAGE_FAILURE.json"), 2)
+        self.assertNotIn("cedar-report-triage-diagnostic/*", workflow)
 
 
 if __name__ == "__main__":

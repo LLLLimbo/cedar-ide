@@ -19,8 +19,12 @@ import tomllib
 # keep this feature's receipt, selection, time limits and execution independent.
 from copy_draft_acceptance import (
     AcceptanceError, MAX_COMPILE_BYTES, MAX_LIST_BYTES, MAX_RUNTIME_BYTES,
-    bounded_process, compiled_test, decode_output, require, strict_json,
+    compiled_test, decode_output, require, strict_json,
     test_compile_command, typed_equal,
+)
+
+from report_triage_diagnostics import (
+    StageFailure, bounded_process, run_stage, write_failure_artifact,
 )
 
 TEST_NAME = "report_triage_process_tests::normal_agent_report_keyboard_triage_is_local_and_revision_bound"
@@ -28,7 +32,7 @@ PREFIX = "report_triage_acceptance "
 COMPILE_TIMEOUT = 120
 SELECTION_TIMEOUT = 15
 RUNTIME_TIMEOUT = 90
-SOURCE_VERSION = "0.55.1"
+SOURCE_VERSION = "0.55.2"
 MAX_AGENT_BYTES = 256 * 1024 * 1024
 DRAFT_BASE = "saved α😀e\u0301 café\r\nsecond Ω\r\n"
 ROWS = 192
@@ -190,16 +194,17 @@ def run(root):
     original_agent = agent_digest(binary)
     environment = dict(os.environ, CARGO_TARGET_DIR=str(root / "target"),
                        CEDAR_REPORT_TRIAGE_AGENT_BIN=str(binary))
-    compiled = bounded_process(test_compile_command(), root, environment,
-                               COMPILE_TIMEOUT, MAX_COMPILE_BYTES)
-    executable = compiled_test(compiled, root, platform)
-    selected = bounded_process([str(executable), TEST_NAME, "--ignored", "--exact", "--list"],
-                               root, environment, SELECTION_TIMEOUT, MAX_LIST_BYTES)
-    validate_test_listing(selected)
-    executed = bounded_process([str(executable), TEST_NAME, "--ignored", "--exact",
-                                "--test-threads=1", "--nocapture"], root, environment,
-                               RUNTIME_TIMEOUT, MAX_RUNTIME_BYTES)
-    receipt = validate_execution(executed, platform)
+    executable = run_stage("compile", root, test_compile_command(), environment,
+                           COMPILE_TIMEOUT, MAX_COMPILE_BYTES,
+                           lambda data: compiled_test(data, root, platform), bounded_process)
+    run_stage("selection", root,
+              [str(executable), TEST_NAME, "--ignored", "--exact", "--list"], environment,
+              SELECTION_TIMEOUT, MAX_LIST_BYTES, validate_test_listing, bounded_process)
+    receipt = run_stage("runtime", root,
+                        [str(executable), TEST_NAME, "--ignored", "--exact",
+                         "--test-threads=1", "--nocapture"], environment,
+                        RUNTIME_TIMEOUT, MAX_RUNTIME_BYTES,
+                        lambda data: validate_execution(data, platform), bounded_process)
     validate_source_version(root)
     require(agent_digest(binary) == original_agent, "release_agent_changed")
     print(PREFIX + json.dumps(receipt, ensure_ascii=True, sort_keys=True, allow_nan=False))
@@ -211,6 +216,11 @@ def main():
     try:
         require(len(sys.argv) == 1, "unexpected_arguments")
         run(Path(__file__).resolve().parent.parent)
+    except StageFailure as error:
+        artifact = write_failure_artifact(error, os.environ.get("CEDAR_REPORT_TRIAGE_DIAGNOSTIC_DIR"))
+        print("Report keyboard triage acceptance failed: " + str(error)
+              + "; sanitized_diagnostic=" + artifact, file=sys.stderr)
+        return 1
     except AcceptanceError as error:
         print("Report keyboard triage acceptance failed: " + str(error), file=sys.stderr)
         return 1
