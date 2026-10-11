@@ -229,12 +229,21 @@ fn coordinate_parser_rejects_invalid_numbers_and_bounds_only_coordinate_text() {
     );
 }
 
-fn selection_at(app: &CedarApp, id: egui::Id) -> egui::text::CCursorRange {
+fn selection_at_context(app: &CedarApp, id: egui::Id, context: &str) -> egui::text::CCursorRange {
+    let role = if id == egui::Id::new(LINE_INPUT) {
+        "Go-to dialog input"
+    } else {
+        "editor"
+    };
     egui::TextEdit::load_state(&app.editor_ctx, id)
-        .unwrap()
+        .unwrap_or_else(|| panic!("missing {role} TextEditState: {context}"))
         .cursor
         .char_range()
-        .unwrap()
+        .unwrap_or_else(|| panic!("missing {role} cursor range: {context}"))
+}
+
+fn selection_at(app: &CedarApp, id: egui::Id) -> egui::text::CCursorRange {
+    selection_at_context(app, id, "navigation fixture")
 }
 
 fn editor_selection(app: &CedarApp) -> egui::text::CCursorRange {
@@ -392,19 +401,36 @@ fn coordinate_opening_typing_and_enter_can_share_sizing_frame_without_replay() {
 fn oversized_go_to_batches_restore_input_selection_and_block_enter() {
     for opening in [false, true] {
         for single_pass in [false, true] {
-            for payload in [
+            for (payload_case, payload) in [
                 "9".repeat(33),
                 format!("1:1{}", " ".repeat(30)),
                 format!("{}1:1", " ".repeat(MAX_QUERY_CHARS + 1)),
                 "é".repeat(33),
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let (mut app, commands) = app();
                 if single_pass {
                     app.editor_ctx
                         .options_mut(|options| options.max_passes = 1.try_into().unwrap());
                 }
+                // Seed only the fixture's starting editor state, before any
+                // render or Go-to/oversized-input action under test.
+                let mut initial = egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(8),
+                    egui::text::CCursor::new(1),
+                );
+                initial.primary.prefer_next_row = true;
+                initial.secondary.prefer_next_row = false;
+                set_editor_selection(&mut app, initial);
+                let context = format!(
+                    "oversized opening={opening} single_pass={single_pass} payload_case={payload_case}"
+                );
+                let editor = egui::Id::new(("editor", app.active_document.unwrap()));
                 frame(&mut app, 0.0, vec![]);
-                let departure = editor_selection(&app);
+                let departure = selection_at_context(&app, editor, &format!("{context} before"));
+                assert!(crate::location_history::same_selection(departure, initial));
                 if !opening {
                     frame(&mut app, 1.0, key(egui::Key::G, egui::Modifiers::COMMAND));
                     frame(&mut app, 1.1, vec![]);
@@ -429,7 +455,7 @@ fn oversized_go_to_batches_restore_input_selection_and_block_enter() {
                 assert!(!app.navigation.coordinate_jump_pending());
                 assert!(app.active().unwrap().jump_to.is_none());
                 assert!(crate::location_history::same_selection(
-                    editor_selection(&app),
+                    selection_at_context(&app, editor, &format!("{context} after")),
                     departure
                 ));
                 assert!(app.location_history.back.is_empty());
@@ -824,6 +850,15 @@ fn only_sizing_replay_refuses_an_oversized_event_batch() {
 fn held_explorer_key_cannot_hide_newer_input_from_coordinate_guard() {
     for release_frames in [0, 1] {
         let (mut app, commands) = app();
+        // Establish the editor selection before the real Explorer press; an
+        // unfocused first render need not create an editor cursor range.
+        let mut initial =
+            egui::text::CCursorRange::two(egui::text::CCursor::new(8), egui::text::CCursor::new(1));
+        initial.primary.prefer_next_row = true;
+        initial.secondary.prefer_next_row = false;
+        set_editor_selection(&mut app, initial);
+        let context = format!("held Explorer release_frames={release_frames}");
+        let editor = egui::Id::new(("editor", app.active_document.unwrap()));
         app.explorer.mode = Mode::Tree;
         app.editor_ctx.memory_mut(|memory| {
             memory.request_focus(crate::explorer_tree::row_id(""));
@@ -838,7 +873,8 @@ fn held_explorer_key_cannot_hide_newer_input_from_coordinate_guard() {
             modifiers: egui::Modifiers::NONE,
         };
         frame(&mut app, 0.0, vec![press.clone()]);
-        let selection = editor_selection(&app);
+        let selection = selection_at_context(&app, editor, &format!("{context} before"));
+        assert!(crate::location_history::same_selection(selection, initial));
         choose_coordinate(&mut app, 1.0, "2:4");
         if release_frames == 1 {
             frame(&mut app, 2.0, vec![]);
@@ -865,7 +901,7 @@ fn held_explorer_key_cannot_hide_newer_input_from_coordinate_guard() {
         assert!(!app.navigation.coordinate_jump_pending());
         assert!(app.navigation.message.is_some());
         assert!(crate::location_history::same_selection(
-            editor_selection(&app),
+            selection_at_context(&app, editor, &format!("{context} after")),
             selection
         ));
         assert!(app.location_history.back.is_empty());

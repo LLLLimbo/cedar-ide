@@ -1,4 +1,4 @@
-# Verification report · Go to line:column / 0.52.1 (pending)
+# Verification report · Go to line:column / 0.52.2 (pending)
 
 Latest accepted checkpoint is [0.51.1 Save and close](TEST_REPORT_PHASE51_SAVE_CLOSE.md#final-verified-acceptance--0511), public `d1d440bc0b7ceee45e95b45a68a2e4e592f4052e` and CI 38106723716. Historical failure evidence is preserved. The earlier Git incomplete-EOF and client marker failures still have no established historical cause. Windows recovery admission integration remains paused.
 
@@ -25,3 +25,9 @@ Local formatting and diff checks pass. The strict receipt driver passes nine Pyt
 Public `66967fa16ced29dc4e9cf466c844de32f6fbcab3`, [CI 38109309091](https://github.com/LLLLimbo/cedar-ide/actions/runs/38109309091), failed strict Clippy on both OSes because the test helper `dialog_history` exposed a nested tuple/vector return type that triggered `type_complexity`. Aggregate tests, the new process proof, release builds and packages did not run; no native GUI archive existed. The failure is preserved and no runtime pass is inferred.
 
 0.52.1 names that exact test snapshot entry and collection type. Fields, equality assertions, input and history behavior are unchanged; no lint suppression is added. Shipping Rust source and dependency versions/features are unchanged except Cedar package versions. Local Rust compilation remains deferred to fresh CI. Full dual-platform strict checks, aggregates, process ledgers, all packages and fresh exact-archive GUI remain mandatory.
+
+## Preserved 0.52.1 fixture failure and 0.52.2 correction
+
+Public `0dfe87066055ffb0798e47255559a9478d844559`, [CI 38109797602](https://github.com/LLLLimbo/cedar-ide/actions/runs/38109797602), passed strict Clippy but both app aggregates failed the same two new navigation tests at the shared cursor-range unwrap (Linux 1,053 passed / 2 failed / 46 ignored; Windows 1,056 / 2 / 50). No process receipt or package was produced. The log identifies a missing range, not the matrix iteration or exact caller. Source review found both fixtures read editor selection without first establishing it, including an unfocused Explorer-first render and a single-pass initial render. No production navigation failure or runtime acceptance is inferred from this diagnosis.
+
+0.52.2 seeds an exact starting editor selection and both affinities before the two scenarios. It preserves the real held Explorer filtering, max_passes=1 cases and every after-action selection/history assertion. Contextual failures now identify editor versus dialog and the fixed matrix case without printing document text. No missing-range fallback, delay, post-action state override, shipping logic or dependency change is added. Fresh full CI and exact-archive GUI remain required; prior failed runs stay failed.
