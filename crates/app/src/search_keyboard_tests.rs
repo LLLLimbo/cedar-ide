@@ -1163,7 +1163,7 @@ fn scrolled_pointer_app() -> (CedarApp, Receiver<Command>) {
         }),
         true,
     );
-    // This is the actual Open completion frame; the next frame is the press.
+    // This is the actual Open completion frame; the next frame is pointer arrival.
     frame(&mut app, vec![]);
     assert_eq!(app.documents.len(), 2);
     assert_eq!(app.active().unwrap().path, SCROLLED_UNOPENED);
@@ -1197,6 +1197,8 @@ struct PointerPass {
     post_update_scroll: PointerScroll,
     input_pointer: Option<egui::Pos2>,
     input_pointer_delta: egui::Vec2,
+    input_pointer_any_down: bool,
+    input_pointer_any_click: bool,
     post_update_scroll_area_dragged: Option<bool>,
     consumed: search_keyboard::PointerProbe,
     rows: Vec<PointerRow>,
@@ -1208,6 +1210,7 @@ const POINTER_DIAGNOSTIC_TARGET_ROWS: usize = 2;
 
 #[derive(Clone, Copy, Debug)]
 enum PointerEdge {
+    Arrival,
     Press,
     Held,
     Release,
@@ -1237,6 +1240,7 @@ fn pointer_pos(pos: Option<egui::Pos2>) -> PointerNumbers<2> {
     PointerNumbers(pos.map(|pos| [pos.x, pos.y]))
 }
 
+#[derive(PartialEq)]
 struct PointerScroll {
     id: Option<egui::Id>,
     offset: Option<egui::Vec2>,
@@ -1321,7 +1325,7 @@ impl std::fmt::Debug for PointerFrame {
         }) {
             writeln!(
                 f,
-                "pass={} retained={} recorded_row_count={} pre_update_scroll={:?} post_update_scroll={:?} input_pointer={:?} input_pointer_delta={:?} post_update_scroll_area_dragged={:?} post_update_ticket={:?}",
+                "pass={} retained={} recorded_row_count={} pre_update_scroll={:?} post_update_scroll={:?} input_pointer={:?} input_pointer_delta={:?} input_pointer_any_down={} input_pointer_any_click={} post_update_scroll_area_dragged={:?} post_update_ticket={:?}",
                 pass.number,
                 index + 1 == self.passes.len(),
                 pass.rows.len(),
@@ -1329,6 +1333,8 @@ impl std::fmt::Debug for PointerFrame {
                 pass.post_update_scroll,
                 pointer_pos(pass.input_pointer),
                 PointerNumbers(Some([pass.input_pointer_delta.x, pass.input_pointer_delta.y])),
+                pass.input_pointer_any_down,
+                pass.input_pointer_any_click,
                 pass.post_update_scroll_area_dragged,
                 pass.consumed,
             )?;
@@ -1434,6 +1440,8 @@ fn observe_pointer_frame(
             post_update_scroll,
             input_pointer: ctx.input(|input| input.pointer.interact_pos()),
             input_pointer_delta: ctx.input(|input| input.pointer.delta()),
+            input_pointer_any_down: ctx.input(|input| input.pointer.any_down()),
+            input_pointer_any_click: ctx.input(|input| input.pointer.any_click()),
             post_update_scroll_area_dragged,
             consumed: app.search_state.pointer_probe(),
             rows: ctx.data_mut(|data| data.remove_temp(probe.with("rows")).unwrap()),
@@ -1517,6 +1525,52 @@ enum RawMotionAt {
     Release,
 }
 
+type PointerSelection = (usize, bool, usize, bool);
+type PointerHistory = [Vec<(PointerSelection, String)>; 2];
+
+fn pointer_editor_history(app: &CedarApp) -> Vec<(u64, PointerSelection, PointerHistory)> {
+    let selection = |range: egui::text::CCursorRange| {
+        (
+            range.primary.index,
+            range.primary.prefer_next_row,
+            range.secondary.index,
+            range.secondary.prefer_next_row,
+        )
+    };
+    app.documents
+        .iter()
+        .map(|document| {
+            let state =
+                egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", document.id)))
+                    .unwrap();
+            let cursor = state.cursor.char_range().unwrap();
+            let mut snapshots = PointerHistory::default();
+            // Observe reachable Undo/Redo states on disposable clones, including
+            // selection affinity. Never compare the Undoer's per-frame clocks or
+            // send Undo/Redo input, store state, or render another frame here.
+            for (index, redo) in [false, true].into_iter().enumerate() {
+                let mut history = state.undoer();
+                let mut current = (cursor, document.text.clone());
+                for _ in 0..=editor_state::MAX_UNDO_STATES + 1 {
+                    let next = if redo {
+                        history.redo(&current)
+                    } else {
+                        history.undo(&current)
+                    }
+                    .cloned();
+                    let Some(next) = next else {
+                        break;
+                    };
+                    snapshots[index].push((selection(next.0), next.1.clone()));
+                    current = next;
+                }
+                assert!(snapshots[index].len() <= editor_state::MAX_UNDO_STATES + 1);
+            }
+            (document.id, selection(cursor), snapshots)
+        })
+        .collect()
+}
+
 fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
     let (mut app, commands) = scrolled_pointer_app();
     let target = SCROLLED_COUNT - 2;
@@ -1538,6 +1592,142 @@ fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
     );
     assert_eq!(selection.secondary.index, selection.primary.index);
     let edit_version = app.active().unwrap().edit_version;
+    let editor_documents = |app: &CedarApp| {
+        app.documents
+            .iter()
+            .map(|document| {
+                (
+                    document.id,
+                    document.path.clone(),
+                    document.text.clone(),
+                    document.saved_text.clone(),
+                    document.revision.clone(),
+                    document.cursor,
+                    document.jump_to,
+                    document.scroll_to,
+                    document.edit_version,
+                    document.dirty(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let documents_before = editor_documents(&app);
+    let history_before = pointer_editor_history(&app);
+    let active_before = app.active_document;
+    let focus_before = focused(&app);
+    let next_request_before = app.next_request;
+    let accepted_before = app.search_state.accepted.clone();
+    let pending_before = app.search_state.pending.clone();
+    let tickets_before = app.search_state.pointer_probe();
+    assert_eq!(tickets_before.pressed, None);
+    assert_eq!(tickets_before.click, None);
+    assert!(app.pending.is_empty());
+    assert!(app.location_history.forward.is_empty());
+    assert!(!app.editor_ctx.input(|input| input.pointer.any_down()));
+    assert!(!app
+        .editor_ctx
+        .is_being_dragged(recorded_scroll_id(&app).with("area")));
+
+    // Model an already-arrived-pointer click explicitly: exactly one movement-
+    // only frame, then the existing press/held/release variants at this position.
+    // This does not model arbitrary native grouping or repair the historical
+    // combined-arrival-and-press case whose nonzero delta scrolled the rows.
+    let arrival = observe_pointer_frame(
+        &mut app,
+        vec![egui::Event::PointerMoved(pos)],
+        raw_motion,
+        PointerEdge::Arrival,
+        target_id,
+        pos,
+    );
+    // At most four distinct edges are retained (Arrival/Press/Held/Release),
+    // with the same bounded pass and row diagnostics for every edge.
+    eprintln!("{arrival:?}");
+    assert_pointer_owners(&arrival, target_id, pos, false, false, false);
+    let previous_pointer = arrival.pre_hook_previous_pointer.unwrap();
+    assert!(
+        previous_pointer.is_finite() && previous_pointer != pos,
+        "{arrival:?}"
+    );
+    assert!(
+        arrival.passes[0].input_pointer_delta == pos - previous_pointer,
+        "{arrival:?}"
+    );
+    let previous = arrival.pre_hook_previous_render_target.as_ref().unwrap();
+    assert_eq!(previous.index, target);
+    assert_eq!(previous.id, target_id);
+    assert!(!previous.sizing && previous.enabled);
+    assert!(previous.rect.is_finite() && previous.clip.is_finite());
+    assert!(previous.rect.intersect(previous.clip).contains(pos));
+    assert!(arrival.pre_hook_scroll.id.is_some());
+    assert!(arrival.pre_hook_scroll.offset.unwrap().is_finite());
+    assert_eq!(arrival.captured, tickets_before, "{arrival:?}");
+    for pass in &arrival.passes {
+        assert!(pass.input_pointer == Some(pos), "{arrival:?}");
+        assert!(!pass.input_pointer_any_down, "{arrival:?}");
+        assert!(!pass.input_pointer_any_click, "{arrival:?}");
+        assert_eq!(
+            pass.post_update_scroll_area_dragged,
+            Some(false),
+            "{arrival:?}"
+        );
+        assert_eq!(
+            pass.pre_update_scroll, arrival.pre_hook_scroll,
+            "{arrival:?}"
+        );
+        assert_eq!(
+            pass.post_update_scroll, arrival.pre_hook_scroll,
+            "{arrival:?}"
+        );
+        assert_eq!(pass.consumed, tickets_before, "{arrival:?}");
+        for row in pass.rows.iter().filter(|row| row.index == target) {
+            assert_eq!(row.id, previous.id, "{arrival:?}");
+            assert!(row.rect == previous.rect, "{arrival:?}");
+            assert!(row.clip == previous.clip, "{arrival:?}");
+            assert_eq!(row.enabled, previous.enabled, "{arrival:?}");
+        }
+    }
+    assert_eq!(clipped_center(&app, &format!("search_row:{target}")), pos);
+    assert_eq!(app.active_document, active_before);
+    assert_eq!(focused(&app), focus_before);
+    assert!(editor_documents(&app) == documents_before, "{arrival:?}");
+    assert!(
+        pointer_editor_history(&app) == history_before,
+        "{arrival:?}"
+    );
+    let arrived_selection =
+        egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 2_u64)))
+            .unwrap()
+            .cursor
+            .char_range()
+            .unwrap();
+    assert!(location_history::same_selection(
+        arrived_selection,
+        selection
+    ));
+    assert_eq!(app.navigation_epoch, before);
+    assert!(!app.navigation.restore_focus);
+    assert!(app.location_history.pending.is_none());
+    assert_eq!(app.location_history.back.len(), 1);
+    assert!(app.location_history.forward.is_empty());
+    let arrival_departure = app.location_history.back[0];
+    assert_eq!(arrival_departure.document, original_departure.document);
+    assert_eq!(arrival_departure.generation, original_departure.generation);
+    assert_eq!(
+        arrival_departure.edit_version,
+        original_departure.edit_version
+    );
+    assert!(location_history::same_selection(
+        arrival_departure.selection,
+        original_departure.selection
+    ));
+    assert!(app.search_state.accepted == accepted_before, "{arrival:?}");
+    assert!(app.search_state.pending == pending_before, "{arrival:?}");
+    assert_eq!(app.search_state.pointer_probe(), tickets_before);
+    assert_eq!(app.next_request, next_request_before);
+    assert!(app.pending.is_empty());
+    assert!(commands.try_recv().is_err());
+
     let mut press = pointer(pos, true);
     if raw_motion == RawMotionAt::Press {
         press.insert(1, egui::Event::MouseMoved(egui::vec2(1.0, -1.0)));
@@ -1564,6 +1754,10 @@ fn assert_scrolled_pointer_characterization(raw_motion: RawMotionAt) {
     );
     assert_eq!(down.captured.click, None);
     for pass in &down.passes {
+        assert!(pass.input_pointer == Some(pos), "{down:?}");
+        assert!(pass.input_pointer_delta == egui::Vec2::ZERO, "{down:?}");
+        assert_eq!(pass.pre_update_scroll, arrival.pre_hook_scroll, "{down:?}");
+        assert_eq!(pass.post_update_scroll, arrival.pre_hook_scroll, "{down:?}");
         assert_eq!(
             pass.consumed, down.captured,
             "pass {}: {down:?}",

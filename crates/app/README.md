@@ -20,7 +20,7 @@ The optional argument prefills the local workspace field. Select **Connect works
 - Directory navigation, new-file drafts, up to 32 tabs, and path-based quick open
 - UTF-8 editing, line numbers, Java/Kotlin/Rust lexical colors, and case-sensitive find
 - Revision-checked saves, disk-version inspection, and explicit confirmation before discarding a dirty tab or quitting
-- Explicit project text search with historical line results; 0.57.3 adds bounded test-only failure context for the retained 0.57.0 navigation; native acceptance remains incomplete
+- Explicit project text search with historical line results; 0.57.4 narrows the test-only click fixture to a pointer already arrived over the target; retained 0.57.0 navigation is unchanged; native acceptance remains incomplete
 - Trusted-workspace Git status and explicit executable commands with literal argument rows, cancellable task output, and saved project profiles in `cedar.tasks.json`
 
 Shortcuts:
@@ -62,7 +62,7 @@ CI and all three packages passed; bounded Linux native acceptance combines the
 original partial run with a separate same-package shrink/regrow check. Original
 misses and limits remain in the [0.56.1 report](../../docs/TEST_REPORT_PHASE561_TOOLS_HEIGHT.md#final-accepted-0561-evidence).
 
-## Project Search keyboard navigation (0.57.3 diagnostic candidate)
+## Project Search keyboard navigation (0.57.4 fixture candidate)
 
 0.57.1 passed both platform CI jobs, its process proofs and all three package
 audits, but the native Linux check failed when clicking the preceding result at
@@ -72,10 +72,20 @@ egui clicked ownership; the cause remains unknown and no retry was made.
 0.57.2 passed strict checks on both platforms, but all four new scrolled-pointer
 tests failed the target rectangle/clip containment assertion without frame-edge or
 geometry context. It produced no artifacts; release, process and package gates did
-not run. 0.57.3 adds only bounded failure context to the same tests. Their setup,
-frames, coordinates and assertions stay intact, as do shipping Search and shared
-input behavior. No geometry correction or native cause is claimed. Fresh diagnostic
-CI must complete before any separate decision on another GUI run.
+not run. 0.57.3 also passed both strict checks, but the same four tests failed.
+Its bounded witnesses recorded a controlled ScrollArea drag when pointer arrival
+and press shared a frame; the next retained target row lay outside the clip.
+Partial clicked/ticket witnesses did not reach the final cursor/history/request
+assertions. No packages or downstream runtime results were produced.
+0.57.4 inserts exactly one test-only PointerMoved arrival frame before the old
+press, explicitly narrowing the click criterion to an already-arrived pointer.
+Arrival must preserve geometry, offset, editor/history, tickets and requests;
+the following press must have zero pointer delta. Existing containment, ownership,
+final-outcome assertions and all three MouseMoved variants remain. The old combined
+arrival/press evidence stays archived as a controlled drag characterization.
+Shipping Search and shared input behavior are unchanged. This does not establish
+arbitrary coalesced-input behavior or explain/fix the native failure. Fresh CI
+must complete before any separate decision on another GUI run.
 0.56.1 remains the latest fully accepted checkpoint.
 
 Enter a case-sensitive literal query and explicitly select **Search**, or press
@@ -103,9 +113,9 @@ Query/batch changes, hidden or switched tools, modals and competing input cancel
 unfinished row intent; continue with a fresh valid key or pointer action. The frontend keeps at
 most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
 oversized batches are rejected whole. No automatic search, new engine, protocol,
-capability or workspace operation is added. 0.57.3 diagnostic CI, process proofs
+capability or workspace operation is added. 0.57.4 fixture CI, process proofs
 and packages remain [pending](../../docs/TEST_REPORT.md); no automatic native rerun
-or production-fix claim follows from the diagnostics.
+or production-fix claim follows from the fixture.
 
 ## Agent capabilities and trust
 
