@@ -129,7 +129,7 @@ fn with_client<T>(
 
 fn expected_capabilities() -> Vec<&'static str> {
     // Use the shared lifecycle groups plus the explicit Linux platform set.
-    // Maven's two groups leave these 31 direct capability names unchanged.
+    // Maven's two groups keep the 32 direct capability names within the wire cap.
     let mut expected = vec![
         "list",
         "read",
@@ -153,6 +153,7 @@ fn expected_capabilities() -> Vec<&'static str> {
         "java_diagnostics_refresh",
         "language_organize_java_imports",
         "language_java_implementations",
+        "language_java_signature_help",
     ];
     expected.extend_from_slice(RUN_TASK_CAPABILITIES);
     expected.extend_from_slice(LANGUAGE_SESSION_CAPABILITIES);
@@ -327,6 +328,12 @@ fn typed_java_operations() -> Vec<Operation> {
             version: 1,
         },
         Operation::LanguageJavaImplementations {
+            path: FILE.into(),
+            version: 1,
+            line: 0,
+            character: 0,
+        },
+        Operation::LanguageJavaSignatureHelp {
             path: FILE.into(),
             version: 1,
             line: 0,

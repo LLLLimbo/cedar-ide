@@ -51,6 +51,8 @@ mod interrupted_save_process_tests;
 mod java_language;
 #[cfg(test)]
 mod java_maven_metadata_tests;
+#[cfg(test)]
+mod java_parameter_info_acceptance_tests;
 mod language_navigation_results;
 mod language_results;
 mod language_sync;
@@ -1088,6 +1090,17 @@ impl CedarApp {
             }
             return;
         }
+        // Parameter replies wait until every current-frame draft/navigation
+        // finisher has run. Current transport loss is still handled immediately.
+        if defer_implementation
+            && event.connected
+            && self.pending.get(&event.id).is_some_and(
+                |job| matches!(job, Job::Language(action) if action.is_java_parameter_info()),
+            )
+        {
+            self.defer_java_parameter_reply(event);
+            return;
+        }
         // Poll runs before this frame's editor and Cancel input. Keep completed
         // implementation replies pending until that input has been processed;
         // only this new route changes timing, and transport loss remains immediate.
@@ -1134,6 +1147,14 @@ impl CedarApp {
         let Some(job) = self.pending.remove(&event.id) else {
             return;
         };
+        if let Job::Language(language_ui::Action {
+            kind: language_ui::ActionKind::JavaParameterInfo { context },
+            ..
+        }) = job
+        {
+            self.apply_java_parameter_event(context, event.result, event.connected);
+            return;
+        }
         if let Job::Search { query } = job {
             // Retired search outcomes cannot replace the current view/error,
             // but a current transport failure still disconnects the workspace.
@@ -3353,6 +3374,7 @@ impl eframe::App for CedarApp {
         self.finish_copy_draft_frame(ctx);
         self.finish_save_close_tab_frame(ctx);
         self.finish_tab_close_focus_frame(ctx);
+        self.finish_java_parameter_info_frame();
     }
 }
 

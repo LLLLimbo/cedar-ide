@@ -276,6 +276,7 @@ mod portable {
             "java_diagnostics_refresh",
             "language_organize_java_imports",
             "language_java_implementations",
+            "language_java_signature_help",
             "language_open",
             "language_change",
             "language_close",
@@ -602,7 +603,7 @@ mod linux_desktop {
 
     fn expected_capabilities() -> Vec<&'static str> {
         // Use the shared lifecycle groups plus the explicit Linux platform set.
-        // Maven's two groups leave these 31 direct capability names unchanged.
+        // Maven's two groups keep the 32 direct capability names within the wire cap.
         let mut expected = vec![
             "list",
             "read",
@@ -626,6 +627,7 @@ mod linux_desktop {
             "java_diagnostics_refresh",
             "language_organize_java_imports",
             "language_java_implementations",
+            "language_java_signature_help",
         ];
         expected.extend_from_slice(RUN_TASK_CAPABILITIES);
         expected.extend_from_slice(LANGUAGE_SESSION_CAPABILITIES);
@@ -805,6 +807,12 @@ mod linux_desktop {
                 version: 1,
             },
             Operation::LanguageJavaImplementations {
+                path: FILE.into(),
+                version: 1,
+                line: 0,
+                character: 0,
+            },
+            Operation::LanguageJavaSignatureHelp {
                 path: FILE.into(),
                 version: 1,
                 line: 0,

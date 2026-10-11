@@ -1,6 +1,6 @@
 # Public source checkpoint
 
-This is the source-only public export of tested development stage `phase584-tab-boundary-focus-fixture-0.58.4`.
+This is the source-only public export of tested development stage `phase59-java-parameter-info-0.59.0`.
 It is an independent Rust IDE project, not a complete IntelliJ IDEA replacement.
 Public commits preserve the phase-by-phase development sequence, but their hashes
 differ from the private build checkpoints because generated evidence is omitted.

@@ -824,6 +824,7 @@ fn initialization_options(pom_uri: &str, paths: &ControlPaths) -> Value {
     json!({
         "projectConfigurations": [pom_uri],
         "settings": { "java": {
+            "signatureHelp": {"enabled": true, "description": {"enabled": false}},
             "search": {"scope": "all"},
             "import": {
                 "maven": {"enabled": true, "offline": {"enabled": true}},
@@ -1164,6 +1165,10 @@ mod tests {
         assert_eq!(settings, fs::read_to_string(&paths.user_settings).unwrap());
         assert_eq!(fs::read_dir(&paths.home).unwrap().count(), 0);
         let config = initialization_options("file:///project/pom.xml", &paths);
+        assert_eq!(
+            config["settings"]["java"]["signatureHelp"],
+            json!({"enabled":true,"description":{"enabled":false}})
+        );
         assert!(config.get("extendedClientCapabilities").is_none());
         assert_eq!(config["settings"]["java"]["search"]["scope"], "all");
         assert!(config["settings"]["java"]["symbols"]

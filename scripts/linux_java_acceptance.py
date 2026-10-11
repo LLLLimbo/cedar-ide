@@ -64,7 +64,7 @@ FALSE_BOOLS = (
     "primary_failed", "cleanup_failed", "restart_failed", "startup_cleanup_verified", "elapsed_saturated",
 )
 FIXED = {
-    "schema_version": 1, "capability_count": 31, "capability_group_count": 2,
+    "schema_version": 1, "capability_count": 32, "capability_group_count": 2,
     "organize_editor_stages": 5, "implementation_type_count": 2,
     "implementation_method_count": 1, "implementation_negative_count": 0,
     "primary_deadline_ms": 360_000, "outer_deadline_ms": 480_000,
@@ -198,7 +198,7 @@ def decode_probe(data):
     for key in flags:
         require(type(receipt[key]) is bool, "Probe flag is not boolean")
         result[key] = receipt[key]
-    variable_fixed = {"capability_count": 31, "capability_group_count": 2, "organize_editor_stages": 5,
+    variable_fixed = {"capability_count": 32, "capability_group_count": 2, "organize_editor_stages": 5,
                       "implementation_type_count": 128, "implementation_method_count": 128,
                       "implementation_negative_count": 128}
     for key, expected_value in FIXED.items():

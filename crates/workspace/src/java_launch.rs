@@ -124,7 +124,7 @@ pub(super) fn client_options() -> ClientOptions {
 pub(super) fn initialization_options() -> Value {
     // Cedar has no class-file content viewer. Only the validation wrapper may
     // advertise that extended capability to exercise its fixed JDK witness.
-    json!({"settings":{"java":{"search":{"scope":"all"},"import":{"gradle":{"enabled":false},"maven":{"enabled":false}}}}})
+    json!({"settings":{"java":{"signatureHelp":{"enabled":true,"description":{"enabled":false}},"search":{"scope":"all"},"import":{"gradle":{"enabled":false},"maven":{"enabled":false}}}}})
 }
 
 pub(super) fn check_environment() -> Result<(), RemoteError> {
@@ -386,6 +386,10 @@ mod tests {
     #[test]
     fn production_initialization_never_claims_a_class_file_content_viewer() {
         let value = initialization_options();
+        assert_eq!(
+            value["settings"]["java"]["signatureHelp"],
+            json!({"enabled":true,"description":{"enabled":false}})
+        );
         assert!(value.get("extendedClientCapabilities").is_none());
         // Standard workspace/symbol uses the existing indexed type scope. It
         // does not enable method search, importers or a class-file viewer.

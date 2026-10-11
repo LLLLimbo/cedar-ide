@@ -30,6 +30,7 @@ pub(super) fn agent_info(backend_mode: BackendMode) -> AgentInfo {
         capabilities.push("java_diagnostics_refresh");
         capabilities.push("language_organize_java_imports");
         capabilities.push("language_java_implementations");
+        capabilities.push("language_java_signature_help");
     }
     // Windows retains its direct claims. Linux uses the exact versioned groups
     // so its existing flat inventory remains within the unchanged wire bound.
@@ -199,6 +200,12 @@ mod tests {
                 line: 0,
                 character: 0,
             },
+            Operation::LanguageJavaSignatureHelp {
+                path: "a.java".into(),
+                version: 1,
+                line: 0,
+                character: 0,
+            },
             Operation::LanguageReferences {
                 path: "a.rs".into(),
                 line: 0,
@@ -241,6 +248,7 @@ mod tests {
                 | "java_diagnostics_refresh"
                 | "language_organize_java_imports"
                 | "language_java_implementations"
+                | "language_java_signature_help"
                 | "language_start_java_begin"
                 | "language_start_java_poll"
                 | "language_start_java_cancel" => typed_java,
@@ -306,8 +314,8 @@ mod tests {
                 let typed_java =
                     matches!(os, "linux" | "windows") && backend_mode == BackendMode::IsolatedAgent;
                 if typed_java {
-                    assert_eq!(expected.len(), 31, "{os}: raw flat inventory");
-                    assert_eq!(effective.len(), if os == "linux" { 34 } else { 31 });
+                    assert_eq!(expected.len(), 32, "{os}: raw flat inventory");
+                    assert_eq!(effective.len(), if os == "linux" { 35 } else { 32 });
                 }
                 for capability in [
                     "language_start_java",
@@ -317,6 +325,7 @@ mod tests {
                     "java_diagnostics_refresh",
                     "language_organize_java_imports",
                     "language_java_implementations",
+                    "language_java_signature_help",
                 ] {
                     assert_eq!(
                         expected.contains(&capability),
@@ -408,6 +417,7 @@ mod tests {
                 | "java_diagnostics_refresh"
                 | "language_organize_java_imports"
                 | "language_java_implementations"
+                | "language_java_signature_help"
                 | "language_start_java_begin"
                 | "language_start_java_poll"
                 | "language_start_java_cancel" => java_language,
@@ -427,6 +437,7 @@ mod tests {
                 "java_diagnostics_refresh",
                 "language_organize_java_imports",
                 "language_java_implementations",
+                "language_java_signature_help",
                 "language_query",
                 "language_resolve_uri",
                 "language_format",
@@ -478,7 +489,7 @@ mod tests {
                 assert!(wire.get("capability_groups").is_none());
             } else {
                 assert_eq!(wire["capability_groups"], serde_json::json!(groups));
-                assert_eq!(wire["capabilities"].as_array().unwrap().len(), 31);
+                assert_eq!(wire["capabilities"].as_array().unwrap().len(), 32);
             }
             assert_eq!(
                 info.capabilities,

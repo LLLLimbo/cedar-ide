@@ -38,6 +38,7 @@ jobs:
       - run: python scripts/test_copy_draft_acceptance.py
       - run: python scripts/test_save_close_acceptance.py
       - run: python scripts/test_linux_java_acceptance.py
+      - run: python -B scripts/test_java_signature_acceptance.py
       - run: python scripts/test_linux_maven_acceptance.py
       - run: python scripts/test_windows_bundle.py
       - run: python scripts/test_windows_recovery_privacy_probe.py
@@ -654,3 +655,59 @@ jobs:
             LICENSE-*
             THIRD_PARTY_NOTICES.md
             third-party-licenses/**
+  java_signature:
+    # This independent job starts only after BOTH existing package jobs succeed.
+    # 60 checkout + 120 setup + 60 download + 60 verify + 1680 driver
+    # + 60 always-upload = 2040 s, with 60 s left in the 2100 s job.
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact: cedar-linux-agent-development
+          - os: windows-latest
+            artifact: cedar-windows-development
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 1
+        with:
+          ref: ${{ github.sha }}
+      # Same standard runner dependencies/toolchain as test; bounded setup totals
+      # two minutes. Cargo dependency fetch belongs to the driver's 600 s compile.
+      - uses: actions/setup-python@v5
+        timeout-minutes: 1
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 1
+      - name: Download this run's verified development package
+        uses: actions/download-artifact@v4
+        timeout-minutes: 1
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/cedar-signature-artifact
+          # Without token/repository/run-id overrides, download-artifact is
+          # confined to this workflow run. Never select latest or a cross-run ID.
+      - name: Bind packaged normal agent to this exact checkout and run
+        timeout-minutes: 1
+        run: python -B scripts/java_signature_acceptance.py --verify --artifact-dir "${{ runner.temp }}/cedar-signature-artifact" --verified-dir "${{ runner.temp }}/cedar-signature-verified" --scratch-root "${{ runner.temp }}"
+      - name: Real pinned-JDT Parameter info through the normal agent
+        timeout-minutes: 28
+        # 600 compile/fetch + 180 JDT + 10+10 git + 15 JDK + 15 selection
+        # + 780 runtime = 1610 s. One failing child gets 20 s teardown/reap;
+        # hashes and final receipt share 30 s; 20 s remains for orchestration.
+        run: python -B scripts/java_signature_acceptance.py --artifact-dir "${{ runner.temp }}/cedar-signature-artifact" --verified-dir "${{ runner.temp }}/cedar-signature-verified" --scratch-root "${{ runner.temp }}"
+      - name: Parameter info sanitized evidence (including partial failures)
+        if: always()
+        timeout-minutes: 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-signature-acceptance-${{ matrix.os }}
+          path: ${{ runner.temp }}/JAVA_SIGNATURE_ACCEPTANCE.json
+          if-no-files-found: ignore
+          retention-days: 30

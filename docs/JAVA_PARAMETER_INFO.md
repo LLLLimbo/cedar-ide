@@ -1,0 +1,31 @@
+# Explicit Java Parameter info
+
+0.59.0 adds a candidate **Parameter info** action for an already running Java/JDT session. Its acceptance state is **CI-first PARTIAL**: fresh real-JDT and exact-commit CI evidence is pending, and positive native GUI acceptance is **DEFERRED**. The latest fully accepted checkpoint is 0.58.4; its existing Java evidence does not validate this new feature. Consult the [current source verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md) for the checkpoint associated with the package manifest.
+
+## Use and requirements
+
+Connect with a matching frontend and supported isolated agent, explicitly trust the workspace, and start an installed Java/JDT server through **Java / JDT LS**. Place the cursor at the desired Java invocation position and request **Parameter info** explicitly. The action requires the optional backend operation and the running server's actual signature-help provider. It does not start or install a server, save a file, run a command or modify source text.
+
+The action captures the current document and UTF-16 cursor, then sends the query only after its exact positive draft version has been acknowledged as synchronized Java and the captured identity is still current. The agent requires a workspace-contained `.java` document and a production typed Java session. A generic LSP connection or a server that merely reports a JDT name cannot substitute for this route. Trust-off and old agents without the optional capability leave this feature unavailable while preserving existing file operations.
+
+The result is a plain-text list of the server's signatures. Use **Overload 1**, **Overload 2** and subsequent controls to browse returned signatures locally; browsing does not send another query. **Dismiss parameter info** clears the view. Editing, changing the captured cursor/document, navigating, reconnecting, changing the workspace or language session, starting a newer query and hiding the view invalidate the captured answer. Stale replies must not replace a newer state or revive a dismissed result. Draft bytes, selection, Undo/Redo and disk source stay unchanged.
+
+Dismissal does not cancel ordinary document synchronization already submitted before the query. A late synchronization failure can still update the existing global language status under its existing behavior. It must not revive Parameter info, dispatch its cancelled query or restore a stale answer. Signature-query successes and errors are separately checked against the captured Parameter info identity.
+
+There is no automatic trigger on typing, comma or opening parenthesis, and no server-initiated Parameter info callback or new activation shortcut. Both basic Java and Maven initialization enable JDT signature help with descriptions disabled. That setting neither grants trust nor starts Java. A returned signature remains a server answer for a captured position, not proof that indexing is current or that the program compiles.
+
+## Selection and highlighting
+
+A valid server `activeSignature` selects the initially displayed overload, labeled **Server-selected overload** while that row is visible. Otherwise the display uses the first row as a local fallback and says **First overload shown; the server did not select a valid overload.** Changing the visible overload does not imply a server choice.
+
+A per-signature `activeParameter` wins when present. If it is out of range, no parameter is active; the top-level hint is not used to repair it. When the per-signature hint is absent, a usable top-level hint applies only to the initially displayed signature. Missing, null or unusable hints produce no guessed parameter-zero highlight. This is a conservative intentional deviation from [LSP 3.17 signature-help selection defaults](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_signatureHelp), which specify fallback selection behavior. Row zero remains a display fallback, not a server-selected claim.
+
+Parameters can identify their label with a string or a pair of UTF-16 offsets. An offset pair must be ordered, within the signature and on valid character boundaries; splitting a surrogate pair rejects the result. A zero-length valid range has no visible highlight. A string must be nonempty and occur in the signature. If it occurs more than once, including overlapping occurrences, Cedar retains the parameter but shows no guessed highlight. A unique string occurrence can be highlighted when its parameter is active.
+
+## Result limits and compatibility
+
+The same parser runs at the agent and frontend boundaries. It accepts at most 32 signatures, 64 parameters per signature, 8 KiB of UTF-8 for each retained signature or string-parameter label, and 128 KiB of retained label text in total. The total counts UTF-8 bytes, not characters or UTF-16 units. Null and empty signature lists mean no result. Invalid types, malformed rows, missing required labels, out-of-bounds offsets and excess limits reject the whole result. Documentation, Markdown, links and server extension fields are not interpreted or retained.
+
+The optional wire operation is `language_java_signature_help`. Supported isolated agents advertise it as the 32nd direct capability; protocol 4, schema 1, the direct-capability limit and existing Maven capability groups are unchanged. Provider objects are accepted, with boolean `true` supported for compatibility. Capability metadata does not grant execution trust. The agent and frontend must use compatible request and response behavior; an older agent may omit the operation without affecting retained features.
+
+This feature does not expand generic Windows LSP, call hierarchy, snippets, code actions, full Maven/Gradle project support, or multi-file refactoring. Native Windows GUI, real SSH and positive native Java Parameter info remain outside current acceptance.

@@ -71,10 +71,24 @@ class WindowsBundleTests(unittest.TestCase):
         values[bundle.MANIFEST] = bundle.canonical_json(self.manifest if manifest is None else manifest)
         return sorted(values.items())
 
+    def test_parameter_info_guide_is_required_and_hash_bound(self):
+        name = "JAVA_PARAMETER_INFO.md"
+        payload = dict(self.payload)
+        del payload[name]
+        manifest = copy.deepcopy(self.manifest)
+        manifest["files"] = [item for item in manifest["files"] if item["path"] != name]
+        with self.assertRaisesRegex(bundle.BundleError, "required payload"):
+            bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+        payload = dict(self.payload)
+        payload[name] = b"X" + payload[name][1:]
+        with self.assertRaisesRegex(bundle.BundleError, "SHA256 mismatch: JAVA_PARAMETER_INFO.md"):
+            bundle.verify_bytes(bundle.archive_bytes(payload, self.manifest))
+
     def test_current_entry_guides_link_only_to_packaged_local_targets(self):
         self.assertEqual(bundle.SOURCE_FILES["docs/JAVA_IMPLEMENTATIONS.md"],
                          "JAVA_IMPLEMENTATIONS.md")
         self.assertEqual(bundle.SOURCE_FILES["docs/MAVEN_DEPENDENCIES.md"], "MAVEN_DEPENDENCIES.md")
+        self.assertEqual(bundle.SOURCE_FILES["docs/JAVA_PARAMETER_INFO.md"], "JAVA_PARAMETER_INFO.md")
         self.assertEqual(bundle.SOURCE_FILES["docs/EXPLORER_TREE.md"], "EXPLORER_TREE.md")
         self.assertEqual(bundle.SOURCE_FILES["docs/LOCATION_HISTORY.md"], "LOCATION_HISTORY.md")
         self.assertEqual(bundle.SOURCE_FILES["docs/INTERRUPTED_SAVES.md"], "INTERRUPTED_SAVES.md")
@@ -82,12 +96,13 @@ class WindowsBundleTests(unittest.TestCase):
         self.assertEqual(bundle.SOURCE_FILES["docs/SAVE_ALL.md"], "SAVE_ALL.md")
         root = Path(__file__).resolve().parent.parent
         payload = dict(self.payload)
-        for source in ("docs/WINDOWS_QUICKSTART.zh-CN.md", "docs/JAVA_IMPLEMENTATIONS.md", "docs/MAVEN_DEPENDENCIES.md", "docs/EXPLORER_TREE.md", "docs/LOCATION_HISTORY.md", "docs/INTERRUPTED_SAVES.md", "docs/EXPLICIT_DISCONNECT.md", "docs/SAVE_ALL.md"):
+        for source in ("docs/WINDOWS_QUICKSTART.zh-CN.md", "docs/JAVA_IMPLEMENTATIONS.md", "docs/JAVA_PARAMETER_INFO.md", "docs/MAVEN_DEPENDENCIES.md", "docs/EXPLORER_TREE.md", "docs/LOCATION_HISTORY.md", "docs/INTERRUPTED_SAVES.md", "docs/EXPLICIT_DISCONNECT.md", "docs/SAVE_ALL.md"):
             payload[bundle.SOURCE_FILES[source]] = (root / source).read_bytes()
         bundle.validate_entry_guide_links(payload)
         manifest = bundle.make_manifest("0.28.1", COMMIT, RUN_URL, payload)
         _, verified = bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
         self.assertEqual(verified["JAVA_IMPLEMENTATIONS.md"], payload["JAVA_IMPLEMENTATIONS.md"])
+        self.assertEqual(verified["JAVA_PARAMETER_INFO.md"], payload["JAVA_PARAMETER_INFO.md"])
         self.assertEqual(verified["MAVEN_DEPENDENCIES.md"], payload["MAVEN_DEPENDENCIES.md"])
         self.assertEqual(verified["EXPLORER_TREE.md"], payload["EXPLORER_TREE.md"])
         self.assertEqual(verified["LOCATION_HISTORY.md"], payload["LOCATION_HISTORY.md"])

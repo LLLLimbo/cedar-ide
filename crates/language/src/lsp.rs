@@ -240,6 +240,7 @@ impl LspClient {
                         "hover": {"dynamicRegistration":false,"contentFormat":["plaintext","markdown"]},
                         "definition": {"dynamicRegistration":false,"linkSupport":true},
                         "implementation": {"dynamicRegistration":false,"linkSupport":false},
+                        "signatureHelp": {"dynamicRegistration":false,"signatureInformation":{"parameterInformation":{"labelOffsetSupport":true},"activeParameterSupport":true}},
                         "formatting": {"dynamicRegistration":false},
                         "references": {"dynamicRegistration":false},
                         "documentSymbol": {"dynamicRegistration":false,"hierarchicalDocumentSymbolSupport":true},
@@ -497,6 +498,19 @@ impl LspClient {
             json!({"textDocument":{"uri":uri},"position":position}),
         )?;
         crate::implementations::normalize_result(result)
+    }
+
+    /// One explicit signature request, with no trigger context or auto requests.
+    /// Keep only the shared bounded label/parameter/hint subset.
+    pub fn signature_help(&self, uri: &str, position: Position) -> Result<Value, Error> {
+        let _gate = self.gate.read().unwrap();
+        self.ready_document("signatureHelpProvider", "textDocument/signatureHelp", uri)?;
+        validate_position(position)?;
+        let result = self.rpc.request(
+            "textDocument/signatureHelp",
+            json!({"textDocument":{"uri":uri},"position":position}),
+        )?;
+        crate::signature_help::normalize_result(result)
     }
 
     /// Return DocumentSymbol[], SymbolInformation[], or null unchanged.

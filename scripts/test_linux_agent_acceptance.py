@@ -57,7 +57,7 @@ class ReceiptTests(unittest.TestCase):
                 acceptance.validate_probe({**valid(), obsolete: True})
 
     def test_exact_flat_and_group_counts_cannot_hide_inventory_drift(self):
-        for field, values in (("capability_count", (0, 1, 30, 32, 33)),
+        for field, values in (("capability_count", (0, 1, 30, 31, 33)),
                               ("capability_group_count", (0, 1, 3, 31))):
             for value in values:
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):
@@ -73,7 +73,7 @@ class ReceiptTests(unittest.TestCase):
 
     def test_bounded_counts_late_results_and_nonfinite_values_rejected(self):
         wrong = {
-            "capability_count": (0, 33, -1, True, 1.0, "31"),
+            "capability_count": (0, 33, -1, True, 1.0, "32"),
             "explicit_client_calls": (0, 97, -1, True, 76.0, "76"),
             "elapsed_ms": (-1, 30001, True, 0.0, float("nan"), float("inf")),
         }

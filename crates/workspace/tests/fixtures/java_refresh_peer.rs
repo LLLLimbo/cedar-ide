@@ -52,6 +52,7 @@ fn main() {
         let id: u64 = id.split([',', '}']).next().unwrap().parse().unwrap();
         let organize = request.contains("\"method\":\"workspace/executeCommand\"");
         let symbols = request.contains("\"method\":\"workspace/symbol\"");
+        let signature_help = request.contains("\"method\":\"textDocument/signatureHelp\"");
         let implementations = request.contains("\"method\":\"textDocument/implementation\"");
         if organize {
             if let Ok(apply) = fs::read_to_string(directory.join("server-apply-edit.json")) {
@@ -64,6 +65,9 @@ fn main() {
         } else if organize {
             fs::read_to_string(directory.join("organize-result.json"))
                 .unwrap_or_else(|_| "{}".into())
+        } else if signature_help {
+            fs::read_to_string(directory.join("signature-help-result.json"))
+                .unwrap_or_else(|_| "null".into())
         } else if implementations {
             fs::read_to_string(directory.join("implementations-result.json"))
                 .unwrap_or_else(|_| "null".into())
@@ -75,6 +79,9 @@ fn main() {
         };
         let response = if implementations && directory.join("implementations-error.json").exists() {
             let error = fs::read_to_string(directory.join("implementations-error.json")).unwrap();
+            format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{error}}}")
+        } else if signature_help && directory.join("signature-help-error.json").exists() {
+            let error = fs::read_to_string(directory.join("signature-help-error.json")).unwrap();
             format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{error}}}")
         } else if organize && directory.join("organize-error.json").exists() {
             let error = fs::read_to_string(directory.join("organize-error.json")).unwrap();

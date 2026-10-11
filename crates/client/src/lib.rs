@@ -357,6 +357,7 @@ impl Client {
             | Operation::LanguageStartJavaCancel { .. }
             | Operation::LanguageOrganizeJavaImports { .. }
             | Operation::LanguageJavaImplementations { .. }
+            | Operation::LanguageJavaSignatureHelp { .. }
             | Operation::LanguageRefreshJavaDiagnostics { .. } => {
                 JAVA_LANGUAGE_SESSION_CAPABILITIES
             }
@@ -551,6 +552,7 @@ fn is_language_session_operation(op: &Operation) -> bool {
             | Operation::LanguageRefreshJavaDiagnostics { .. }
             | Operation::LanguageReferences { .. }
             | Operation::LanguageJavaImplementations { .. }
+            | Operation::LanguageJavaSignatureHelp { .. }
             | Operation::LanguageDocumentSymbols { .. }
             | Operation::LanguageWorkspaceSymbols { .. }
             | Operation::LanguageResolveUri { .. }

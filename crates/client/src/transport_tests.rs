@@ -1210,6 +1210,12 @@ fn advanced_operations() -> Vec<Operation> {
             line: 0,
             character: 0,
         },
+        Operation::LanguageJavaSignatureHelp {
+            path: "fixture.java".into(),
+            version: 1,
+            line: 0,
+            character: 0,
+        },
         Operation::LanguageReferences {
             path: "fixture.txt".into(),
             line: 0,
@@ -1458,6 +1464,7 @@ fn java_capabilities() -> Vec<&'static str> {
             "java_diagnostics_refresh",
             "language_organize_java_imports",
             "language_java_implementations",
+            "language_java_signature_help",
             "language_query",
             "language_format",
             "language_references",
@@ -1711,6 +1718,91 @@ fn java_implementations_preserves_wire_reply_errors_and_existing_timeout_without
         directory.path(),
         &mut client,
         serde_json::json!({"Err":{"code":"language_error","message":"implementation provider unavailable"}}),
+    );
+    assert!(client
+        .request(operation)
+        .unwrap_err()
+        .starts_with("language_error:"));
+    read_fixture(&mut client);
+    assert_eq!(recorded_requests(directory.path()).len(), 5);
+}
+
+#[test]
+fn java_signature_help_requires_optional_bridge_and_complete_typed_java_lifecycle() {
+    let signature_help = Operation::LanguageJavaSignatureHelp {
+        path: "Hello.java".into(),
+        version: 7,
+        line: 2,
+        character: 3,
+    };
+    for missing in std::iter::once(&"language_java_signature_help")
+        .chain(JAVA_LANGUAGE_SESSION_CAPABILITIES.iter())
+    {
+        let capabilities: Vec<_> = java_capabilities()
+            .into_iter()
+            .chain(["language_start"])
+            .filter(|capability| capability != missing)
+            .collect();
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+        let error = client.request(signature_help.clone()).unwrap_err();
+        assert!(error.starts_with("unsupported_operation:"), "{error}");
+        assert!(error.contains(missing), "{error}");
+        assert_eq!(recorded_requests(directory.path()).len(), 1);
+        read_fixture(&mut client);
+        assert_eq!(recorded_requests(directory.path()).len(), 2);
+    }
+    let capabilities: Vec<_> = java_capabilities()
+        .into_iter()
+        .filter(|capability| *capability != "language_java_signature_help")
+        .collect();
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&capabilities)));
+    client.request(start_java_language()).unwrap();
+    client.request(Operation::LanguageEvents).unwrap();
+    assert!(client
+        .request(signature_help)
+        .unwrap_err()
+        .contains("language_java_signature_help"));
+    client.request(Operation::LanguageStop).unwrap();
+    assert_eq!(recorded_requests(directory.path()).len(), 4);
+}
+
+#[test]
+fn java_signature_help_preserves_wire_reply_errors_and_existing_timeout_without_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = capability_client(directory.path(), Some(agent_info(&java_capabilities())));
+    client.request(start_java_language()).unwrap();
+    let operation = Operation::LanguageJavaSignatureHelp {
+        path: "Hello #雪.java".into(),
+        version: 7,
+        line: 2,
+        character: 3,
+    };
+    assert_eq!(
+        process(&mut client).request_timeout(&operation),
+        Duration::from_secs(75)
+    );
+    let locations = serde_json::json!({"signatures":[{"label":"f(int x)","parameters":[{"label":[2,7]}]}],"activeSignature":0,"activeParameter":0});
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Ok":{"type":"language","value":locations}}),
+    );
+    assert!(
+        matches!(client.request(operation.clone()).unwrap(), Payload::Language { value } if value == locations)
+    );
+    assert!(process(&mut client).java_language_session);
+    let requests = recorded_requests(directory.path());
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[2]["op"],
+        serde_json::json!({"type":"language_java_signature_help","path":"Hello #雪.java","version":7,"line":2,"character":3})
+    );
+    next_result(
+        directory.path(),
+        &mut client,
+        serde_json::json!({"Err":{"code":"language_error","message":"signature help provider unavailable"}}),
     );
     assert!(client
         .request(operation)
@@ -2902,6 +2994,12 @@ fn old_linux_flat_inventory_keeps_typed_java_without_admitting_maven_or_discover
             begin_maven_language(),
             Operation::LanguageMavenModel,
             maven_dependencies_operation(),
+            Operation::LanguageJavaSignatureHelp {
+                path: "Hello.java".into(),
+                version: 1,
+                line: 0,
+                character: 0,
+            },
         ] {
             assert!(client
                 .request(operation)

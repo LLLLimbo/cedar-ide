@@ -10,6 +10,7 @@ pub mod framing;
 mod implementations;
 mod lsp;
 mod shutdown;
+pub mod signature_help;
 mod transport;
 mod workspace_symbols;
 

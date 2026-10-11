@@ -298,6 +298,13 @@ pub enum Operation {
         line: u32,
         character: u32,
     },
+    /// Explicit signature lookup for the exact acknowledged Java source version.
+    LanguageJavaSignatureHelp {
+        path: String,
+        version: i32,
+        line: u32,
+        character: u32,
+    },
     LanguageDocumentSymbols {
         path: String,
     },
@@ -362,6 +369,7 @@ impl Operation {
             Self::LanguageOrganizeJavaImports { .. } => "language_organize_java_imports",
             Self::LanguageReferences { .. } => "language_references",
             Self::LanguageJavaImplementations { .. } => "language_java_implementations",
+            Self::LanguageJavaSignatureHelp { .. } => "language_java_signature_help",
             Self::LanguageDocumentSymbols { .. } => "language_document_symbols",
             Self::LanguageWorkspaceSymbols { .. } => "language_workspace_symbols",
             Self::LanguageResolveUri { .. } => "language_resolve_uri",
@@ -701,6 +709,44 @@ mod tests {
         }
         assert!(serde_json::from_value::<Operation>(serde_json::json!({
             "type":"language_request", "method":"textDocument/implementation", "params":{}
+        }))
+        .is_err());
+    }
+    #[test]
+    fn java_signature_help_is_a_typed_optional_protocol_four_operation() {
+        let wire = serde_json::json!({
+            "type":"language_java_signature_help", "path":"src/你好 #.java",
+            "version":7, "line":2, "character":3
+        });
+        let operation: Operation = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(
+            operation.capability_name(),
+            Some("language_java_signature_help")
+        );
+        assert_eq!(serde_json::to_value(operation).unwrap(), wire);
+        assert!(!supports_capability(None, "language_java_signature_help"));
+        assert!(!JAVA_LANGUAGE_SESSION_CAPABILITIES.contains(&"language_java_signature_help"));
+        assert!(!LANGUAGE_SESSION_CAPABILITIES.contains(&"language_java_signature_help"));
+        assert_eq!(PROTOCOL_VERSION, 4);
+        for field in ["path", "version", "line", "character"] {
+            let mut missing = wire.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<Operation>(missing).is_err());
+            let mut wrong_type = wire.clone();
+            wrong_type[field] = serde_json::json!([]);
+            assert!(serde_json::from_value::<Operation>(wrong_type).is_err());
+        }
+        for (field, value) in [
+            ("version", serde_json::json!(2147483648_i64)),
+            ("line", serde_json::json!(-1)),
+            ("character", serde_json::json!(4294967296_u64)),
+        ] {
+            let mut invalid = wire.clone();
+            invalid[field] = value;
+            assert!(serde_json::from_value::<Operation>(invalid).is_err());
+        }
+        assert!(serde_json::from_value::<Operation>(serde_json::json!({
+            "type":"language_request", "method":"textDocument/signatureHelp", "params":{}
         }))
         .is_err());
     }

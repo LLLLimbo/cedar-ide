@@ -140,6 +140,19 @@ class LinuxAgentBundleTests(unittest.TestCase):
         (binary_dir / bundle.AGENT).write_bytes(self.payload[bundle.AGENT])
         return root, binary_dir, commit
 
+    def test_parameter_info_guide_is_required_and_hash_bound(self):
+        name = "JAVA_PARAMETER_INFO.md"
+        payload = dict(self.payload)
+        del payload[name]
+        manifest = copy.deepcopy(self.manifest)
+        manifest["files"] = [item for item in manifest["files"] if item["path"] != name]
+        with self.assertRaisesRegex(bundle.BundleError, "required payload"):
+            bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+        payload = dict(self.payload)
+        payload[name] = b"X" + payload[name][1:]
+        with self.assertRaisesRegex(bundle.BundleError, "SHA256 mismatch: JAVA_PARAMETER_INFO.md"):
+            bundle.verify_bytes(bundle.archive_bytes(payload, self.manifest))
+
     def test_archive_roundtrip_and_deterministic_bytes(self):
         manifest, payload = bundle.verify_bytes(self.archive, COMMIT, RUN_URL)
         self.assertEqual(manifest, self.manifest)
@@ -383,7 +396,7 @@ class LinuxAgentBundleTests(unittest.TestCase):
     def test_current_guide_links_target_packaged_files(self):
         root = Path(__file__).resolve().parent.parent
         payload = dict(self.payload)
-        for name in ("MAVEN_PROJECTS.md", "MAVEN_DEPENDENCIES.md"):
+        for name in ("MAVEN_PROJECTS.md", "MAVEN_DEPENDENCIES.md", "JAVA_PARAMETER_INFO.md"):
             self.assertEqual(bundle.SOURCE_FILES["docs/" + name], name)
             payload[name] = (root / "docs" / name).read_bytes()
         payload[bundle.GUIDE] = (root / "docs" / bundle.GUIDE).read_bytes()

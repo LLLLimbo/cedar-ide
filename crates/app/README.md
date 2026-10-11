@@ -66,19 +66,22 @@ The **Automatic height** control added in 0.58.0 explicitly clears the runtime
 height preference after the current panel pass and requests a repaint using the
 existing automatic content-sizing behavior. A later genuine divider drag can
 establish an explicit height again. It does not persist settings or send a
-workspace request. Both 0.58.3 strict checks, all 27 resize checks and all 23
-sidebar checks passed, including the original Tools reset → native Tab → immediate
-Undo/Redo sequence. Each aggregate failed eight new cases in a shared boundary-
-button focus fixture; seven new cases passed. Native button clicks did not grant
-the keyboard focus that this fixture expected. 0.58.4 changes only that test
-setup: require no focus after the click, then use real Tab or Shift+Tab to acquire
-the exact boundary button before measuring editor entry. Shipping code is unchanged.
-Downstream proofs, packages and native checks remain pending. 0.57.6 remains
-accepted and the command-output banner remains backlog.
+workspace request. **0.58.4 is the latest fully accepted bounded checkpoint**:
+complete dual-platform CI, retained process gates and all three packages passed,
+including 15 editor-entry, 27 resize and 23 sidebar checks on each platform.
+Fresh exact-package cloud Linux GUI evidence covers actual divider drags,
+pointer/keyboard reset and native Tab entry followed immediately by Undo/Redo
+without pointer refocus. The critical sequence is steps 56/57/58, after 37 real
+Tab presses; the anticipatory step 55 filename does not prove editor entry.
+No Save, Run, LSP or source-disk change occurred. The 0.58.3 boundary-button fixture
+failures and earlier shipping failures remain preserved in the
+[current report](../../docs/TEST_REPORT.md#final-accepted-0584-evidence).
+No Windows GUI, raw-event ownership, native request-count or native agent-reap
+claim follows. The command-output banner remains backlog.
 
 ## Project Search keyboard navigation (0.57.6 bounded acceptance)
 
-0.57.6 is the latest accepted checkpoint: complete dual-platform CI, all retained
+The retained 0.57.6 Search checkpoint passed complete dual-platform CI: all retained
 process gates and all three packages passed. Both platforms passed 33 Search and
 19 report-keyboard tests and the exact 14-case/57-field/12-request Search proof.
 A fresh exact-package cloud Linux native run observed Space opening line 97 and
@@ -127,8 +130,9 @@ Query/batch changes, hidden or switched tools, modals and competing input cancel
 unfinished row intent; continue with a fresh valid key or pointer action. The frontend keeps at
 most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
 oversized batches are rejected whole. No automatic search, new engine, protocol,
-capability or workspace operation is added. The 0.58.4 boundary-focus fixture candidate
-requires fresh validation described in the [current report](../../docs/TEST_REPORT.md).
+capability or workspace operation is added by Search. The 0.58.4 accepted baseline
+and new 0.59.0 Parameter info candidate have separate evidence in the
+[current report](../../docs/TEST_REPORT.md).
 
 ## Agent capabilities and trust
 
@@ -158,6 +162,35 @@ Ctrl+Space opens a candidate menu. Single-click selects an item; Enter, **Apply 
 Cedar supports plain-text edits and explicit replacement-mode InsertReplaceEdit. Snippets, ambiguous/overlapping ranges, unknown command-dependent items, and unsupported complex edits are disabled with an explanation. `insertTextMode: 2` is accepted for a single-line primary insertion, where indentation adjustment has no effect; multiline primary indentation adjustment remains unsupported. Additional import edits preserve their exact text.
 
 No completion command is executed. The exact JDT LS callback `java.completion.onDidSelect` is deliberately skipped while its validated text edits are applied. Its selection-ranking feedback and automatic signature-help follow-up are unavailable. The official [JDT handler](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/main/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/CompletionHandler.java) handles that callback separately from text/import edits.
+
+### Explicit Java Parameter info (0.59.0 candidate)
+
+In an already running trusted **Java / JDT LS** session, **Parameter info** requests
+a read-only signature snapshot at the exact synchronized Java draft version and
+UTF-16 cursor. Both the agent's optional operation and the actual server provider
+must support it. **Overload 1**, **Overload 2** and subsequent controls browse the
+returned signatures locally. **Dismiss parameter info** clears the result.
+
+Only a valid server hint earns **Server-selected overload**. With a missing or
+invalid signature hint, the UI says **First overload shown; the server did not
+select a valid overload.** A usable per-signature parameter hint wins over the
+top-level hint; an out-of-range per-signature hint produces no highlight and does
+not fall back. Missing or invalid hints do not guess parameter zero. UTF-16
+ranges must be valid; string labels highlight only a unique occurrence.
+
+The shared parser caps 32 signatures, 64 parameters per signature, 8 KiB per
+retained label and 128 KiB total retained UTF-8 label text. Documentation and
+server extension fields are not interpreted. Edit/cursor/tab/navigation changes,
+workspace/connection/session generations, newer queries, dismissal and hiding the
+view invalidate it. Late responses cannot revive an old view. The action does
+not edit source, move the selection, create an Undo record or save. There is no
+automatic typing callback or new activation shortcut. Synchronization does not
+prove that JDT has finished indexing or analyzing.
+
+This is **CI-first PARTIAL** source work: new Rust/real-JDT/CI and package evidence
+is pending. Positive native Java/UI acceptance is **DEFERRED**; the latest fully
+accepted checkpoint remains 0.58.4. See the [complete contract and LSP default
+deviation](../../docs/JAVA_PARAMETER_INFO.md).
 
 ### Problems and navigation
 

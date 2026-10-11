@@ -453,6 +453,34 @@ fn known_groups_do_not_consume_the_frozen_flat_capability_budget() {
 }
 
 #[test]
+fn signature_help_is_the_32nd_flat_claim_without_changing_old_reader_bounds() {
+    let mut advertised = info(&[JAVA_MAVEN_LEAF_GROUP, JAVA_MAVEN_DEPENDENCIES_GROUP]);
+    advertised.capabilities = LEGACY_31_CAPABILITIES
+        .iter()
+        .copied()
+        .chain(["language_java_signature_help"])
+        .map(str::to_owned)
+        .collect();
+    advertised.capabilities.sort_unstable();
+    assert_eq!(advertised.capabilities.len(), 32);
+    assert_eq!(MAX_AGENT_CAPABILITIES, 32);
+    assert_eq!(PROTOCOL_VERSION, 4);
+    assert_eq!(AGENT_INFO_SCHEMA, 1);
+    advertised.validate().unwrap();
+    let old: frozen_v037::AgentInfo =
+        serde_json::from_value(serde_json::to_value(&advertised).unwrap()).unwrap();
+    old.validate().unwrap();
+    assert!(old.supports("language_java_signature_help"));
+    assert!(!old.supports("language_maven_model"));
+    assert!(advertised.supports("language_maven_model"));
+    advertised.capabilities.push("one_too_many".into());
+    assert!(advertised.validate().is_err());
+    let old: frozen_v037::AgentInfo =
+        serde_json::from_value(serde_json::to_value(advertised).unwrap()).unwrap();
+    assert!(old.validate().is_err());
+}
+
+#[test]
 fn current_reader_preserves_frozen_windows_direct_claims_and_metadata_free_fallback() {
     let direct: Vec<_> = LEGACY_31_CAPABILITIES
         .iter()

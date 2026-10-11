@@ -68,7 +68,7 @@ class ProbeTests(unittest.TestCase):
         receipt = valid()
         self.assertIs(receipt["maven_groups_advertised"], True)
         self.assertIs(receipt["maven_trust_off_rejected"], True)
-        self.assertEqual(receipt["capability_count"], 31)
+        self.assertEqual(receipt["capability_count"], 32)
         self.assertEqual(receipt["capability_group_count"], 2)
         del receipt["maven_groups_advertised"]
         receipt["maven_unadvertised"] = True
@@ -152,7 +152,7 @@ class ProbeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             acceptance.parse_probe(data)
         for key, value in (("failure_stage", "raw private sentinel"), ("spontaneous_result", "private message"),
-                           ("capability_count", "31"), ("elapsed_ms", 0x100000000),
+                           ("capability_count", "32"), ("elapsed_ms", 0x100000000),
                            ("recovery_attempts", 2), ("initial_stop", {**stop(), "private": "sentinel"})):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 acceptance.decode_probe(json.dumps({**receipt, key: value}).encode())

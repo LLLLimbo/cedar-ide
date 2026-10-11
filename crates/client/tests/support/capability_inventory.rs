@@ -45,6 +45,7 @@ pub fn assert_shipping_inventory(info: &AgentInfo) {
             "java_diagnostics_refresh",
             "language_organize_java_imports",
             "language_java_implementations",
+            "language_java_signature_help",
         ]);
     }
     let maven = [
@@ -59,7 +60,7 @@ pub fn assert_shipping_inventory(info: &AgentInfo) {
     assert!(expected.windows(2).all(|pair| pair[0] < pair[1]));
     assert_eq!(info.capabilities, expected);
     if matches!(info.os.as_str(), "linux" | "windows") {
-        assert_eq!(info.capabilities.len(), 31);
+        assert_eq!(info.capabilities.len(), 32);
     }
     let wire = serde_json::to_value(info).unwrap();
     if info.os == "linux" {

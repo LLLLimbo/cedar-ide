@@ -30,7 +30,7 @@ BOOLS = (
 )
 FIXED = {
     "schema_version": 1, "protocol_version": 4, "agent_info_schema": 1,
-    "capability_count": 31, "capability_group_count": 2,
+    "capability_count": 32, "capability_group_count": 2,
     "agent_processes_spawned": 2, "elapsed_bound_ms": 30000,
     "client_call_limit": 96, "agent_spawn_limit": 2, "close_bound_ms": 5000,
 }

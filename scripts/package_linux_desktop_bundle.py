@@ -48,6 +48,7 @@ SOURCE_FILES = {
     "docs/" + GUIDE: GUIDE,
     "docs/MAVEN_PROJECTS.md": "MAVEN_PROJECTS.md",
     "docs/MAVEN_DEPENDENCIES.md": "MAVEN_DEPENDENCIES.md",
+    "docs/JAVA_PARAMETER_INFO.md": "JAVA_PARAMETER_INFO.md",
     "docs/SAVE_ALL.md": "SAVE_ALL.md",
     "docs/EXPLORER_TREE.md": "EXPLORER_TREE.md",
 }

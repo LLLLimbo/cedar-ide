@@ -476,6 +476,7 @@ const EXPECTED_CAPABILITIES: &[&str] = &[
     "language_events",
     "language_format",
     "language_java_implementations",
+    "language_java_signature_help",
     "language_open",
     "language_organize_java_imports",
     "language_query",
@@ -1064,7 +1065,7 @@ fn capabilities(client: &Client) -> CheckResult<AgentInfo> {
                 .iter()
                 .map(String::as_str)
                 .eq(["java_maven_dependencies_v1", "java_maven_leaf_v1"]),
-        "Linux shipping agent must advertise exact 31 flat capabilities and two known Maven groups",
+        "Linux shipping agent must advertise exact 32 flat capabilities and two known Maven groups",
     )?;
     Ok(info.clone())
 }

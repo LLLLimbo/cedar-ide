@@ -9,6 +9,8 @@ mod java_implementations;
 mod java_maven;
 #[path = "java_maven_dependencies.rs"]
 mod java_maven_dependencies;
+#[path = "java_parameter_info.rs"]
+mod java_parameter_info;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use java_maven_dependencies::verify_native_linux_maven_dependencies;
 #[cfg(all(test, windows))]
@@ -97,6 +99,9 @@ pub(super) enum ActionKind {
     WorkspaceSymbols {
         context: JavaTypeContext,
     },
+    JavaParameterInfo {
+        context: java_parameter_info::ParameterContext,
+    },
     JavaImplementationResolve {
         context: JavaImplementationContext,
         sequence: u64,
@@ -138,6 +143,9 @@ impl Action {
         matches!(&self.kind, ActionKind::JavaImplementationResolve { .. })
             || matches!(&self.kind, ActionKind::Feature { request } if matches!(request.kind, features::FeatureKind::JavaImplementations))
     }
+    pub(crate) fn is_java_parameter_info(&self) -> bool {
+        matches!(self.kind, ActionKind::JavaParameterInfo { .. })
+    }
     pub fn is_java_startup(&self) -> bool {
         matches!(
             self.kind,
@@ -171,6 +179,7 @@ enum View {
     MavenDependencies,
     JavaTypes,
     JavaImplementations,
+    JavaParameterInfo,
 }
 struct CompletionMenu {
     context: QueryContext,
@@ -194,6 +203,7 @@ pub(super) struct LanguagePanel {
     features: features::FeatureState,
     types: java_types::TypeSearch,
     implementations: java_implementations::ImplementationSearch,
+    parameter_info: java_parameter_info::ParameterInfo,
     implementation_replies: Vec<crate::worker::Event>,
     next_version: i32,
     closed_uris: HashSet<String>,
@@ -232,7 +242,7 @@ pub(super) struct LanguagePanel {
 impl Default for LanguagePanel {
     fn default() -> Self {
         Self {
-            running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), types: java_types::TypeSearch::default(), implementations: java_implementations::ImplementationSearch::default(), implementation_replies: Vec::new(), next_version: 1, closed_uris: HashSet::new(),
+            running: false, cjk_seen: false, session: 0, sync: SyncTracker::default(), features: features::FeatureState::default(), types: java_types::TypeSearch::default(), implementations: java_implementations::ImplementationSearch::default(), parameter_info: java_parameter_info::ParameterInfo::default(), implementation_replies: Vec::new(), next_version: 1, closed_uris: HashSet::new(),
             mode: ServerMode::Generic, java: JavaConfiguration::default(), maven: java_maven::MavenConfiguration::default(), maven_model: java_maven::ModelState::default(), maven_dependencies: java_maven_dependencies::DependencyState::default(), running_startup_id: None, restart_blocked: false, startup: None,
             program: String::new(), args: "[]".into(), language_id: "rust".into(), capabilities: Value::Null,
             diagnostics: Diagnostics::default(), diagnostics_exited: false, java_diagnostics_refresh_supported: false, java_organize_imports_supported: false,
@@ -256,6 +266,7 @@ impl LanguagePanel {
         self.features.reset();
         self.types.reset();
         self.implementations.reset();
+        self.parameter_info.reset();
         self.session = self.session.wrapping_add(1);
         self.running = false;
         self.restart_blocked = false;
@@ -291,6 +302,7 @@ impl LanguagePanel {
     pub(super) fn cancel_navigation(&mut self) {
         self.features.cancel_pending();
         self.implementations.reset();
+        self.parameter_info.reset();
         self.cancel_deferred_navigation();
     }
     fn cancel_deferred_navigation(&mut self) {
@@ -476,6 +488,7 @@ impl CedarApp {
         self.language.features.reset();
         self.language.types.reset();
         self.language.implementations.reset();
+        self.language.parameter_info.reset();
         self.language.intent = None;
         self.language.automatic = false;
         self.language_request(Operation::LanguageStop, ActionKind::Stop);
@@ -748,6 +761,11 @@ impl CedarApp {
         if !self.pending.is_empty() {
             return;
         }
+        // Parameter info owns explicit sync/query admission at the end of the
+        // frame, after all editor, tab, recovery and navigation finishers.
+        if self.language.parameter_info.waiting_to_dispatch() {
+            return;
+        }
         if self.language_feature_tick() {
             return;
         }
@@ -963,6 +981,9 @@ impl CedarApp {
             }
             ActionKind::Feature { request } => self.apply_language_feature(request, value),
             ActionKind::WorkspaceSymbols { context } => self.apply_java_types(context, value),
+            ActionKind::JavaParameterInfo { .. } => {
+                unreachable!("parameter info replies are applied after final-frame guards")
+            }
             ActionKind::JavaImplementationResolve {
                 context,
                 sequence,
@@ -1639,6 +1660,7 @@ impl CedarApp {
             View::MavenDependencies => self.maven_dependencies_view(ui),
             View::JavaTypes => self.java_types_view(ui),
             View::JavaImplementations => self.java_implementations_view(ui),
+            View::JavaParameterInfo => self.java_parameter_info_view(ui),
             View::Definitions => {
                 let mut selected = None;
                 egui::ScrollArea::vertical()
@@ -1853,6 +1875,16 @@ impl CedarApp {
     pub(super) fn language_shortcuts(&mut self, ctx: &egui::Context) {
         // Consume modal Escape before the app-wide Escape handler.
         if self.format_preview_shortcut(ctx) {
+            return;
+        }
+        if self.tools_open
+            && self.tool == crate::Tool::Language
+            && self.language.view == View::JavaParameterInfo
+            && !self.foreign_modal_owns_input(ctx)
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.language.parameter_info.reset();
+            self.language.view = View::Problems;
             return;
         }
         if self.tools_open

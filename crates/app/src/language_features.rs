@@ -621,7 +621,10 @@ impl CedarApp {
     }
     pub(super) fn language_feature_controls(&mut self, ui: &mut egui::Ui) {
         if self.language.mode == ServerMode::Java {
-            ui.horizontal_wrapped(|ui| self.java_implementations_control(ui));
+            ui.horizontal_wrapped(|ui| {
+                self.java_implementations_control(ui);
+                self.java_parameter_info_control(ui);
+            });
         }
         if !self.language.running {
             return;

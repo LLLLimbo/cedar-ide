@@ -30,6 +30,7 @@ const EXPECTED_CAPABILITIES: &[&str] = &[
     "language_events",
     "language_format",
     "language_java_implementations",
+    "language_java_signature_help",
     "language_open",
     "language_organize_java_imports",
     "language_query",
@@ -228,7 +229,7 @@ fn capabilities(client: &AcceptanceClient) -> CheckResult<()> {
             && info.arch == "x86_64"
             && info.schema == 1
             && info.version == env!("CARGO_PKG_VERSION")
-            && info.capabilities.len() == 31
+            && info.capabilities.len() == 32
             && info.capability_groups == ["java_maven_dependencies_v1", "java_maven_leaf_v1"]
             && info
                 .capabilities
@@ -1174,7 +1175,7 @@ fn real_linux_normal_agent_java_editor_acceptance() -> CheckResult<()> {
         };
         connect(&mut client, &clock, &binary, &root, false)?;
         capabilities(client.as_ref().unwrap())?;
-        evidence.capability_count = 31;
+        evidence.capability_count = 32;
         evidence.capability_group_count = 2;
         evidence.exact_capabilities = true;
         evidence.maven_groups_advertised = true;
