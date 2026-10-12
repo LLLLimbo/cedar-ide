@@ -6,7 +6,7 @@ const PROBE: &str = "workspace_access_test_probe";
 const REPORT_SCROLL: &str = "workspace_access_report_scroll";
 const SIZE: [f32; 2] = [780.0, 540.0];
 const TOOLS: [(Tool, &str); 5] = [
-    (Tool::Search, "PROJECT SEARCH"),
+    (Tool::Search, "FIND RESULTS"),
     (Tool::Git, "GIT CHANGES"),
     (Tool::Run, "COMMANDS"),
     (Tool::Language, "LANGUAGE"),
@@ -548,7 +548,7 @@ fn held_key_repeats_do_not_toggle_or_take_focus_and_modifiers_are_exact() {
     }
     toggle(&mut app, SIZE);
     assert!(app.tools_open);
-    assert_eq!(focused(&app), Some(widget(&app, "PROJECT SEARCH").id));
+    assert_eq!(focused(&app), Some(widget(&app, "FIND RESULTS").id));
     assert!(commands.try_recv().is_err());
 }
 

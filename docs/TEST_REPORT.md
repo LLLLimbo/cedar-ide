@@ -1,4 +1,164 @@
-# Verification checkpoint — 0.60.0 Find and return candidate
+# Verification checkpoint — 0.61.0 candidate
+
+## 0.61.0 scope and pending acceptance
+
+**The 0.61.0 candidate is not accepted.** Focused local tests and normal-agent
+proofs passed, and the versioned 0.61.0 local aggregate and strict checks passed.
+Both matching-version normal-agent proofs also passed. Exact-commit dual-platform
+CI, all three exact-source package audits and native-window
+acceptance remain pending. The accepted 0.60.0 baseline below does not validate these new frontend
+paths. No new Windows GUI or real-SSH acceptance is claimed.
+
+The candidate keeps one same-session Project Text snapshot, bounded to 500 rows
+and 512 KiB of combined path/snippet text. The shared Find and return window and
+FIND RESULTS tool use the same accepted source. Exact-path groups follow
+first-seen order and preserve original hit identity, including duplicate-looking
+rows. A click selects, Space explicitly previews, and Enter or double-click uses
+ordinary Open. A collapsed group retains its selected hit but cannot activate a
+hidden row. Submitted query, selection, group state and view scroll survive
+hiding/reopening and Open–Back; preview intent is retired when hidden.
+
+Query edits, pending or failed reruns, and reconnect make retained historical
+rows inactive until another explicit successful search. An outstanding physical
+search request disables duplicate submission even after its intent is retired.
+Preview keeps the shared one-Read-in-flight boundary and 1 MiB limit; an open
+draft previews with zero backend Reads. Opening reuses existing dirty tabs and
+ordinary location history without implicit Save. Wide results/preview layouts
+become stacked in narrower views, with spacing changes local to Find. Cancelling
+or hiding a preview retires its intent: explicitly previewing the same target
+again creates a fresh intent that cannot use the cancelled request's reply. The
+existing request and preview limits are unchanged.
+
+A very short explicit tools-height preference can clip or hide Find rows. Fully
+invisible rows cannot activate through pointer or keyboard; **Automatic height**
+is the recovery control. Targeted frame checks passed the ordinary and narrow
+Find journeys with 13- and 18-point text. They do not establish usability of a
+150-point tools preference with 18-point text, or of every viewport. Native GUI
+and the complete aggregate remain separate gates. A retained scroll offset can
+be clamped by the actual available scroll range after a layout change.
+
+This is a retained-results subset of B2, not completion of the whole roadmap
+phase. There are no new text filters, case/word options, regular expressions,
+CamelCase matching, debounce, disk persistence, global-theme changes, protocol
+changes or Java/JDT features. Existing filename discovery and its extension
+contract remain unchanged. The user-facing contract is in
+[Find and return](FIND_AND_RETURN.md).
+
+## 0.61.0 local checks and remaining gates
+
+The integrated local Linux **workspace, all-target, all-feature, locked** aggregate
+passed **49 suites, 1,943 passed / 0 failed / 69 ignored** against the versioned
+0.61.0 candidate. Formatting and strict workspace checks passed. The selected
+Python checks recorded **207 tests: 206 passed, zero failed and one skipped**. The earlier pre-version
+aggregate had the same Rust totals; it is not substituted for this final run.
+
+The local Browse frame suite passed **44 tests**, comprising the retained 27
+cases and **17 new retained-result cases**. The **33 Search tests** also passed
+after adapting their expected controls to the current labels. These headless
+egui checks cover grouped duplicate identities, visible-hit navigation, shared
+snapshot retention, query round trips, pending and failed reruns, reconnect,
+mixed/held/composition input, busy submission, hidden-row protection, safe height
+recovery, retained/clamped scrolling, preview cancellation and request-identity
+exhaustion. Standard and narrow journeys include 13- and 18-point text. Test
+names using "native" refer to real egui input handling, not an OS-window run.
+
+Both normal-agent proofs passed locally with the matching **0.61.0 agent**,
+and both receipts passed strict validation. Earlier pre-version results are not
+substituted for these final executions:
+
+- Browse passed the strict **17-field / seven-operation** contract. Its six added outcomes
+  verify the retained text snapshot, grouped original indices, exact text
+  Open–Back, reopened selection, zero additional operations for grouped
+  navigation, and zero additional Reads for retained dirty-draft preview.
+- Search keeps **14 cases / 57 fields / 12 operations** through the normal
+  agent/client path.
+
+The complete outer CI driver was **not run locally**. These local executions do
+not establish Windows execution, exact release-package audits or native GUI
+acceptance. Public
+exact-commit CI is pending, and no 0.61.0 native run has occurred.
+
+### Preserved local failures and layout boundary
+
+Earlier focused checks failed, and their outcomes remain part of the record:
+
+- Result allocation left the End-selected row outside its actual clip even with
+  13-point text. Allocation handling was corrected.
+- A 150-point tools-height preference with 18-point text hid the first hit. This
+  remains an explicit usability limit. An initial Automatic height recovery
+  attempt also failed; Find-local automatic sizing now restores the journey.
+  Safe clipping and recovery do not turn the original fixed-height failure into
+  a usability pass.
+- Two fixtures asserted egui presentation too early: the rendered enabled state
+  immediately after model retirement, and repeated Shift+Tab before deferred
+  focus movement settled. Corrections preserve immediate authority checks and
+  exact recovery assertions using real input frames.
+- An exact retained-scroll assertion failed when the viewport grew by 24 points.
+  The resulting 24-point offset reduction was the exact maximum-scroll clamp;
+  the final check uses observed content/viewport geometry without a tolerance.
+
+Source review found that selecting A, then B, then A again could recreate an old
+preview identity. A fresh serial now distinguishes each new preview intent,
+including cancellation and reopening; an old reply cannot satisfy a later intent
+for the same hit. Controlled headless tests cover this source-derived fix and
+serial exhaustion. It is not a diagnosis of a native-window failure.
+
+Passing regressions also cover deferred preview reveal yielding to newer
+focus/scroll actions and fully clipped focused rows. These review-found risks
+are not presented as earlier failed test executions. A separate local monitoring/observation failure is an
+observation failure, not a failed product test or a substitute for its terminal
+result.
+
+### Remaining native gate
+
+The 0.61.0 native gate must independently exercise Project Text result Open–Back,
+reopening the retained query/selection/group state, and the keyboard Back/Forward
+aliases against the exact candidate package. The 0.60.0 native omissions below
+cannot be filled by headless tests or inherited as new native evidence. The
+ordinary/narrow Find journey and the insufficient-height recovery boundary must
+remain distinct; safe clipping with Automatic height recovery is not a general
+150-point/18-point usability pass.
+
+## Accepted 0.60.0 bounded browsing baseline
+
+Public commit
+[`bd5cf9fc38635545d94941044f18d9ee436df2ea`](https://github.com/LLLLimbo/cedar-ide/commit/bd5cf9fc38635545d94941044f18d9ee436df2ea)
+passed [CI 38206608526](https://github.com/LLLLimbo/cedar-ide/actions/runs/38206608526).
+All **four jobs** and **three exact-source packages** passed verification. The
+complete workspace aggregates recorded **1,926 passed / 0 failed / 69 ignored**
+on Linux and **1,866 / 0 / 113** on Windows, each across **49 suites**.
+Both platforms passed all **27 Browse frame tests** and the normal-agent browsing
+proof. Existing required runtime gates and independent real-JDT producer proofs
+also passed; they are separate from native GUI evidence.
+
+The browsing proof used exactly **seven operations**: Hello, List, an origin
+Read, FindFiles, separate unopened-file preview and Open Reads, and Search.
+Preview and opening of an already dirty draft added **zero Reads**. The proof
+verified unchanged fixture sources and owned-agent cleanup. These are headless
+normal-agent results, not native-window operation counts.
+
+The bounded Linux native run used the exact CI desktop package with trust off.
+It exercised file discovery, preview, ordinary Open, toolbar Back, dirty-draft
+Undo/Redo, scoped discovery and Unicode-path display/open, plus Project Text
+submission and Current open draft preview. The application exited successfully.
+This accepts the stated 0.60.0 browsing milestone; it does not mean every roadmap
+journey passed natively.
+
+The native run **did not exercise** Project Text result Open–Back, reopened
+Project Text query retention, keyboard Back/Forward aliases, Forward, native
+Unicode character input, old-peer or incomplete-scan stress, Windows GUI, or real
+SSH. Unicode paths were found using an ASCII query. It did not establish native
+backend operation counts, exact dirty-buffer bytes or raw selection affinities
+from screenshots, native agent reaping, peak memory, or comparative performance.
+The new B2 retention and grouped-result interactions require their own evidence.
+
+## Preserved preparation and historical reports
+
+The original 0.60.0 preparation record follows unchanged. Its pending statements
+and its then-current 0.59.3 baseline describe the period before the accepted
+0.60.0 CI/package/native evidence above. Earlier failed checks and native limits
+remain part of the record; none are relabelled as passes. This historical text
+does not report execution or acceptance of the 0.61.0 candidate.
 
 ## 0.60.0 scope and acceptance state
 

@@ -4,15 +4,21 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-This guide describes the **0.60.0** integrated browsing candidate. Full CI,
-package checks and native-window acceptance are still pending; it does not
-announce an accepted release or Windows GUI validation.
+This guide describes the **0.61.0 candidate**: one retained, grouped Project
+Text result set with explicit preview and Open. Local tests and normal-agent
+proofs have passed against the versioned candidate. Exact-commit CI, package
+audits and native acceptance remain pending. The latest accepted bounded baseline is
+**0.60.0**; its evidence and native omissions are recorded in the
+[verification report](TEST_REPORT.md). That acceptance does not transfer to the
+new retained-result behavior.
 
 ## Start with a connected workspace
 
 Select **Find…** in the header, or use **Ctrl+Shift+N** for **Files** and
 **Ctrl+Shift+F** for **Project Text**. The window shows the workspace being searched.
-Use its provider buttons to switch between filenames and text.
+Use its provider buttons to switch between filenames and text. The steps below
+describe this shared window; the retained bottom tool is described separately
+under [Retained Project Text results](#retained-project-text-results).
 
 1. Enter a query, then press **Enter** in the query field or select **Find**.
 2. Press **Down** to focus the first result. Use **Up/Down** or **Home/End** to move
@@ -29,12 +35,19 @@ retained **Ctrl/Cmd+Shift+E**, hides tools and focuses the enabled Explorer
 **Refresh** control. It does not refresh, scan or read a file by itself. These
 shortcuts retain the existing modal, mixed-input and held-key guards.
 
-Tab and Shift+Tab move between controls. Escape when no preview is open, or
-**Close**, dismisses Find and return and restores the captured editor focus while
-that editor context remains current. Query or scope edits retire previous results;
-submit again to activate a new set. Switching provider, reconnecting or dismissing
-the window also retires pending intent. Late replies cannot reopen a dismissed
-preview or activate a different result.
+In this shared window, Tab and Shift+Tab move between controls. Escape when no
+preview is open, or
+**Close**, hides Find and return and restores the captured editor focus while
+that editor context remains current. Hiding the window keeps an accepted Project
+Text snapshot for this session. It retires pending preview and activation intent;
+late replies cannot reopen a hidden preview or activate a different result.
+
+Query edits make previous results inactive. Project files scope edits also retire
+that discovery result. Submit explicitly to activate a new set; changing a query
+back to its earlier text does not reactivate the old rows. Switching provider
+retires pending intent without discarding the retained Project Text snapshot.
+Reconnect requires a new explicit successful text search before historical rows
+can be used again.
 
 ## Files: check the provider label
 
@@ -103,22 +116,86 @@ reduce traversal. No matches in an incomplete scan does not mean the file is
 absent. Even a complete no-match result applies only to that scope and exclusion
 policy. A discovered binary or large file can still be refused by Open or Preview.
 
-## Project Text and preview
+## Retained Project Text results
 
 **Project Text** explicitly submits a case-sensitive literal search of disk text.
 It does not search unsaved draft bytes. Results display the submitted query and
 historical line hints; those coordinates may no longer identify the same text.
-The existing engine is bounded, and the interface retains at most 500 results and
-512 KiB of combined path/snippet text. A limit warning can reflect traversal,
-time or response limits, not just the number of matches.
+The existing engine is bounded, and the interface retains one accepted snapshot
+of at most **500 results** and **512 KiB** of combined path/snippet text. The
+shared Find and return window and the **FIND RESULTS** tool show that same
+snapshot; they do not keep independent search histories or duplicate result text.
+A limit warning can reflect traversal, time or response limits, not just the
+number of matches.
+
+Select **Search** in the sidebar to open the retained **FIND RESULTS** tool.
+Enter a query and select **Search**, or press **Enter** in its query field. The
+shared **Project Text** entry continues to use **Find**. Both are explicit
+submissions. While a search request is outstanding, another text submission is
+disabled, including after an edit makes its original intent inactive. Typing,
+hiding, reopening and switching views do not start a search.
+
+Results are grouped by their exact original path. Groups follow the first
+appearance of each path in the accepted response, and each group's hits retain
+their original relative order. Equal-looking hits remain separate rows. Grouping
+does not rewrite paths or change which original hit an action addresses.
+
+- Single-click a hit to select it. Selection and hover do not read file contents.
+- With a hit focused, **Up/Down** and **Home/End** navigate visible hits.
+  **Space** requests a read-only preview; **Enter** or a double-click uses
+  ordinary Open.
+- Click a path header to expand or collapse its group, or reach it with **Tab**
+  and press **Enter** or **Space**. Collapsing a group preserves its selected hit
+  and puts focus on the group header. A hidden hit cannot be previewed or opened;
+  expand its group to act on it again.
+
+In the bottom FIND RESULTS tool, preview leaves focus on the selected row.
+Use the existing tool close/hide control or **Ctrl/Cmd+J** to return to the editor;
+**Ctrl/Cmd+J** also reopens the selected tool. The bottom tool does not add an
+Escape action. The shared Find and return window keeps its preview/dismiss
+Escape behavior described above.
+
+The submitted query, selected hit and group expansion state survive hiding and
+reopening, switching between the two text-search views, and Open followed by
+Back, within the same session. Each view retains its scroll position within the
+current layout's scroll limits; resizing can clamp it. Preview intent is separate:
+request it again after reopening. A successful rerun replaces the accepted
+snapshot; no history is stored across application restarts.
+
+Editing the query, starting a rerun, a failed rerun or reconnecting leaves old
+rows visible as **inactive** historical results. They cannot preview or Open.
+Neither restoring the old query text nor reopening the view renews their
+authority. Run **Search** in FIND RESULTS, or **Find** in Project Text, and wait
+for a successful result for the current query and connection.
+
+Both Find views use compact local spacing and place results and preview side by
+side when there is enough width. In narrower views, preview stacks below the
+results and their controls. A very short manually chosen tools height can clip
+or hide result rows, especially with larger text. Fully invisible rows cannot
+preview or Open, even if a row previously had keyboard focus. Select
+**Automatic height** in the tools header to recover room for the Find journey;
+you can also reach that control with **Tab** and activate it with **Enter**.
+Then focus a visible hit before previewing or opening it. The stored height is a
+preference, not a guarantee that all Find content fits.
+
+These local changes do not change the application's global theme or promise
+usability at every tiny viewport. Directory/file-mask filters, case/word options,
+regular expressions, debounced queries and disk-persistent search history are
+not part of this candidate.
+
+## Explicit read-only preview
 
 Preview is separate from an editable tab and is limited to **1 MiB**. For a file
 already open, **Current open draft** shows that exact draft and sends **zero
 backend Reads**. For an unopened file, an explicit preview uses a bounded Read.
 Unreadable, binary, oversized or invalid responses show an explanation. There is
-one retained preview and at most one preview Read in flight, with one replacement
-selection waiting. Text hits carry no file revision, so a disk preview cannot
-establish that the file is unchanged since the search.
+one retained preview and at most one preview Read in flight across both Find
+views, with one replacement selection waiting. Text hits carry no file revision,
+so a disk preview cannot establish that the file is unchanged since the search.
+
+After cancelling or hiding a preview, explicitly previewing the same hit again
+starts a fresh preview intent. A reply belonging to the cancelled preview cannot
+supply the new one. The same single-flight and size limits still apply.
 
 **Open** always uses ordinary file opening; preview bytes are not promoted into
 a new editable document. An existing dirty tab is reused without rereading or

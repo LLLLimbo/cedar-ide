@@ -97,6 +97,17 @@ class ReceiptTests(unittest.TestCase):
             proof.validate_execution(execution(name), name)
         receipt = proof.expected_receipt()
         self.assertEqual(len(receipt["operation_ledger"]), 7)
+        self.assertEqual({key: receipt[key] for key in (
+            "retained_text_snapshot", "grouped_original_indices",
+            "text_open_back_exact", "reopen_keeps_selection",
+            "grouped_navigation_additional_operations",
+            "retained_dirty_preview_additional_reads",
+        )}, {
+            "retained_text_snapshot": True, "grouped_original_indices": True,
+            "text_open_back_exact": True, "reopen_keeps_selection": True,
+            "grouped_navigation_additional_operations": 0,
+            "retained_dirty_preview_additional_reads": 0,
+        })
         self.assertEqual(receipt["source_sha256"], [
             ["origin.txt", "2310717b7af21074597cd38d20ed4c76988de26c130e6e729d5968891892f401"],
             [proof.TARGET, "9871cde2b808033d4b8a4252cf0360136904bc65016352ea7cfa1ce0db69c6f6"],
@@ -110,6 +121,9 @@ class ReceiptTests(unittest.TestCase):
             invalid.append({**receipt, key: "wrong"})
             if type(value) is int:
                 invalid.append({**receipt, key: float(value)})
+            elif type(value) is bool:
+                invalid.append({**receipt, key: not value})
+                invalid.append({**receipt, key: int(value)})
         invalid.append({**receipt, "trust": 0})
         for change in ("ledger", "hash", "read_count", "nested_type"):
             changed = copy.deepcopy(receipt)

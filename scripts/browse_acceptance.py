@@ -92,6 +92,12 @@ def expected_receipt():
         "active_budget_seconds": 240, "cleanup_timeout_seconds": 30,
         "watchdog_seconds": 300, "dirty_preview_and_open_additional_reads": 0,
         "unopened_preview_reads": 1, "unopened_open_reads": 1,
+        "retained_text_snapshot": True,
+        "grouped_original_indices": True,
+        "text_open_back_exact": True,
+        "reopen_keeps_selection": True,
+        "grouped_navigation_additional_operations": 0,
+        "retained_dirty_preview_additional_reads": 0,
     }
 
 

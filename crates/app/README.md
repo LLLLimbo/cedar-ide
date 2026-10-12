@@ -4,18 +4,52 @@
 
 Cedar is a native Rust application using `eframe`/`egui` 0.31.1 and the Glow renderer. It does not embed a browser or a JVM. The remote workspace agent and optional language server run separately from the UI.
 
-## Find and return candidate (0.60.0)
+## Find and return: 0.61.0 candidate
 
 Use **Find…**, **Ctrl+Shift+N** for Files, or **Ctrl+Shift+F** for Project Text.
-Submit a query, select a result, request **Preview**, then use ordinary **Open**
-and **Back**. Negotiated Project files discovery includes untouched directories;
-the labelled fallback searches only open and loaded files. Draft preview sends no
-Read and browsing does not implicitly save. See the [usage and limits](../../docs/FIND_AND_RETURN.md).
-Filename queries use explicit submission and literal Unicode lowercase matching;
-regex, CamelCase matching and search-as-you-type are not implemented.
-This candidate still needs full CI, package checks and native-window acceptance;
-it does not change the accepted status of earlier checkpoints or claim visual
-parity or a performance advantage. Existing Build/Run features remain available.
+Select **Search** in the sidebar for the retained **FIND RESULTS** tool. Both
+text-search views share one same-session snapshot, bounded to 500 rows and
+512 KiB of path/snippet text; oversized snapshots are rejected whole. Results
+group by exact path in first-seen order, with the original identity of every hit
+preserved. Single-click selects,
+**Space** explicitly previews, and **Enter** or double-click uses ordinary
+**Open**. Use **Back** to return to a valid departure location.
+
+The submitted query, selection, group expansion and each view's scroll position
+survive hiding/reopening and Open–Back. Query edits, pending or failed reruns,
+and reconnect leave old rows inactive until an explicit successful search.
+An outstanding request disables duplicate text submissions. Preview is limited
+to 1 MiB and uses one shared Read in flight; an existing open draft previews with
+zero Reads. Browsing never implicitly saves. Both Find views use compact local
+spacing, with side-by-side results/preview at wide sizes and stacked content at
+narrower sizes. See the [usage and limits](../../docs/FIND_AND_RETURN.md).
+
+**This 0.61.0 candidate is not accepted.** The 44 Browse frame checks, including
+17 new retained-result cases, the 33 retained Search checks and both normal-agent
+proofs passed locally with the matching 0.61.0 agent. The versioned Linux aggregate passed 1,943 tests
+with zero failures and 69 ignored across 49 suites; formatting and strict checks
+also passed. Exact-commit dual-platform CI, all three package audits and native
+acceptance remain pending. This candidate covers retained grouped results only. There are
+no new directory/file-mask or case/word filters, debounce, regular expressions,
+CamelCase matching, disk persistence, global-theme, protocol or JDT changes.
+Existing Build/Run features remain available; no visual-parity or performance
+advantage is claimed.
+
+The latest accepted bounded baseline is **0.60.0**, public commit
+[`bd5cf9fc38635545d94941044f18d9ee436df2ea`](https://github.com/LLLLimbo/cedar-ide/commit/bd5cf9fc38635545d94941044f18d9ee436df2ea),
+with all four jobs and three exact-source packages verified in
+[CI 38206608526](https://github.com/LLLLimbo/cedar-ide/actions/runs/38206608526).
+Its scoped Linux native run covered Files discovery/preview/Open/toolbar Back,
+dirty-draft Undo/Redo, and Project Text submission/current-draft preview.
+Project Text Open–Back, reopened query retention, keyboard Back/Forward aliases
+and Forward were not exercised natively. Windows GUI and real SSH also remain
+unverified; the [report](../../docs/TEST_REPORT.md) records the full omissions.
+These baseline results do not validate the new B2 paths.
+
+Negotiated Project files discovery includes untouched directories; its labelled
+fallback searches only open and loaded files. Filename queries use explicit
+submission and literal Unicode lowercase matching. There is no search-as-you-type
+mode, persistent filename index or automatic filesystem watcher.
 
 ## Run
 
@@ -33,7 +67,7 @@ The optional argument prefills the local workspace field. Select **Connect works
 - Directory navigation, new-file drafts, up to 32 tabs, and path-based quick open
 - UTF-8 editing, line numbers, Java/Kotlin/Rust lexical colors, and case-sensitive find
 - Revision-checked saves, disk-version inspection, and explicit confirmation before discarding a dirty tab or quitting
-- Explicit project text search with historical line results; 0.57.6 passed complete dual-platform CI, all three packages and bounded Linux native acceptance, with an exact inactive-row pointer-hit limitation retained
+- Explicit project text search with historical disk lines; the 0.61.0 candidate adds shared retained groups and preview with validation pending. The accepted 0.57.6 historical evidence and its inactive-row pointer-hit limitation remain recorded below
 - Trusted-workspace Git status and explicit executable commands with literal argument rows, cancellable task output, and saved project profiles in `cedar.tasks.json`
 
 Shortcuts:
@@ -96,7 +130,7 @@ failures and earlier shipping failures remain preserved in the
 No Windows GUI, raw-event ownership, native request-count or native agent-reap
 claim follows. The command-output banner remains backlog.
 
-## Project Search keyboard navigation (0.57.6 bounded acceptance)
+## Historical Project Search evidence (0.57.6 bounded acceptance)
 
 The retained 0.57.6 Search checkpoint passed complete dual-platform CI: all retained
 process gates and all three packages passed. Both platforms passed 33 Search and
@@ -113,7 +147,7 @@ owned-agent reaping. It does not explain the preserved 0.57.1 native failure or
 claim Windows GUI acceptance. The [final 0.57.6 evidence](../../docs/TEST_REPORT_PHASE576_SEARCH_MIXED_INPUT.md#final-accepted-0576-evidence)
 retains each original failed verdict and the exact-package native limits.
 
-Shipping Search retains the 0.57.5 classification: MouseMoved(_) is ignored
+That checkpoint retained the 0.57.5 classification: MouseMoved(_) is ignored
 companion metadata, never read or validated for finiteness, and never used as a
 position or geometry source, consumed or replayed. Actual Primary-button absolute
 positions, matching capture/view/release/current-frame ownership and the row's
@@ -122,34 +156,52 @@ changes only a mixed-input test's focus/key-ownership expectation and bounded
 diagnostics, with no added frames, forced focus or shipping change. Deterministic
 already-arrived-pointer cases do not guarantee arbitrary merged native input.
 
-Enter a case-sensitive literal query and explicitly select **Search**, or press
-Enter in its query field. The accepted result batch labels the submitted query.
-These are historical on-disk lines, without file revisions or current-draft
-freshness: unsaved changes are not search input, and a recorded line may now point
-somewhere else. The existing engine is bounded; a limit warning may reflect scan,
-time or response limits as well as row count.
+## Retained Find interaction (0.61.0 candidate, pending verification)
 
-Use native Tab to focus a result row. Standalone, unmodified Up/Down moves through
-backend order, Home/End reaches the first/last row, and boundaries stop without
-wrapping. The destination scrolls into view; duplicate labels retain distinct
-row identity. Movement sends no requests and leaves editor text, selection, Undo
-and history unchanged. Other controls keep their normal keys.
+Enter a case-sensitive literal query and explicitly select **Search** in FIND
+RESULTS, or **Find** in the shared Project Text window. Enter in the query field
+also submits. The accepted result snapshot labels the submitted query. These are
+historical disk lines, without file revisions or current-draft freshness:
+unsaved changes are not search input, and a recorded line may now point somewhere
+else. A limit warning may reflect traversal, time or response limits as well as
+row count.
 
-Enter/Space or clicking an enabled row opens that exact result through ordinary
-Open. Existing dirty text and Undo stay intact, but the caret deliberately moves
-to the historical line and the departure is recorded for Back. An unopened file
-uses the ordinary root-confined Read path. No match-column or current-draft
-position guarantee is made.
+Native Tab reaches group headers and visible hits. Standalone, unmodified
+Up/Down moves through visible hits in displayed group order; Home/End reaches the
+first/last visible hit, with no wrapping. Selection and scrolling send no
+requests. A single click selects, Space explicitly previews, and Enter or a
+double-click opens the exact original hit. Group headers toggle with a click,
+Enter or Space. Collapsing a group keeps its selected hit and focuses the header;
+a hidden hit cannot preview or Open. Equal-looking hits retain distinct identities.
 
-Old rows remain visible but inactive while a newer request is pending, the query
-differs, or the connection changes. Explicitly search again after reconnect.
-Query/batch changes, hidden or switched tools, modals and competing input cancel
-unfinished row intent; continue with a fresh valid key or pointer action. The frontend keeps at
-most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
-oversized batches are rejected whole. No automatic search, new engine, protocol,
-capability or workspace operation was added by that Search checkpoint. The
-accepted 0.59.3 Unicode Parameter info renderer checkpoint has separate evidence in the
-[current report](../../docs/TEST_REPORT.md).
+A very short explicit tools height can clip or hide Find rows, especially with
+larger text. Fully invisible rows cannot preview or Open, including through a
+previously focused row. Use **Automatic height** in the tools header to restore
+room, or reach it with Tab and activate it with Enter, then focus a visible hit.
+No fixed-height setting guarantees that all content fits. Retained scroll
+positions are clamped to the current layout's scroll limits after resizing.
+
+In the bottom tool, preview keeps focus on its selected row. Hide it with the
+existing tool controls or **Ctrl/Cmd+J**; reopening retains the accepted snapshot.
+The bottom tool has no new Escape action. In the shared Find and return window,
+Escape dismisses preview back to the selected result; another Escape, or Close,
+hides the window and restores a still-current captured editor context. Cancelling
+or hiding a preview and then explicitly previewing the same hit creates a fresh
+intent; the old reply cannot satisfy it. Existing preview limits still apply.
+
+Ordinary Open retains existing dirty text and Undo, while a text hit intentionally
+moves the caret to its historical line and records the departure for Back. An
+unopened file uses the ordinary root-confined Read path; preview bytes never
+become an editable tab without ordinary Open. No match-column or current-draft
+position guarantee is made, and no action implicitly saves.
+
+Query edits, pending or failed reruns, and connection changes keep old rows
+visible but inactive. Restoring the earlier query text cannot reactivate them;
+explicitly submit again and wait for a successful current response. Hiding or
+switching tools retires unfinished input and preview intent, without losing an
+accepted snapshot. Late success/error cannot revive a hidden preview or redirect
+an action to a different row. All new retained/grouped interaction and layout
+checks remain separate from the historical 0.57.6 evidence above.
 
 ## Agent capabilities and trust
 

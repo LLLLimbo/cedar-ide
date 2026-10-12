@@ -384,7 +384,7 @@ impl Harness {
             "generated fixture root or form requires unsupported CJK font probing",
         )?;
         require(
-            env!("CARGO_PKG_VERSION") == "0.60.0"
+            env!("CARGO_PKG_VERSION") == "0.61.0"
                 && self.app.agent_info.as_ref().is_some_and(|info| {
                     info.version == env!("CARGO_PKG_VERSION")
                         && info.os == if cfg!(windows) { "windows" } else { "linux" }
@@ -1069,8 +1069,36 @@ fn normal_agent_search_keyboard_navigation_is_local_and_source_bound() -> Check<
     let old_source = h.source()?;
     let mut late = None;
     h.render_after_capture(key(egui::Key::Enter, egui::Modifiers::NONE), true, |h| {
-        late = Some(h.refresh_reply()?);
+        let first = h.refresh_reply()?;
+        let first_request = first.id;
+        // A completed backend exchange still owns its physical Search slot
+        // until the owner receives it. Another submit must dispatch nothing.
+        require(
+            h.app.search_busy(),
+            "undelivered Search lost its physical slot",
+        )?;
+        h.app.search();
+        h.idle()?;
+        late = Some(Event {
+            generation: first.generation,
+            id: first.id,
+            connected: first.connected,
+            result: first.result.clone(),
+        });
+        // Deliver the first real completion now to release that slot and stage
+        // its result. Only then may the next explicit Search be dispatched.
+        // The later old Event is a duplicate delivery, not a concurrent first
+        // delivery; the ready newer reply still meets captured Enter below.
+        h.app.apply_event(first);
+        require(
+            !h.app.search_busy() && h.source()? == old_source,
+            "first completion did not release its slot while leaving admission staged",
+        )?;
         let ready = h.refresh_reply()?;
+        require(
+            ready.id > first_request && h.app.search_busy(),
+            "newer explicit Search did not own a fresh physical request",
+        )?;
         h.app
             .result_tx
             .send(WorkerEvent::Response(ready))
@@ -1088,6 +1116,8 @@ fn normal_agent_search_keyboard_navigation_is_local_and_source_bound() -> Check<
     )?;
     h.preserved(&buffers, draft, selection, &history)?;
     h.case(CASES[6])?;
+    // The first old completion was already staged before the newer submit;
+    // re-delivery must leave the newer accepted source and editor untouched.
     h.app
         .apply_event(late.take().ok_or("late Search reply absent")?);
     h.settle()?;

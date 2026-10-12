@@ -1198,7 +1198,7 @@ impl CedarApp {
                 if self.browse_owns_search(event.id) {
                     self.stage_browse_search(event.id, query, event.result);
                 } else {
-                    self.apply_search_response(event.id, query, event.result);
+                    self.stage_search_response(event.id, query, event.result);
                 }
             }
             return;
@@ -1711,12 +1711,23 @@ impl CedarApp {
         }
     }
 
+    fn search_busy(&self) -> bool {
+        self.pending
+            .values()
+            .any(|job| matches!(job, Job::Search { .. }))
+    }
+
     fn search(&mut self) {
-        if self.search_query.trim().is_empty() {
+        if self.search_query.trim().is_empty() || self.search_busy() {
             return;
         }
         let query = self.search_query.clone();
-        self.search_state.invalidate();
+        self.search_state.deactivate();
+        self.retire_search_preview();
+        if self.next_request == 0 || self.next_request == u64::MAX {
+            self.error = Some("Search cannot submit: the request identity counter is exhausted. Reopen Cedar to start a new session.".into());
+            return;
+        }
         self.search_request = self.request(
             Operation::Search {
                 query: query.clone(),
@@ -1739,6 +1750,7 @@ impl CedarApp {
                     query,
                 })
         };
+        self.begin_search_submission();
     }
     fn git(&mut self) {
         if !self.active_form.as_ref().is_some_and(|form| form.allow_run) {
@@ -2510,7 +2522,7 @@ impl CedarApp {
                 }
                 ui.horizontal_wrapped(|ui| {
                     for (tool, label) in [
-                        (Tool::Search, "PROJECT SEARCH"),
+                        (Tool::Search, "FIND RESULTS"),
                         (Tool::Git, "GIT CHANGES"),
                         (Tool::Run, "COMMANDS"),
                         (Tool::Language, "LANGUAGE"),
@@ -3417,6 +3429,7 @@ impl eframe::App for CedarApp {
         self.finish_save_close_tab_frame(ctx);
         self.finish_tab_close_focus_frame(ctx);
         self.finish_java_parameter_info_frame();
+        self.finish_search_frame(ctx);
         self.browse_finish_frame(ctx);
     }
 }

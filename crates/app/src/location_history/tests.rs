@@ -1220,8 +1220,21 @@ fn selected_search_result_admits_after_its_line_selection() {
             truncated: false,
         }),
     });
-    let output = frame(&mut app, vec![]);
-    let at = label(&output, "2.txt:2");
+    // The first update admits the staged batch; subsequent frames present its
+    // native grouped row before any pointer event is captured.
+    for _ in 0..3 {
+        frame(&mut app, vec![]);
+    }
+    let response = crate::workspace_access_tests::recorded_response(&app, "search_row:0");
+    let clip = crate::workspace_access_tests::recorded_clip(&app, "search_row:0");
+    let visible = response.rect.intersect(clip);
+    assert!(response.enabled() && response.sense.senses_click());
+    assert!(visible.is_finite() && visible.width() > 0.0 && visible.height() > 0.0);
+    let at = visible.center();
+    let epoch = app.navigation_epoch;
+    let departure = selection(&app, 1);
+    let target_selection = selection(&app, 2);
+    frame(&mut app, vec![egui::Event::PointerMoved(at)]);
     frame(
         &mut app,
         vec![
@@ -1232,14 +1245,40 @@ fn selected_search_result_admits_after_its_line_selection() {
                 pressed: true,
                 modifiers: egui::Modifiers::NONE,
             },
-            egui::Event::PointerButton {
-                pos: at,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            },
         ],
     );
+    assert!(
+        crate::workspace_access_tests::recorded_response(&app, "search_row:0")
+            .is_pointer_button_down_on()
+    );
+    frame(
+        &mut app,
+        vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert!(
+        crate::workspace_access_tests::recorded_response(&app, "search_row:0")
+            .clicked_by(egui::PointerButton::Primary)
+    );
+    assert_eq!(app.search_state.selected_index(), Some(0));
+    assert_eq!(
+        app.editor_ctx.memory(|memory| memory.focused()),
+        Some(response.id)
+    );
+    assert_eq!(app.active_document, Some(1));
+    assert!(same_selection(selection(&app, 1), departure));
+    assert!(same_selection(selection(&app, 2), target_selection));
+    assert_eq!(app.navigation_epoch, epoch);
+    assert!(app.location_history.back.is_empty());
+    assert!(app.location_history.forward.is_empty());
+    assert!(app.location_history.pending.is_none());
+    assert!(!app.has_search_preview());
+    assert!(commands.try_recv().is_err());
+    frame(&mut app, key(egui::Key::Enter, egui::Modifiers::NONE));
     frame(&mut app, vec![]);
     assert_eq!(app.active_document, Some(2));
     assert_eq!(selection(&app, 2).primary.index, 4);

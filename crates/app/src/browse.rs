@@ -1,7 +1,7 @@
 //! Common, explicitly submitted Find and return entry. Provider adapters retain
 //! authority; this view owns only selection, native input and one bounded preview.
 use crate::{
-    navigation, search_keyboard, CedarApp, ConnectionState, Job, WorkspaceKey, AMBER, MUTED,
+    navigation, search_keyboard, CedarApp, ConnectionState, Job, Tool, WorkspaceKey, AMBER, MUTED,
 };
 use cedar_protocol::{
     FileDiscoveryIncompleteReason, Operation, Payload, DEFAULT_FILE_DISCOVERY_RESULTS,
@@ -113,8 +113,16 @@ impl Discovery {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PreviewSurface {
+    Browse,
+    Search,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct PreviewTicket {
+    surface: PreviewSurface,
+    serial: u64,
     context: Context,
     epoch: u64,
     provider: Provider,
@@ -122,6 +130,19 @@ pub(super) struct PreviewTicket {
     index: usize,
     row: Row,
     draft: Option<(u64, u64)>,
+}
+
+impl PreviewTicket {
+    fn same_intent(&self, other: &Self) -> bool {
+        self.surface == other.surface
+            && self.context == other.context
+            && self.epoch == other.epoch
+            && self.provider == other.provider
+            && self.query == other.query
+            && self.index == other.index
+            && self.row == other.row
+            && self.draft == other.draft
+    }
 }
 
 enum Preview {
@@ -154,6 +175,7 @@ enum Target {
     Text,
     Submit,
     Row(usize),
+    Group(usize),
     Preview,
     Open,
     Close,
@@ -238,6 +260,9 @@ pub(super) struct Browse {
     text_request: Option<u64>,
     search_completed: Option<(u64, String, Result<Payload, String>)>,
     desired: Option<PreviewTicket>,
+    // A fresh explicit intent never reuses an earlier in-flight Read ticket,
+    // including A → B → A and collapse → expand → preview of the same row.
+    preview_serial: u64,
     preview: Option<Preview>,
     // Kept across dismissal and reopening. Only its actual reply drains flight.
     flight: Option<(u64, PreviewTicket)>,
@@ -255,6 +280,14 @@ impl Browse {
     #[cfg(test)]
     pub(super) fn set_epoch_for_test(&mut self, epoch: u64) {
         self.epoch = epoch;
+    }
+    #[cfg(test)]
+    pub(super) fn set_preview_serial_for_test(&mut self, serial: u64) {
+        self.preview_serial = serial;
+    }
+    #[cfg(test)]
+    pub(super) fn preview_serial(&self) -> u64 {
+        self.preview_serial
     }
     #[cfg(test)]
     pub(super) fn query(&self) -> &str {
@@ -376,6 +409,9 @@ impl CedarApp {
         self.browse.focus = Some(Target::Query);
         self.browse.restore = None;
         self.browse.snapshot = None;
+        if provider == Provider::ProjectText {
+            self.restore_browse_text();
+        }
         if provider == Provider::Files {
             match self.browse_loaded_snapshot() {
                 Ok(snapshot) => self.browse.snapshot = Some(snapshot),
@@ -385,6 +421,41 @@ impl CedarApp {
                 self.browse_submit();
             }
         }
+    }
+    fn restore_browse_text(&mut self) {
+        self.browse.submitted = self
+            .search_state
+            .accepted
+            .as_ref()
+            .map(|source| source.query.clone())
+            .unwrap_or_default();
+        self.browse.rows = self
+            .browse_search_hits()
+            .into_iter()
+            .map(Row::Text)
+            .collect();
+        self.browse.selected = self.search_state.selected_index();
+        self.browse.truncated = self.search_truncated;
+        if self.search_state.accepted.is_some() && !self.search_rows_active() {
+            self.browse.message = Some(
+                "Previous results are inactive. Run Find for the current query and connection."
+                    .into(),
+            );
+        }
+    }
+    fn browse_text_visible(&self, index: usize) -> bool {
+        self.browse.provider != Provider::ProjectText || self.search_state.visible(index)
+    }
+    fn browse_toggle_text_group(&mut self, first: usize) {
+        if self.browse.provider != Provider::ProjectText || !self.search_rows_active() {
+            return;
+        }
+        self.search_state.toggle_group(first);
+        self.browse.input.retire();
+        self.browse.desired = None;
+        self.browse.preview = None;
+        self.browse.replacement = None;
+        self.browse.focus = Some(Target::Group(first));
     }
     pub(super) fn browse_retire(&mut self) {
         if self.browse.text_request.take().is_some() {
@@ -431,6 +502,29 @@ impl CedarApp {
         }
     }
     fn browse_ticket_current(&self, ticket: &PreviewTicket) -> bool {
+        if ticket.serial != self.browse.preview_serial {
+            return false;
+        }
+        if ticket.surface == PreviewSurface::Search {
+            return self.tools_open
+                && self.tool == Tool::Search
+                && !self.navigation.blocks_editor()
+                && !self.open_form
+                && !self.new_file
+                && !self.foreign_modal_owns_input(&self.editor_ctx)
+                && ticket.context.current(self)
+                && self.search_state.selected_index() == Some(ticket.index)
+                && self.search_state.visible(ticket.index)
+                && self.search_query == ticket.query
+                && matches!(&ticket.row, Row::Text(hit) if self.browse_search_current(hit))
+                && self
+                    .documents
+                    .iter()
+                    .find(|doc| doc.path == ticket.row.path())
+                    .map(|doc| (doc.id, doc.edit_version))
+                    == ticket.draft
+                && ticket.draft.is_none_or(|(_, version)| version != u64::MAX);
+        }
         self.browse_current()
             && ticket.context.current(self)
             && ticket.epoch == self.browse.epoch
@@ -438,6 +532,7 @@ impl CedarApp {
             && ticket.query == self.browse.query
             && ticket.query == self.browse.submitted
             && self.browse.selected == Some(ticket.index)
+            && self.browse_text_visible(ticket.index)
             && self.browse.rows.get(ticket.index) == Some(&ticket.row)
             && self.browse_row_current(&ticket.row)
             && self
@@ -449,7 +544,9 @@ impl CedarApp {
             && ticket.draft.is_none_or(|(_, version)| version != u64::MAX)
     }
     pub(super) fn browse_submit(&mut self) {
-        if !self.browse_current() {
+        if !self.browse_current()
+            || (self.browse.provider == Provider::ProjectText && self.search_busy())
+        {
             return;
         }
         if self.browse.provider == Provider::Files
@@ -534,7 +631,7 @@ impl CedarApp {
                 }
             }
             Provider::ProjectText => {
-                self.search_state.retire();
+                self.search_state.deactivate();
                 if self.next_request == 0 || self.next_request == u64::MAX {
                     self.browse.message = Some("Find cannot submit: the request identity counter is exhausted. Reopen Cedar to start a new session.".into());
                     return;
@@ -556,6 +653,10 @@ impl CedarApp {
         }
     }
     fn browse_query_changed(&mut self) {
+        if self.browse.provider == Provider::ProjectText {
+            self.search_query = self.browse.query.clone();
+            self.search_state.deactivate();
+        }
         if self.browse.text_request.take().is_some() {
             self.search_state.retire();
         }
@@ -563,11 +664,18 @@ impl CedarApp {
         if self.browse_refuse_exhaustion() {
             return;
         }
-        self.browse.submitted.clear();
+        if self.browse.provider == Provider::Files {
+            self.browse.submitted.clear();
+        } else {
+            // Retain the accepted batch's actual list during this very frame;
+            // an empty intermediate layout would clamp its scroll to zero.
+            self.restore_browse_text();
+        }
         self.browse.message = Some("Press Enter to submit this query.".into());
     }
     pub(super) fn browse_select(&mut self, index: usize) {
         if !self.browse_current()
+            || !self.browse_text_visible(index)
             || !self
                 .browse
                 .rows
@@ -582,6 +690,9 @@ impl CedarApp {
             self.browse.replacement = None;
         }
         self.browse.selected = Some(index);
+        if self.browse.provider == Provider::ProjectText {
+            self.select_search_row(index);
+        }
         self.browse.focus = Some(Target::Row(index));
     }
     pub(super) fn browse_preview(&mut self) {
@@ -600,6 +711,8 @@ impl CedarApp {
             .find(|doc| doc.path == row.path())
             .map(|doc| (doc.id, doc.edit_version));
         let ticket = PreviewTicket {
+            surface: PreviewSurface::Browse,
+            serial: self.browse.preview_serial,
             context,
             epoch: self.browse.epoch,
             provider: self.browse.provider,
@@ -611,13 +724,146 @@ impl CedarApp {
         if !self.browse_ticket_current(&ticket) {
             return;
         }
-        if self.browse.desired.as_ref() == Some(&ticket) {
-            self.browse.focus = Some(Target::PreviewPane);
+        self.request_find_preview(ticket);
+    }
+    pub(super) fn search_preview(&mut self, index: usize) {
+        let Some(hit) = self
+            .browse_search_hits()
+            .into_iter()
+            .find(|hit| hit.index() == index)
+        else {
+            return;
+        };
+        let draft = self
+            .documents
+            .iter()
+            .find(|doc| doc.path == hit.path())
+            .map(|doc| (doc.id, doc.edit_version));
+        let ticket = PreviewTicket {
+            surface: PreviewSurface::Search,
+            serial: self.browse.preview_serial,
+            context: Context::capture(self),
+            epoch: self.search_request,
+            provider: Provider::ProjectText,
+            query: self.search_query.clone(),
+            index,
+            row: Row::Text(hit),
+            draft,
+        };
+        if self.browse_ticket_current(&ticket) {
+            self.request_find_preview(ticket);
+        }
+    }
+    pub(super) fn retire_search_preview(&mut self) {
+        if self
+            .browse
+            .desired
+            .as_ref()
+            .is_some_and(|ticket| ticket.surface == PreviewSurface::Search)
+        {
+            self.browse.desired = None;
+            self.browse.preview = None;
+            self.browse.replacement = None;
+        }
+    }
+    pub(super) fn search_preview_current(&self) -> bool {
+        self.browse.desired.as_ref().is_some_and(|ticket| {
+            ticket.surface == PreviewSurface::Search && self.browse_ticket_current(ticket)
+        })
+    }
+    #[cfg(test)]
+    pub(super) fn has_search_preview(&self) -> bool {
+        self.search_preview_current()
+    }
+    #[cfg(test)]
+    pub(super) fn search_preview_text(&self) -> Option<&str> {
+        self.current_preview_text(PreviewSurface::Search)
+    }
+    fn current_preview_text(&self, surface: PreviewSurface) -> Option<&str> {
+        let ticket = self.browse.desired.as_ref()?;
+        if ticket.surface != surface || !self.browse_ticket_current(ticket) {
+            return None;
+        }
+        match self
+            .browse
+            .preview
+            .as_ref()
+            .filter(|preview| preview.ticket() == ticket)?
+        {
+            Preview::Draft(ticket) => self
+                .documents
+                .iter()
+                .find(|doc| {
+                    Some((doc.id, doc.edit_version)) == ticket.draft
+                        && doc.path == ticket.row.path()
+                })
+                .map(|doc| doc.text.as_str()),
+            Preview::Disk { text, .. } => Some(text),
+            Preview::Message { .. } => None,
+        }
+    }
+    pub(super) fn search_preview_panel(&mut self, ui: &mut egui::Ui, height: f32) {
+        let current = self.browse.desired.as_ref().is_some_and(|ticket| {
+            ticket.surface == PreviewSurface::Search && self.browse_ticket_current(ticket)
+        });
+        let title = if !current {
+            "Read-only preview · select a result and press Space".to_owned()
+        } else {
+            match &self.browse.preview {
+                Some(Preview::Draft(_)) => "Current open draft · read-only preview".into(),
+                Some(Preview::Disk { revision, .. }) => format!(
+                    "Disk preview · revision {} · historical search coordinates",
+                    &revision[..8]
+                ),
+                Some(Preview::Message { message, .. }) => message.clone(),
+                None => "Preview requested…".into(),
+            }
+        };
+        ui.label(RichText::new(title).small().color(MUTED));
+        egui::ScrollArea::both()
+            .id_salt("search_preview_scroll")
+            .min_scrolled_height(0.0)
+            .max_height(search_keyboard::visible_height(ui).min(height))
+            .show(ui, |ui| {
+                let response = ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            self.current_preview_text(PreviewSurface::Search)
+                                .unwrap_or("1 MiB maximum · preview does not change the editor"),
+                        )
+                        .monospace(),
+                    )
+                    .selectable(false),
+                );
+                #[cfg(test)]
+                crate::workspace_access_tests::record(ui, "search_preview_content", &response);
+                #[cfg(not(test))]
+                let _ = response;
+            });
+    }
+    fn request_find_preview(&mut self, mut ticket: PreviewTicket) {
+        if self.browse.desired.as_ref().is_some_and(|desired| {
+            desired.same_intent(&ticket) && self.browse_ticket_current(desired)
+        }) {
+            if ticket.surface == PreviewSurface::Browse {
+                self.browse.focus = Some(Target::PreviewPane);
+            }
             return;
         }
+        let Some(serial) = self.browse.preview_serial.checked_add(1) else {
+            self.browse.desired = None;
+            self.browse.preview = None;
+            self.browse.replacement = None;
+            self.error = Some("Preview cannot continue: the preview identity counter is exhausted. Reopen Cedar to start a new session.".into());
+            return;
+        };
+        self.browse.preview_serial = serial;
+        ticket.serial = serial;
         self.browse.desired = Some(ticket.clone());
         self.browse.preview = None;
-        self.browse.focus = Some(Target::PreviewPane);
+        if ticket.surface == PreviewSurface::Browse {
+            self.browse.focus = Some(Target::PreviewPane);
+        }
         if !valid_preview_path(ticket.row.path()) {
             self.browse.preview = Some(Preview::Message { ticket, message: "Preview is unavailable because this result is not a valid workspace-relative file path.".into() });
             self.browse.replacement = None;
@@ -655,6 +901,10 @@ impl CedarApp {
         };
         if !self.browse_current()
             || self.browse.query != self.browse.submitted
+            || !self
+                .browse
+                .selected
+                .is_some_and(|index| self.browse_text_visible(index))
             || !self.browse_row_current(&row)
         {
             return;
@@ -732,7 +982,7 @@ impl CedarApp {
             {
                 self.browse.flight = None;
             }
-            if owns_view
+            if !self.foreign_modal_owns_input(ctx)
                 && self.browse.desired.as_ref() == Some(&ticket)
                 && self.browse_ticket_current(&ticket)
             {
@@ -748,6 +998,16 @@ impl CedarApp {
                 });
             }
         }
+        if self
+            .browse
+            .desired
+            .as_ref()
+            .is_some_and(|ticket| !self.browse_ticket_current(ticket))
+        {
+            self.browse.desired = None;
+            self.browse.preview = None;
+            self.browse.replacement = None;
+        }
         if self.browse.flight.as_ref().is_some_and(|(id, ticket)| {
             ticket.context.generation != self.generation || !self.pending.contains_key(id)
         }) {
@@ -755,7 +1015,7 @@ impl CedarApp {
         }
         if self.browse.flight.is_none() {
             if let Some(ticket) = self.browse.replacement.take() {
-                if owns_view
+                if !self.foreign_modal_owns_input(ctx)
                     && self.browse.desired.as_ref() == Some(&ticket)
                     && self.browse_ticket_current(&ticket)
                     && self.ready()
@@ -1141,6 +1401,7 @@ impl CedarApp {
                 Target::Text => "browse_text".into(),
                 Target::Submit => "browse_submit".into(),
                 Target::Row(index) => format!("browse_row:{index}"),
+                Target::Group(index) => format!("browse_group:{index}"),
                 Target::Preview => "browse_preview".into(),
                 Target::Open => "browse_open".into(),
                 Target::Close => "browse_close".into(),
@@ -1184,26 +1445,207 @@ impl CedarApp {
             .inner;
         self.browse_response(ui, target, &response)
     }
+    fn browse_results_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        max_height: f32,
+        select: &mut Option<usize>,
+        open: &mut bool,
+        toggle_group: &mut Option<usize>,
+    ) {
+        let scroll = egui::ScrollArea::vertical().id_salt("browse_results");
+        let scroll = if self.browse.provider == Provider::ProjectText {
+            scroll.id_salt((
+                "browse_text_results",
+                self.search_state
+                    .accepted
+                    .as_ref()
+                    .map(|source| search_keyboard::row_id(source, 0)),
+            ))
+        } else {
+            scroll
+        };
+        let output = scroll
+            .animated(false)
+            .max_height(max_height)
+            .show(ui, |ui| {
+                // Group adapters preserve original accepted indexes; no snippets are copied.
+                let groups = if self.browse.provider == Provider::ProjectText {
+                    self.search_state.group_rows()
+                } else {
+                    vec![(0..self.browse.rows.len()).collect()]
+                };
+                for group in groups {
+                    if self.browse.provider == Provider::ProjectText {
+                        let Some(first) = group.first().copied() else {
+                            continue;
+                        };
+                        let Some(row) = self.browse.rows.get(first) else {
+                            continue;
+                        };
+                        let label = format!(
+                            "{} {}  ({})",
+                            if self.search_state.group_expanded(first) {
+                                "▾"
+                            } else {
+                                "▸"
+                            },
+                            row.path(),
+                            group.len()
+                        );
+                        if self.browse_button(
+                            ui,
+                            Target::Group(first),
+                            &label,
+                            self.search_rows_active(),
+                        ) {
+                            *toggle_group = Some(first);
+                        }
+                        if !self.search_state.group_expanded(first) {
+                            continue;
+                        }
+                    }
+                    for index in group {
+                        let Some(row) = self.browse.rows.get(index).cloned() else {
+                            continue;
+                        };
+                        let label = match &row {
+                            Row::Project(candidate) => {
+                                candidate.source.paths[candidate.index].clone()
+                            }
+                            Row::File(candidate) => self.browse_loaded_label(candidate),
+                            Row::Text(hit) => format!(
+                                "    {}:  {}",
+                                hit.line(),
+                                self.browse_search_snippet(hit).unwrap_or("").trim()
+                            ),
+                        };
+                        let target = Target::Row(index);
+                        let id = self.browse.id(&target);
+                        let current = self.browse_row_current(&row);
+                        let response = ui
+                            .add_enabled_ui(current, |ui| {
+                                navigation::candidate_row(
+                                    ui,
+                                    id,
+                                    self.browse.selected == Some(index),
+                                    &label,
+                                    true,
+                                )
+                            })
+                            .inner;
+                        if response.has_focus() {
+                            ui.memory_mut(|memory| {
+                                memory.set_focus_lock_filter(
+                                    id,
+                                    egui::EventFilter {
+                                        vertical_arrows: true,
+                                        ..Default::default()
+                                    },
+                                )
+                            });
+                        }
+                        if self.browse_response(ui, target, &response) {
+                            *select = Some(index);
+                            if response.double_clicked_by(egui::PointerButton::Primary) {
+                                *open = true;
+                            }
+                        }
+                    }
+                }
+                if self.browse.rows.is_empty() {
+                    let empty = match &self.browse.discovery.accepted {
+                        Some(source) if source.incomplete => {
+                            "No matches observed in an incomplete scan; more files may exist."
+                        }
+                        Some(_) => {
+                            "No matching project files in the searched scope and exclusions."
+                        }
+                        None => "No active results. Submit a query to find a file or text.",
+                    };
+                    ui.label(RichText::new(empty).color(MUTED));
+                }
+            });
+        #[cfg(test)]
+        crate::browse_tests::record_results_scroll(
+            ui.ctx(),
+            output.id,
+            output.inner_rect,
+            output.content_size,
+        );
+        #[cfg(not(test))]
+        let _ = output;
+    }
+    fn browse_preview_panel(&mut self, ui: &mut egui::Ui, max_height: f32) {
+        if self.browse.desired.is_some() {
+            ui.separator();
+            let text = self
+                .browse
+                .preview
+                .as_ref()
+                .filter(|preview| self.browse.desired.as_ref() == Some(preview.ticket()))
+                .and_then(|preview| match preview {
+                    Preview::Draft(ticket) => self
+                        .documents
+                        .iter()
+                        .find(|doc| {
+                            Some((doc.id, doc.edit_version)) == ticket.draft
+                                && doc.path == ticket.row.path()
+                        })
+                        .map(|doc| doc.text.as_str()),
+                    Preview::Disk { text, .. } => Some(text.as_str()),
+                    _ => None,
+                });
+            let title = match &self.browse.preview {
+                Some(Preview::Draft(_)) => "Current open draft · read-only preview".to_owned(),
+                Some(Preview::Disk { revision, .. }) => format!(
+                    "Disk preview · revision {} · search coordinates may be historical",
+                    &revision[..8]
+                ),
+                Some(Preview::Message { message, .. }) => message.clone(),
+                None => "Preview requested…".to_owned(),
+            };
+            ui.label(RichText::new(title).small().color(MUTED));
+            let id = self.browse.id(&Target::PreviewPane);
+            let response = egui::ScrollArea::both()
+                .id_salt("browse_preview_scroll")
+                .max_height(max_height)
+                .show(ui, |ui| {
+                    let content = ui.add(
+                        egui::Label::new(
+                            RichText::new(text.unwrap_or("No preview bytes available")).monospace(),
+                        )
+                        .selectable(false),
+                    );
+                    ui.interact(content.rect, id, egui::Sense::click())
+                })
+                .inner;
+            self.browse_response(ui, Target::PreviewPane, &response);
+            ui.label(
+                RichText::new("Escape returns to the selected result")
+                    .small()
+                    .color(MUTED),
+            );
+        }
+    }
     pub(super) fn browse_window(&mut self, ctx: &egui::Context) {
         if !self.browse_current() {
             self.dismiss_navigation();
             return;
         }
-        if self.browse.provider == Provider::ProjectText
-            && self.browse.rows.is_empty()
-            && self.browse.text_request.is_some_and(|request| {
-                self.search_state.accepted.as_ref().is_some_and(|source| {
-                    source.request == request && source.query == self.browse.submitted
-                })
-            })
-        {
-            self.browse.rows = self
-                .browse_search_hits()
-                .into_iter()
-                .map(Row::Text)
-                .collect();
-            self.browse.selected = (!self.browse.rows.is_empty()).then_some(0);
-            self.browse.truncated = self.search_truncated;
+        if self.browse.provider == Provider::ProjectText {
+            let unchanged = self.browse.rows.first().is_some_and(
+                |row| matches!(row, Row::Text(hit) if self.browse_search_snapshot_current(hit)),
+            );
+            if !unchanged {
+                self.browse.rows = self
+                    .browse_search_hits()
+                    .into_iter()
+                    .map(Row::Text)
+                    .collect();
+                self.browse.selected = self.search_state.selected_index();
+                self.browse.truncated = self.search_truncated;
+            }
         }
         if self
             .browse
@@ -1226,6 +1668,7 @@ impl CedarApp {
         let mut open = false;
         let mut close = false;
         let mut switch = None;
+        let mut toggle_group = None;
         if let Some(intent) = &key {
             match (&intent.source.token.target, intent.key) {
                 (_, egui::Key::Escape) => {
@@ -1239,7 +1682,11 @@ impl CedarApp {
                 }
                 (Target::Query | Target::Scope, egui::Key::Enter) => submit = true,
                 (Target::Query | Target::Scope, egui::Key::ArrowDown) => {
-                    select = (!self.browse.rows.is_empty()).then_some(0)
+                    select = if self.browse.provider == Provider::ProjectText {
+                        self.search_state.visible_indices().first().copied()
+                    } else {
+                        (!self.browse.rows.is_empty()).then_some(0)
+                    }
                 }
                 (Target::Row(index), egui::Key::Enter) => {
                     select = Some(*index);
@@ -1250,7 +1697,14 @@ impl CedarApp {
                     preview = true;
                 }
                 (Target::Row(index), key) => {
-                    select = search_keyboard::destination(self.browse.rows.len(), *index, key)
+                    select = if self.browse.provider == Provider::ProjectText {
+                        self.search_state.destination(*index, key)
+                    } else {
+                        search_keyboard::destination(self.browse.rows.len(), *index, key)
+                    }
+                }
+                (Target::Group(first), egui::Key::Enter | egui::Key::Space) => {
+                    toggle_group = Some(*first)
                 }
                 _ => {}
             }
@@ -1261,6 +1715,8 @@ impl CedarApp {
         self.browse.input.presented.clear();
         let modal_id = egui::Id::new("navigation_modal");
         egui::Modal::new(modal_id).area(egui::Modal::default_area(modal_id).anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 24.0))).show(ctx, |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.spacing_mut().button_padding = egui::vec2(6.0, 3.0);
             ui.set_width((ctx.screen_rect().width() - 64.0).clamp(240.0, 860.0));
             ui.heading("Find and return");
             ui.horizontal(|ui| {
@@ -1296,13 +1752,16 @@ impl CedarApp {
                 }
             }
             ui.horizontal(|ui| {
-                submit |= self.browse_button(ui, Target::Submit, "Find", self.browse.provider == Provider::Files || self.backend_supports("search"));
+                submit |= self.browse_button(ui, Target::Submit, "Find", self.browse.provider == Provider::Files || (self.backend_supports("search") && !self.search_busy()));
                 ui.label(RichText::new("Enter submits · ↓ selects · Space previews · Enter opens").small().color(MUTED));
             });
-            if self.browse.provider == Provider::ProjectText && !self.browse.submitted.is_empty() {
-                ui.label(RichText::new(format!("Historical results for {:?}. Lines may have changed; Open uses current source.", self.browse.submitted)).small().color(MUTED));
+            if self.browse.provider == Provider::ProjectText {
+                if let Some(source) = &self.search_state.accepted {
+                    ui.label(RichText::new(format!("Historical results for {:?}. Lines may have changed; Open uses current source.", source.query)).small().color(MUTED));
+                    if !self.search_rows_active() { ui.colored_label(AMBER, "Previous results are inactive. Run Find for the current query and connection."); }
+                }
             }
-            if self.browse.provider == Provider::ProjectText && self.browse.text_request.is_some() && self.search_state.pending.is_some() { ui.label("Searching…"); }
+            if self.browse.provider == Provider::ProjectText && self.search_busy() { ui.label("Searching…"); }
             if self.browse.provider == Provider::Files {
                 if let Some(source) = &self.browse.discovery.accepted {
                     ui.label(RichText::new(format!("Project files for {:?} · scope /{} · {} entries examined", source.ticket.query, source.ticket.scope, source.examined)).small().color(MUTED));
@@ -1316,60 +1775,22 @@ impl CedarApp {
             if let Some(message) = &self.browse.message { ui.colored_label(AMBER, message); }
             if self.browse.truncated { ui.colored_label(AMBER, if self.browse.provider == Provider::ProjectText { "Search incomplete; more matches may exist." } else { "Result limit reached; more matches may exist. Narrow the query." }); }
             let max_height = (ctx.screen_rect().height() - 400.0).clamp(70.0, 280.0);
-            egui::ScrollArea::vertical().id_salt("browse_results").animated(false).max_height(max_height).show(ui, |ui| {
-                // Candidate wrappers carry authority, not duplicated snippets.
-                for index in 0..self.browse.rows.len() {
-                    let row = self.browse.rows[index].clone();
-                    let label = match &row {
-                        Row::Project(candidate) => candidate.source.paths[candidate.index].clone(),
-                        Row::File(candidate) => self.browse_loaded_label(candidate),
-                        Row::Text(hit) => format!("{}:{}  {}", hit.path(), hit.line(), self.browse_search_snippet(hit).unwrap_or("").trim()),
-                    };
-                    let target = Target::Row(index); let id = self.browse.id(&target);
-                    let current = self.browse_row_current(&row);
-                    let response = ui.add_enabled_ui(current, |ui| navigation::candidate_row(ui, id, self.browse.selected == Some(index), &label, true)).inner;
-                    if response.has_focus() { ui.memory_mut(|memory| memory.set_focus_lock_filter(id, egui::EventFilter { vertical_arrows: true, ..Default::default() })); }
-                    if self.browse_response(ui, target, &response) {
-                        select = Some(index);
-                        if response.double_clicked_by(egui::PointerButton::Primary) { open = true; }
-                    }
-                }
-                if self.browse.rows.is_empty() {
-                    let empty = match &self.browse.discovery.accepted {
-                        Some(source) if source.incomplete => "No matches observed in an incomplete scan; more files may exist.",
-                        Some(_) => "No matching project files in the searched scope and exclusions.",
-                        None => "No active results. Submit a query to find a file or text.",
-                    };
-                    ui.label(RichText::new(empty).color(MUTED));
-                }
-            });
-            let selected = self.browse.selected.and_then(|index| self.browse.rows.get(index)).is_some_and(|row| self.browse_row_current(row));
+            let wide = ui.available_width() >= 760.0;
+            if wide {
+                ui.columns(2, |columns| {
+                    self.browse_results_panel(&mut columns[0], max_height, &mut select, &mut open, &mut toggle_group);
+                    self.browse_preview_panel(&mut columns[1], max_height);
+                });
+            } else {
+                self.browse_results_panel(ui, max_height, &mut select, &mut open, &mut toggle_group);
+            }
+            let selected = self.browse.selected.filter(|index| self.browse_text_visible(*index)).and_then(|index| self.browse.rows.get(index)).is_some_and(|row| self.browse_row_current(row));
             ui.horizontal(|ui| {
                 preview |= self.browse_button(ui, Target::Preview, "Preview · Space", selected);
                 open |= self.browse_button(ui, Target::Open, "Open · Enter", selected);
                 ui.label(RichText::new("Explicit read-only preview · 1 MiB maximum").small().color(MUTED));
             });
-            if self.browse.desired.is_some() {
-                ui.separator();
-                let text = self.browse.preview.as_ref().filter(|preview| self.browse.desired.as_ref() == Some(preview.ticket())).and_then(|preview| match preview {
-                    Preview::Draft(ticket) => self.documents.iter().find(|doc| Some((doc.id, doc.edit_version)) == ticket.draft && doc.path == ticket.row.path()).map(|doc| doc.text.as_str()),
-                    Preview::Disk { text, .. } => Some(text.as_str()), _ => None,
-                });
-                let title = match &self.browse.preview {
-                    Some(Preview::Draft(_)) => "Current open draft · read-only preview".to_owned(),
-                    Some(Preview::Disk { revision, .. }) => format!("Disk preview · revision {} · search coordinates may be historical", &revision[..8]),
-                    Some(Preview::Message { message, .. }) => message.clone(),
-                    None => "Preview requested…".to_owned(),
-                };
-                ui.label(RichText::new(title).small().color(MUTED));
-                let id = self.browse.id(&Target::PreviewPane);
-                let response = egui::ScrollArea::both().id_salt("browse_preview_scroll").max_height((ctx.screen_rect().height() - 400.0).clamp(45.0, 180.0)).show(ui, |ui| {
-                    let content = ui.add(egui::Label::new(RichText::new(text.unwrap_or("No preview bytes available")).monospace()).selectable(false));
-                    ui.interact(content.rect, id, egui::Sense::click())
-                }).inner;
-                self.browse_response(ui, Target::PreviewPane, &response);
-                ui.label(RichText::new("Escape returns to the selected result").small().color(MUTED));
-            }
+            if !wide { self.browse_preview_panel(ui, (ctx.screen_rect().height() - 400.0).clamp(45.0, 180.0)); }
         });
         // Same modal quarantine as the legacy chooser: entry/exit events cannot
         // become edits in the underlying editor, even before focus settles.
@@ -1392,6 +1813,8 @@ impl CedarApp {
             self.browse_switch(provider);
         } else if submit {
             self.browse_submit();
+        } else if let Some(first) = toggle_group {
+            self.browse_toggle_text_group(first);
         } else {
             if let Some(index) = select {
                 self.browse_select(index);

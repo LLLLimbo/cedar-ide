@@ -1072,7 +1072,7 @@ fn tools_automatic_height_close_switch_disconnect_and_reconnect_retain_automatic
         (Tool::Run, "COMMANDS"),
         (Tool::Language, "LANGUAGE"),
         (Tool::Tests, "TEST RESULTS"),
-        (Tool::Search, "PROJECT SEARCH"),
+        (Tool::Search, "FIND RESULTS"),
     ] {
         click_widget(&mut app, SIZE, label);
         let geometry = settle(&mut app, SIZE);
@@ -1114,7 +1114,7 @@ fn tools_automatic_height_close_switch_disconnect_and_reconnect_retain_automatic
 #[test]
 fn tools_automatic_height_narrow_header_controls_remain_visible_and_clickable() {
     let labels = [
-        "PROJECT SEARCH",
+        "FIND RESULTS",
         "GIT CHANGES",
         "COMMANDS",
         "LANGUAGE",

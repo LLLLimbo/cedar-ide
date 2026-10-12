@@ -168,6 +168,28 @@ fn id(app: &CedarApp, index: usize) -> egui::Id {
     row_id(app.search_state.accepted.as_ref().unwrap(), index)
 }
 
+fn tab_from_search_submit_to_first_row(app: &mut CedarApp) {
+    assert_eq!(
+        focused(app),
+        Some(recorded_response(app, "search_submit").id)
+    );
+    let area_id = recorded_scroll_id(app).with("area");
+    if app
+        .editor_ctx
+        .read_response(area_id)
+        .is_some_and(|response| response.sense.is_focusable())
+    {
+        frame(app, key(egui::Key::Tab));
+        assert_eq!(focused(app), Some(area_id));
+    }
+    let group = recorded_response(app, "search_group:0");
+    assert!(group.enabled() && group.sense.is_focusable());
+    for expected in [group.id, id(app, 0)] {
+        frame(app, key(egui::Key::Tab));
+        assert_eq!(focused(app), Some(expected));
+    }
+}
+
 fn has_text(output: &egui::FullOutput, expected: &str) -> bool {
     fn contains(shape: &egui::epaint::Shape, expected: &str) -> bool {
         match shape {
@@ -310,8 +332,7 @@ fn search_keyboard_exact_space_companion_and_mixed_batch_veto() {
 fn search_keyboard_native_tab_and_explicit_query_enter_remain_available() {
     let (mut app, commands) = app(8);
     focus(&mut app, "search_submit");
-    frame(&mut app, key(egui::Key::Tab));
-    assert_eq!(focused(&app), Some(id(&app, 0)));
+    tab_from_search_submit_to_first_row(&mut app);
     frame(&mut app, key(egui::Key::Tab));
     assert_eq!(focused(&app), Some(id(&app, 1)));
     frame(
@@ -341,6 +362,11 @@ fn search_keyboard_native_tab_overflow_visits_actual_scroll_area_then_rows() {
     assert!(area.rect.is_finite() && area.rect.height() > 0.0);
     frame(&mut app, key(egui::Key::Tab));
     assert_eq!(focused(&app), Some(area_id));
+    frame(&mut app, key(egui::Key::Tab));
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, "search_group:0").id)
+    );
     frame(&mut app, key(egui::Key::Tab));
     assert_eq!(focused(&app), Some(id(&app, 0)));
     frame(&mut app, key(egui::Key::Tab));
@@ -378,7 +404,7 @@ fn search_keyboard_arrows_home_end_reveal_real_scroll_viewport_and_duplicates() 
 }
 
 #[test]
-fn search_keyboard_enter_space_and_pointer_open_dirty_buffer_preserving_undo() {
+fn search_keyboard_enter_preview_and_double_click_open_dirty_buffer_preserving_undo() {
     for activation in 0..3 {
         let (mut app, commands) = app(8);
         let original = app.documents[0].text.clone();
@@ -391,6 +417,8 @@ fn search_keyboard_enter_space_and_pointer_open_dirty_buffer_preserving_undo() {
         settle(&mut app);
         focus(&mut app, "search_row:0");
         let departure = app.navigation_epoch;
+        let cursor = app.documents[0].cursor;
+        let history = pointer_editor_history(&app);
         match activation {
             0 => {
                 frame(&mut app, key(egui::Key::Enter));
@@ -399,6 +427,20 @@ fn search_keyboard_enter_space_and_pointer_open_dirty_buffer_preserving_undo() {
                 let mut events = key(egui::Key::Space);
                 events.insert(1, egui::Event::Text(" ".into()));
                 frame(&mut app, events);
+                settle(&mut app);
+                assert_eq!(app.search_state.selected_index(), Some(0));
+                assert!(app.has_search_preview());
+                assert_eq!(
+                    app.search_preview_text(),
+                    Some(app.documents[0].text.as_str())
+                );
+                assert_eq!(app.navigation_epoch, departure);
+                assert_eq!(app.documents[0].cursor, cursor);
+                assert!(pointer_editor_history(&app) == history);
+                assert!(app.location_history.back.is_empty());
+                assert!(commands.try_recv().is_err());
+                assert_eq!(focused(&app), Some(id(&app, 0)));
+                frame(&mut app, key(egui::Key::Enter));
             }
             _ => {
                 assert_visible(&app, 0);
@@ -408,6 +450,20 @@ fn search_keyboard_enter_space_and_pointer_open_dirty_buffer_preserving_undo() {
                 frame(&mut app, pointer(pos, false));
                 assert!(recorded_response(&app, "search_row:0")
                     .clicked_by(egui::PointerButton::Primary));
+                assert!(!recorded_response(&app, "search_row:0")
+                    .double_clicked_by(egui::PointerButton::Primary));
+                assert_eq!(app.search_state.selected_index(), Some(0));
+                assert_eq!(app.navigation_epoch, departure);
+                assert_eq!(app.documents[0].cursor, cursor);
+                assert!(pointer_editor_history(&app) == history);
+                assert!(app.location_history.back.is_empty());
+                assert!(!app.has_search_preview());
+                assert!(commands.try_recv().is_err());
+                frame(&mut app, pointer(pos, true));
+                assert!(recorded_response(&app, "search_row:0").is_pointer_button_down_on());
+                frame(&mut app, pointer(pos, false));
+                assert!(recorded_response(&app, "search_row:0")
+                    .double_clicked_by(egui::PointerButton::Primary));
             }
         }
         settle(&mut app);
@@ -496,7 +552,7 @@ fn search_keyboard_history_uses_submitted_query_and_old_rows_stay_inactive() {
     assert!(has_text(&output, "Historical results for \"replacement\""));
     assert!(has_text(
         &output,
-        "Search stopped at an engine limit; more matches may exist. Narrow your query."
+        "Search incomplete; more matches may exist."
     ));
     assert!(!has_text(&output, "Results capped at 500"));
 }
@@ -526,6 +582,7 @@ fn search_keyboard_rejected_whole_batch_and_current_error_keep_old_rows_inactive
         app.search();
         let search = commands.try_recv().unwrap();
         reply(&mut app, search.id, result, true);
+        frame(&mut app, vec![]);
         assert_eq!(app.search_results.len(), 8);
         assert_eq!(app.search_state.accepted, source);
         assert!(app.search_state.pending.is_none());
@@ -547,10 +604,31 @@ fn search_keyboard_retired_success_error_and_payload_are_silent_but_transport_lo
         Err("retired failure".into()),
     ] {
         let (mut app, commands) = app(8);
+        let original_source = app.search_state.accepted.clone();
         app.search();
         let older = commands.try_recv().unwrap();
         app.search();
+        assert!(
+            commands.try_recv().is_err(),
+            "only one physical Search may be pending"
+        );
+        // The completed backend request releases its physical slot before the
+        // staged result is admitted after current-frame controls. A fresh
+        // submission must make that queued older completion inert.
+        reply(&mut app, older.id, result.clone(), true);
+        app.search();
         let newer = commands.try_recv().unwrap();
+        assert_ne!(newer.id, older.id);
+        app.error = Some("newer error must survive".into());
+        let staged_notice = app.notice.clone();
+        frame(&mut app, vec![]);
+        assert_eq!(app.search_results.len(), 8);
+        assert_eq!(app.search_state.accepted, original_source);
+        assert_eq!(app.search_state.pending.as_ref().unwrap().request, newer.id);
+        assert_eq!(app.error.as_deref(), Some("newer error must survive"));
+        assert_eq!(app.notice, staged_notice);
+        assert!(!app.search_rows_active());
+        assert!(commands.try_recv().is_err());
         reply(
             &mut app,
             newer.id,
@@ -560,9 +638,11 @@ fn search_keyboard_retired_success_error_and_payload_are_silent_but_transport_lo
             }),
             true,
         );
+        frame(&mut app, vec![]);
         app.error = Some("newer error must survive".into());
         let notice = app.notice.clone();
         reply(&mut app, older.id, result, true);
+        frame(&mut app, vec![]);
         assert_eq!(app.search_results.len(), 2);
         assert_eq!(
             app.search_state.accepted.as_ref().unwrap().request,
@@ -575,8 +655,15 @@ fn search_keyboard_retired_success_error_and_payload_are_silent_but_transport_lo
     let (mut app, commands) = app(8);
     app.search();
     let older = commands.try_recv().unwrap();
+    focus(&mut app, "search_query");
+    frame(&mut app, vec![egui::Event::Text("x".into())]);
+    assert!(app.search_state.pending.is_none());
+    assert!(!app.search_rows_active());
     app.search();
-    let _newer = commands.try_recv().unwrap();
+    assert!(
+        commands.try_recv().is_err(),
+        "retiring a query must not release its physical Search slot"
+    );
     reply(&mut app, older.id, Err("transport lost".into()), false);
     assert!(app.state == ConnectionState::Disconnected);
     assert!(!app.search_rows_active());
@@ -695,6 +782,8 @@ fn search_keyboard_pointer_release_cannot_retarget_new_batch_or_changed_query() 
         frame(&mut app, pointer(pos, false));
         assert!(commands.try_recv().is_err());
         assert_eq!(app.active_document, Some(1));
+        assert_eq!(app.search_state.selected_index(), Some(0));
+        assert!(!app.has_search_preview());
     }
 }
 
@@ -702,6 +791,7 @@ fn search_keyboard_pointer_release_cannot_retarget_new_batch_or_changed_query() 
 fn search_keyboard_owned_space_release_keeps_new_editor_space_and_unrelated_input() {
     let (mut app, commands) = app(8);
     focus(&mut app, "search_row:0");
+    let epoch = app.navigation_epoch;
     frame(
         &mut app,
         vec![
@@ -710,6 +800,14 @@ fn search_keyboard_owned_space_release_keeps_new_editor_space_and_unrelated_inpu
         ],
     );
     settle(&mut app);
+    assert!(app.has_search_preview());
+    assert_eq!(app.navigation_epoch, epoch);
+    assert!(app.search_state.claims(egui::Key::Space));
+    // Preview retains the result focus. Transfer it through the actual editor
+    // control while the original Space lifetime is still held.
+    click_control(&mut app, "editor");
+    assert_eq!(focused(&app), Some(egui::Id::new(("editor", 1_u64))));
+    assert!(app.search_state.claims(egui::Key::Space));
     let before = app.documents[0].text.clone();
     let ctx = app.editor_ctx.clone();
     let mut input = raw(
@@ -968,9 +1066,11 @@ fn search_keyboard_pointer_allows_only_inactive_ime_lifecycle_notifications() {
         frame(&mut app, vec![egui::Event::Ime(lifecycle)]);
         frame(&mut app, pointer(pos, false));
         assert!(recorded_response(&app, "search_row:2").clicked_by(egui::PointerButton::Primary));
-        assert!(
-            matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "file-2.txt")
-        );
+        assert_eq!(app.search_state.selected_index(), Some(2));
+        assert_eq!(focused(&app), Some(id(&app, 2)));
+        assert_eq!(app.active_document, Some(1));
+        assert!(app.location_history.back.is_empty());
+        assert!(!app.has_search_preview());
         assert!(commands.try_recv().is_err());
     }
     for composition in [
@@ -985,6 +1085,8 @@ fn search_keyboard_pointer_allows_only_inactive_ime_lifecycle_notifications() {
         frame(&mut app, vec![egui::Event::Ime(composition)]);
         frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Disabled)]);
         frame(&mut app, pointer(pos, false));
+        assert_eq!(app.search_state.selected_index(), Some(0));
+        assert!(!app.has_search_preview());
         assert!(
             commands.try_recv().is_err(),
             "composition must cancel the pending pointer press"
@@ -1132,23 +1234,19 @@ fn scrolled_pointer_app() -> (CedarApp, Receiver<Command>) {
     frame(&mut app, vec![]);
 
     click_control(&mut app, "search_query");
-    for expected in [
-        recorded_response(&app, "search_submit").id,
-        recorded_scroll_id(&app).with("area"),
-        id(&app, 0),
-    ] {
-        frame(&mut app, key(egui::Key::Tab));
-        assert_eq!(focused(&app), Some(expected));
-    }
+    frame(&mut app, key(egui::Key::Tab));
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, "search_submit").id)
+    );
+    tab_from_search_submit_to_first_row(&mut app);
     frame(&mut app, key(egui::Key::End));
     assert_eq!(focused(&app), Some(id(&app, SCROLLED_COUNT - 1)));
     // End's reveal is applied by the ScrollArea on the following layout frame.
     frame(&mut app, vec![]);
     assert_visible(&app, SCROLLED_COUNT - 1);
     assert_visible(&app, SCROLLED_COUNT - 2);
-    let mut space = key(egui::Key::Space);
-    space.insert(1, egui::Event::Text(" ".into()));
-    frame(&mut app, space);
+    frame(&mut app, key(egui::Key::Enter));
     let read = commands.try_recv().unwrap();
     assert!(matches!(&read.op, Operation::Read { path } if path == SCROLLED_UNOPENED));
     assert!(commands.try_recv().is_err());
@@ -1827,6 +1925,24 @@ fn assert_scrolled_pointer_companion(raw_motion: RawMotionAt) {
             pass.number
         );
     }
+    assert_eq!(app.search_state.selected_index(), Some(target));
+    assert_eq!(focused(&app), Some(target_id));
+    assert_eq!(app.navigation_epoch, before);
+    assert_eq!(app.active_document, active_before);
+    assert!(editor_documents(&app) == documents_before, "{up:?}");
+    assert!(pointer_editor_history(&app) == history_before, "{up:?}");
+    assert_eq!(app.active().unwrap().cursor, (97, 1));
+    assert_eq!(app.location_history.back.len(), 1);
+    assert!(app.location_history.forward.is_empty());
+    assert!(app.location_history.pending.is_none());
+    assert_eq!(app.next_request, next_request_before);
+    assert!(app.pending.is_empty());
+    assert!(!app.has_search_preview());
+    assert!(commands.try_recv().is_err());
+
+    // The witnessed single click only selects. A separate native Enter owns
+    // the ordinary Open and its existing editor/history transition below.
+    frame(&mut app, key(egui::Key::Enter));
     assert_eq!(app.navigation_epoch, before + 1);
     assert_eq!(app.active().unwrap().cursor, (96, 1));
     assert_eq!(app.location_history.back.len(), 2);
@@ -1951,15 +2067,19 @@ fn assert_companion_quiet(
     assert!(app.location_history.back.is_empty());
     assert!(app.location_history.forward.is_empty());
     assert!(app.location_history.pending.is_none());
+    assert_eq!(app.search_state.selected_index(), Some(0));
+    assert!(!app.has_search_preview());
     assert!(commands.try_recv().is_err());
 }
 
 fn tab_to_first_search_row(app: &mut CedarApp) {
     click_control(app, "search_query");
-    for expected in [recorded_response(app, "search_submit").id, id(app, 0)] {
-        frame(app, key(egui::Key::Tab));
-        assert_eq!(focused(app), Some(expected));
-    }
+    frame(app, key(egui::Key::Tab));
+    assert_eq!(
+        focused(app),
+        Some(recorded_response(app, "search_submit").id)
+    );
+    tab_from_search_submit_to_first_row(app);
 }
 
 #[test]
@@ -2392,7 +2512,15 @@ fn search_keyboard_workspace_changing_hello_preserves_held_lifetime_until_releas
     for held in [egui::Key::Enter, egui::Key::Space] {
         let (mut app, commands) = app(8);
         focus(&mut app, "search_row:0");
+        let initial_epoch = app.navigation_epoch;
         frame(&mut app, vec![edge(held, true, false)]);
+        if held == egui::Key::Space {
+            assert!(app.has_search_preview());
+            assert_eq!(app.navigation_epoch, initial_epoch);
+            assert!(app.location_history.back.is_empty());
+        } else {
+            assert_eq!(app.navigation_epoch, initial_epoch + 1);
+        }
         assert!(commands.try_recv().is_err());
         // Exercise the actual accepted Hello transition after an explicit
         // generation retirement; no backend process is launched by this test.
@@ -2420,6 +2548,7 @@ fn search_keyboard_workspace_changing_hello_preserves_held_lifetime_until_releas
         ));
         assert!(app.search_state.accepted.is_none());
         assert!(app.search_results.is_empty());
+        assert!(!app.has_search_preview());
         settle(&mut app);
         let ctx = app.editor_ctx.clone();
         let mut repeat = raw(&app, vec![edge(held, true, true)]);
@@ -2446,10 +2575,24 @@ fn search_keyboard_workspace_changing_hello_preserves_held_lifetime_until_releas
         );
         settle(&mut app);
         focus(&mut app, "search_row:2");
+        let epoch = app.navigation_epoch;
+        let active = app.active_document;
+        let documents = app.documents.len();
         frame(&mut app, key(held));
         assert!(
             matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "file-2.txt")
         );
+        assert_eq!(app.search_state.selected_index(), Some(2));
+        if held == egui::Key::Space {
+            assert!(app.has_search_preview());
+            assert_eq!(app.navigation_epoch, epoch);
+            assert_eq!(app.active_document, active);
+            assert_eq!(app.documents.len(), documents);
+            assert!(app.location_history.pending.is_none());
+        } else {
+            assert_eq!(app.navigation_epoch, epoch + 1);
+            assert!(!app.has_search_preview());
+        }
         assert!(commands.try_recv().is_err());
     }
 }

@@ -34,6 +34,49 @@ pub(super) fn record_dispatch_keys(ctx: &egui::Context) {
     ctx.data_mut(|data| data.insert_temp(egui::Id::new(DISPATCH_KEYS), keys));
 }
 
+pub(super) fn record_results_scroll(
+    ctx: &egui::Context,
+    id: egui::Id,
+    inner: egui::Rect,
+    content: egui::Vec2,
+) {
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new("browse_results_scroll_probe"),
+            (id, inner, content),
+        )
+    });
+}
+
+pub(super) fn record_bottom_results_scroll(
+    ctx: &egui::Context,
+    id: egui::Id,
+    inner: egui::Rect,
+    content: egui::Vec2,
+) {
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new("bottom_results_scroll_probe"),
+            (id, inner, content),
+        )
+    });
+}
+
+fn recorded_results_geometry(app: &CedarApp, bottom: bool) -> (egui::Id, egui::Rect, egui::Vec2) {
+    let key = if bottom {
+        "bottom_results_scroll_probe"
+    } else {
+        "browse_results_scroll_probe"
+    };
+    app.editor_ctx
+        .data(|data| data.get_temp(egui::Id::new(key)))
+        .expect("production Find results scroll was not rendered")
+}
+
+fn recorded_results_scroll(app: &CedarApp) -> egui::Id {
+    recorded_results_geometry(app, false).0
+}
+
 fn dispatch_keys(app: &CedarApp) -> Vec<KeyMetadata> {
     app.editor_ctx
         .data(|data| data.get_temp(egui::Id::new(DISPATCH_KEYS)))
@@ -126,13 +169,17 @@ fn visible_center(app: &CedarApp, probe: &str) -> egui::Pos2 {
 }
 
 fn click(app: &mut CedarApp, probe: &str) {
+    click_at_size(app, SIZE, probe);
+}
+
+fn click_at_size(app: &mut CedarApp, size: egui::Vec2, probe: &str) {
     let pos = visible_center(app, probe);
     let id = recorded_response(app, probe).id;
     let rect = recorded_rect(app, probe);
     let clip = recorded_clip(app, probe);
     // Arrive before pressing: coalescing a large pointer delta with down can
     // begin a native ScrollArea drag instead of clicking the observed row.
-    frame(app, vec![egui::Event::PointerMoved(pos)]);
+    frame_at_size(app, size, vec![egui::Event::PointerMoved(pos)]);
     assert_eq!(
         recorded_rect(app, probe),
         rect,
@@ -148,7 +195,7 @@ fn click(app: &mut CedarApp, probe: &str) {
     // inside this unchanged target in both clips; never choose a new point.
     assert!(rect.intersect(clip).contains(pos));
     assert!(rect.intersect(recorded_clip(app, probe)).contains(pos));
-    frame(app, pointer(pos, true));
+    frame_at_size(app, size, pointer(pos, true));
     assert_eq!(
         app.editor_ctx.input(|input| input.pointer.delta()),
         egui::Vec2::ZERO
@@ -157,7 +204,7 @@ fn click(app: &mut CedarApp, probe: &str) {
         recorded_response(app, probe).is_pointer_button_down_on(),
         "{probe}: native press did not reach its current rendered rectangle at {pos:?}"
     );
-    frame(app, pointer(pos, false));
+    frame_at_size(app, size, pointer(pos, false));
     assert!(
         recorded_response(app, probe).clicked_by(egui::PointerButton::Primary),
         "{probe}: native release did not click the rendered control at {pos:?}"
@@ -1893,6 +1940,1610 @@ fn browse_global_key_consumption_preserves_fresh_same_key_edges_and_metadata_ord
     }
 }
 
+// B2 keeps the accepted Project Text payload separate from each short-lived
+// Find presentation. These journeys act through rendered controls and observe
+// the shared snapshot without manufacturing focus, pointer owners, or tickets.
+fn retained_snapshot(app: &CedarApp) -> egui::Id {
+    app.search_state
+        .accepted_snapshot_id()
+        .expect("the explicit Search must have one retained snapshot")
+}
+
+fn assert_retained_rows(app: &CedarApp, snapshot: egui::Id, paths: &[&str]) {
+    assert_eq!(retained_snapshot(app), snapshot);
+    assert_eq!(app.browse.paths(), paths);
+    assert_eq!(
+        app.search_results
+            .iter()
+            .map(|row| row.path.as_str())
+            .collect::<Vec<_>>(),
+        paths,
+        "grouping must not reorder the accepted backend payload"
+    );
+}
+
+#[test]
+fn browse_retained_groups_keep_duplicate_indices_and_visible_order() {
+    let (mut app, commands) = fixture();
+    let departure = selection_signature(selection(&app));
+    let undo = undo_texts(&app);
+    let paths = ["origin.txt", "a.txt", "origin.txt", "b.txt", "a.txt"];
+    enter(&mut app, true);
+    submit_text(&mut app, &commands, &paths);
+    let snapshot = retained_snapshot(&app);
+    assert_eq!(
+        app.search_state.group_rows(),
+        vec![vec![0, 2], vec![1, 4], vec![3]]
+    );
+    assert_retained_rows(&app, snapshot, &paths);
+    assert_ne!(
+        recorded_response(&app, "browse_row:0").id,
+        recorded_response(&app, "browse_row:2").id,
+        "identical path, line and snippet still have distinct original indices"
+    );
+    for pair in [0, 2, 1, 4, 3].windows(2) {
+        assert!(
+            recorded_rect(&app, &format!("browse_row:{}", pair[0])).top()
+                < recorded_rect(&app, &format!("browse_row:{}", pair[1])).top()
+        );
+    }
+    click(&mut app, "browse_row:0");
+    for expected in [2, 1, 4, 3, 3] {
+        frame(&mut app, key(egui::Key::ArrowDown));
+        assert_eq!(app.browse.selected_index(), Some(expected));
+        assert_eq!(app.search_state.selected_index(), Some(expected));
+        assert_eq!(
+            focused(&app),
+            Some(recorded_response(&app, &format!("browse_row:{expected}")).id)
+        );
+    }
+    frame(&mut app, key(egui::Key::Home));
+    frame(&mut app, key(egui::Key::ArrowUp));
+    assert_eq!(app.browse.selected_index(), Some(0));
+    click(&mut app, "browse_group:0");
+    settle(&mut app);
+    assert!(!app.search_state.group_expanded(0));
+    assert_eq!(app.browse.selected_index(), Some(0));
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, "browse_group:0").id)
+    );
+    assert!(!recorded_response(&app, "browse_preview").enabled());
+    assert!(!recorded_response(&app, "browse_open").enabled());
+    click(&mut app, "browse_row:1");
+    frame(&mut app, key(egui::Key::Home));
+    assert_eq!(app.browse.selected_index(), Some(1));
+    frame(&mut app, key(egui::Key::ArrowDown));
+    assert_eq!(app.browse.selected_index(), Some(4));
+    frame(&mut app, key(egui::Key::End));
+    assert_eq!(app.browse.selected_index(), Some(3));
+    click(&mut app, "browse_group:0");
+    settle(&mut app);
+    assert!(app.search_state.group_expanded(0));
+    assert_retained_rows(&app, snapshot, &paths);
+    assert_draft(&app, departure, &undo);
+    assert!(app.location_history.back.is_empty());
+    assert!(app.location_history.forward.is_empty());
+    assert!(
+        commands.try_recv().is_err(),
+        "grouping and selection perform no operation"
+    );
+}
+
+#[test]
+fn browse_retained_snapshot_is_shared_across_open_back_hide_and_reopen() {
+    let (mut app, commands) = fixture();
+    let departure = selection_signature(selection(&app));
+    let undo = undo_texts(&app);
+    let paths = ["origin.txt", "a.txt", "origin.txt"];
+    enter(&mut app, true);
+    submit_text(&mut app, &commands, &paths);
+    let snapshot = retained_snapshot(&app);
+    click(&mut app, "browse_group:1");
+    settle(&mut app);
+    click(&mut app, "browse_row:2");
+    frame(&mut app, key(egui::Key::Space));
+    settle(&mut app);
+    assert!(app.browse.preview_visible());
+    assert_draft(&app, departure, &undo);
+    frame(&mut app, key(egui::Key::Escape));
+    frame(&mut app, key(egui::Key::Enter));
+    settle(&mut app);
+    assert_eq!(app.documents[0].cursor, (2, 1));
+    assert_eq!(app.location_history.back.len(), 1);
+    frame(
+        &mut app,
+        modified_key(egui::Key::OpenBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_draft(&app, departure, &undo);
+    assert!(app.location_history.back.is_empty());
+    assert_eq!(app.location_history.forward.len(), 1);
+    enter(&mut app, true);
+    assert_retained_rows(&app, snapshot, &paths);
+    assert_eq!(app.browse.selected_index(), Some(2));
+    assert!(!app.search_state.group_expanded(1));
+    assert!(
+        !app.browse.preview_visible(),
+        "reopen must not revive a preview ticket"
+    );
+    frame(&mut app, key(egui::Key::Escape));
+    settle(&mut app);
+    frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+    settle(&mut app);
+    assert!(app.tools_open && app.tool == Tool::Search);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert_eq!(app.search_state.selected_index(), Some(2));
+    assert!(!app.search_state.group_expanded(1));
+    assert!(!app.has_search_preview());
+    assert!(recorded_response(&app, "search_row:2").enabled());
+    click(&mut app, "search_group:1");
+    settle(&mut app);
+    assert!(app.search_state.group_expanded(1));
+    click(&mut app, "close_tools");
+    settle(&mut app);
+    assert!(!app.tools_open);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    enter(&mut app, true);
+    assert_retained_rows(&app, snapshot, &paths);
+    assert!(app.search_state.group_expanded(1));
+    assert_eq!(app.browse.selected_index(), Some(2));
+    assert!(!app.browse.preview_visible());
+    assert_draft(&app, departure, &undo);
+    assert!(app.location_history.back.is_empty());
+    assert_eq!(app.location_history.forward.len(), 1);
+    assert!(
+        commands.try_recv().is_err(),
+        "Open on a dirty tab, grouping, hide and reopen add no I/O"
+    );
+}
+
+#[test]
+fn browse_retained_query_round_trip_and_failed_rerun_require_explicit_search() {
+    let (mut app, commands) = fixture();
+    let departure = selection_signature(selection(&app));
+    let undo = undo_texts(&app);
+    enter(&mut app, true);
+    submit_text(&mut app, &commands, &["origin.txt", "a.txt"]);
+    let snapshot = retained_snapshot(&app);
+    for edited in ["changed", "needle"] {
+        query(&mut app, edited);
+        settle(&mut app);
+        assert_retained_rows(&app, snapshot, &["origin.txt", "a.txt"]);
+        assert!(!recorded_response(&app, "browse_row:0").enabled());
+        assert!(!recorded_response(&app, "browse_preview").enabled());
+        assert!(!recorded_response(&app, "browse_open").enabled());
+        assert!(commands.try_recv().is_err());
+    }
+    frame(&mut app, key(egui::Key::Enter));
+    let failed = commands.try_recv().unwrap();
+    assert!(matches!(&failed.op, Operation::Search { query, limit: 500 } if query == "needle"));
+    settle(&mut app);
+    assert!(!recorded_response(&app, "browse_row:0").enabled());
+    reply(
+        &mut app,
+        failed.id,
+        Err("bounded retained rerun failed".into()),
+    );
+    settle(&mut app);
+    assert_retained_rows(&app, snapshot, &["origin.txt", "a.txt"]);
+    assert!(!recorded_response(&app, "browse_row:0").enabled());
+    assert!(has_text(&frame(&mut app, vec![]), "needle"));
+    frame(&mut app, key(egui::Key::Escape));
+    enter(&mut app, true);
+    assert_retained_rows(&app, snapshot, &["origin.txt", "a.txt"]);
+    assert!(!recorded_response(&app, "browse_row:0").enabled());
+    frame(&mut app, key(egui::Key::Enter));
+    let accepted = commands.try_recv().unwrap();
+    assert!(matches!(&accepted.op, Operation::Search { query, limit: 500 } if query == "needle"));
+    reply(
+        &mut app,
+        accepted.id,
+        Ok(Payload::Matches {
+            matches: vec![SearchMatch {
+                path: "origin.txt".into(),
+                line: 3,
+                text: "replacement needle".into(),
+            }],
+            truncated: false,
+        }),
+    );
+    settle(&mut app);
+    assert_ne!(retained_snapshot(&app), snapshot);
+    assert!(recorded_response(&app, "browse_row:0").enabled());
+    assert_eq!(app.search_results[0].line, 3);
+    assert_draft(&app, departure, &undo);
+    assert!(app.location_history.back.is_empty());
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn browse_retained_reconnect_cannot_revive_preview_or_search_authority() {
+    for failed in [false, true] {
+        let (mut app, commands) = fixture();
+        let departure = selection_signature(selection(&app));
+        let undo = undo_texts(&app);
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["origin.txt", "a.txt"]);
+        let snapshot = retained_snapshot(&app);
+        click(&mut app, "browse_row:1");
+        frame(&mut app, key(egui::Key::Space));
+        let preview = commands.try_recv().unwrap();
+        assert!(matches!(&preview.op, Operation::Read { path } if path == "a.txt"));
+        let old_generation = app.generation;
+        let entries = app.entries.clone();
+        app.disconnected("retained Find connection changed".into());
+        app.generation += 1;
+        let (worker, commands) = Worker::recording();
+        app.worker = Some(worker);
+        app.state = ConnectionState::Connecting;
+        app.connecting_form = app.active_form.clone();
+        reply(
+            &mut app,
+            0,
+            Ok(Payload::Hello {
+                protocol: cedar_protocol::PROTOCOL_VERSION,
+                root: "/workspace".into(),
+                agent: Some(agent_support::full_test_agent()),
+                file_discovery: None,
+            }),
+        );
+        let list = commands.try_recv().unwrap();
+        assert!(matches!(&list.op, Operation::List { path } if path.is_empty()));
+        reply(&mut app, list.id, Ok(Payload::Entries { entries }));
+        settle(&mut app);
+        enter(&mut app, true);
+        assert_retained_rows(&app, snapshot, &["origin.txt", "a.txt"]);
+        assert!(!recorded_response(&app, "browse_row:1").enabled());
+        assert!(!app.browse.preview_visible());
+        app.error = Some("new connection status".into());
+        app.apply_event(Event {
+            generation: old_generation,
+            id: preview.id,
+            connected: true,
+            result: if failed {
+                Err("stale connection preview error".into())
+            } else {
+                Ok(file("a.txt", "stale connection preview bytes"))
+            },
+        });
+        settle(&mut app);
+        assert!(!app.browse.preview_visible());
+        assert_eq!(app.error.as_deref(), Some("new connection status"));
+        assert_eq!(retained_snapshot(&app), snapshot);
+        assert!(
+            commands.try_recv().is_err(),
+            "reconnect and stale outcomes must not re-search"
+        );
+        submit_text(&mut app, &commands, &["origin.txt", "a.txt"]);
+        assert_ne!(retained_snapshot(&app), snapshot);
+        assert!(recorded_response(&app, "browse_row:1").enabled());
+        assert_draft(&app, departure, &undo);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn browse_retained_group_keys_reject_mixed_composition_and_held_replay() {
+    for companion in [
+        egui::Event::Text("x".into()),
+        egui::Event::Paste("x".into()),
+        egui::Event::Ime(egui::ImeEvent::Preedit("composition".into())),
+        egui::Event::Ime(egui::ImeEvent::Commit("x".into())),
+        egui::Event::PointerMoved(egui::pos2(4.0, 4.0)),
+    ] {
+        let (mut app, commands) = fixture();
+        let departure = selection_signature(selection(&app));
+        let undo = undo_texts(&app);
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["origin.txt", "a.txt", "origin.txt"]);
+        let snapshot = retained_snapshot(&app);
+        click(&mut app, "browse_group:0");
+        settle(&mut app);
+        assert!(!app.search_state.group_expanded(0));
+        let mut events = key(egui::Key::Space);
+        events.insert(1, companion);
+        frame(&mut app, events);
+        assert!(
+            !app.search_state.group_expanded(0),
+            "mixed native input cannot toggle a group"
+        );
+        assert_eq!(retained_snapshot(&app), snapshot);
+        assert!(!app.browse.preview_visible());
+        assert_draft(&app, departure, &undo);
+        assert!(commands.try_recv().is_err());
+    }
+    let (mut app, commands) = fixture();
+    enter(&mut app, true);
+    submit_text(&mut app, &commands, &["origin.txt", "a.txt"]);
+    click(&mut app, "browse_group:0");
+    settle(&mut app);
+    frame(
+        &mut app,
+        vec![egui::Event::Ime(egui::ImeEvent::Preedit(String::new()))],
+    );
+    frame(&mut app, key(egui::Key::Space));
+    assert!(!app.search_state.group_expanded(0));
+    frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Disabled)]);
+    frame(&mut app, vec![edge(egui::Key::Space, true, false)]);
+    assert!(app.search_state.group_expanded(0));
+    for repeat in [false, true] {
+        frame(&mut app, vec![edge(egui::Key::Space, true, repeat)]);
+        assert!(
+            app.search_state.group_expanded(0),
+            "held key lifetime cannot toggle twice"
+        );
+    }
+    frame(&mut app, vec![edge(egui::Key::Space, false, false)]);
+    frame(&mut app, key(egui::Key::Space));
+    assert!(!app.search_state.group_expanded(0));
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn browse_retained_search_busy_rejection_keeps_one_physical_request_until_reply() {
+    for failed in [false, true] {
+        let (mut app, commands) = fixture();
+        let departure = selection_signature(selection(&app));
+        let undo = undo_texts(&app);
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["origin.txt", "a.txt"]);
+        let snapshot = retained_snapshot(&app);
+        query(&mut app, "pending A");
+        frame(&mut app, key(egui::Key::Enter));
+        let pending = commands.try_recv().unwrap();
+        assert!(
+            matches!(&pending.op, Operation::Search { query, limit: 500 } if query == "pending A")
+        );
+        for value in ["replacement B", "replacement C"] {
+            query(&mut app, value);
+            frame(&mut app, key(egui::Key::Enter));
+            settle(&mut app);
+            assert!(
+                commands.try_recv().is_err(),
+                "an outstanding physical Search cannot be superseded by a request burst"
+            );
+            assert_retained_rows(&app, snapshot, &["origin.txt", "a.txt"]);
+            assert!(!recorded_response(&app, "browse_row:0").enabled());
+        }
+        frame(&mut app, key(egui::Key::Escape));
+        enter(&mut app, true);
+        assert_eq!(app.browse.query(), "replacement C");
+        frame(&mut app, key(egui::Key::Enter));
+        assert!(
+            commands.try_recv().is_err(),
+            "hide/reopen does not free a physical Search slot"
+        );
+        app.error = Some("status from current view".into());
+        reply(
+            &mut app,
+            pending.id,
+            if failed {
+                Err("obsolete pending A failure".into())
+            } else {
+                Ok(Payload::Matches {
+                    matches: vec![SearchMatch {
+                        path: "b.txt".into(),
+                        line: 7,
+                        text: "obsolete pending A".into(),
+                    }],
+                    truncated: false,
+                })
+            },
+        );
+        settle(&mut app);
+        assert_retained_rows(&app, snapshot, &["origin.txt", "a.txt"]);
+        assert!(!recorded_response(&app, "browse_row:0").enabled());
+        assert_eq!(app.error.as_deref(), Some("status from current view"));
+        assert!(
+            commands.try_recv().is_err(),
+            "busy rejection must not become a deferred automatic Search"
+        );
+        frame(&mut app, key(egui::Key::Enter));
+        let fresh = commands.try_recv().unwrap();
+        assert!(
+            matches!(&fresh.op, Operation::Search { query, limit: 500 } if query == "replacement C")
+        );
+        reply(
+            &mut app,
+            fresh.id,
+            Ok(Payload::Matches {
+                matches: vec![SearchMatch {
+                    path: "origin.txt".into(),
+                    line: 3,
+                    text: "replacement C".into(),
+                }],
+                truncated: false,
+            }),
+        );
+        settle(&mut app);
+        assert_ne!(retained_snapshot(&app), snapshot);
+        assert!(recorded_response(&app, "browse_row:0").enabled());
+        assert_draft(&app, departure, &undo);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn browse_retained_preview_tickets_do_not_survive_reopen_or_group_collapse() {
+    for collapse in [false, true] {
+        for failed in [false, true] {
+            let (mut app, commands) = fixture();
+            let departure = selection_signature(selection(&app));
+            let undo = undo_texts(&app);
+            enter(&mut app, true);
+            submit_text(&mut app, &commands, &["origin.txt", "a.txt"]);
+            let snapshot = retained_snapshot(&app);
+            click(&mut app, "browse_row:1");
+            frame(&mut app, key(egui::Key::Space));
+            let obsolete = commands.try_recv().unwrap();
+            assert!(matches!(&obsolete.op, Operation::Read { path } if path == "a.txt"));
+            if collapse {
+                click(&mut app, "browse_group:1");
+                settle(&mut app);
+                assert!(!app.search_state.group_expanded(1));
+                assert_eq!(app.browse.selected_index(), Some(1));
+                assert!(!recorded_response(&app, "browse_open").enabled());
+            } else {
+                frame(&mut app, key(egui::Key::Escape));
+                frame(&mut app, key(egui::Key::Escape));
+                enter(&mut app, true);
+                assert_eq!(app.browse.selected_index(), Some(1));
+            }
+            assert_retained_rows(&app, snapshot, &["origin.txt", "a.txt"]);
+            assert!(!app.browse.preview_visible());
+            app.error = Some("retained current status".into());
+            reply(
+                &mut app,
+                obsolete.id,
+                if failed {
+                    Err("obsolete preview failure".into())
+                } else {
+                    Ok(file("a.txt", "obsolete preview bytes"))
+                },
+            );
+            settle(&mut app);
+            assert!(!app.browse.preview_visible());
+            assert!(app.browse.preview_text().is_none());
+            assert_eq!(app.error.as_deref(), Some("retained current status"));
+            assert_eq!(retained_snapshot(&app), snapshot);
+            assert!(
+                commands.try_recv().is_err(),
+                "retention does not recreate preview authority"
+            );
+            if collapse {
+                click(&mut app, "browse_group:1");
+                settle(&mut app);
+            }
+            click(&mut app, "browse_row:1");
+            frame(&mut app, key(egui::Key::Space));
+            let fresh = commands.try_recv().unwrap();
+            assert_ne!(fresh.id, obsolete.id);
+            assert!(matches!(&fresh.op, Operation::Read { path } if path == "a.txt"));
+            reply(
+                &mut app,
+                fresh.id,
+                Ok(file("a.txt", "fresh requested preview")),
+            );
+            settle(&mut app);
+            assert_eq!(app.browse.preview_text(), Some("fresh requested preview"));
+            assert_eq!(app.active_document, Some(1));
+            assert_eq!(app.documents.len(), 1);
+            assert_draft(&app, departure, &undo);
+            assert!(app.location_history.back.is_empty());
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn browse_retained_native_tab_and_geometry_at_standard_and_narrow_sizes() {
+    for size in [egui::vec2(1280.0, 900.0), egui::vec2(780.0, 540.0)] {
+        for font in [13.0, 18.0] {
+            let (mut app, commands) = fixture();
+            let departure = selection_signature(selection(&app));
+            let undo = undo_texts(&app);
+            app.editor_ctx.style_mut(|style| {
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Body, FontId::proportional(font));
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Button, FontId::proportional(font));
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Monospace, FontId::monospace(font));
+            });
+            enter(&mut app, true);
+            submit_text(&mut app, &commands, &vec!["origin.txt"; 80]);
+            let snapshot = retained_snapshot(&app);
+            for _ in 0..4 {
+                frame_at_size(&mut app, size, vec![]);
+            }
+            assert_eq!(
+                focused(&app),
+                Some(recorded_response(&app, "browse_query").id)
+            );
+            frame_at_size(&mut app, size, key(egui::Key::Tab));
+            assert_eq!(
+                focused(&app),
+                Some(recorded_response(&app, "browse_submit").id)
+            );
+            let group = recorded_response(&app, "browse_group:0").id;
+            let first_row = recorded_response(&app, "browse_row:0").id;
+            let mut native_tab_focus = Vec::new();
+            for _ in 0..6 {
+                frame_at_size(&mut app, size, key(egui::Key::Tab));
+                native_tab_focus.push(focused(&app));
+                if focused(&app) == Some(first_row) {
+                    break;
+                }
+            }
+            assert!(
+                native_tab_focus.contains(&Some(group)),
+                "native Tab must visit the group before its rows"
+            );
+            assert_eq!(
+                focused(&app),
+                Some(first_row),
+                "native Tab must reach a real result without injected focus"
+            );
+            frame_at_size(&mut app, size, key(egui::Key::End));
+            for _ in 0..4 {
+                frame_at_size(&mut app, size, vec![]);
+            }
+            assert_eq!(app.browse.selected_index(), Some(79));
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let row = recorded_rect(&app, "browse_row:79");
+            assert!(
+                recorded_clip(&app, "browse_row:79").contains_rect(row),
+                "font {font}, size {size:?}: selected row is clipped"
+            );
+            assert!(screen.contains_rect(row));
+            frame_at_size(&mut app, size, key(egui::Key::Space));
+            for _ in 0..4 {
+                frame_at_size(&mut app, size, vec![]);
+            }
+            for probe in [
+                "browse_query",
+                "browse_preview",
+                "browse_open",
+                "browse_close",
+                "browse_preview_content",
+            ] {
+                let rect = recorded_rect(&app, probe);
+                assert!(rect.is_finite() && rect.is_positive());
+                assert!(
+                    screen.contains_rect(rect),
+                    "font {font}, size {size:?}: {probe} outside screen: {rect:?}"
+                );
+                assert!(
+                    recorded_clip(&app, probe).contains_rect(rect),
+                    "font {font}, size {size:?}: {probe} clipped: {rect:?}"
+                );
+            }
+            frame_at_size(&mut app, size, key(egui::Key::Escape));
+            assert_eq!(
+                focused(&app),
+                Some(recorded_response(&app, "browse_row:79").id)
+            );
+            assert_eq!(retained_snapshot(&app), snapshot);
+            assert_draft(&app, departure, &undo);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn browse_retained_historical_label_tracks_accepted_query_during_failed_replacement() {
+    let (mut app, commands) = fixture();
+    enter(&mut app, true);
+    submit_text(&mut app, &commands, &["origin.txt"]);
+    let snapshot = retained_snapshot(&app);
+    query(&mut app, "replacement query");
+    frame(&mut app, key(egui::Key::Enter));
+    let pending = commands.try_recv().unwrap();
+    assert!(
+        matches!(&pending.op, Operation::Search { query, limit: 500 } if query == "replacement query")
+    );
+    settle(&mut app);
+    let output = frame(&mut app, vec![]);
+    assert!(has_text(&output, "Historical results for \"needle\""));
+    assert!(!has_text(
+        &output,
+        "Historical results for \"replacement query\""
+    ));
+    assert!(!recorded_response(&app, "browse_row:0").enabled());
+    reply(&mut app, pending.id, Err("replacement query failed".into()));
+    settle(&mut app);
+    let output = frame(&mut app, vec![]);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert!(has_text(&output, "Historical results for \"needle\""));
+    assert!(!has_text(
+        &output,
+        "Historical results for \"replacement query\""
+    ));
+    assert!(!recorded_response(&app, "browse_row:0").enabled());
+    frame(&mut app, key(egui::Key::Escape));
+    enter(&mut app, true);
+    assert_eq!(app.browse.query(), "replacement query");
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert!(has_text(
+        &frame(&mut app, vec![]),
+        "Historical results for \"needle\""
+    ));
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn browse_retained_bottom_search_hide_reopen_retires_unchanged_query_request() {
+    for failed in [false, true] {
+        let (mut app, commands) = fixture();
+        let departure = selection_signature(selection(&app));
+        let undo = undo_texts(&app);
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["origin.txt", "a.txt"]);
+        let snapshot = retained_snapshot(&app);
+        frame(&mut app, key(egui::Key::Escape));
+        settle(&mut app);
+        frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+        settle(&mut app);
+        assert!(app.tools_open && app.tool == Tool::Search);
+        click(&mut app, "search_submit");
+        let pending = commands.try_recv().unwrap();
+        assert!(
+            matches!(&pending.op, Operation::Search { query, limit: 500 } if query == "needle")
+        );
+        assert!(
+            !app.search_rows_active(),
+            "submission immediately retires old row authority"
+        );
+        assert_eq!(
+            app.search_state
+                .pending
+                .as_ref()
+                .map(|source| source.request),
+            Some(pending.id)
+        );
+        assert!(commands.try_recv().is_err());
+        // The original assertion read a reconstructed egui response immediately
+        // after submission and disagreed with the final inactive model. Pinned
+        // egui read_response uses this/previous-pass WidgetRect data, and repeated
+        // ID insertion OR-merges enabled; it is not our stored render response.
+        // Check disabled presentation after settling, retaining the immediate
+        // authority/request assertions above and the exact native Close hit below.
+        settle(&mut app);
+        assert!(!recorded_response(&app, "search_row:0").enabled());
+        click(&mut app, "close_tools");
+        settle(&mut app);
+        assert!(!app.tools_open);
+        frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+        settle(&mut app);
+        assert_eq!(
+            app.search_query, "needle",
+            "this lifecycle test never edits the pending query"
+        );
+        assert_eq!(retained_snapshot(&app), snapshot);
+        app.error = Some("status after reopening retained results".into());
+        reply(
+            &mut app,
+            pending.id,
+            if failed {
+                Err("obsolete same-query Search error".into())
+            } else {
+                Ok(Payload::Matches {
+                    matches: vec![SearchMatch {
+                        path: "b.txt".into(),
+                        line: 7,
+                        text: "obsolete same-query result".into(),
+                    }],
+                    truncated: false,
+                })
+            },
+        );
+        settle(&mut app);
+        assert_eq!(
+            retained_snapshot(&app),
+            snapshot,
+            "reopening cannot restore a hidden request's authority"
+        );
+        assert_eq!(app.search_results.len(), 2);
+        assert_eq!(app.search_results[0].path, "origin.txt");
+        assert!(!app.search_rows_active());
+        assert!(!recorded_response(&app, "search_row:0").enabled());
+        assert_eq!(
+            app.error.as_deref(),
+            Some("status after reopening retained results")
+        );
+        assert!(
+            commands.try_recv().is_err(),
+            "hide/reopen and stale outcomes must not automatically re-search"
+        );
+        click(&mut app, "search_submit");
+        let fresh = commands.try_recv().unwrap();
+        assert!(matches!(&fresh.op, Operation::Search { query, limit: 500 } if query == "needle"));
+        reply(
+            &mut app,
+            fresh.id,
+            Ok(Payload::Matches {
+                matches: vec![SearchMatch {
+                    path: "origin.txt".into(),
+                    line: 3,
+                    text: "fresh explicit Search".into(),
+                }],
+                truncated: false,
+            }),
+        );
+        settle(&mut app);
+        assert_ne!(retained_snapshot(&app), snapshot);
+        assert!(recorded_response(&app, "search_row:0").enabled());
+        assert_draft(&app, departure, &undo);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn browse_retained_bottom_insufficient_height_is_safe_and_automatic_restores_journey() {
+    for size in [egui::vec2(1280.0, 900.0), egui::vec2(780.0, 540.0)] {
+        for font in [13.0, 18.0] {
+            let (mut app, commands) = fixture();
+            let departure = selection_signature(selection(&app));
+            let undo = undo_texts(&app);
+            // This is a retained runtime preference, not a hard content cap.
+            // Production may grow the panel; assert actual visible allocations.
+            app.tools_height = Some(150.0);
+            app.editor_ctx.style_mut(|style| {
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Body, FontId::proportional(font));
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Button, FontId::proportional(font));
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Monospace, FontId::monospace(font));
+            });
+            enter(&mut app, true);
+            query(&mut app, "needle");
+            frame(&mut app, key(egui::Key::Enter));
+            let search = commands.try_recv().unwrap();
+            assert!(
+                matches!(&search.op, Operation::Search { query, limit: 500 } if query == "needle")
+            );
+            reply(
+                &mut app,
+                search.id,
+                Ok(Payload::Matches {
+                    matches: (0..32)
+                        .map(|_| SearchMatch {
+                            path: "origin.txt".into(),
+                            line: 2,
+                            text: "needle historical match".into(),
+                        })
+                        .collect(),
+                    truncated: true,
+                }),
+            );
+            settle(&mut app);
+            let snapshot = retained_snapshot(&app);
+            frame(&mut app, key(egui::Key::Escape));
+            for _ in 0..4 {
+                frame_at_size(&mut app, size, vec![]);
+            }
+            frame_at_size(
+                &mut app,
+                size,
+                modified_key(egui::Key::J, command_modifiers()),
+            );
+            for _ in 0..4 {
+                frame_at_size(&mut app, size, vec![]);
+            }
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let positive_visible = |app: &CedarApp, probe: &str, stage: &str| {
+                let rect = recorded_rect(app, probe);
+                let clip = recorded_clip(app, probe);
+                let visible = rect.intersect(clip).intersect(screen);
+                let scroll_id = crate::search_keyboard_tests::recorded_scroll_id(app);
+                let offset = egui::scroll_area::State::load(&app.editor_ctx, scroll_id)
+                    .map(|state| state.offset);
+                let selected = app.search_state.selected_index();
+                let native_focus = focused(app);
+                assert!(visible.is_finite() && visible.width() > 0.0 && visible.height() > 0.0,
+                    "stage={stage}, font={font}, size={size:?}, probe={probe}, rect={rect:?}, clip={clip:?}, screen={screen:?}, scroll={scroll_id:?}, offset={offset:?}, selected_original_index={selected:?}, native_focus={native_focus:?}");
+            };
+            for probe in [
+                "search_query",
+                "search_submit",
+                "close_tools",
+                "tools_automatic_height",
+            ] {
+                positive_visible(&app, probe, "constrained controls");
+            }
+            let row_zero_visible = recorded_rect(&app, "search_row:0")
+                .intersect(recorded_clip(&app, "search_row:0"))
+                .intersect(screen)
+                .is_positive();
+            if size == egui::vec2(1280.0, 900.0) && font == 18.0 {
+                // Preserved failed usability boundary: this 150-point preference
+                // cannot expose its first hit at the larger font. A safe fallback
+                // is not a claim that the constrained result journey passed.
+                assert!(!row_zero_visible, "the documented insufficient-height boundary changed; reassess its exact geometry");
+            }
+            let hidden = (0..32)
+                .find(|index| {
+                    let probe = format!("search_row:{index}");
+                    !recorded_rect(&app, &probe)
+                        .intersect(recorded_clip(&app, &probe))
+                        .intersect(screen)
+                        .is_positive()
+                })
+                .expect("the constrained long result set must include a clipped row");
+            let hidden_probe = format!("search_row:{hidden}");
+            let hidden_rect = recorded_rect(&app, &hidden_probe);
+            let hidden_clip = recorded_clip(&app, &hidden_probe);
+            let hidden_point = hidden_rect.center();
+            let selected_before = app.search_state.selected_index();
+            let navigation_before = app.navigation_epoch;
+            frame_at_size(
+                &mut app,
+                size,
+                vec![egui::Event::PointerMoved(hidden_point)],
+            );
+            frame_at_size(&mut app, size, pointer(hidden_point, true));
+            frame_at_size(&mut app, size, pointer(hidden_point, false));
+            assert!(!hidden_rect.intersect(hidden_clip).contains(hidden_point));
+            assert_eq!(
+                app.search_state.selected_index(),
+                selected_before,
+                "a clipped row must not acquire pointer selection"
+            );
+            assert_eq!(app.navigation_epoch, navigation_before);
+            assert!(!app.has_search_preview());
+            assert!(commands.try_recv().is_err());
+            assert_eq!(app.tools_height, Some(150.0));
+            assert_draft(&app, departure, &undo);
+            // Reach the visible escape hatch by real Tab traversal, without a
+            // pointer refocus or fabricated focus/scroll ownership.
+            let automatic = recorded_response(&app, "tools_automatic_height").id;
+            for _ in 0..24 {
+                if focused(&app) == Some(automatic) {
+                    break;
+                }
+                frame_at_size(&mut app, size, key(egui::Key::Tab));
+            }
+            assert_eq!(
+                focused(&app),
+                Some(automatic),
+                "native Tab must reach Automatic height"
+            );
+            positive_visible(
+                &app,
+                "tools_automatic_height",
+                "constrained keyboard recovery",
+            );
+            frame_at_size(&mut app, size, key(egui::Key::Enter));
+            for _ in 0..4 {
+                frame_at_size(&mut app, size, vec![]);
+            }
+            assert_eq!(app.tools_height, None);
+            for probe in [
+                "search_query",
+                "search_submit",
+                "search_truncated",
+                "search_group:0",
+                "search_row:0",
+                "close_tools",
+            ] {
+                positive_visible(&app, probe, "automatic before End");
+            }
+            click_at_size(&mut app, size, "search_row:0");
+            frame_at_size(&mut app, size, key(egui::Key::End));
+            for _ in 0..4 {
+                frame_at_size(&mut app, size, vec![]);
+            }
+            assert_eq!(app.search_state.selected_index(), Some(31));
+            positive_visible(&app, "search_row:31", "after End");
+            assert_eq!(
+                focused(&app),
+                Some(recorded_response(&app, "search_row:31").id)
+            );
+            frame_at_size(&mut app, size, key(egui::Key::Space));
+            for _ in 0..4 {
+                frame_at_size(&mut app, size, vec![]);
+            }
+            assert!(app.has_search_preview());
+            assert_eq!(app.search_preview_text(), Some(DRAFT));
+            positive_visible(&app, "search_row:31", "after Preview");
+            positive_visible(&app, "search_preview_content", "after Preview");
+            positive_visible(&app, "search_submit", "after Preview");
+            positive_visible(&app, "close_tools", "after Preview");
+            assert_eq!(
+                app.tools_height, None,
+                "only explicit Automatic height clears the preference"
+            );
+            assert_eq!(retained_snapshot(&app), snapshot);
+            assert_draft(&app, departure, &undo);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn browse_retained_bottom_search_refuses_exhausted_request_identity() {
+    for exhausted in [0, u64::MAX] {
+        for button in [false, true] {
+            let (mut app, commands) = fixture();
+            let departure = selection_signature(selection(&app));
+            let undo = undo_texts(&app);
+            enter(&mut app, true);
+            submit_text(&mut app, &commands, &["origin.txt"]);
+            let snapshot = retained_snapshot(&app);
+            frame(&mut app, key(egui::Key::Escape));
+            settle(&mut app);
+            frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+            settle(&mut app);
+            app.next_request = exhausted;
+            if button {
+                click(&mut app, "search_submit");
+            } else {
+                click(&mut app, "search_query");
+                frame(&mut app, key(egui::Key::Enter));
+            }
+            settle(&mut app);
+            assert!(
+                commands.try_recv().is_err(),
+                "bottom Search must not dispatch a reused identity"
+            );
+            assert_eq!(app.next_request, exhausted);
+            assert!(app.search_state.pending.is_none());
+            assert_eq!(retained_snapshot(&app), snapshot);
+            assert!(!recorded_response(&app, "search_row:0").enabled());
+            let message = app
+                .error
+                .clone()
+                .expect("exhaustion needs an explicit refusal");
+            assert!(message.contains("request identity counter is exhausted"));
+            assert!(has_text(&frame(&mut app, vec![]), &message));
+            assert_draft(&app, departure, &undo);
+            assert!(app.location_history.back.is_empty());
+        }
+    }
+}
+
+#[test]
+fn browse_retained_result_scroll_survives_reopen_but_resets_for_new_batch() {
+    for bottom in [false, true] {
+        let (mut app, commands) = fixture();
+        let departure = selection_signature(selection(&app));
+        let undo = undo_texts(&app);
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &vec!["origin.txt"; 80]);
+        let snapshot = retained_snapshot(&app);
+        if bottom {
+            frame(&mut app, key(egui::Key::Escape));
+            settle(&mut app);
+            frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+            settle(&mut app);
+        }
+        let row = |index| {
+            format!(
+                "{}:{index}",
+                if bottom { "search_row" } else { "browse_row" }
+            )
+        };
+        let query_probe = if bottom {
+            "search_query"
+        } else {
+            "browse_query"
+        };
+        let scroll = |app: &CedarApp| {
+            if bottom {
+                crate::search_keyboard_tests::recorded_scroll_id(app)
+            } else {
+                recorded_results_scroll(app)
+            }
+        };
+        click(&mut app, &row(0));
+        frame(&mut app, key(egui::Key::End));
+        settle(&mut app);
+        assert_eq!(app.search_state.selected_index(), Some(79));
+        let old_scroll = scroll(&app);
+        let old_offset = egui::scroll_area::State::load(&app.editor_ctx, old_scroll)
+            .unwrap()
+            .offset;
+        assert!(
+            old_offset.y > 0.0,
+            "the journey must actually scroll the accepted result batch"
+        );
+        assert!(recorded_clip(&app, &row(79)).contains_rect(recorded_rect(&app, &row(79))));
+        let old_geometry = recorded_results_geometry(&app, bottom);
+        let old_row_rect = recorded_rect(&app, &row(79));
+        let old_row_clip = recorded_clip(&app, &row(79));
+        if bottom {
+            click(&mut app, "close_tools");
+            settle(&mut app);
+            frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+            settle(&mut app);
+        } else {
+            frame(&mut app, key(egui::Key::Escape));
+            enter(&mut app, true);
+        }
+        assert_eq!(retained_snapshot(&app), snapshot);
+        assert_eq!(app.search_state.selected_index(), Some(79));
+        assert_eq!(
+            scroll(&app),
+            old_scroll,
+            "reopening retains the same batch's actual scroll identity"
+        );
+        let reopened_offset = egui::scroll_area::State::load(&app.editor_ctx, old_scroll)
+            .unwrap()
+            .offset;
+        let reopened_geometry = recorded_results_geometry(&app, bottom);
+        let reopened_row_rect = recorded_rect(&app, &row(79));
+        let reopened_row_clip = recorded_clip(&app, &row(79));
+        assert_eq!(
+            reopened_geometry.2, old_geometry.2,
+            "same-batch content size is retained"
+        );
+        // The preserved original failure measured unchanged 1940-point content,
+        // viewport growth from 256 to 280, and offset 1684 -> 1660. Pinned egui
+        // clamps to content minus viewport; compare that exact observed geometry,
+        // without an epsilon, extra scroll command, or reconstructed scroll ID.
+        let maximum_offset =
+            (reopened_geometry.2 - reopened_geometry.1.size()).max(egui::Vec2::ZERO);
+        let expected_offset = old_offset.max(egui::Vec2::ZERO).min(maximum_offset);
+        assert_eq!(reopened_offset, expected_offset,
+            "bottom={bottom}, before_scroll_inner_content={old_geometry:?}, after_scroll_inner_content={reopened_geometry:?}, before_row={old_row_rect:?}, before_clip={old_row_clip:?}, after_row={reopened_row_rect:?}, after_clip={reopened_row_clip:?}");
+        assert!(recorded_clip(&app, &row(79)).contains_rect(recorded_rect(&app, &row(79))));
+        assert!(commands.try_recv().is_err());
+
+        click(&mut app, query_probe);
+        frame(&mut app, modified_key(egui::Key::A, command_modifiers()));
+        frame(&mut app, vec![egui::Event::Text("replacement".into())]);
+        frame(&mut app, key(egui::Key::Enter));
+        let pending = commands.try_recv().unwrap();
+        assert!(
+            matches!(&pending.op, Operation::Search { query, limit: 500 } if query == "replacement")
+        );
+        settle(&mut app);
+        // Enter has normal TextEdit focus behavior on the bottom surface. Use
+        // a real query click while the reply is pending, then verify publishing
+        // a new batch neither steals this focus nor reuses the deep old offset.
+        click(&mut app, query_probe);
+        let query_focus = recorded_response(&app, query_probe).id;
+        assert_eq!(focused(&app), Some(query_focus));
+        reply(
+            &mut app,
+            pending.id,
+            Ok(Payload::Matches {
+                matches: (0..80)
+                    .map(|_| SearchMatch {
+                        path: "origin.txt".into(),
+                        line: 2,
+                        text: "replacement historical match".into(),
+                    })
+                    .collect(),
+                truncated: false,
+            }),
+        );
+        settle(&mut app);
+        assert_ne!(retained_snapshot(&app), snapshot);
+        assert_ne!(
+            scroll(&app),
+            old_scroll,
+            "a newly accepted batch has its own actual scroll identity"
+        );
+        assert_eq!(app.search_state.selected_index(), Some(0));
+        let rect = recorded_rect(&app, &row(0));
+        let clip = recorded_clip(&app, &row(0));
+        assert!(
+            clip.contains_rect(rect),
+            "bottom={bottom}: new first result {rect:?} outside {clip:?}"
+        );
+        assert_eq!(focused(&app), Some(query_focus));
+        assert_draft(&app, departure, &undo);
+        assert!(app.location_history.back.is_empty());
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn browse_retained_focused_clipped_row_rejects_keyboard_until_visible_again() {
+    for activation in [egui::Key::Enter, egui::Key::Space] {
+        let (mut app, commands) = fixture();
+        let departure = selection_signature(selection(&app));
+        let undo = undo_texts(&app);
+        app.tools_height = Some(150.0);
+        app.editor_ctx.style_mut(|style| {
+            style
+                .text_styles
+                .insert(egui::TextStyle::Body, FontId::proportional(13.0));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Button, FontId::proportional(13.0));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Monospace, FontId::monospace(13.0));
+        });
+        enter(&mut app, true);
+        query(&mut app, "needle");
+        frame(&mut app, key(egui::Key::Enter));
+        let search = commands.try_recv().unwrap();
+        assert!(matches!(&search.op, Operation::Search { query, limit: 500 } if query == "needle"));
+        reply(
+            &mut app,
+            search.id,
+            Ok(Payload::Matches {
+                matches: (0..32)
+                    .map(|_| SearchMatch {
+                        path: "origin.txt".into(),
+                        line: 2,
+                        text: "needle historical match".into(),
+                    })
+                    .collect(),
+                truncated: true,
+            }),
+        );
+        settle(&mut app);
+        let snapshot = retained_snapshot(&app);
+        frame(&mut app, key(egui::Key::Escape));
+        let wide = egui::vec2(1280.0, 900.0);
+        for _ in 0..4 {
+            frame_at_size(&mut app, wide, vec![]);
+        }
+        frame_at_size(
+            &mut app,
+            wide,
+            modified_key(egui::Key::J, command_modifiers()),
+        );
+        for _ in 0..4 {
+            frame_at_size(&mut app, wide, vec![]);
+        }
+        click_at_size(&mut app, wide, "search_row:0");
+        let row = recorded_response(&app, "search_row:0").id;
+        assert_eq!(focused(&app), Some(row));
+        assert_eq!(app.search_state.selected_index(), Some(0));
+        assert!(recorded_rect(&app, "search_row:0")
+            .intersect(recorded_clip(&app, "search_row:0"))
+            .is_positive());
+        // Change the actual frame layout while retaining genuine native focus.
+        // No test writes a pointer owner, focus owner, scroll state or key ticket.
+        app.editor_ctx.style_mut(|style| {
+            style
+                .text_styles
+                .insert(egui::TextStyle::Body, FontId::proportional(18.0));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Button, FontId::proportional(18.0));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Monospace, FontId::monospace(18.0));
+        });
+        let narrow = egui::vec2(780.0, 540.0);
+        for _ in 0..4 {
+            frame_at_size(&mut app, narrow, vec![]);
+        }
+        let clipped_rect = recorded_rect(&app, "search_row:0");
+        let clipped_view = recorded_clip(&app, "search_row:0");
+        assert!(!clipped_rect.intersect(clipped_view).is_positive(), "the keyboard guard fixture needs a fully clipped row: rect={clipped_rect:?}, clip={clipped_view:?}");
+        assert_eq!(
+            focused(&app),
+            Some(row),
+            "the clipped row must retain actual native focus"
+        );
+        let epoch = app.navigation_epoch;
+        frame_at_size(&mut app, narrow, vec![edge(activation, true, false)]);
+        for repeat in [false, true] {
+            frame_at_size(&mut app, narrow, vec![edge(activation, true, repeat)]);
+        }
+        frame_at_size(&mut app, narrow, vec![edge(activation, false, false)]);
+        assert_eq!(app.navigation_epoch, epoch);
+        assert_eq!(app.search_state.selected_index(), Some(0));
+        assert!(!app.has_search_preview());
+        assert!(app.location_history.back.is_empty());
+        assert!(
+            commands.try_recv().is_err(),
+            "focused but invisible Enter/Space must not activate"
+        );
+        assert_draft(&app, departure, &undo);
+        let automatic = recorded_response(&app, "tools_automatic_height").id;
+        for _ in 0..24 {
+            if focused(&app) == Some(automatic) {
+                break;
+            }
+            frame_at_size(
+                &mut app,
+                narrow,
+                modified_key(egui::Key::Tab, egui::Modifiers::SHIFT),
+            );
+            // Pinned egui Focus::interested_in_focus defers Previous into
+            // id_next_frame. Observe that production move before issuing the
+            // next physical Tab; otherwise the loop queues a second predecessor
+            // while its reported focus still belongs to the previous frame.
+            frame_at_size(&mut app, narrow, vec![]);
+        }
+        assert_eq!(
+            focused(&app),
+            Some(automatic),
+            "activation={activation:?}: release and native reverse Tab must remain usable"
+        );
+        frame_at_size(&mut app, narrow, key(egui::Key::Enter));
+        let activation_focus = focused(&app);
+        let activation_clicked = recorded_response(&app, "tools_automatic_height").clicked();
+        let activation_keys = app.editor_ctx.input(|input| key_metadata(&input.events));
+        for _ in 0..4 {
+            frame_at_size(&mut app, narrow, vec![]);
+        }
+        assert_eq!(app.tools_height, None, "blocked={activation:?}, phase=Automatic Enter, target={automatic:?}, focus={activation_focus:?}, reconstructed_clicked={activation_clicked}, residual_keys={activation_keys:?}");
+        click_at_size(&mut app, narrow, "search_row:0");
+        frame_at_size(&mut app, narrow, key(activation));
+        for _ in 0..4 {
+            frame_at_size(&mut app, narrow, vec![]);
+        }
+        if activation == egui::Key::Space {
+            assert!(
+                app.has_search_preview(),
+                "a fresh visible Space is not swallowed after the blocked lifetime"
+            );
+            assert_eq!(app.search_preview_text(), Some(DRAFT));
+            assert_draft(&app, departure, &undo);
+        } else {
+            assert_eq!(
+                app.navigation_epoch,
+                epoch + 1,
+                "a fresh visible Enter performs ordinary Open"
+            );
+            assert_eq!(app.documents[0].cursor, (2, 1));
+            assert_eq!(app.location_history.back.len(), 1);
+            assert_eq!(app.documents[0].text, DRAFT);
+            assert_eq!(undo_texts(&app), undo);
+        }
+        assert_eq!(retained_snapshot(&app), snapshot);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn browse_retained_bottom_preview_reveal_yields_to_newer_query_tab_and_wheel() {
+    for newer in ["query", "tab", "wheel"] {
+        let (mut app, commands) = fixture();
+        let departure = selection_signature(selection(&app));
+        let undo = undo_texts(&app);
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &vec!["origin.txt"; 80]);
+        let snapshot = retained_snapshot(&app);
+        frame(&mut app, key(egui::Key::Escape));
+        settle(&mut app);
+        frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+        settle(&mut app);
+        click(&mut app, "search_row:0");
+        frame(&mut app, key(egui::Key::End));
+        settle(&mut app);
+        let row = recorded_response(&app, "search_row:79").id;
+        assert_eq!(focused(&app), Some(row));
+        let scroll = crate::search_keyboard_tests::recorded_scroll_id(&app);
+        let before_preview = egui::scroll_area::State::load(&app.editor_ctx, scroll)
+            .unwrap()
+            .offset;
+        let query_id = recorded_response(&app, "search_query").id;
+        let query_pos = visible_center(&app, "search_query");
+        let row_visible =
+            recorded_rect(&app, "search_row:79").intersect(recorded_clip(&app, "search_row:79"));
+        let wheel_pos = egui::pos2(row_visible.left() + 6.0, row_visible.center().y);
+        let epoch = app.navigation_epoch;
+        frame(&mut app, key(egui::Key::Space));
+        assert!(app.has_search_preview());
+        assert!(commands.try_recv().is_err());
+        // Deliberately no empty presentation frame between Space and the newer
+        // native intent: a delayed reveal must neither refocus nor undo a wheel.
+        match newer {
+            "query" => {
+                frame(&mut app, pointer(query_pos, true));
+                assert!(recorded_response(&app, "search_query").is_pointer_button_down_on());
+                assert_eq!(
+                    focused(&app),
+                    Some(query_id),
+                    "preview reveal cannot overwrite the newer query pointer focus"
+                );
+                frame(&mut app, pointer(query_pos, false));
+                assert!(recorded_response(&app, "search_query")
+                    .clicked_by(egui::PointerButton::Primary));
+                settle(&mut app);
+                assert_eq!(focused(&app), Some(query_id));
+            }
+            "tab" => {
+                frame(&mut app, key(egui::Key::Tab));
+                let newer_focus = focused(&app);
+                assert_ne!(
+                    newer_focus,
+                    Some(row),
+                    "native Tab must actually leave the previewed row"
+                );
+                settle(&mut app);
+                assert_eq!(
+                    focused(&app),
+                    newer_focus,
+                    "preview reveal cannot restore old row focus after Tab"
+                );
+            }
+            _ => {
+                frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(wheel_pos),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, 120.0),
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+                let after_wheel = egui::scroll_area::State::load(&app.editor_ctx, scroll)
+                    .unwrap()
+                    .offset;
+                assert!(after_wheel.y < before_preview.y, "the actual wheel must move results up: before={before_preview:?}, after={after_wheel:?}");
+                settle(&mut app);
+                let settled = egui::scroll_area::State::load(&app.editor_ctx, scroll)
+                    .unwrap()
+                    .offset;
+                assert!(settled.y < before_preview.y, "delayed preview reveal must not override newer wheel scrolling: before={before_preview:?}, after={settled:?}");
+            }
+        }
+        assert_eq!(retained_snapshot(&app), snapshot);
+        assert_eq!(app.search_state.selected_index(), Some(79));
+        assert_eq!(app.navigation_epoch, epoch);
+        assert_draft(&app, departure, &undo);
+        assert!(app.location_history.back.is_empty());
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn browse_retained_preview_intent_rejects_selection_group_and_reopen_aba() {
+    for bottom in [false, true] {
+        for change in ["selection", "group", "reopen"] {
+            for failed in [false, true] {
+                let (mut app, commands) = fixture();
+                let departure = selection_signature(selection(&app));
+                let undo = undo_texts(&app);
+                enter(&mut app, true);
+                submit_text(&mut app, &commands, &["a.txt", "b.txt"]);
+                let snapshot = retained_snapshot(&app);
+                if bottom {
+                    frame(&mut app, key(egui::Key::Escape));
+                    settle(&mut app);
+                    frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+                    settle(&mut app);
+                }
+                let row = |index| {
+                    format!(
+                        "{}:{index}",
+                        if bottom { "search_row" } else { "browse_row" }
+                    )
+                };
+                let group = format!(
+                    "{}:0",
+                    if bottom {
+                        "search_group"
+                    } else {
+                        "browse_group"
+                    }
+                );
+                click(&mut app, &row(0));
+                frame(&mut app, key(egui::Key::Space));
+                let obsolete = commands.try_recv().unwrap();
+                assert!(matches!(&obsolete.op, Operation::Read { path } if path == "a.txt"));
+                let first_serial = app.browse.preview_serial();
+                settle(&mut app);
+                if bottom {
+                    frame(&mut app, key(egui::Key::Space));
+                } else {
+                    click(&mut app, "browse_preview");
+                }
+                assert_eq!(
+                    app.browse.preview_serial(),
+                    first_serial,
+                    "repeating the same live preview is idempotent"
+                );
+                assert!(commands.try_recv().is_err());
+                match change {
+                    "selection" => {
+                        click(&mut app, &row(1));
+                        frame(&mut app, key(egui::Key::Space));
+                        settle(&mut app);
+                        assert!(
+                            commands.try_recv().is_err(),
+                            "B remains coalesced behind A's physical Read"
+                        );
+                    }
+                    "group" => {
+                        click(&mut app, &group);
+                        settle(&mut app);
+                        assert!(!app.search_state.group_expanded(0));
+                        click(&mut app, &group);
+                        settle(&mut app);
+                        assert!(app.search_state.group_expanded(0));
+                    }
+                    _ if bottom => {
+                        click(&mut app, "close_tools");
+                        settle(&mut app);
+                        frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+                        settle(&mut app);
+                    }
+                    _ => {
+                        frame(&mut app, key(egui::Key::Escape));
+                        frame(&mut app, key(egui::Key::Escape));
+                        enter(&mut app, true);
+                    }
+                }
+                click(&mut app, &row(0));
+                frame(&mut app, key(egui::Key::Space));
+                let replacement_serial = app.browse.preview_serial();
+                assert!(
+                    replacement_serial > first_serial,
+                    "bottom={bottom}, change={change}: A returning is a new preview intent"
+                );
+                assert!(app.browse.busy());
+                assert!(
+                    commands.try_recv().is_err(),
+                    "only one physical preview Read may be outstanding"
+                );
+                app.error = Some("current preview status".into());
+                reply(
+                    &mut app,
+                    obsolete.id,
+                    if failed {
+                        Err("obsolete A preview failure".into())
+                    } else {
+                        Ok(file("a.txt", "obsolete A preview bytes"))
+                    },
+                );
+                settle(&mut app);
+                assert!(app.browse.preview_text().is_none());
+                assert!(app.search_preview_text().is_none());
+                assert!(app
+                    .browse
+                    .preview_message()
+                    .is_none_or(|message| !message.contains("obsolete A")));
+                assert_eq!(app.error.as_deref(), Some("current preview status"));
+                let fresh = commands.try_recv().expect(
+                    "draining the retired Read admits exactly the latest explicit A intent",
+                );
+                assert_ne!(fresh.id, obsolete.id);
+                assert!(matches!(&fresh.op, Operation::Read { path } if path == "a.txt"));
+                assert!(
+                    commands.try_recv().is_err(),
+                    "no intermediate B Read or duplicate A Read"
+                );
+                reply(
+                    &mut app,
+                    fresh.id,
+                    Ok(file("a.txt", "fresh A preview bytes")),
+                );
+                settle(&mut app);
+                assert_eq!(
+                    if bottom {
+                        app.search_preview_text()
+                    } else {
+                        app.browse.preview_text()
+                    },
+                    Some("fresh A preview bytes")
+                );
+                assert_eq!(app.browse.preview_serial(), replacement_serial);
+                assert!(!app.browse.busy());
+                if bottom {
+                    frame(&mut app, key(egui::Key::Space));
+                } else {
+                    click(&mut app, "browse_preview");
+                }
+                assert_eq!(app.browse.preview_serial(), replacement_serial);
+                assert!(
+                    commands.try_recv().is_err(),
+                    "completed live preview remains idempotent"
+                );
+                assert_eq!(retained_snapshot(&app), snapshot);
+                assert_eq!(app.active_document, Some(1));
+                assert_eq!(app.documents.len(), 1);
+                assert_draft(&app, departure, &undo);
+                assert!(app.location_history.back.is_empty());
+                assert!(app.location_history.forward.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn browse_retained_preview_serial_exhaustion_refuses_new_intent_and_drains_old_flight() {
+    for bottom in [false, true] {
+        for failed in [false, true] {
+            let (mut app, commands) = fixture();
+            let departure = selection_signature(selection(&app));
+            let undo = undo_texts(&app);
+            enter(&mut app, true);
+            submit_text(&mut app, &commands, &["a.txt", "b.txt"]);
+            let snapshot = retained_snapshot(&app);
+            if bottom {
+                frame(&mut app, key(egui::Key::Escape));
+                settle(&mut app);
+                frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+                settle(&mut app);
+            }
+            let row = |index| {
+                format!(
+                    "{}:{index}",
+                    if bottom { "search_row" } else { "browse_row" }
+                )
+            };
+            app.browse.set_preview_serial_for_test(u64::MAX - 1);
+            click(&mut app, &row(0));
+            frame(&mut app, key(egui::Key::Space));
+            let final_identity = commands.try_recv().unwrap();
+            assert!(matches!(&final_identity.op, Operation::Read { path } if path == "a.txt"));
+            assert_eq!(app.browse.preview_serial(), u64::MAX);
+            settle(&mut app);
+            if bottom {
+                frame(&mut app, key(egui::Key::Space));
+            } else {
+                click(&mut app, "browse_preview");
+            }
+            assert_eq!(app.browse.preview_serial(), u64::MAX);
+            assert!(
+                commands.try_recv().is_err(),
+                "the same live final identity does not consume another serial"
+            );
+            click(&mut app, &row(1));
+            frame(&mut app, key(egui::Key::Space));
+            settle(&mut app);
+            assert_eq!(
+                app.browse.preview_serial(),
+                u64::MAX,
+                "preview identity never wraps"
+            );
+            assert!(!app.browse.preview_visible());
+            assert!(!app.has_search_preview());
+            assert!(
+                app.browse.busy(),
+                "refusal cannot release an outstanding physical Read"
+            );
+            assert!(commands.try_recv().is_err());
+            let refusal = app
+                .error
+                .clone()
+                .expect("preview exhaustion needs a visible refusal");
+            assert!(refusal.contains("preview identity counter is exhausted"));
+            assert!(has_text(&frame(&mut app, vec![]), &refusal));
+            reply(
+                &mut app,
+                final_identity.id,
+                if failed {
+                    Err("retired exhausted preview error".into())
+                } else {
+                    Ok(file("a.txt", "retired exhausted preview bytes"))
+                },
+            );
+            settle(&mut app);
+            assert!(
+                !app.browse.busy(),
+                "the actual old completion drains the physical flight"
+            );
+            assert!(!app.browse.preview_visible());
+            assert!(app.browse.preview_text().is_none());
+            assert!(app.search_preview_text().is_none());
+            assert_eq!(app.error.as_deref(), Some(refusal.as_str()));
+            assert_eq!(app.browse.preview_serial(), u64::MAX);
+            assert!(
+                commands.try_recv().is_err(),
+                "drain must not dispatch a refused replacement"
+            );
+            assert_eq!(retained_snapshot(&app), snapshot);
+            assert_eq!(app.active_document, Some(1));
+            assert_eq!(app.documents.len(), 1);
+            assert_draft(&app, departure, &undo);
+            assert!(app.location_history.back.is_empty());
+        }
+    }
+}
+
 const NORMAL_TARGET: &str = "untouched/deep/Needle.rs";
 const NORMAL_TARGET_TEXT: &str = "first\nneedle target\nlast\n";
 const NORMAL_ACTIVE: std::time::Duration = std::time::Duration::from_secs(240);
@@ -1913,6 +3564,12 @@ struct NormalBrowse {
     hashes: Vec<(String, String)>,
     close_verified: bool,
     success: bool,
+    retained_text_snapshot: bool,
+    grouped_original_indices: bool,
+    text_open_back_exact: bool,
+    reopen_keeps_selection: bool,
+    grouped_navigation_additional_operations: Option<usize>,
+    retained_dirty_preview_additional_reads: Option<usize>,
 }
 
 fn source_digest(path: &std::path::Path) -> String {
@@ -1996,6 +3653,12 @@ impl NormalBrowse {
             hashes,
             close_verified: false,
             success: false,
+            retained_text_snapshot: false,
+            grouped_original_indices: false,
+            text_open_back_exact: false,
+            reopen_keeps_selection: false,
+            grouped_navigation_additional_operations: None,
+            retained_dirty_preview_additional_reads: None,
         };
         proof.admit_call();
         // Client's constructor performs one ordinary 30-second Hello. Register
@@ -2060,6 +3723,12 @@ impl NormalBrowse {
 
     fn finish(&mut self) {
         assert!(self.started.elapsed() < NORMAL_ACTIVE);
+        assert!(self.retained_text_snapshot);
+        assert!(self.grouped_original_indices);
+        assert!(self.text_open_back_exact);
+        assert!(self.reopen_keeps_selection);
+        assert_eq!(self.grouped_navigation_additional_operations, Some(0));
+        assert_eq!(self.retained_dirty_preview_additional_reads, Some(0));
         assert_eq!(
             self.ledger,
             vec![
@@ -2103,6 +3772,12 @@ impl NormalBrowse {
                 "active_budget_seconds": 240, "cleanup_timeout_seconds": 30,
                 "watchdog_seconds": 300, "dirty_preview_and_open_additional_reads": 0,
                 "unopened_preview_reads": 1, "unopened_open_reads": 1,
+                "retained_text_snapshot": self.retained_text_snapshot,
+                "grouped_original_indices": self.grouped_original_indices,
+                "text_open_back_exact": self.text_open_back_exact,
+                "reopen_keeps_selection": self.reopen_keeps_selection,
+                "grouped_navigation_additional_operations": self.grouped_navigation_additional_operations.unwrap(),
+                "retained_dirty_preview_additional_reads": self.retained_dirty_preview_additional_reads.unwrap(),
             })
         );
     }
@@ -2252,12 +3927,32 @@ fn browse_normal_agent_find_preview_open_and_exact_return() {
         serde_json::json!({"op": "Search", "query": "needle", "limit": 500}),
     );
     settle(&mut app);
+    let snapshot = retained_snapshot(&app);
+    let retained_paths: Vec<String> = app.browse.paths().into_iter().map(str::to_owned).collect();
+    let grouping_ledger_start = proof.ledger.len();
     let origin = app
         .browse
         .paths()
         .iter()
         .position(|path| *path == "origin.txt")
         .unwrap();
+    let target = app
+        .browse
+        .paths()
+        .iter()
+        .position(|path| *path == NORMAL_TARGET)
+        .unwrap();
+    assert_ne!(origin, target);
+    let groups = app.search_state.group_rows();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups, (0..2).map(|index| vec![index]).collect::<Vec<_>>());
+    assert_eq!(app.search_results[origin].path, "origin.txt");
+    assert_eq!(app.search_results[target].path, NORMAL_TARGET);
+    proof.grouped_original_indices = true;
+    click(&mut app, &format!("browse_group:{target}"));
+    settle(&mut app);
+    assert!(!app.search_state.group_expanded(target));
+    assert_eq!(retained_snapshot(&app), snapshot);
     click(&mut app, &format!("browse_row:{origin}"));
     frame(&mut app, key(egui::Key::Space));
     settle(&mut app);
@@ -2273,6 +3968,89 @@ fn browse_normal_agent_find_preview_open_and_exact_return() {
     );
     settle(&mut app);
     assert_draft_revision(&app, departure, &undo, &revision);
+    assert!(app.location_history.back.is_empty());
+    assert_eq!(app.location_history.forward.len(), 1);
+    assert!(commands.try_recv().is_err());
+    enter(&mut app, true);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert_eq!(
+        app.browse.paths(),
+        retained_paths
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(app.browse.selected_index(), Some(origin));
+    assert!(!app.search_state.group_expanded(target));
+    assert!(!app.browse.preview_visible());
+    proof.reopen_keeps_selection = true;
+    click(&mut app, &format!("browse_row:{origin}"));
+    let preview_ledger_start = proof.ledger.len();
+    frame(&mut app, key(egui::Key::Space));
+    settle(&mut app);
+    assert!(app.browse.preview_visible());
+    assert!(has_text(&frame(&mut app, vec![]), "dirty Ω😀"));
+    assert_draft_revision(&app, departure, &undo, &revision);
+    assert!(
+        commands.try_recv().is_err(),
+        "retained dirty preview sends no Read"
+    );
+    proof.retained_dirty_preview_additional_reads = Some(proof.ledger.len() - preview_ledger_start);
+    frame(&mut app, key(egui::Key::Escape));
+    frame(&mut app, key(egui::Key::Escape));
+    settle(&mut app);
+    frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+    settle(&mut app);
+    assert!(app.tools_open && app.tool == Tool::Search);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert_eq!(app.search_state.selected_index(), Some(origin));
+    assert!(!app.search_state.group_expanded(target));
+    assert!(!app.has_search_preview());
+    click(&mut app, &format!("search_group:{target}"));
+    settle(&mut app);
+    click(&mut app, &format!("search_row:{target}"));
+    assert_eq!(app.search_state.selected_index(), Some(target));
+    assert_eq!(
+        app.active_document,
+        Some(1),
+        "single click only selects the existing target"
+    );
+    assert!(commands.try_recv().is_err());
+    frame(&mut app, key(egui::Key::Enter));
+    settle(&mut app);
+    assert_eq!(app.active().unwrap().path, NORMAL_TARGET);
+    assert_eq!(app.active().unwrap().cursor, (2, 1));
+    assert_eq!(app.location_history.back.len(), 1);
+    assert!(
+        commands.try_recv().is_err(),
+        "ordinary text Open reuses the already-open target"
+    );
+    frame(
+        &mut app,
+        modified_key(egui::Key::OpenBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_draft_revision(&app, departure, &undo, &revision);
+    assert!(app.location_history.back.is_empty());
+    assert_eq!(app.location_history.forward.len(), 1);
+    proof.text_open_back_exact = true;
+    click(&mut app, "close_tools");
+    settle(&mut app);
+    assert!(!app.tools_open);
+    enter(&mut app, true);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert_eq!(app.browse.selected_index(), Some(target));
+    assert!(app.search_state.group_expanded(target));
+    assert!(!app.browse.preview_visible());
+    proof.retained_text_snapshot = true;
+    frame(&mut app, key(egui::Key::Escape));
+    settle(&mut app);
+    assert!(
+        commands.try_recv().is_err(),
+        "retained grouping, Open/Back, hide and reopen have zero additional operations"
+    );
+    proof.grouped_navigation_additional_operations =
+        Some(proof.ledger.len() - grouping_ledger_start);
     frame(&mut app, modified_key(egui::Key::Z, command_modifiers()));
     assert_eq!(app.documents[0].text, SAVED);
     frame(

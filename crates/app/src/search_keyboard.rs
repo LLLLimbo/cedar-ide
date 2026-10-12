@@ -39,7 +39,15 @@ impl Source {
 pub(super) struct Search {
     pub accepted: Option<Source>,
     pub pending: Option<Source>,
+    completed: Option<(u64, String, Result<Payload, String>)>,
+    submission: Option<(u64, Option<(u64, u64)>)>,
     keyboard: Keyboard,
+    // Only indexes are grouped; snippets live once in CedarApp::search_results.
+    groups: Vec<Vec<usize>>,
+    collapsed: HashSet<usize>,
+    selected: Option<usize>,
+    active: bool,
+    layout: u64,
 }
 
 #[cfg(test)]
@@ -64,13 +72,89 @@ impl Search {
         }
     }
 
+    pub(super) fn selected_index(&self) -> Option<usize> {
+        self.selected
+    }
+    #[cfg(test)]
+    pub(super) fn accepted_snapshot_id(&self) -> Option<egui::Id> {
+        self.accepted
+            .as_ref()
+            .map(|source| egui::Id::new(source.batch()))
+    }
+    pub(super) fn group_rows(&self) -> Vec<Vec<usize>> {
+        self.groups.clone()
+    }
+    pub(super) fn group_expanded(&self, first: usize) -> bool {
+        !self.collapsed.contains(&first)
+    }
+    pub(super) fn visible_indices(&self) -> Vec<usize> {
+        self.groups
+            .iter()
+            .filter(|group| self.group_expanded(group[0]))
+            .flatten()
+            .copied()
+            .collect()
+    }
+    pub(super) fn visible(&self, index: usize) -> bool {
+        self.groups
+            .iter()
+            .any(|group| self.group_expanded(group[0]) && group.contains(&index))
+    }
+    pub(super) fn destination(&self, current: usize, key: egui::Key) -> Option<usize> {
+        let visible = self.visible_indices();
+        let position = visible.iter().position(|index| *index == current)?;
+        destination(visible.len(), position, key).map(|position| visible[position])
+    }
+    pub(super) fn deactivate(&mut self) {
+        self.active = false;
+        self.retire();
+    }
+    fn install(&mut self, rows: &[SearchMatch]) {
+        self.groups.clear();
+        for (index, row) in rows.iter().enumerate() {
+            if let Some(group) = self
+                .groups
+                .iter_mut()
+                .find(|group| rows[group[0]].path == row.path)
+            {
+                group.push(index);
+            } else {
+                self.groups.push(vec![index]);
+            }
+        }
+        self.collapsed.clear();
+        self.selected = (!rows.is_empty()).then_some(0);
+        self.active = true;
+        self.layout = 0;
+    }
+    pub(super) fn toggle_group(&mut self, first: usize) {
+        if !self.groups.iter().any(|group| group[0] == first) {
+            return;
+        }
+        if !self.collapsed.remove(&first) {
+            self.collapsed.insert(first);
+        }
+        if let Some(layout) = self.layout.checked_add(1) {
+            self.layout = layout;
+        } else {
+            self.active = false;
+        }
+        self.invalidate();
+    }
+
     pub(super) fn clear_owned(&mut self) {
         self.accepted = None;
+        self.groups.clear();
+        self.collapsed.clear();
+        self.selected = None;
+        self.active = false;
         self.retire();
     }
 
     pub(super) fn retire(&mut self) {
         self.pending = None;
+        self.submission = None;
+        self.completed = None;
         self.keyboard.invalidate();
     }
 
@@ -108,14 +192,31 @@ pub(super) fn validate(matches: &[SearchMatch]) -> Result<(), &'static str> {
 struct View {
     batch: Batch,
     count: usize,
+    layout: u64,
+    navigation: u64,
+    document: Option<(u64, u64)>,
+    screen: [u32; 4],
 }
 
 impl View {
     fn of(app: &CedarApp) -> Option<Self> {
-        app.search_rows_active().then(|| Self {
-            batch: app.search_state.accepted.as_ref().unwrap().batch(),
-            count: app.search_results.len(),
-        })
+        (app.search_rows_active() && app.active().is_none_or(|doc| doc.edit_version != u64::MAX))
+            .then(|| Self {
+                batch: app.search_state.accepted.as_ref().unwrap().batch(),
+                count: app.search_results.len(),
+                layout: app.search_state.layout,
+                navigation: app.navigation_epoch,
+                document: app.active().map(|doc| (doc.id, doc.edit_version)),
+                screen: {
+                    let rect = app.editor_ctx.screen_rect();
+                    [
+                        rect.min.x.to_bits(),
+                        rect.min.y.to_bits(),
+                        rect.max.x.to_bits(),
+                        rect.max.y.to_bits(),
+                    ]
+                },
+            })
     }
 }
 
@@ -152,12 +253,16 @@ struct Keyboard {
     pressed: Option<Pointer>,
     click: Option<Pointer>,
     render: Option<(View, usize, egui::Id)>,
+    preview_reveal: Option<(View, usize, u64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Focus(usize),
     Open(usize),
+    Preview(usize),
+    Toggle(usize),
+    Reveal(usize),
 }
 
 pub(super) fn destination(count: usize, current: usize, key: egui::Key) -> Option<usize> {
@@ -222,6 +327,7 @@ impl Keyboard {
         self.pressed = None;
         self.click = None;
         self.render = None;
+        self.preview_reveal = None;
         // Lifetime ownership ends at physical release, not a focus/view change.
     }
 
@@ -238,6 +344,7 @@ impl Keyboard {
 impl CedarApp {
     pub(super) fn search_rows_active(&self) -> bool {
         self.ready()
+            && self.search_state.active
             && self.search_state.pending.is_none()
             && self.search_state.accepted.as_ref().is_some_and(|source| {
                 self.workspace_key.as_ref() == Some(&source.workspace)
@@ -261,7 +368,68 @@ impl CedarApp {
             && self.close_tab_requested.is_none()
             && !self.close_after_language_stop
             && !self.allow_close
-            && !self.active().is_some_and(|doc| doc.jump_to.is_some())
+            && !self
+                .active()
+                .is_some_and(|doc| doc.jump_to.is_some() || doc.edit_version == u64::MAX)
+    }
+
+    pub(super) fn begin_search_submission(&mut self) {
+        self.search_state.submission = self.search_state.pending.as_ref().map(|_| {
+            (
+                self.navigation_epoch,
+                self.active().map(|doc| (doc.id, doc.edit_version)),
+            )
+        });
+    }
+    pub(super) fn stage_search_response(
+        &mut self,
+        request: u64,
+        query: String,
+        result: Result<Payload, String>,
+    ) {
+        self.search_state.completed = Some((request, query, result));
+    }
+    pub(super) fn finish_search_frame(&mut self, ctx: &egui::Context) {
+        let visible = self.tools_open
+            && self.tool == Tool::Search
+            && !self.open_form
+            && !self.new_file
+            && !self.navigation.blocks_editor()
+            && !self.foreign_modal_owns_input(ctx);
+        let bottom_pending = self
+            .search_state
+            .pending
+            .as_ref()
+            .is_some_and(|source| !self.browse_owns_search(source.request));
+        let submission = (
+            self.navigation_epoch,
+            self.active().map(|doc| (doc.id, doc.edit_version)),
+        );
+        if bottom_pending
+            && (!visible
+                || self.search_state.submission != Some(submission)
+                || submission.1.is_some_and(|(_, version)| version == u64::MAX))
+        {
+            // Retire intent, never the physical Job::Search slot. Reopening is not a rerun.
+            self.search_state.retire();
+        }
+        if let Some((request, query, result)) = self.search_state.completed.take() {
+            if visible {
+                self.apply_search_response(request, query, result);
+                ctx.request_repaint();
+            } else if self
+                .search_state
+                .pending
+                .as_ref()
+                .is_some_and(|source| source.request == request)
+            {
+                self.search_state.retire();
+            }
+        }
+        if !visible {
+            self.search_state.invalidate();
+            self.retire_search_preview();
+        }
     }
 
     pub(super) fn apply_search_response(
@@ -282,6 +450,7 @@ impl CedarApp {
             return;
         }
         let source = self.search_state.pending.take().unwrap();
+        self.search_state.submission = None;
         self.search_state.invalidate();
         let (matches, truncated) = match result {
             Ok(Payload::Matches { matches, truncated }) => (matches, truncated),
@@ -299,6 +468,7 @@ impl CedarApp {
             return;
         }
         self.notice = format!("{} matches for {:?}", matches.len(), source.query);
+        self.search_state.install(&matches);
         self.search_results = matches;
         self.search_truncated = truncated;
         self.search_state.accepted = Some(source);
@@ -316,6 +486,13 @@ impl CedarApp {
         let current = View::of(self);
         let focused = ctx.memory(|memory| memory.focused());
         let keyboard = &mut self.search_state.keyboard;
+        // This continuation may scroll only after the user's existing Space.
+        // Inspect the original native batch, before any surface removes events.
+        if !input.modifiers.is_none() || input.events.iter().any(|event| !matches!(event,
+            egui::Event::Key { key: egui::Key::Space, pressed: false, modifiers, .. } if modifiers.is_none()
+        ) && !matches!(event, egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_))) {
+            keyboard.preview_reveal = None;
+        }
         keyboard.input_pass = Some(ctx.cumulative_pass_nr());
         keyboard.render = None;
         keyboard.key = None;
@@ -352,6 +529,10 @@ impl CedarApp {
         } else {
             None
         };
+        let screen = input.screen_rect.unwrap_or_else(|| ctx.screen_rect());
+        let activation_visible = source
+            .as_ref()
+            .is_some_and(|row| row.rect.intersect(row.clip).intersect(screen).is_positive());
         let companion = clean_key(&input.events);
         let candidate = if !composition_was_active
             && !keyboard.composing
@@ -459,7 +640,11 @@ impl CedarApp {
                     keyboard.claimed.insert(*key);
                 }
                 claimed_space_press |= *key == egui::Key::Space;
-                if fresh && !repeat && candidate == Some(*key) {
+                if fresh
+                    && !repeat
+                    && candidate == Some(*key)
+                    && (!matches!(key, egui::Key::Enter | egui::Key::Space) || activation_visible)
+                {
                     accepted = Some(*key);
                 }
                 consumed[index] = true;
@@ -521,17 +706,50 @@ impl CedarApp {
             return None;
         }
         let index = intent.source.index;
-        if index >= intent.view.count {
+        if index >= MAX_ROWS {
+            return matches!(intent.key, egui::Key::Enter | egui::Key::Space)
+                .then_some(Action::Toggle(index - MAX_ROWS));
+        }
+        if index >= intent.view.count || !self.search_state.visible(index) {
             return None;
         }
-        if matches!(intent.key, egui::Key::Enter | egui::Key::Space) {
-            Some(Action::Open(index))
-        } else {
-            destination(intent.view.count, index, intent.key).map(Action::Focus)
+        match intent.key {
+            egui::Key::Enter => Some(Action::Open(index)),
+            egui::Key::Space => Some(Action::Preview(index)),
+            key => self.search_state.destination(index, key).map(Action::Focus),
         }
     }
 
+    pub(super) fn select_search_row(&mut self, index: usize) {
+        if !self.search_rows_active() || !self.search_state.visible(index) {
+            return;
+        }
+        if self.search_state.selected != Some(index) {
+            self.retire_search_preview();
+        }
+        self.search_state.selected = Some(index);
+    }
+
+    fn search_rendered_row_visible(&self, index: usize, ctx: &egui::Context) -> bool {
+        self.search_state.keyboard.presented.iter().any(|row| {
+            row.index == index
+                && row
+                    .rect
+                    .intersect(row.clip)
+                    .intersect(ctx.screen_rect())
+                    .is_positive()
+        })
+    }
+
     pub(super) fn search_panel(&mut self, ui: &mut egui::Ui) {
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.spacing_mut().button_padding = egui::vec2(6.0, 3.0);
+            self.find_results_panel(ui);
+        });
+    }
+
+    fn find_results_panel(&mut self, ui: &mut egui::Ui) {
         if self.ready() && !self.backend_supports("search") {
             ui.colored_label(AMBER, self.unsupported_message("search"));
         }
@@ -539,19 +757,20 @@ impl CedarApp {
             let edit = ui.add(
                 egui::TextEdit::singleline(&mut self.search_query)
                     .hint_text("Find text across the workspace...")
-                    .desired_width((ui.available_width() - 175.0).max(180.0)),
+                    .desired_width((ui.available_width() - 170.0).max(80.0)),
             );
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "search_query", &edit);
             if edit.changed() {
-                self.search_state.invalidate();
+                self.search_state.deactivate();
+                self.retire_search_preview();
             }
             let enter = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            let submit =
-                ui.add_enabled(self.backend_supports("search"), egui::Button::new("Search"));
+            let enabled = self.ready() && self.backend_supports("search") && !self.search_busy();
+            let submit = ui.add_enabled(enabled, egui::Button::new("Search"));
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "search_submit", &submit);
-            if submit.clicked() || enter {
+            if enabled && (submit.clicked() || enter) {
                 self.search();
             }
             ui.label(
@@ -578,51 +797,181 @@ impl CedarApp {
             #[cfg(not(test))]
             let _ = label;
         }
-        if self.ready() && self.search_state.pending.is_some() {
+        if self.search_busy() {
             ui.label(RichText::new("Searching...").small().color(MUTED));
         }
         if self.search_truncated {
-            let label = ui.colored_label(
-                AMBER,
-                "Search stopped at an engine limit; more matches may exist. Narrow your query.",
-            );
+            let label = ui.colored_label(AMBER, "Search incomplete; more matches may exist.");
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "search_truncated", &label);
             #[cfg(not(test))]
             let _ = label;
         }
-        let action = if ui.is_sizing_pass() {
+        ui.label(
+            RichText::new("Click selects · Space previews · Enter or double-click opens")
+                .small()
+                .color(MUTED),
+        );
+        let mut action = if ui.is_sizing_pass() {
             None
         } else {
             self.take_search_action(ui.ctx())
         };
+        if !ui.is_sizing_pass() {
+            if let Some((view, index, pass)) = self.search_state.keyboard.preview_reveal {
+                if self.search_state.keyboard.input_pass != Some(pass) {
+                    self.search_state.keyboard.preview_reveal = None;
+                    if action.is_none()
+                        && View::of(self) == Some(view)
+                        && self.search_preview_current()
+                        && ui.memory(|memory| memory.focused())
+                            == Some(batch_row_id(view.batch, index))
+                    {
+                        action = Some(Action::Reveal(index));
+                    }
+                }
+            }
+        }
         let click = if ui.is_sizing_pass() {
             None
         } else {
             self.take_search_click(ui.ctx())
         };
-        self.search_state.keyboard.presented.clear();
-        let source = self.search_state.accepted.as_ref();
-        let keyboard = &mut self.search_state.keyboard;
-        let mut open = match action {
-            Some(Action::Open(index)) => Some(index),
-            _ => None,
+        let toggle = match action {
+            Some(Action::Toggle(first)) => Some(first),
+            _ => click
+                .filter(|index| *index >= MAX_ROWS)
+                .map(|index| index - MAX_ROWS),
         };
-        let mut revealed = false;
-        let scroll = egui::ScrollArea::vertical()
-            .id_salt("search_results")
-            .animated(false)
-            .show(ui, |ui| {
-                ui.add_enabled_ui(active, |ui| {
-                    for (index, result) in self.search_results.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            let id = source.map_or_else(
+        // A structure change retires native presentation before another row may act.
+        let mut toggle_after = None;
+        let mut open = None;
+        let mut preview = None;
+        match action {
+            Some(Action::Focus(index)) => self.select_search_row(index),
+            Some(Action::Open(index)) => {
+                self.select_search_row(index);
+                open = Some(index);
+            }
+            Some(Action::Preview(index)) => {
+                self.select_search_row(index);
+                preview = Some(index);
+            }
+            _ => {}
+        }
+        self.search_state.keyboard.presented.clear();
+        let wide = ui.available_width() >= 760.0;
+        // A small Tools preference may leave only part of the logical Ui on
+        // screen. Scroll within that actual clip so End cannot reveal a row
+        // into an invisible extension of the viewport.
+        let showing_preview = self.search_preview_current();
+        if self.tools_height.is_none() {
+            // Auto needs a bounded content request independent of its previous
+            // clipped viewport. Explicit user heights remain entirely unchanged.
+            let spacing = ui.spacing().item_spacing.y;
+            let row_height = (ui.text_style_height(&egui::TextStyle::Button)
+                + 2.0 * ui.spacing().button_padding.y)
+                .max(ui.spacing().interact_size.y);
+            let controls = (self.search_state.groups.len()
+                + self.search_state.visible_indices().len())
+            .clamp(1, 5) as f32;
+            let results = controls * row_height + (controls - 1.0) * spacing;
+            let preview = if showing_preview {
+                ui.text_style_height(&egui::TextStyle::Small)
+                    + spacing
+                    + 2.0 * ui.text_style_height(&egui::TextStyle::Monospace)
+            } else {
+                0.0
+            };
+            let body_height = if wide {
+                results.max(preview)
+            } else {
+                results
+                    + if showing_preview {
+                        spacing + preview
+                    } else {
+                        0.0
+                    }
+            };
+            ui.expand_to_include_rect(egui::Rect::from_min_size(
+                ui.available_rect_before_wrap().min,
+                egui::vec2(0.0, body_height),
+            ));
+        }
+        let available = visible_height(ui);
+        let results_height = if wide || !showing_preview {
+            available
+        } else {
+            available * 0.4
+        };
+        let scroll_source = self
+            .search_state
+            .accepted
+            .as_ref()
+            .map(|source| row_id(source, 0));
+        let mut draw_results = |app: &mut Self, ui: &mut egui::Ui| {
+            let scroll = egui::ScrollArea::vertical()
+                .id_salt(("search_results", scroll_source))
+                .animated(false)
+                .min_scrolled_height(0.0)
+                .max_height(results_height)
+                .show(ui, |ui| {
+                    let mut revealed = false;
+                    for group in app.search_state.group_rows() {
+                        let first = group[0];
+                        let expanded = app.search_state.group_expanded(first);
+                        let Some(result) = app.search_results.get(first) else {
+                            continue;
+                        };
+                        let id = app.search_state.accepted.as_ref().map_or_else(
+                            || egui::Id::new(("unowned_search_group", first)),
+                            |source| egui::Id::new(("find_group", source.batch(), first)),
+                        );
+                        let label = format!(
+                            "{} {}  ({})",
+                            if expanded { "▾" } else { "▸" },
+                            result.path,
+                            group.len()
+                        );
+                        let response = ui
+                            .add_enabled_ui(active, |ui| row_control(ui, id, &label, false))
+                            .inner;
+                        app.search_state
+                            .keyboard
+                            .record(ui, MAX_ROWS + first, &response);
+                        #[cfg(test)]
+                        crate::workspace_access_tests::record(
+                            ui,
+                            &format!("search_group:{first}"),
+                            &response,
+                        );
+                        if toggle == Some(first)
+                            && (action == Some(Action::Toggle(first))
+                                || response.clicked_by(egui::PointerButton::Primary))
+                        {
+                            toggle_after = Some((first, id));
+                        }
+                        if !expanded {
+                            continue;
+                        }
+                        for index in group {
+                            let result = &app.search_results[index];
+                            let id = app.search_state.accepted.as_ref().map_or_else(
                                 || egui::Id::new(("unowned_search_row", index)),
                                 |source| row_id(source, index),
                             );
-                            let response =
-                                row_control(ui, id, &format!("{}:{}", result.path, result.line));
-                            keyboard.record(ui, index, &response);
+                            let label = format!("    {}:  {}", result.line, result.text.trim());
+                            let response = ui
+                                .add_enabled_ui(active, |ui| {
+                                    row_control(
+                                        ui,
+                                        id,
+                                        &label,
+                                        app.search_state.selected == Some(index),
+                                    )
+                                })
+                                .inner;
+                            app.search_state.keyboard.record(ui, index, &response);
                             #[cfg(test)]
                             crate::workspace_access_tests::record(
                                 ui,
@@ -636,10 +985,14 @@ impl CedarApp {
                             if click == Some(index)
                                 && response.clicked_by(egui::PointerButton::Primary)
                             {
-                                open = Some(index);
-                            }
-                            if !ui.is_sizing_pass() && action == Some(Action::Focus(index)) {
+                                app.select_search_row(index);
                                 response.request_focus();
+                                if response.double_clicked_by(egui::PointerButton::Primary) {
+                                    open = Some(index);
+                                }
+                            }
+                            if !ui.is_sizing_pass() && matches!(action, Some(Action::Focus(target) | Action::Preview(target) | Action::Reveal(target)) if target == index) {
+                                if action != Some(Action::Reveal(index)) { response.request_focus(); }
                                 response.scroll_to_me(Some(egui::Align::Center));
                                 revealed = true;
                             } else if !ui.is_sizing_pass()
@@ -650,32 +1003,49 @@ impl CedarApp {
                                 response.scroll_to_me(None);
                                 revealed = true;
                             }
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(result.text.trim())
-                                        .monospace()
-                                        .size(12.0)
-                                        .color(MUTED),
-                                )
-                                .truncate(),
-                            );
-                        });
+                        }
+                    }
+                    if app.search_results.is_empty() {
+                        ui.label(
+                            RichText::new(
+                                "Case-sensitive literal disk search. Submit a query to find text.",
+                            )
+                            .small()
+                            .color(MUTED),
+                        );
                     }
                 });
-                if self.search_results.is_empty() {
-                    ui.label(
-                        RichText::new(
-                            "Case-sensitive text search. Open a result to jump to its line",
-                        )
-                        .small()
-                        .color(MUTED),
-                    );
-                }
+            #[cfg(test)]
+            crate::search_keyboard_tests::record_scroll(ui.ctx(), scroll.id);
+            #[cfg(test)]
+            crate::browse_tests::record_bottom_results_scroll(
+                ui.ctx(),
+                scroll.id,
+                scroll.inner_rect,
+                scroll.content_size,
+            );
+            #[cfg(not(test))]
+            let _ = scroll;
+        };
+        if wide {
+            ui.columns(2, |columns| {
+                draw_results(self, &mut columns[0]);
+                self.search_preview_panel(&mut columns[1], available);
             });
-        #[cfg(test)]
-        crate::search_keyboard_tests::record_scroll(ui.ctx(), scroll.id);
-        #[cfg(not(test))]
-        let _ = scroll;
+        } else {
+            draw_results(self, ui);
+            if showing_preview {
+                self.search_preview_panel(ui, visible_height(ui));
+            }
+        }
+        if let Some((first, id)) = toggle_after {
+            self.search_state.toggle_group(first);
+            self.retire_search_preview();
+            ui.memory_mut(|memory| memory.request_focus(id));
+            open = None;
+            preview = None;
+            ui.ctx().request_repaint();
+        }
         let view = View::of(self);
         if let (Some(view), Some(Action::Focus(index))) = (view, action) {
             let focus = batch_row_id(view.batch, index);
@@ -684,26 +1054,44 @@ impl CedarApp {
             }
         }
         self.search_state.keyboard.view = view;
-        if let Some(index) = open.filter(|_| self.search_input_allowed(ui.ctx())) {
-            if let Some(result) = self.search_results.get(index) {
-                self.open(result.path.clone(), Some(result.line));
+        if self.search_input_allowed(ui.ctx()) {
+            if let Some(index) =
+                preview.filter(|index| self.search_rendered_row_visible(*index, ui.ctx()))
+            {
+                self.search_preview(index);
+                self.search_state.keyboard.preview_reveal = View::of(self)
+                    .zip(self.search_state.keyboard.input_pass)
+                    .map(|(view, pass)| (view, index, pass));
+                ui.ctx().request_repaint();
+            }
+            if let Some(index) =
+                open.filter(|index| self.search_rendered_row_visible(*index, ui.ctx()))
+            {
+                if let Some(result) = self.search_results.get(index) {
+                    self.open(result.path.clone(), Some(result.line));
+                }
             }
         }
     }
 }
 
+pub(super) fn visible_height(ui: &egui::Ui) -> f32 {
+    (ui.clip_rect().max.y.min(ui.ctx().screen_rect().max.y) - ui.available_rect_before_wrap().min.y)
+        .max(0.0)
+}
+
 // Give the actual native interaction its batch/index ID, preserving Tab order
 // and accessibility even for duplicate path/line/snippet triples.
-fn row_control(ui: &mut egui::Ui, id: egui::Id, label: &str) -> egui::Response {
+fn row_control(ui: &mut egui::Ui, id: egui::Id, label: &str, selected: bool) -> egui::Response {
     let padding = ui.spacing().button_padding;
     let galley = egui::WidgetText::from(RichText::new(label).color(GREEN)).into_galley(
         ui,
         Some(egui::TextWrapMode::Truncate),
-        (ui.available_width() * 0.6 - 2.0 * padding.x).max(0.0),
+        (ui.available_width() - 2.0 * padding.x).max(0.0),
         egui::TextStyle::Button,
     );
     let (_, rect) = ui.allocate_space(egui::vec2(
-        galley.size().x + 2.0 * padding.x,
+        ui.available_width(),
         (galley.size().y + 2.0 * padding.y).max(ui.spacing().interact_size.y),
     ));
     let response = ui.interact(rect, id, egui::Sense::click());
@@ -722,8 +1110,8 @@ fn row_control(ui: &mut egui::Ui, id: egui::Id, label: &str) -> egui::Response {
         });
     }
     if ui.is_rect_visible(rect) {
-        let visuals = ui.style().interact(&response);
-        if response.hovered() || response.has_focus() {
+        let visuals = ui.style().interact_selectable(&response, selected);
+        if selected || response.hovered() || response.has_focus() {
             ui.painter().rect(
                 rect,
                 visuals.corner_radius,
@@ -737,8 +1125,8 @@ fn row_control(ui: &mut egui::Ui, id: egui::Id, label: &str) -> egui::Response {
     response
 }
 
-// Immutable adapter over an accepted historical row. The common entry never
-// owns a second Search request or changes the legacy Search panel's input.
+// Immutable adapter over the one accepted historical payload. Both Find
+// surfaces share query and selection; adapters never duplicate snippets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BrowseHit {
     source: std::sync::Arc<Source>,
@@ -754,13 +1142,16 @@ impl BrowseHit {
     pub(super) fn line(&self) -> usize {
         self.line
     }
+    pub(super) fn index(&self) -> usize {
+        self.index
+    }
 }
 impl CedarApp {
     pub(super) fn browse_search_hits(&self) -> Vec<BrowseHit> {
-        if !self.search_rows_active() {
+        let Some(accepted) = self.search_state.accepted.as_ref() else {
             return Vec::new();
-        }
-        let source = std::sync::Arc::new(self.search_state.accepted.as_ref().unwrap().clone());
+        };
+        let source = std::sync::Arc::new(accepted.clone());
         self.search_results
             .iter()
             .enumerate()
@@ -774,8 +1165,10 @@ impl CedarApp {
             .collect()
     }
     pub(super) fn browse_search_current(&self, hit: &BrowseHit) -> bool {
-        self.search_rows_active()
-            && self.search_state.accepted.as_ref() == Some(hit.source.as_ref())
+        self.search_rows_active() && self.browse_search_snapshot_current(hit)
+    }
+    pub(super) fn browse_search_snapshot_current(&self, hit: &BrowseHit) -> bool {
+        self.search_state.accepted.as_ref() == Some(hit.source.as_ref())
             && self.search_results.get(hit.index).is_some_and(|row| {
                 row.path == hit.path
                     && row.line == hit.line
@@ -786,7 +1179,7 @@ impl CedarApp {
 
 impl CedarApp {
     pub(super) fn browse_search_snippet(&self, hit: &BrowseHit) -> Option<&str> {
-        self.browse_search_current(hit)
+        self.browse_search_snapshot_current(hit)
             .then(|| self.search_results[hit.index].text.as_str())
     }
 }
