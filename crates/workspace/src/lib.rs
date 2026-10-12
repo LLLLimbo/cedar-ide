@@ -10,6 +10,7 @@
 //! permissions, not merely workspace access.
 
 mod capabilities;
+mod file_discovery;
 mod git_read;
 #[cfg(feature = "windows-java-gc-diagnostic")]
 mod java_gc_diagnostic;
@@ -187,6 +188,7 @@ impl Workspace {
         match op {
             Operation::Hello => Ok(Payload::Hello {
                 protocol: PROTOCOL_VERSION,
+                file_discovery: Some(cedar_protocol::FileDiscoveryDescriptor::V1),
                 root: self.root.to_string_lossy().into_owned(),
                 agent: Some({
                     let mut info = capabilities::agent_info(self.backend_mode);
@@ -204,6 +206,11 @@ impl Workspace {
                 expected_revision,
             } => self.write(&path, &text, expected_revision.as_deref()),
             Operation::Search { query, limit } => self.search(&query, limit),
+            Operation::FindFiles {
+                query,
+                scope,
+                limit,
+            } => self.find_files(&query, &scope, limit),
             Operation::GitStatus => {
                 // Git can run repository-configured clean/process filters even
                 // during status. Disabling fsmonitor alone is not a trust boundary.

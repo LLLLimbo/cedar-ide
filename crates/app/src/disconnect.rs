@@ -41,7 +41,9 @@ impl CedarApp {
                 Job::Save { .. } | Job::Git | Job::GitRead(_) | Job::Run(_) | Job::Language(_) => {
                     true
                 }
-                Job::List { .. }
+                Job::BrowseFindFiles { .. }
+                | Job::BrowsePreviewRead { .. }
+                | Job::List { .. }
                 | Job::TreeList { .. }
                 | Job::Open { .. }
                 | Job::LanguageOpen { .. }
@@ -80,6 +82,7 @@ impl CedarApp {
         self.recovery.restoring_generation = None;
         self.connecting_form = None;
         self.agent_info = None;
+        self.file_discovery = None;
         self.language.reset();
         self.pending.clear();
         self.explorer.reset_connection();

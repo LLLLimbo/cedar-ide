@@ -166,6 +166,7 @@ fn metadata(client: &Client, root: &Path) -> ProbeResult<AgentInfo> {
         protocol,
         root: reported,
         agent: Some(info),
+        ..
     } = client.handshake()
     else {
         return Err("metadata");
@@ -463,6 +464,7 @@ fn verify_initial(
         protocol,
         root: reported,
         agent: Some(after),
+        ..
     } = budget.successful(client, Operation::Hello, "metadata_stable")?
     else {
         return Err("metadata_stable");

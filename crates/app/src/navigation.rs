@@ -71,6 +71,7 @@ struct Dialog {
 }
 
 enum Kind {
+    Browse,
     Files {
         selected: Option<Arc<str>>,
         scope: FileScope,
@@ -323,7 +324,7 @@ fn snapshot_matches(snapshot: &[Candidate], query: &str) -> Candidates {
     }
 }
 
-fn candidate_row(
+pub(super) fn candidate_row(
     ui: &mut egui::Ui,
     id: egui::Id,
     selected: bool,
@@ -706,10 +707,39 @@ impl CedarApp {
     }
 
     pub(super) fn dismiss_navigation(&mut self) {
-        if self.navigation.dialog.take().is_some() {
+        if let Some(dialog) = self.navigation.dialog.take() {
             self.navigation.blocked_frame = true;
-            self.navigation.restore_focus = true;
+            if matches!(dialog.kind, Kind::Browse) {
+                self.browse_retire();
+                self.navigation.restore_focus = false;
+            } else {
+                self.navigation.restore_focus = true;
+            }
         }
+    }
+
+    pub(super) fn browse_marker_open(&self) -> bool {
+        self.navigation
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| matches!(dialog.kind, Kind::Browse))
+    }
+
+    pub(super) fn show_browse_marker(&mut self) {
+        self.navigation_changed();
+        self.navigation.restore_focus = false;
+        self.navigation.dialog = Some(Dialog {
+            document: self.active_document,
+            generation: self.generation,
+            mode_epoch: self.explorer.mode_epoch,
+            mode: self.explorer.mode,
+            serial: self.navigation_epoch,
+            focus: false,
+            deferred_input: Vec::new(),
+            deferred_line_refusal: None,
+            kind: Kind::Browse,
+        });
+        self.navigation.blocked_frame = true;
     }
 
     pub(super) fn begin_navigation_frame(&mut self, ctx: &egui::Context) {
@@ -751,6 +781,7 @@ impl CedarApp {
             // Input queued for the old document must not act on its replacement.
             discard_keyboard(ctx);
         }
+        self.browse_begin_frame(ctx);
         if self.navigation.restore_focus && !self.navigation.blocks_editor() {
             if let Some(document) = self.active_document {
                 ctx.memory_mut(|memory| {
@@ -844,6 +875,7 @@ impl CedarApp {
             self.navigation.blocked_frame = true;
             return true;
         }
+        self.browse_shortcuts(ctx);
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::P)) {
             self.show_file_chooser();
         }
@@ -890,6 +922,10 @@ impl CedarApp {
         if self.foreign_modal_owns_input(ctx) {
             self.dismiss_navigation();
             self.navigation.blocked_frame = true;
+            return;
+        }
+        if self.browse_marker_open() {
+            self.browse_window(ctx);
             return;
         }
         let Some(mut dialog) = self.navigation.dialog.take() else {
@@ -982,6 +1018,7 @@ impl CedarApp {
         let modal = egui::Modal::new(egui::Id::new("navigation_modal")).show(ctx, |ui| {
             ui.set_width((ctx.screen_rect().width() - 64.0).clamp(240.0, 560.0));
             match &mut dialog.kind {
+                Kind::Browse => unreachable!("Browse has its own presentation"),
                 Kind::Files { selected, scope, snapshot, loaded_directories, error, refused, scope_epoch, presented, pressed } => {
                     // Preserve the identity that was actually displayed before a
                     // List reply or buffer update in this frame can move rows.
@@ -1198,6 +1235,7 @@ impl CedarApp {
             ctx.request_repaint();
         }
         let input_id = match &dialog.kind {
+            Kind::Browse => unreachable!("Browse has its own presentation"),
             Kind::Files { .. } => FILE_INPUT,
             Kind::Line { .. } => LINE_INPUT,
         };
@@ -1259,3 +1297,39 @@ impl CedarApp {
 
 #[cfg(test)]
 mod tests;
+
+// The common entry may hold candidates, but cannot manufacture their admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct LoadedCandidate(Candidate);
+
+pub(super) struct LoadedSnapshot(Vec<Candidate>);
+
+impl LoadedCandidate {
+    pub(super) fn path(&self) -> &str {
+        &self.0.path
+    }
+}
+
+impl LoadedSnapshot {
+    pub(super) fn matching(&self, query: &str) -> (Vec<LoadedCandidate>, bool) {
+        let result = snapshot_matches(&self.0, query);
+        (
+            result.items.into_iter().map(LoadedCandidate).collect(),
+            result.truncated,
+        )
+    }
+}
+
+impl CedarApp {
+    pub(super) fn browse_loaded_snapshot(&self) -> Result<LoadedSnapshot, String> {
+        self.explorer_loaded_files()
+            .and_then(|files| loaded_snapshot(&self.documents, &files))
+            .map(LoadedSnapshot)
+    }
+    pub(super) fn browse_loaded_current(&self, candidate: &LoadedCandidate) -> bool {
+        self.navigation_candidate_current(&candidate.0)
+    }
+    pub(super) fn browse_loaded_label(&self, candidate: &LoadedCandidate) -> String {
+        self.navigation_candidate_label(&candidate.0)
+    }
+}

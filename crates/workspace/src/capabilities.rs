@@ -99,6 +99,7 @@ mod tests {
             protocol,
             root,
             agent,
+            ..
         } = workspace.handle(Operation::Hello).unwrap()
         else {
             panic!("expected hello");

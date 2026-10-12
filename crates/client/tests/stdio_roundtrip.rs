@@ -4,6 +4,71 @@ use cedar_protocol::{Operation, Payload};
 use std::path::PathBuf;
 #[path = "support/capability_inventory.rs"]
 mod capability_inventory;
+
+#[test]
+#[ignore = "requires a compiled cedar-agent; run with CEDAR_AGENT_BIN"]
+fn file_discovery_normal_agent_finds_untouched_binary_and_large_paths_without_trust() {
+    let agent = PathBuf::from(std::env::var_os("CEDAR_AGENT_BIN").expect("set CEDAR_AGENT_BIN"));
+    // Preserve this small sparse fixture on success or panic. In particular,
+    // never delete evidence while process cleanup may still be unverified.
+    let root = tempfile::tempdir().unwrap().keep();
+    eprintln!("Retained filename-discovery evidence: {}", root.display());
+    std::fs::create_dir_all(root.join("untouched/deep")).unwrap();
+    std::fs::write(root.join("untouched/deep/needle"), "intended text").unwrap();
+    std::fs::write(root.join("untouched/deep/needle.bin"), [0, 1, 255]).unwrap();
+    std::fs::File::create(root.join("untouched/deep/needle.large"))
+        .unwrap()
+        .set_len(cedar_protocol::MAX_FILE_BYTES as u64 + 1)
+        .unwrap();
+    let mut client = Client::spawn_agent(&agent, &root, false).unwrap();
+    assert!(client.supports_file_discovery());
+    let Payload::Hello {
+        agent: Some(info), ..
+    } = client.handshake()
+    else {
+        panic!("metadata missing");
+    };
+    capability_inventory::assert_shipping_inventory(info);
+    let Payload::FilePaths { result } = client
+        .request(Operation::FindFiles {
+            query: "needle".into(),
+            scope: "".into(),
+            limit: 100,
+        })
+        .unwrap()
+    else {
+        panic!("wrong discovery response");
+    };
+    assert_eq!(
+        result.paths,
+        [
+            "untouched/deep/needle",
+            "untouched/deep/needle.bin",
+            "untouched/deep/needle.large"
+        ]
+    );
+    assert!(!result.incomplete);
+    let opened = client
+        .request(Operation::Read {
+            path: result.paths[0].clone(),
+        })
+        .unwrap();
+    assert!(matches!(opened, Payload::File { text, .. } if text == "intended text"));
+    assert!(client
+        .request(Operation::Read {
+            path: result.paths[1].clone()
+        })
+        .is_err());
+    assert!(client
+        .request(Operation::Read {
+            path: result.paths[2].clone()
+        })
+        .unwrap_err()
+        .starts_with("file_too_large:"));
+    client
+        .close_and_wait(std::time::Duration::from_secs(5))
+        .unwrap();
+}
 #[test]
 #[ignore = "requires a compiled cedar-agent; scripts/verify.sh runs this explicitly"]
 fn process_round_trip_preserves_revisions() {

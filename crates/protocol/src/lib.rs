@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
 mod maven_dependencies;
 pub use maven_dependencies::*;
+mod file_discovery;
+pub use file_discovery::*;
 pub const PROTOCOL_VERSION: u32 = 4;
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_FILE_BYTES: usize = 1024 * 1024;
@@ -197,6 +199,12 @@ pub enum Operation {
         query: String,
         limit: usize,
     },
+    FindFiles {
+        query: String,
+        scope: String,
+        #[serde(default = "default_file_discovery_limit")]
+        limit: usize,
+    },
     GitStatus,
     /// Explicit trusted read view. The program is on the workspace host.
     GitChanges {
@@ -344,7 +352,8 @@ impl Operation {
     /// available so support discovery cannot depend on its own result.
     pub fn capability_name(&self) -> Option<&'static str> {
         Some(match self {
-            Self::Hello => return None,
+            // FindFiles is gated by its independent retained Hello descriptor.
+            Self::Hello | Self::FindFiles { .. } => return None,
             Self::List { .. } => "list",
             Self::Read { .. } => "read",
             Self::Write { .. } => "write",
@@ -403,6 +412,8 @@ pub enum Payload {
         root: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<AgentInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_discovery: Option<FileDiscoveryDescriptor>,
     },
     Entries {
         entries: Vec<Entry>,
@@ -418,6 +429,9 @@ pub enum Payload {
     Matches {
         matches: Vec<SearchMatch>,
         truncated: bool,
+    },
+    FilePaths {
+        result: FileDiscoveryResult,
     },
     GitStatus {
         text: String,

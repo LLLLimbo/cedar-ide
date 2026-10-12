@@ -21,6 +21,7 @@ fn valid_header() -> Vec<u8> {
 fn hello(root: &str) -> Payload {
     Payload::Hello {
         protocol: PROTOCOL_VERSION,
+        file_discovery: None,
         root: root.into(),
         agent: Some(AgentInfo {
             schema: AGENT_INFO_SCHEMA,
@@ -173,6 +174,7 @@ fn strict_hello_requires_metadata_exact_platform_version_and_root() {
             protocol,
             root,
             agent: Some(agent),
+            ..
         } = &mut invalid
         else {
             unreachable!();

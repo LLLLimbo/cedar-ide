@@ -2,6 +2,16 @@
 
 本包把正常默认特性的 `cedar` 原生桌面前端和匹配的 `cedar-agent` 放在同一个目录中，面向 **Ubuntu 24.04 amd64 / x86_64（glibc）**。它是未签名的开发包，不是安装器、系统服务、通用 Linux 静态程序或完整 Java 开发环境。独立的 Linux agent-only 归档仍是另一个产品包，不能替代本包的桌面前端。
 
+## Find and return 浏览候选（0.60.0）
+
+连接工作区后，点击 **Find…**，或按 **Ctrl+Shift+N** 查文件、**Ctrl+Shift+F** 查项目文本。输入查询后按 Enter 提交；Down 或单击选择结果，**Space / Preview** 显式预览，**Enter / Open** 或双击打开，再用 **Back / Ctrl+[** 返回。预览已有草稿不发送 Read，也不保存或覆盖未保存文字。
+
+**Ctrl+Alt+Left/Right** 也可返回/前进；**Alt+1** 与既有 **Ctrl+Shift+E** 一样隐藏工具并聚焦可用的 Explorer Refresh，不触发刷新、扫描或读取。
+
+仅协商支持时才启用 **Project files**，可查找 Explorer 从未展开的目录。目录范围留空表示工作区；不支持时明确显示 **Open and loaded files**，只筛选已有快照。空查询不启动扫描；不完整扫描中的无匹配不表示文件不存在。范围、排除目录、Unicode 小写匹配和全部限制见同目录 [Find and return](FIND_AND_RETURN.md)。
+
+该浏览候选的完整 CI、分发包和原生窗口验收仍待完成；不代表 Windows GUI 或真实 SSH 已通过新验收。既有 Build/Run、Java 与执行信任边界保持。
+
 ## 环境与验证范围
 
 运行前需要 Ubuntu 24.04 amd64 上兼容的动态加载器、glibc、libgcc 和 libm。两个程序的实际 ELF 解释器、`DT_NEEDED` 与符号版本需求分别记录在 [包清单](BUNDLE_MANIFEST.json) 的 `abi.cedar`、`abi.cedar-agent` 中；最低 GLIBC 需求以这些测量值为准，不能据此扩大为任意发行版、旧版 glibc、Alpine/musl 或 ARM64 支持。
@@ -15,7 +25,7 @@
 包只包含：
 
 - 同次构建配对的 `cedar` 和 `cedar-agent`，两者执行权限均为 `0755`
-- 本说明、[Maven 叶工程说明](MAVEN_PROJECTS.md)、[依赖快照说明](MAVEN_DEPENDENCIES.md) 与逐文件大小、权限、SHA-256 清单
+- 本说明、[Find and return](FIND_AND_RETURN.md)、[Maven 叶工程说明](MAVEN_PROJECTS.md)、[依赖快照说明](MAVEN_DEPENDENCIES.md) 与逐文件大小、权限、SHA-256 清单
 - [MIT 许可](LICENSE-MIT)、[Apache 许可](LICENSE-APACHE)、[第三方说明](THIRD_PARTY_NOTICES.md) 和 `third-party-licenses/`
 
 不携带测试探针、验收程序、JDK/JDT、Maven 缓存、额外字体文件、用户项目或凭据。第三方说明可能涵盖工程中未链接到某个程序的组件，不是运行时系统库清单。
@@ -129,6 +139,6 @@ Copy to new draft… 创建独立的未保存标签，随后需显式 Save 才�
 
 已有 LF/CRLF 和混合换行按原字节保留。最后一行没有换行时，先插入最近前一个换行的样式再复制；没有前一个换行时使用 LF。空文档和末尾空行会复制一个空行。单独 CR 是普通内容。原文和结果各不超过 1 MiB，一次最多 4,096 行，超限或失效时不修改文本。查找栏、表单、模态窗口和输入法组字不接管此快捷键；同批其他输入或重复按键不会被重放成复制操作。已启用的语言服务仍可按普通编辑同步草稿。
 
-## 显式 Java Parameter info（0.59.2 已验收；0.59.3 测试待验证）
+## 显式 Java Parameter info（0.59.3 已验收）
 
-已运行且受信任的类型化 Java/JDT 会话可显式查询当前精确同步草稿和光标处的参数信息，只读浏览有界重载结果；输入时不会自动触发，不猜测参数 0，不保存或运行代码。需要 agent 和服务器实际支持该能力。0.59.2 已通过双平台 CI、真实 JDT 证明、三种包与限定 Linux 原生功能及独立清理补验；首次原生清理 125.452 秒超时的失败仍保留，补验为 28.175 秒。原始 Java 源码未变，JDT 生成的 .project/class 变化明确记录。0.59.3 仅增加实际渲染器 Unicode 测试，生产行为不变，CI/包待完成；原生证据沿用 0.59.2 精确包及生产等价审查，不执行新 GUI。Windows GUI、原生请求数与 agent 回收不在此声明内；0.59.0/0.59.1 失败历史保留。范围、版本失效和高亮规则见同包[参数信息说明](JAVA_PARAMETER_INFO.md)。
+已运行且受信任的类型化 Java/JDT 会话可显式查询当前精确同步草稿和光标处的参数信息，只读浏览有界重载结果；输入时不会自动触发，不猜测参数 0，不保存或运行代码。需要 agent 和服务器实际支持该能力。0.59.2 已通过双平台 CI、真实 JDT 证明、三种包与限定 Linux 原生功能及独立清理补验；首次原生清理 125.452 秒超时的失败仍保留，补验为 28.175 秒。原始 Java 源码未变，JDT 生成的 .project/class 变化明确记录。0.59.3 已通过 [CI 38192432380](https://github.com/LLLLimbo/cedar-ide/actions/runs/38192432380) 四项作业与三种包；只增加实际渲染器 Unicode 测试，生产行为不变。原生证据沿用 0.59.2 精确包及已核实的生产等价审查，不执行新 GUI；当前工作区未保有原始私有原生附件，不声称重新查看或新验收。Windows GUI、原生请求数与 agent 回收不在此声明内；0.59.0/0.59.1 失败历史保留。范围、版本失效和高亮规则见同包[参数信息说明](JAVA_PARAMETER_INFO.md)。

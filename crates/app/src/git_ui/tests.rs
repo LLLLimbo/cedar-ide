@@ -409,6 +409,7 @@ fn reconnect_reset_clears_results_and_endpoint_switch_clears_program() {
             id: 0,
             connected: true,
             result: Ok(Payload::Hello {
+                file_discovery: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: form.local_root,
                 agent: info,

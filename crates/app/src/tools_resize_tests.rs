@@ -497,6 +497,7 @@ fn tools_resize_hide_tool_switch_disconnect_and_reconnect_keep_runtime_preferenc
         id: 0,
         connected: true,
         result: Ok(Payload::Hello {
+            file_discovery: None,
             protocol: cedar_protocol::PROTOCOL_VERSION,
             root: "tools-resize-fixture".into(),
             agent: None,
@@ -1092,6 +1093,7 @@ fn tools_automatic_height_close_switch_disconnect_and_reconnect_retain_automatic
         id: 0,
         connected: true,
         result: Ok(Payload::Hello {
+            file_discovery: None,
             protocol: cedar_protocol::PROTOCOL_VERSION,
             root: "tools-automatic-height-fixture".into(),
             agent: None,

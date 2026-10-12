@@ -736,3 +736,57 @@ fn row_control(ui: &mut egui::Ui, id: egui::Id, label: &str) -> egui::Response {
     }
     response
 }
+
+// Immutable adapter over an accepted historical row. The common entry never
+// owns a second Search request or changes the legacy Search panel's input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BrowseHit {
+    source: std::sync::Arc<Source>,
+    index: usize,
+    path: String,
+    line: usize,
+    text_identity: egui::Id,
+}
+impl BrowseHit {
+    pub(super) fn path(&self) -> &str {
+        &self.path
+    }
+    pub(super) fn line(&self) -> usize {
+        self.line
+    }
+}
+impl CedarApp {
+    pub(super) fn browse_search_hits(&self) -> Vec<BrowseHit> {
+        if !self.search_rows_active() {
+            return Vec::new();
+        }
+        let source = std::sync::Arc::new(self.search_state.accepted.as_ref().unwrap().clone());
+        self.search_results
+            .iter()
+            .enumerate()
+            .map(|(index, row)| BrowseHit {
+                source: source.clone(),
+                index,
+                path: row.path.clone(),
+                line: row.line,
+                text_identity: egui::Id::new(&row.text),
+            })
+            .collect()
+    }
+    pub(super) fn browse_search_current(&self, hit: &BrowseHit) -> bool {
+        self.search_rows_active()
+            && self.search_state.accepted.as_ref() == Some(hit.source.as_ref())
+            && self.search_results.get(hit.index).is_some_and(|row| {
+                row.path == hit.path
+                    && row.line == hit.line
+                    && egui::Id::new(&row.text) == hit.text_identity
+            })
+    }
+}
+
+impl CedarApp {
+    pub(super) fn browse_search_snippet(&self, hit: &BrowseHit) -> Option<&str> {
+        self.browse_search_current(hit)
+            .then(|| self.search_results[hit.index].text.as_str())
+    }
+}

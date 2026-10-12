@@ -153,6 +153,15 @@ fn shortcut(event: &egui::Event) -> Option<Direction> {
     let egui::Event::Key { key, modifiers, .. } = event else {
         return None;
     };
+    // Windows navigation aliases use the same original-batch admission and
+    // exact location history as the retained bracket shortcuts.
+    if modifiers.ctrl && modifiers.alt && !modifiers.shift && !modifiers.mac_cmd {
+        return match key {
+            egui::Key::ArrowLeft => Some(Direction::Back),
+            egui::Key::ArrowRight => Some(Direction::Forward),
+            _ => None,
+        };
+    }
     if modifiers.alt
         || modifiers.shift
         || (modifiers.ctrl && modifiers.mac_cmd)
@@ -741,13 +750,13 @@ impl CedarApp {
                     Direction::Back,
                     "Back",
                     !self.location_history.back.is_empty(),
-                    "Back to an unchanged open-buffer location · Ctrl/Cmd+[",
+                    "Back to an unchanged open-buffer location · Ctrl/Cmd+[ or Ctrl+Alt+Left",
                 ),
                 (
                     Direction::Forward,
                     "Forward",
                     !self.location_history.forward.is_empty(),
-                    "Forward to an unchanged open-buffer location · Ctrl/Cmd+]",
+                    "Forward to an unchanged open-buffer location · Ctrl/Cmd+] or Ctrl+Alt+Right",
                 ),
             ] {
                 let response = ui

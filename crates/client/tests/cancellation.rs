@@ -149,8 +149,20 @@ fn cancellation_interrupts_each_eligible_file_operation() {
             query: "fixture".into(),
             limit: 5,
         },
+        Operation::FindFiles {
+            query: "fixture".into(),
+            scope: "".into(),
+            limit: 5,
+        },
     ] {
         let fixture = Fixture::new("held_reply");
+        if matches!(&operation, Operation::FindFiles { .. }) {
+            let path = fixture.root().join("hello.json");
+            let mut hello: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            hello["file_discovery"] = serde_json::json!({"version": 1});
+            fs::write(path, serde_json::to_vec(&hello).unwrap()).unwrap();
+        }
         let token = ConnectionCancellation::new();
         let mut client = fixture.connect(token.clone());
         let (finished, result) = mpsc::channel();

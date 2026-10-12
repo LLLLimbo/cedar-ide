@@ -31,6 +31,7 @@ fn hello(agent: Option<AgentInfo>) -> Response {
             protocol: PROTOCOL_VERSION,
             root: "/fixture".into(),
             agent,
+            file_discovery: None,
         }),
     }
 }

@@ -47,6 +47,7 @@ fn fixture(root: &Path, mode: &str) {
     fs::write(
         root.join("hello.json"),
         serde_json::to_vec(&Payload::Hello {
+            file_discovery: None,
             protocol: cedar_protocol::PROTOCOL_VERSION,
             root: SYNTHETIC_ROOT.into(),
             agent: None,

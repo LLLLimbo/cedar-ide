@@ -102,6 +102,7 @@ pub fn metadata(payload: Payload) -> AgentInfo {
         protocol,
         root,
         agent: Some(info),
+        ..
     } = payload
     else {
         panic!("expected current agent metadata, got {payload:?}")

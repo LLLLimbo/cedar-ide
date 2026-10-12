@@ -3,6 +3,9 @@ mod agent_support;
 mod block_indent;
 #[cfg(test)]
 mod block_indent_process_tests;
+mod browse;
+#[cfg(test)]
+mod browse_tests;
 #[cfg(test)]
 mod build_problem_process_tests;
 #[cfg(test)]
@@ -281,6 +284,12 @@ impl ConnectForm {
 }
 
 enum Job {
+    BrowseFindFiles {
+        ticket: browse::DiscoveryTicket,
+    },
+    BrowsePreviewRead {
+        ticket: browse::PreviewTicket,
+    },
     List {
         path: String,
     },
@@ -361,6 +370,7 @@ pub struct CedarApp {
     connecting_form: Option<ConnectForm>,
     // Validated, immutable support claims for this accepted connection only.
     agent_info: Option<AgentInfo>,
+    file_discovery: Option<cedar_protocol::FileDiscoveryDescriptor>,
     root: String,
     generation: u64,
     next_request: u64,
@@ -404,6 +414,7 @@ pub struct CedarApp {
     test_report: test_report_ui::TestReportPanel,
     language: language_ui::LanguagePanel,
     navigation: navigation::Navigation,
+    browse: browse::Browse,
     location_history: location_history::LocationHistory,
     workspace_access: workspace_access::Access,
     new_file: bool,
@@ -475,6 +486,7 @@ impl CedarApp {
             workspace_key: None,
             connecting_form: None,
             agent_info: None,
+            file_discovery: None,
             root: String::new(),
             generation: 0,
             next_request: 1,
@@ -517,6 +529,7 @@ impl CedarApp {
             test_report: test_report_ui::TestReportPanel::default(),
             language: language_ui::LanguagePanel::default(),
             navigation: navigation::Navigation::default(),
+            browse: browse::Browse::default(),
             location_history: location_history::LocationHistory::default(),
             workspace_access: workspace_access::Access::default(),
             new_file: false,
@@ -611,6 +624,7 @@ impl CedarApp {
             doc.saving = false;
         }
         self.agent_info = None;
+        self.file_discovery = None;
         self.state = ConnectionState::Connecting;
         self.notice = format!("Connecting to {}...", form.label());
         self.error = None;
@@ -633,6 +647,7 @@ impl CedarApp {
         self.worker = None;
         self.disk_review.outstanding = None;
         self.agent_info = None;
+        self.file_discovery = None;
         self.search_state.retire();
         self.generation += 1;
         self.location_history.clear();
@@ -695,6 +710,7 @@ impl CedarApp {
         self.state = ConnectionState::Disconnected;
         self.connecting_form = None;
         self.agent_info = None;
+        self.file_discovery = None;
         self.language.disconnected();
         self.worker = None;
         self.pending.clear();
@@ -995,6 +1011,7 @@ impl CedarApp {
             }
             match event.result {
                 Ok(Payload::Hello {
+                    file_discovery,
                     protocol,
                     root,
                     agent,
@@ -1004,6 +1021,12 @@ impl CedarApp {
                             "Agent protocol version does not match this frontend".into(),
                         );
                         return;
+                    }
+                    if let Some(descriptor) = &file_discovery {
+                        if let Err(error) = descriptor.validate() {
+                            self.disconnected(error.to_string());
+                            return;
+                        }
                     }
                     if let Some(info) = &agent {
                         if let Err(error) = info.validate() {
@@ -1066,6 +1089,7 @@ impl CedarApp {
                     self.active_form = Some(form);
                     self.root = root;
                     self.agent_info = agent;
+                    self.file_discovery = file_discovery;
                     self.state = ConnectionState::Ready;
                     self.error = None;
                     self.notice = "Workspace connected".into();
@@ -1155,6 +1179,14 @@ impl CedarApp {
             self.apply_java_parameter_event(context, event.result, event.connected);
             return;
         }
+        if let Job::BrowseFindFiles { ticket } = job {
+            self.apply_browse_discovery(event.id, ticket, event.result, event.connected);
+            return;
+        }
+        if let Job::BrowsePreviewRead { ticket } = job {
+            self.apply_browse_preview(event.id, ticket, event.result, event.connected);
+            return;
+        }
         if let Job::Search { query } = job {
             // Retired search outcomes cannot replace the current view/error,
             // but a current transport failure still disconnects the workspace.
@@ -1163,7 +1195,11 @@ impl CedarApp {
                     "The connection closed during project search. Your drafts are retained".into()
                 }));
             } else {
-                self.apply_search_response(event.id, query, event.result);
+                if self.browse_owns_search(event.id) {
+                    self.stage_browse_search(event.id, query, event.result);
+                } else {
+                    self.apply_search_response(event.id, query, event.result);
+                }
             }
             return;
         }
@@ -1966,6 +2002,10 @@ impl CedarApp {
                     ui.label(RichText::new(name).color(MUTED))
                         .on_hover_text(&self.root);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let find = ui.add_enabled(self.workspace_key.is_some(), egui::Button::new("Find…"));
+                        #[cfg(test)]
+                        crate::workspace_access_tests::record(ui, "browse_entry", &find);
+                        if find.clicked() { self.show_browse(browse::Provider::Files); }
                         let can_save = self.backend_supports("write")
                             && !self.save_all_busy()
                             && !self.interrupted_save_check.busy()
@@ -2229,7 +2269,7 @@ impl CedarApp {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("EXPLORER").size(11.0).strong().color(MUTED));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let refresh = ui.add_enabled(self.ready() && !self.explorer_busy(), egui::Button::new("R").small()).on_hover_text("Refresh directory · Ctrl/Cmd+Shift+E focuses Explorer without refreshing");
+                                let refresh = ui.add_enabled(self.ready() && !self.explorer_busy(), egui::Button::new("R").small()).on_hover_text("Refresh directory · Ctrl/Cmd+Shift+E or Alt+1 focuses Project without refreshing");
                                 self.workspace_access.record(workspace_access::Target::Explorer, &refresh);
                                 self.workspace_access.record(workspace_access::Target::Refresh, &refresh);
                                 #[cfg(test)]
@@ -2436,7 +2476,7 @@ impl CedarApp {
                             }
                         });
                         ui.add(egui::Separator::default().spacing(separator_height));
-                        let help = ui.label(shortcut_help).on_hover_text("Ctrl/Cmd+J  Hide tools and return to editor, or show the selected tool\nCtrl/Cmd+Shift+E  Hide tools and focus Explorer without refreshing");
+                        let help = ui.label(shortcut_help).on_hover_text("Ctrl/Cmd+J  Hide tools and return to editor, or show the selected tool\nCtrl/Cmd+Shift+E or Alt+1  Hide tools and focus Project without refreshing");
                         #[cfg(test)]
                         sidebar_layout_tests::record(ui, "help", &help);
                         #[cfg(test)]
@@ -3278,9 +3318,11 @@ impl eframe::App for CedarApp {
         // Classify every surface from the same ordered native batch. Filtering
         // sooner could create a new clean action or hide a held key's release.
         let mut consumed = vec![false; raw_input.events.len()];
+        self.capture_browse_input(ctx, raw_input, &mut consumed);
         self.capture_test_report_input(ctx, raw_input, &mut consumed);
         self.capture_search_input(ctx, raw_input, &mut consumed);
         self.explorer_tree_input(ctx, raw_input, explorer_input, &mut consumed);
+        self.finish_browse_input_capture(ctx, &raw_input.events, &consumed);
         let mut index = 0;
         raw_input.events.retain(|_| {
             let keep = !consumed[index];
@@ -3375,6 +3417,7 @@ impl eframe::App for CedarApp {
         self.finish_save_close_tab_frame(ctx);
         self.finish_tab_close_focus_frame(ctx);
         self.finish_java_parameter_info_frame();
+        self.browse_finish_frame(ctx);
     }
 }
 
@@ -3460,6 +3503,7 @@ mod tests {
             id: 0,
             connected: true,
             result: Ok(Payload::Hello {
+                file_discovery: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 agent: None,
                 root: root.into(),
@@ -3652,6 +3696,7 @@ mod tests {
             id: 0,
             connected: true,
             result: Ok(Payload::Hello {
+                file_discovery: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 agent: None,
                 root: "wrong".into(),
@@ -3747,6 +3792,7 @@ mod tests {
             id: 0,
             connected: true,
             result: Ok(Payload::Hello {
+                file_discovery: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 agent: None,
                 root: "/new".into(),

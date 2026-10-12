@@ -457,6 +457,7 @@ fn explicit_reconnect_preserves_draft_and_does_not_start_language_automatically(
         id: 0,
         connected: true,
         result: Ok(Payload::Hello {
+            file_discovery: None,
             protocol: cedar_protocol::PROTOCOL_VERSION,
             agent: Some(crate::agent_support::full_test_agent()),
             root: ROOT.into(),

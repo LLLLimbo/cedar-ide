@@ -35,6 +35,7 @@ jobs:
       - run: python scripts/test_duplicate_lines_acceptance.py
       - run: python -B scripts/test_report_triage_acceptance.py
       - run: python -B scripts/test_search_navigation_acceptance.py
+      - run: python -B scripts/test_browse_acceptance.py
       - run: python scripts/test_copy_draft_acceptance.py
       - run: python scripts/test_save_close_acceptance.py
       - run: python scripts/test_linux_java_acceptance.py
@@ -58,6 +59,11 @@ jobs:
         timeout-minutes: 15
       - id: release_build
         run: cargo build --release --workspace --all-features --locked
+      - name: Find, preview, open and exact return (normal agent, both platforms)
+        # Reuse aggregate feature artifacts. Compile/selection 120s, backend
+        # 180s, app 330s, plus bounded direct-child reap and orchestration.
+        timeout-minutes: 12
+        run: python -B scripts/browse_acceptance.py
       - name: Selected-block indentation stays local (Unix, normal agent)
         timeout-minutes: 3
         if: runner.os != 'Windows'

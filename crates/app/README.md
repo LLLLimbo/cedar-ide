@@ -4,6 +4,19 @@
 
 Cedar is a native Rust application using `eframe`/`egui` 0.31.1 and the Glow renderer. It does not embed a browser or a JVM. The remote workspace agent and optional language server run separately from the UI.
 
+## Find and return candidate (0.60.0)
+
+Use **Find…**, **Ctrl+Shift+N** for Files, or **Ctrl+Shift+F** for Project Text.
+Submit a query, select a result, request **Preview**, then use ordinary **Open**
+and **Back**. Negotiated Project files discovery includes untouched directories;
+the labelled fallback searches only open and loaded files. Draft preview sends no
+Read and browsing does not implicitly save. See the [usage and limits](../../docs/FIND_AND_RETURN.md).
+Filename queries use explicit submission and literal Unicode lowercase matching;
+regex, CamelCase matching and search-as-you-type are not implemented.
+This candidate still needs full CI, package checks and native-window acceptance;
+it does not change the accepted status of earlier checkpoints or claim visual
+parity or a performance advantage. Existing Build/Run features remain available.
+
 ## Run
 
 From the repository root:
@@ -28,12 +41,16 @@ Shortcuts:
 | Shortcut | Action |
 | --- | --- |
 | Ctrl/Cmd+P | Choose an open buffer or current-directory file; explicitly open a relative path |
+| Ctrl+Shift+N | Open Find and return with Files selected |
+| Ctrl+Shift+F | Open Find and return with Project Text selected |
+| Ctrl/Cmd+[ or Ctrl+Alt+Left | Back to an unchanged open-buffer location |
+| Ctrl/Cmd+] or Ctrl+Alt+Right | Forward to an unchanged open-buffer location |
 | Ctrl/Cmd+G | Go to a 1-based line in the current buffer |
 | Ctrl/Cmd+F | Find and preview literal replacements in the current buffer |
 | Ctrl/Cmd+S | Save |
 | Ctrl/Cmd+W | Close the current tab |
 | Ctrl/Cmd+J | Hide tools and return to the editor, or reopen the selected tool |
-| Ctrl/Cmd+Shift+E | Hide tools and focus enabled Explorer Refresh without refreshing |
+| Ctrl/Cmd+Shift+E or Alt+1 | Hide tools and focus enabled Explorer Refresh without refreshing |
 | Ctrl+Space | Request completion |
 | F12 | Go to definition |
 | Ctrl/Cmd+K | Show hover information |
@@ -66,7 +83,7 @@ The **Automatic height** control added in 0.58.0 explicitly clears the runtime
 height preference after the current panel pass and requests a repaint using the
 existing automatic content-sizing behavior. A later genuine divider drag can
 establish an explicit height again. It does not persist settings or send a
-workspace request. **0.58.4 is the latest fully accepted bounded checkpoint**:
+workspace request. **0.58.4 passed this bounded acceptance**:
 complete dual-platform CI, retained process gates and all three packages passed,
 including 15 editor-entry, 27 resize and 23 sidebar checks on each platform.
 Fresh exact-package cloud Linux GUI evidence covers actual divider drags,
@@ -130,8 +147,8 @@ Query/batch changes, hidden or switched tools, modals and competing input cancel
 unfinished row intent; continue with a fresh valid key or pointer action. The frontend keeps at
 most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
 oversized batches are rejected whole. No automatic search, new engine, protocol,
-capability or workspace operation is added by Search. The accepted 0.59.2 Parameter info checkpoint and test-only 0.59.3
-Unicode renderer candidate have separate evidence in the
+capability or workspace operation was added by that Search checkpoint. The
+accepted 0.59.3 Unicode Parameter info renderer checkpoint has separate evidence in the
 [current report](../../docs/TEST_REPORT.md).
 
 ## Agent capabilities and trust
@@ -163,7 +180,7 @@ Cedar supports plain-text edits and explicit replacement-mode InsertReplaceEdit.
 
 No completion command is executed. The exact JDT LS callback `java.completion.onDidSelect` is deliberately skipped while its validated text edits are applied. Its selection-ranking feedback and automatic signature-help follow-up are unavailable. The official [JDT handler](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/main/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/CompletionHandler.java) handles that callback separately from text/import edits.
 
-### Explicit Java Parameter info (0.59.2 accepted; 0.59.3 renderer tests pending)
+### Explicit Java Parameter info (0.59.3 accepted)
 
 In an already running trusted **Java / JDT LS** session, **Parameter info** requests
 a read-only signature snapshot at the exact synchronized Java draft version and
@@ -195,12 +212,18 @@ failed; the same-package complement completed in 28.175 seconds. Original Java
 source was unchanged, while JDT rewrote generated `.project` metadata and added
 a class file. No whole-workspace equality or native agent-reaping claim is made.
 
-Version **0.59.3 is CI-only pending**. It adds actual-renderer Unicode tests and
-updates versions/docs without changing production behavior, strict validators,
-workflow or deadlines. Native provenance is carried from 0.59.2 through production
-source equivalence; no new GUI run is performed. The 0.59.0/0.59.1 failures remain
-preserved, and the 0.59.1 temporary-path alias explanation is still unconfirmed at
-runtime. See the [complete contract and LSP default deviation](../../docs/JAVA_PARAMETER_INFO.md)
+Version **0.59.3 passed bounded acceptance** at public commit
+`1e2a26d6dd38c17ed3723ced54797fcb43255eb6` in
+[CI 38192432380](https://github.com/LLLLimbo/cedar-ide/actions/runs/38192432380):
+all four jobs and three exact-source packages passed. Linux recorded 1,862 passed
+and 67 ignored; Windows recorded 1,805 passed and 111 ignored, with zero failures.
+It adds actual-renderer Unicode tests without changing production behavior.
+Native provenance is carried from 0.59.2 through verified shipping equivalence;
+no new GUI run was performed. Original private native artifacts are unavailable
+in the current workspace, so no fresh native recheck is claimed. The
+0.59.0/0.59.1 failures remain preserved, and the 0.59.1 temporary-path alias
+explanation is still unconfirmed at runtime. See the
+[complete contract and LSP default deviation](../../docs/JAVA_PARAMETER_INFO.md)
 and [current verification report](../../docs/TEST_REPORT.md).
 
 ### Problems and navigation

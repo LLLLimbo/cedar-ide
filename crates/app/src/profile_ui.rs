@@ -1395,6 +1395,7 @@ mod tests {
             id: 0,
             connected: true,
             result: Ok(Payload::Hello {
+                file_discovery: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 agent: None,
                 root: "/different".into(),

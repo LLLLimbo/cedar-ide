@@ -70,6 +70,7 @@ fn hello_and_sorted_listing() {
             protocol,
             root,
             agent,
+            ..
         } => {
             agent.expect("backend metadata").validate().unwrap();
             assert_eq!(protocol, cedar_protocol::PROTOCOL_VERSION);

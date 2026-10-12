@@ -1113,6 +1113,247 @@ fn capability_client(directory: &Path, agent: Option<cedar_protocol::AgentInfo>)
     });
     Client::from_process(capability_peer(directory, hello)).unwrap()
 }
+
+fn discovery_operation() -> Operation {
+    Operation::FindFiles {
+        query: "file".into(),
+        scope: "src".into(),
+        limit: 100,
+    }
+}
+
+fn discovery_hello(descriptor: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "type":"hello", "protocol":4, "root":"/fixture",
+        "agent":agent_info(&["list", "read", "find_files"]), "file_discovery":descriptor })
+}
+
+fn discovery_result() -> cedar_protocol::FileDiscoveryResult {
+    cedar_protocol::FileDiscoveryResult {
+        query: "file".into(),
+        scope: "src".into(),
+        paths: vec!["src/file".into()],
+        incomplete: false,
+        reasons: vec![],
+        examined_entries: 1,
+    }
+}
+
+#[test]
+fn file_discovery_old_null_future_and_flat_claims_send_zero_new_operations() {
+    for descriptor in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!({"version":2})),
+        Some(serde_json::json!({"version":u32::MAX})),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut hello = discovery_hello(descriptor.clone().unwrap_or(serde_json::Value::Null));
+        if descriptor.is_none() {
+            hello.as_object_mut().unwrap().remove("file_discovery");
+        }
+        let mut client = Client::from_process(capability_peer(directory.path(), hello)).unwrap();
+        assert!(!client.supports_file_discovery());
+        let snapshot = serde_json::to_value(client.handshake()).unwrap();
+        assert!(client
+            .request(discovery_operation())
+            .unwrap_err()
+            .starts_with("unsupported_operation:"));
+        assert_eq!(
+            serde_json::to_value(client.request(Operation::Hello).unwrap()).unwrap(),
+            snapshot
+        );
+        read_fixture(&mut client);
+        let requests = recorded_requests(directory.path());
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["op"]["type"], "hello");
+        assert_eq!(requests[1]["op"]["type"], "read");
+        assert!(client.is_connected());
+    }
+}
+
+#[test]
+fn file_discovery_descriptor_alone_enables_validated_request_and_keeps_first_hello() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut hello = discovery_hello(serde_json::json!({"version":1}));
+    hello["agent"] = serde_json::json!(agent_info(&["list", "read"]));
+    let mut client = Client::from_process(capability_peer(directory.path(), hello)).unwrap();
+    assert!(client.supports_file_discovery());
+    fs::write(
+        directory.path().join("response-2.json"),
+        serde_json::json!({"Ok":Payload::FilePaths { result:discovery_result() }}).to_string(),
+    )
+    .unwrap();
+    let payload = client.request(discovery_operation()).unwrap();
+    assert!(matches!(payload, Payload::FilePaths { result } if result.paths == ["src/file"]));
+    assert!(
+        matches!(client.request(Operation::Hello).unwrap(), Payload::Hello { file_discovery:Some(descriptor), .. } if descriptor.supported())
+    );
+    let requests = recorded_requests(directory.path());
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1]["op"],
+        serde_json::json!({"type":"find_files","query":"file","scope":"src","limit":100})
+    );
+}
+
+#[test]
+fn file_discovery_malformed_raw_metadata_fails_handshake_without_probing() {
+    for descriptor in [
+        "{}",
+        "{\"version\":0}",
+        "{\"version\":1,\"version\":1}",
+        "{\"version\":1,\"extra\":1}",
+        "[]",
+        "true",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("hello.json"), format!("{{\"type\":\"hello\",\"protocol\":4,\"root\":\"/fixture\",\"file_discovery\":{descriptor}}}")).unwrap();
+        let failure = match Client::from_process(spawn("capability_peer", directory.path())) {
+            Ok(_) => panic!("accepted malformed descriptor"),
+            Err(failure) => failure,
+        };
+        assert!(failure.starts_with("transport_read:"), "{failure}");
+        assert_eq!(recorded_requests(directory.path()).len(), 1);
+    }
+    for fields in [
+        "\"file_discovery\":null,\"file_discovery\":{\"version\":1}",
+        "\"file_discovery\":{\"version\":1},\"file_discovery\":null",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("hello.json"),
+            format!("{{\"type\":\"hello\",\"protocol\":4,\"root\":\"/fixture\",{fields}}}"),
+        )
+        .unwrap();
+        assert!(Client::from_process(spawn("capability_peer", directory.path())).is_err());
+        assert_eq!(recorded_requests(directory.path()).len(), 1);
+    }
+}
+
+#[test]
+fn file_discovery_malformed_or_oversized_result_closes_without_exposing_partial_paths() {
+    let mut invalids = Vec::new();
+    let mut wrong_scope = discovery_result();
+    wrong_scope.paths[0] = "src-other/file".into();
+    invalids.push(wrong_scope);
+    let mut wrong_query = discovery_result();
+    wrong_query.query = "later".into();
+    invalids.push(wrong_query);
+    let mut wrong_status = discovery_result();
+    wrong_status.incomplete = true;
+    invalids.push(wrong_status);
+    let mut oversized = discovery_result();
+    oversized.paths = (0..100)
+        .map(|i| format!("src/file{i:03}{}", "\"".repeat(3000)))
+        .collect();
+    oversized.examined_entries = 100;
+    assert!(oversized.paths.iter().all(|path| path.len() < 4096));
+    assert!(
+        oversized.paths.iter().map(String::len).sum::<usize>()
+            < cedar_protocol::MAX_FILE_DISCOVERY_RESULT_BYTES
+    );
+    assert!(
+        serde_json::to_vec(&oversized).unwrap().len()
+            > cedar_protocol::MAX_FILE_DISCOVERY_RESULT_BYTES
+    );
+    invalids.push(oversized);
+    for result in invalids {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = Client::from_process(capability_peer(
+            directory.path(),
+            discovery_hello(serde_json::json!({"version":1})),
+        ))
+        .unwrap();
+        fs::write(
+            directory.path().join("response-2.json"),
+            serde_json::json!({"Ok":Payload::FilePaths { result }}).to_string(),
+        )
+        .unwrap();
+        assert!(client
+            .request(discovery_operation())
+            .unwrap_err()
+            .starts_with("protocol_error:"));
+        assert!(!client.is_connected());
+        assert_eq!(recorded_requests(directory.path()).len(), 2);
+    }
+}
+
+#[test]
+fn file_discovery_invalid_local_query_does_not_reach_transport() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::from_process(capability_peer(
+        directory.path(),
+        discovery_hello(serde_json::json!({"version":1})),
+    ))
+    .unwrap();
+    assert!(client
+        .request(Operation::FindFiles {
+            query: "".into(),
+            scope: "".into(),
+            limit: 100
+        })
+        .unwrap_err()
+        .starts_with("invalid_query:"));
+    assert!(client.is_connected());
+    assert_eq!(recorded_requests(directory.path()).len(), 1);
+}
+
+#[test]
+fn file_discovery_late_hello_cannot_upgrade_and_reconnect_refreshes_descriptor() {
+    let old_root = tempfile::tempdir().unwrap();
+    let mut old = capability_client(old_root.path(), Some(agent_info(&["list", "read"])));
+    let snapshot = serde_json::to_value(old.handshake()).unwrap();
+    fs::write(
+        old_root.path().join("response-2.json"),
+        serde_json::json!({
+            "Ok":discovery_hello(serde_json::json!({"version":1}))
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert!(
+        matches!(old.request(Operation::Read { path:"fixture.txt".into() }).unwrap(),
+        Payload::Hello { file_discovery:Some(descriptor), .. } if descriptor.supported())
+    );
+    assert!(!old.supports_file_discovery());
+    assert_eq!(serde_json::to_value(old.handshake()).unwrap(), snapshot);
+    assert!(old
+        .request(discovery_operation())
+        .unwrap_err()
+        .starts_with("unsupported_operation:"));
+    assert_eq!(recorded_requests(old_root.path()).len(), 2);
+    old.close_and_wait(Duration::from_secs(5)).unwrap();
+
+    let fresh_root = tempfile::tempdir().unwrap();
+    let mut fresh = Client::from_process(capability_peer(
+        fresh_root.path(),
+        discovery_hello(serde_json::json!({"version":1})),
+    ))
+    .unwrap();
+    assert!(fresh.supports_file_discovery());
+    fs::write(
+        fresh_root.path().join("response-2.json"),
+        serde_json::json!({"Ok":Payload::FilePaths { result:discovery_result() }}).to_string(),
+    )
+    .unwrap();
+    assert!(matches!(
+        fresh.request(discovery_operation()).unwrap(),
+        Payload::FilePaths { .. }
+    ));
+    fresh.close_and_wait(Duration::from_secs(5)).unwrap();
+    assert_eq!(recorded_requests(fresh_root.path()).len(), 2);
+
+    let downgrade_root = tempfile::tempdir().unwrap();
+    let mut downgrade =
+        capability_client(downgrade_root.path(), Some(agent_info(&["list", "read"])));
+    assert!(!downgrade.supports_file_discovery());
+    assert!(downgrade
+        .request(discovery_operation())
+        .unwrap_err()
+        .starts_with("unsupported_operation:"));
+    assert_eq!(recorded_requests(downgrade_root.path()).len(), 1);
+    downgrade.close_and_wait(Duration::from_secs(5)).unwrap();
+}
 fn recorded_requests(directory: &Path) -> Vec<serde_json::Value> {
     fs::read_to_string(directory.join("requests"))
         .unwrap()

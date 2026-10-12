@@ -196,7 +196,7 @@ impl Harness {
         };
         let hello = h.response(0)?;
         require(
-            matches!(&hello.result, Ok(Payload::Hello { protocol, root, agent: Some(_) })
+            matches!(&hello.result, Ok(Payload::Hello { protocol, root, agent: Some(_), .. })
                 if *protocol == cedar_protocol::PROTOCOL_VERSION && root == &expected_root),
             "normal-agent Hello metadata absent",
         )?;

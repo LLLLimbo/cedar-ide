@@ -1,0 +1,148 @@
+# Find and return
+
+Find and return brings filename discovery, project text results and an explicit
+read-only preview into one window. You can inspect a file, open it in the editor
+and return to the selection you left, while keeping unsaved drafts intact.
+
+This guide describes the **0.60.0** integrated browsing candidate. Full CI,
+package checks and native-window acceptance are still pending; it does not
+announce an accepted release or Windows GUI validation.
+
+## Start with a connected workspace
+
+Select **Find…** in the header, or use **Ctrl+Shift+N** for **Files** and
+**Ctrl+Shift+F** for **Project Text**. The window shows the workspace being searched.
+Use its provider buttons to switch between filenames and text.
+
+1. Enter a query, then press **Enter** in the query field or select **Find**.
+2. Press **Down** to focus the first result. Use **Up/Down** or **Home/End** to move
+   through results, or single-click a row to select it.
+3. With a result focused, press **Space**, or select **Preview**, to inspect it.
+   Selection and hover alone do not request a preview.
+4. Press **Escape** to leave the preview and return to the selected row. Press
+   **Enter** on a result, double-click it, or select **Open** to open that file.
+5. Use the editor's **Back** button or **Ctrl+[** to return. **Forward** or
+   **Ctrl+]** goes forward again. On macOS, the existing history shortcuts use Cmd.
+
+**Ctrl+Alt+Left/Right** are additional Back/Forward shortcuts. **Alt+1**, like the
+retained **Ctrl/Cmd+Shift+E**, hides tools and focuses the enabled Explorer
+**Refresh** control. It does not refresh, scan or read a file by itself. These
+shortcuts retain the existing modal, mixed-input and held-key guards.
+
+Tab and Shift+Tab move between controls. Escape when no preview is open, or
+**Close**, dismisses Find and return and restores the captured editor focus while
+that editor context remains current. Query or scope edits retire previous results;
+submit again to activate a new set. Switching provider, reconnecting or dismissing
+the window also retires pending intent. Late replies cannot reopen a dismissed
+preview or activate a different result.
+
+## Files: check the provider label
+
+**Project files** is available only when the connected agent advertises the
+supported filename-discovery extension, version 1. A submitted nonempty query
+searches directories that have never been expanded in Explorer, within the
+selected scope and the limits below. It reads directory metadata, not file contents, and does
+not create a persistent index or watch the filesystem.
+
+Leave **Directory scope** empty to search the workspace. To search one subtree,
+enter its exact workspace-relative directory, such as `src/main`. Use `/`
+separators; absolute paths, backslashes, empty components, `.` and `..` are
+rejected. A nonempty scope still requires a filename query. Scope applies to
+Project files only; it is not a Project Text filter.
+
+An empty filename query shows open buffers and already loaded Explorer files,
+without starting discovery. If discovery is unavailable, the label explicitly
+reads **Open and loaded files**. Searches then filter that bounded snapshot only;
+they cannot find files in untouched directories, and directory scope is
+unavailable. At most 64 matching rows are shown. Reopen Files after loading more
+Explorer directories to refresh the snapshot. **Ctrl/Cmd+P** retains its existing
+current-directory and loaded-file chooser.
+
+An older agent, or one advertising an unsupported discovery version, keeps this
+fallback and receives no discovery requests. Cedar uses the negotiated extension,
+not the agent's product version or a trial request. Protocol 4 and existing
+capability/trust meanings remain unchanged. Malformed handshake metadata is
+rejected; reconnect after replacing an agent to negotiate its support again.
+
+## Matching, exclusions and incomplete scans
+
+Project files accepts a nonempty single-line query of at most **256 UTF-8 bytes**,
+without control characters. Matching compares the Rust Unicode lowercase form of
+the query and path. It does not perform Unicode normalization or full case folding,
+regular expressions, typo correction or CamelCase matching. Results retain their
+exact original path spelling. Searches require explicit submission; there is no
+live search-as-you-type mode.
+
+Results rank by exact basename, basename prefix, basename substring, then path
+substring. Equal ranks sort by original path. Ordering covers the candidates
+actually observed; an incomplete traversal cannot promise the best matches from
+the entire project.
+
+The fixed excluded directory names are `.git`, `target`, `build`, `dist`,
+`node_modules`, `.idea`, `.venv`, `venv` and `__pycache__`, matched exactly. A scope
+inside one is rejected. Discovery skips symbolic links, Windows reparse points and
+special files. It does not interpret `.gitignore` or IDE module exclusions.
+
+Each submitted scan is bounded by:
+
+- 100 returned paths in this interface; the operation supports at most 200
+- 20,000 examined entries and depth 64 below the chosen scope
+- A cooperative two-second elapsed budget
+- 4,096 pending directories and 512 KiB of pending path text
+- 4,096 UTF-8 bytes per relative path and 512 KiB of encoded result data
+
+A blocking filesystem call can outlast the elapsed budget. Only one discovery
+request runs at a time, with at most one newer submission waiting to replace it.
+Typing alone starts no scan or content Read, and retiring a query does not
+disconnect the transport or forcibly interrupt a filesystem call.
+
+**Incomplete scan** identifies permission or I/O errors, unsafe or unrepresentable
+paths, or depth, time, entry, pending-directory, response or result limits. Try a
+narrower directory scope for traversal limits; changing query text alone may not
+reduce traversal. No matches in an incomplete scan does not mean the file is
+absent. Even a complete no-match result applies only to that scope and exclusion
+policy. A discovered binary or large file can still be refused by Open or Preview.
+
+## Project Text and preview
+
+**Project Text** explicitly submits a case-sensitive literal search of disk text.
+It does not search unsaved draft bytes. Results display the submitted query and
+historical line hints; those coordinates may no longer identify the same text.
+The existing engine is bounded, and the interface retains at most 500 results and
+512 KiB of combined path/snippet text. A limit warning can reflect traversal,
+time or response limits, not just the number of matches.
+
+Preview is separate from an editable tab and is limited to **1 MiB**. For a file
+already open, **Current open draft** shows that exact draft and sends **zero
+backend Reads**. For an unopened file, an explicit preview uses a bounded Read.
+Unreadable, binary, oversized or invalid responses show an explanation. There is
+one retained preview and at most one preview Read in flight, with one replacement
+selection waiting. Text hits carry no file revision, so a disk preview cannot
+establish that the file is unchanged since the search.
+
+**Open** always uses ordinary file opening; preview bytes are not promoted into
+a new editable document. An existing dirty tab is reused without rereading or
+replacing its text or Undo history. Filename opening preserves that tab's
+selection; a text hit deliberately navigates to its historical line hint. No
+find, selection, preview, Open or Back action implicitly saves a file.
+
+Back restores the departure selection, including its direction, only while the
+original tab is still open and its edit version is unchanged. Edited or closed
+locations are skipped; Undo to identical text does not revive an old location.
+History is bounded and local to the session, not a persistent recent-files list.
+Reconnect or workspace changes clear it.
+
+## Existing tools and remote access
+
+Filename discovery, text search and preview use Cedar's existing workspace agent
+and path checks. They do not enable execution trust, start Git, commands or a
+language server, or add a new remote transport. Existing local and configured SSH
+connections keep their current setup and authentication boundary. This candidate
+does not establish new real-SSH acceptance or a sandbox against hostile concurrent
+filesystem changes.
+
+Build, Run and other existing tools remain available under their existing support
+and trust requirements. Java type search remains in the Language tools and needs
+an already running supported, trusted Java session. This browsing flow does not
+start it automatically or provide every-language symbol search. It makes no IDEA
+parity or unmeasured performance claim.

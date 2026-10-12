@@ -93,6 +93,7 @@ fn main() {
         protocol,
         root: reported,
         agent: Some(info),
+        ..
     } = untrusted.handshake()
     else {
         panic!("local Windows agent omitted metadata");
@@ -252,6 +253,7 @@ mod portable {
             protocol,
             root: reported,
             agent: Some(info),
+            ..
         } = client.handshake()
         else {
             return Err("metadata");
@@ -429,6 +431,7 @@ mod portable {
             protocol,
             root: reported,
             agent: Some(after),
+            ..
         } = client
             .request(Operation::Hello)
             .map_err(|_| "hello_after")?
@@ -640,6 +643,7 @@ mod linux_desktop {
             protocol,
             root: reported,
             agent: Some(info),
+            ..
         } = client.handshake()
         else {
             return Err("metadata");
@@ -941,6 +945,7 @@ mod linux_desktop {
             protocol,
             root: reported,
             agent: Some(after),
+            ..
         } = budget.successful(client, Operation::Hello, "metadata_stable")?
         else {
             return Err("metadata_stable");
@@ -1239,6 +1244,7 @@ mod linux_desktop {
                     request.id
                 },
                 result: Ok(Payload::Hello {
+                    file_discovery: None,
                     protocol: if mode == "protocol" {
                         PROTOCOL_VERSION + 1
                     } else {

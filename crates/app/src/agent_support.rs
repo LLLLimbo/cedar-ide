@@ -6,6 +6,12 @@ use cedar_protocol::{
 };
 
 impl CedarApp {
+    pub(super) fn backend_file_discovery_supported(&self) -> bool {
+        self.ready()
+            && self
+                .file_discovery
+                .is_some_and(|descriptor| descriptor.supported())
+    }
     pub(super) fn backend_supports(&self, name: &str) -> bool {
         self.ready() && supports_capability(self.agent_info.as_ref(), name)
     }
@@ -49,6 +55,19 @@ impl CedarApp {
         }
     }
     pub(super) fn operation_problem(&self, operation: &Operation) -> Option<String> {
+        if let Operation::FindFiles {
+            query,
+            scope,
+            limit,
+        } = operation
+        {
+            if !self.backend_file_discovery_supported() {
+                return Some("Project files are unavailable for this connection. Open and loaded files remain available.".into());
+            }
+            return cedar_protocol::validate_file_discovery_request(query, scope, *limit)
+                .err()
+                .map(|error| error.to_string());
+        }
         if let Operation::LanguageJavaSignatureHelp {
             path,
             version,
@@ -282,6 +301,7 @@ mod tests {
             id: 0,
             connected: true,
             result: Ok(Payload::Hello {
+                file_discovery: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: root.into(),
                 agent,
@@ -591,6 +611,7 @@ mod tests {
             id: 0,
             connected: true,
             result: Ok(Payload::Hello {
+                file_discovery: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION + 1,
                 root: "/unaccepted".into(),
                 agent: Some(full_test_agent()),

@@ -30,7 +30,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// One connection generation's cancellation signal. Cancellation is permanent;
 /// create a fresh token for a replacement connection.
 ///
-/// Process Hello/List/Read/Search waits observe this at most every 50 ms,
+/// Process Hello/List/Read/Search/FindFiles waits observe this at most every 50 ms,
 /// subject to scheduling. Already enqueued mutation, Git, language, and task
 /// operations retain their normal replies and deadlines. Synchronous embedded
 /// workspace calls, OS process creation, and kernel cleanup are not interrupted.
@@ -239,6 +239,11 @@ impl Client {
     pub fn handshake(&self) -> &Payload {
         &self.handshake
     }
+    /// Availability is solely the first validated Hello descriptor. Future
+    /// versions and old agents are never probed with an unsupported operation.
+    pub fn supports_file_discovery(&self) -> bool {
+        matches!(&self.handshake, Payload::Hello { file_discovery: Some(descriptor), .. } if descriptor.supported())
+    }
     /// Wake the connection owner when the existing process reader or writer
     /// publishes transport activity. This performs no I/O and starts no thread.
     /// Registration also wakes for activity published before registration.
@@ -297,13 +302,45 @@ impl Client {
             return Ok(self.handshake.clone());
         }
         self.require_capabilities(&op)?;
-        match &mut self.backend {
+        let discovery = if let Operation::FindFiles {
+            query,
+            scope,
+            limit,
+        } = &op
+        {
+            cedar_protocol::validate_file_discovery_request(query, scope, *limit)
+                .map_err(|e| e.to_string())?;
+            Some((query.clone(), scope.clone(), *limit))
+        } else {
+            None
+        };
+        let response = match &mut self.backend {
             #[cfg(not(windows))]
             Backend::Local(ws) => ws.handle(op).map_err(|e| e.to_string()),
             Backend::Process(p) => p.request(op),
+        };
+        if let (Some((query, scope, limit)), Ok(payload)) = (discovery, &response) {
+            let validation = match payload {
+                Payload::FilePaths { result } => result
+                    .validate_for(&query, &scope, limit)
+                    .map_err(|e| e.to_string()),
+                _ => Err("invalid_file_discovery: expected file_paths payload".into()),
+            };
+            if let Err(failure) = validation {
+                let message = format!("protocol_error: {failure}");
+                return Err(match &mut self.backend {
+                    #[cfg(not(windows))]
+                    Backend::Local(_) => message,
+                    Backend::Process(process) => process.fail(message),
+                });
+            }
         }
+        response
     }
     fn require_capabilities(&self, op: &Operation) -> Result<(), String> {
+        if matches!(op, Operation::FindFiles { .. }) && !self.supports_file_discovery() {
+            return Err("unsupported_operation: agent does not advertise supported file_discovery v1; reconnect with a compatible agent".into());
+        }
         let Payload::Hello { agent, .. } = &self.handshake else {
             unreachable!("client handshake is validated before construction");
         };
@@ -417,7 +454,10 @@ fn bundled_windows_agent_path(executable: &Path) -> Result<PathBuf, String> {
 
 fn validate_handshake(handshake: &Payload) -> Result<(), String> {
     let Payload::Hello {
-        protocol, agent, ..
+        protocol,
+        agent,
+        file_discovery,
+        ..
     } = handshake
     else {
         return Err("protocol_error: expected hello".into());
@@ -429,6 +469,9 @@ fn validate_handshake(handshake: &Payload) -> Result<(), String> {
     }
     if let Some(agent) = agent {
         agent.validate().map_err(|e| e.to_string())?;
+    }
+    if let Some(descriptor) = file_discovery {
+        descriptor.validate().map_err(|e| e.to_string())?;
     }
     for capability in ["list", "read"] {
         if !supports_capability(agent.as_ref(), capability) {
@@ -1200,6 +1243,7 @@ impl ProcessClient {
                     | Operation::List { .. }
                     | Operation::Read { .. }
                     | Operation::Search { .. }
+                    | Operation::FindFiles { .. }
             );
         self.next_id = self.next_id.checked_add(1).ok_or("request id exhausted")?;
         let id = self.next_id;
@@ -1213,7 +1257,7 @@ impl ProcessClient {
             return Err(self.fail("transport_write: writer stopped or request queue full".into()));
         }
         // The deadline belongs to the request, never to a polling slice. Only
-        // the four read-only operations above observe cancellation in flight;
+        // the read-only operations above observe connection cancellation in flight;
         // once queued, every other operation keeps its authoritative reply.
         let deadline = Instant::now() + timeout;
         let response = loop {
@@ -1579,6 +1623,7 @@ mod tests {
             protocol,
             root: reported_root,
             agent: Some(agent),
+            ..
         } = client.handshake()
         else {
             panic!("local workspace must advertise metadata");

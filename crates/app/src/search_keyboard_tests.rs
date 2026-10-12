@@ -2407,6 +2407,7 @@ fn search_keyboard_workspace_changing_hello_preserves_held_lifetime_until_releas
             &mut app,
             0,
             Ok(Payload::Hello {
+                file_discovery: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: "/other".into(),
                 agent: Some(agent_support::full_test_agent()),

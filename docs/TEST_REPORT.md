@@ -1,6 +1,120 @@
-# Verification checkpoint — 0.59.3 Unicode Parameter info renderer coverage
+# Verification checkpoint — 0.60.0 Find and return candidate
 
-## Scope and acceptance state
+## 0.60.0 scope and acceptance state
+
+**0.60.0 is an integrated browsing candidate, not an accepted release. Full
+exact-commit dual-platform CI, all three exact-source release-package audits and
+native-window acceptance remain pending.** Local focused checks establish only
+their stated scope. Historical acceptance below does not transfer to these new
+production paths, and no new Windows GUI or real-SSH acceptance is claimed.
+
+The candidate combines the shared **Find and return** flow with bounded filename
+discovery into untouched workspace directories. **Files** and **Project Text**
+use explicit submission, immutable result activation, explicit read-only preview,
+ordinary Open and existing location history. Open drafts are previewed without a
+backend Read; dirty text, Undo and save state are preserved. Filename opening
+retains an existing draft's selection, while a text hit uses its historical line
+hint. These actions do not implicitly Save. The complete user contract is in
+[Find and return](FIND_AND_RETURN.md).
+
+Project files requires the supported optional Hello `file_discovery` version-1
+descriptor. Protocol 4, AgentInfo schema 1, the 32 direct-capability limit and
+two-group limit remain unchanged. Absent or unsupported extensions retain the
+explicit **Open and loaded files** fallback and send no discovery requests.
+Discovery reads metadata only, has a visible directory scope and exclusion
+policy, reports bounded incomplete reasons, and does not create an index or
+watcher. Literal filename/path matching uses Rust Unicode lowercase without
+normalization or full case folding; regex, CamelCase and live search-as-you-type
+are not implemented. The elapsed deadline is cooperative, not a guarantee that an
+individual blocking filesystem operation can be interrupted.
+
+Existing Build/Run and language tools are retained under their existing support
+and trust requirements. No new execution trust, automatic language startup, SSH
+deployment or remote transport is introduced. There is no visual-parity or
+unmeasured performance claim. The browsing roadmap remains the design decision;
+implementation and acceptance status are reported here separately.
+
+## 0.60.0 local documentation and package checks
+
+The user guide is linked from both READMEs and all three quickstarts, and is an
+explicit required payload in the Windows development, Linux agent and Linux
+desktop package inventories. Focused Python package/link regressions passed on
+Linux:
+
+| Family | Result |
+| --- | --- |
+| Windows bundle | 37 selected: 36 passed, one Windows-only junction check skipped, zero failed |
+| Linux agent bundle | 31 passed, zero failed |
+| Linux desktop bundle | 40 passed, zero failed |
+
+These tests use synthetic binaries and the real guide text. They do not build or
+validate current shipping binaries, substitute for the three release-package
+audits, prove native GUI behavior, or establish real SSH interoperability. The
+Rust/process results below come from their separate terminal runs; they are not
+inferred from these documentation checks.
+
+The local Linux **workspace, all-target, all-feature, locked** aggregate passed:
+**49 suites, 1,926 passed / 0 failed / 69 ignored**. All **26 retained Python
+test suites** also passed. The new browsing acceptance runner passed its **10
+pure tests**, and its strict validator accepted both actual normal-agent proof
+outputs. These are local results; exact-commit dual-platform CI, Windows
+execution, current release-package audits and native-window acceptance remain
+pending.
+
+## 0.60.0 focused frontend verification and preserved failures
+
+Final formatting and strict workspace, all-target, all-feature Clippy checks
+passed on the final Rust sources, including the fixture-only baseline corrections.
+Focused checks passed the additional Ctrl+Alt+Left/Right history aliases
+and Alt+1 Project access, including positive activation, mixed-input rejection
+and held-key behavior. Queued-Open and residual-input ownership checks also
+passed. The aliases retain the existing bracket history shortcuts and
+Ctrl/Cmd+Shift+E. The final focused run recorded **27 passed / 0 failed / 1 ignored**.
+The ignored normal-agent proof was then executed explicitly using the final
+0.60.0 agent and app; its exact seven-operation journey, source hashes and close
+checks passed. The full local workspace aggregate passed separately as recorded
+above. Neither result establishes native GUI acceptance.
+
+An integrated focused run recorded **26 passed / 1 failed / 1 ignored**. The
+failure was
+`browse_tests::browse_global_entry_rejects_repeat_held_and_ime_input_without_stealing_row_activation`.
+The fixture incorrectly assumed an empty native egui Preedit event was inert
+while an editor selection was active; native editing deletes that selected
+range. The correction collapses the selection with native ArrowRight only for
+the IME case and checks the exact preconditions before the measured event.
+A subsequent IME fixture assertion also failed because native Preedit changes
+caret affinity. Both failures concern expected native editing behavior in the
+fixture; production behavior and input guards are unchanged by the corrections.
+The final focused rerun passed as recorded above; both earlier failures remain
+preserved and are not reclassified as passes.
+
+## Accepted 0.59.3 baseline and preserved pre-CI record
+
+### Final accepted 0.59.3 evidence, verified 2026-10-12
+
+**0.59.3 is the latest accepted bounded checkpoint.** Public commit
+[`1e2a26d6dd38c17ed3723ced54797fcb43255eb6`](https://github.com/LLLLimbo/cedar-ide/commit/1e2a26d6dd38c17ed3723ced54797fcb43255eb6),
+tree `d3f951aa8acd77efebad5aa42c8d773563016c5e`, passed
+[CI 38192432380](https://github.com/LLLLimbo/cedar-ide/actions/runs/38192432380).
+All four jobs and all three exact-source packages passed. Linux recorded
+**1,862 passed / 0 failed / 67 ignored** and Windows recorded
+**1,805 / 0 / 111**, each across 48 suites. Recovered public logs, package manifests
+and receipts were independently rechecked on 2026-10-12; this is a recovery audit
+of that original run, not a new CI execution.
+
+Its native acceptance carries the 0.59.2 functional evidence and separate cleanup
+complement through verified shipping-source equivalence. The original native
+screenshots and receipts were unavailable for this audit, so their contents were
+not reverified. Historical acceptance and the original 125.452-second cleanup
+failure remain intact; there is no fresh native validation or Windows GUI claim.
+The same-package 28.175-second complement retains its original bounded meaning.
+
+The historical status summarized below describes the 0.59.3 source submitted on
+2026-10-12 before its CI run completed. Pending statements are historical and
+superseded by the accepted evidence above. The 0.59.3-only production-equivalence
+and unchanged-inventory statements do not describe the new 0.60.0 implementation.
+
+### Original scope and acceptance state
 
 **0.59.2 is the latest fully accepted bounded checkpoint. 0.59.3 is a test-only, CI-only candidate with exact-commit CI and package verification pending.** This checkpoint adds deterministic Unicode Parameter info checks against the actual egui renderer. Production Rust and Python behavior, the workflow, dependencies, protocol/capabilities, parser limits, receipt predicates, operation inventories and all test/proof budgets remain unchanged. The workspace, Cedar lockfile records and retained exact-version assertions advance to 0.59.3.
 
@@ -10,7 +124,7 @@ No new native GUI run is part of 0.59.3. Its native provenance is carried from t
 
 The accepted public source is [`a3f69b469f16b8bd66b2f57e38aaae2bab759281`](https://github.com/LLLLimbo/cedar-ide/commit/a3f69b469f16b8bd66b2f57e38aaae2bab759281), tree `b20d684046c1bcf86c07a8db6420133b1af590af`, tested by [CI 38183040039](https://github.com/LLLLimbo/cedar-ide/actions/runs/38183040039). **All four CI jobs and all three source-linked packages passed independent verification.** Both strict checks, complete workspace aggregates and retained process/runtime gates passed. Linux recorded **1,861 passed / 0 failed / 67 ignored**, Windows **1,804 / 0 / 111**, each across 48 suites. Each platform passed the 24 Java-signature Python driver tests and the deterministic Parameter info groups: 16 frontend, 12 pure proof, six parser, five backend and two client tests.
 
-Both independent real-JDT producers used the normal agent/normal client route and the same-run, exact-source packaged agent. Each issued exactly three Parameter info queries: first-argument and second-argument results contained **2 / 2** signatures with the exact expected active parameter, and the outside-call query returned **0**. Their exact ledgers, synchronized source, server provider support, unchanged Java source and owned cleanup were verified by the bounded headless receipts. These receipts explicitly do not prove native GUI behavior. The final acceptance summary `cedar-phase592-ci-38183040039/verification-summary.json` has SHA-256 `efe7319332e5c49e7eb6536673144129e838137938f36a390147465bcf0f6013`.
+Both independent real-JDT producers used the normal agent/normal client route and the same-run, exact-source packaged agent. Each issued exactly three Parameter info queries: first-argument and second-argument results contained **2 / 2** signatures with the exact expected active parameter, and the outside-call query returned **0**. Their exact ledgers, synchronized source, server provider support, unchanged Java source and owned cleanup were verified by the bounded headless receipts. These receipts explicitly do not prove native GUI behavior.
 
 The three accepted archive hashes are Windows development `157836d03ba29c1d0d7915a2aa64da7bba497ad92cd07c366066c8c3c86294d1`, Linux agent `5001ef7d4efb4f0e9c994677c5588a3a5270b497549b8457b3bed1fe32d79809`, and Linux desktop `a2cfe3d921030651a34ca160fdef4c4324e24a745af5b1dd275b6658126598d3`. The Linux desktop binary is `f1e308cfffe05d67fadf88debfb3ba0809a8abc0b5a7b20c9e160871145cbe58`; its companion agent is `c4ed462427c6aff21b5ecdf0c00b45e25ca1ed5050fe7ef429078bf92697d0f3`. These are 0.59.2 artifacts, not newly built 0.59.3 binaries.
 
@@ -18,11 +132,11 @@ The three accepted archive hashes are Windows development `157836d03ba29c1d0d791
 
 The first exact-package cloud Linux native run observed both active arguments, both overload labels, an empty outside-call result, cursor/edit invalidation and explicit dismissal. An inserted `8` remained visibly selected in dirty `78` before the query and after 64 native Tab presses back to the editor, with no pointer refocus after dismissal. Undo was the next native input and restored clean `7`; the next Redo restored dirty `78` and selected `8`. Some grouped Tab sequences have only terminal screenshots; no invisible focus owner is inferred. The run observed Java graceful-exit text and frontend exit 0.
 
-That run's strict cleanup gate **failed**: the recorded observation lasted **125.452 seconds**, exceeding the original **120-second** bound by 5.452 seconds. This failure remains failed. A separately authorized same-package cleanup-only complement observed a dirty draft, one correct second-parameter query, normal Stop, explicit Discard/quit, frontend exit 0 and exact-window absence in **28.175 seconds**, within its separate unchanged 120-second bound. The complement supplements the acceptance scope; it does not reclassify the first attempt, repeat the functional matrix or supply new Windows GUI evidence. The complement did not open Java's graceful-exit detail before quitting, so no Java exit-code claim is made for that complement.
+That run's strict cleanup gate **failed**: the recorded observation lasted **125.452 seconds**, exceeding the original **120-second** bound by 5.452 seconds. This failure remains failed. A separate same-package cleanup-only complement observed a dirty draft, one correct second-parameter query, normal Stop, explicit Discard/quit, frontend exit 0 and exact-window absence in **28.175 seconds**, within its separate unchanged 120-second bound. The complement supplements the acceptance scope; it does not reclassify the first attempt, repeat the functional matrix or supply new Windows GUI evidence. The complement did not open Java's graceful-exit detail before quitting, so no Java exit-code claim is made for that complement.
 
-Both generated native workspaces retained the original 322-byte Java source, SHA-256 `2a196b0dc072953dcf36761bb91532ccbc6c64539b2d1cdcdb4857ab33045211`. JDT itself rewrote generated `.project` metadata from 282 to 675 bytes and added a 737-byte `bin/CedarParameterFixture.class`. Thus **whole-workspace equality was not met** and is not claimed; no Save or Run action explains away those explicit background-generated changes. The source export, package payload, preexisting evidence and original JDT files remained unchanged under their recorded verification scopes.
+Both generated native workspaces retained the original 322-byte Java source, SHA-256 `2a196b0dc072953dcf36761bb91532ccbc6c64539b2d1cdcdb4857ab33045211`. JDT itself rewrote generated `.project` metadata from 282 to 675 bytes and added a 737-byte `bin/CedarParameterFixture.class`. Thus **whole-workspace equality was not met** and is not claimed; no Save or Run action explains away those explicit background-generated changes.
 
-The first native receipt SHA-256 is `7d1a3ef6ee4eefc18b098e21ce68a0e7edd1f8ea9410531d6c2ed34bf15e4174`; the complementary receipt is `b9306a659ad5012cce51328246d68894cae5db93e26afadc9aabb18a2a8590d0`; independent audit SHA-256 is `e9c9d73a491b7359113bb3e530310777f09676774a5f59abdd2627d325689e94`. Acceptance combines the first functional observations and the separately verified cleanup complement. It does not establish native backend request counts, agent reaping, delayed/in-flight response races, Windows GUI, broad IME/Unicode input, restart/persistence or broad workspace stress. The headless proofs independently establish their own exact ledgers and cleanup only.
+Acceptance combines the first functional observations and the separately verified cleanup complement. It does not establish native backend request counts, agent reaping, delayed/in-flight response races, Windows GUI, broad IME/Unicode input, restart/persistence or broad workspace stress. The headless proofs independently establish their own exact ledgers and cleanup only.
 
 The [original 0.59.2 preparation report](TEST_REPORT_PHASE592_CANONICAL_FIXTURE.md) is archived **byte-for-byte**, 30,437 bytes, SHA-256 `957ae8fd643fa3abb161fec1ef24a1d6be24a04900e16d9a39b17ee322754ca3`. Its CI-first PARTIAL and native DEFERRED wording records the earlier preparation state, not the terminal result above. The 0.59.0 and 0.59.1 failed runs remain preserved below and in their unchanged archives. Passing 0.59.2 does not retrospectively prove that a Windows temporary-path alias caused the 0.59.1 failures; that explanation remains a source-supported, runtime-unconfirmed candidate.
 
@@ -36,11 +150,11 @@ Retained Duplicate, Search and report acceptance drivers, Python tests and Rust 
 
 ## Final accepted 0.58.4 evidence
 
-The accepted source is public [`9e925cc4dc084b3893bf7ed0cc907990bb22047b`](https://github.com/LLLLimbo/cedar-ide/commit/9e925cc4dc084b3893bf7ed0cc907990bb22047b), tree `f6d4a32e4db06f192c95071065d08a1d873f1ac9`, tested by [CI 38174023016](https://github.com/LLLLimbo/cedar-ide/actions/runs/38174023016). Both strict checks, complete workspace aggregates, retained process gates and all three package audits passed. Linux recorded 1,818 passed / 0 failed / 66 ignored; Windows recorded 1,761 / 0 / 110; each completed 48 suites. Each platform passed 15 editor-entry, 27 resize, 23 sidebar, 33 Search and 19 report-keyboard tests. The normal-agent report proof matched 15 cases / 55 strict typed fields / 10 requests / two owned agents reaped. Search retained 14 cases / 57 fields / 12 requests / two owners reaped. The final summary `cedar-phase584-ci-38174023016/verification-summary.json` has SHA-256 `21774f57b6b0adbbb3d7397dfb426702197ec41ee636dbff7bb9310ab948f004`.
+The accepted source is public [`9e925cc4dc084b3893bf7ed0cc907990bb22047b`](https://github.com/LLLLimbo/cedar-ide/commit/9e925cc4dc084b3893bf7ed0cc907990bb22047b), tree `f6d4a32e4db06f192c95071065d08a1d873f1ac9`, tested by [CI 38174023016](https://github.com/LLLLimbo/cedar-ide/actions/runs/38174023016). Both strict checks, complete workspace aggregates, retained process gates and all three package audits passed. Linux recorded 1,818 passed / 0 failed / 66 ignored; Windows recorded 1,761 / 0 / 110; each completed 48 suites. Each platform passed 15 editor-entry, 27 resize, 23 sidebar, 33 Search and 19 report-keyboard tests. The normal-agent report proof matched 15 cases / 55 strict typed fields / 10 requests / two owned agents reaped. Search retained 14 cases / 57 fields / 12 requests / two owners reaped.
 
 The exact-package fresh cloud Linux GUI run observed genuine divider dragging, pointer reset, report load/clear in automatic mode, a later genuine drag, and keyboard focus followed by Space reset. From the disabled reset onward, 37 real forward Tab presses were captured separately. The critical editor-entry witness is step **56**, followed by immediate Undo at **57** and Redo at **58**, with no intervening pointer refocus. Dirty four-line text and full selected block survived Tab; Undo restored the original clean two-line text and full selection; Redo restored the dirty duplicate and selection. Step 55's anticipatory filename is not the editor-entry witness. Several earlier focus stops lacked visible highlights and have no inferred owner. No Save, Run or LSP action was used, and source/fixture disk bytes remained unchanged.
 
-This is bounded visible evidence for one ASCII CRLF draft, one generated report and one fresh cloud instance. It does not establish Windows GUI, raw event/frame ownership, backend operation counts or native agent reaping, broad IME/Unicode behavior, OS resize or Tools restart coverage. The pinned-egui immediate-next-Tab lock-registration limitation and lack of a cross-frame held-key lineage guarantee remain. Native receipt SHA-256 is `39071003558512511c4e516d02cc52331806badf0835db707cdefab66d136cb8`; independent audit SHA-256 is `5b65b2b7bcc1058c5a91066ea39328d8d0b44ad0a517d1498aa5ad1c9bd99a03`.
+This is bounded visible evidence for one ASCII CRLF draft, one generated report and one fresh cloud instance. It does not establish Windows GUI, raw event/frame ownership, backend operation counts or native agent reaping, broad IME/Unicode behavior, OS resize or Tools restart coverage. The pinned-egui immediate-next-Tab lock-registration limitation and lack of a cross-frame held-key lineage guarantee remain.
 
 The [original 0.58.4 candidate report](TEST_REPORT_PHASE584_TAB_BOUNDARY_FIXTURE.md) is archived unchanged: 20,338 bytes, SHA-256 `966b95ef62c5c505837b2302d3abf33272eef2f4aa39f58dfaf5638afdb59340`. Its pending statements describe the earlier preparation checkpoint, not the terminal result above. The archive retains the 0.58.3 eight-case boundary-focus fixture failure, the 0.58.2 measured Tab mutation, all earlier failed reports, and the exact distinction between test preparation and shipping behavior. No prior failed run or native limit is erased.
 
@@ -56,13 +170,13 @@ Windows selected 19 tests in `scripts/test_java_signature_acceptance.py`; five f
 - `test_every_failed_stage_is_terminal_and_original_failure_preserved`: the mocked runner recorded zero calls rather than the expected first call.
 - `test_failed_native_record_is_retained_and_changed_source_cannot_pass`: the expected probe record was absent.
 
-The last three raw assertions did not log the driver's failing stage. A source-only reproduction decoded the same Rust fixture bytes with explicit UTF-8 and cp1252: UTF-8 reconstructs 322 bytes and the required `2a196b...45211` hash; cp1252 reconstructs 331 bytes and the observed `3cfb97...ff91b` hash. The old Java release parser accepts an LF fixture and rejects the corresponding CRLF fixture. The mocked release file used platform-translating `write_text`, and the parser runs before the first mocked child call. A Windows CRLF fixture causing those three downstream assertion failures is therefore a source-supported inference, not a directly logged runtime stage. Source diagnosis receipt SHA-256 is `a3be9651b39d3ba84571ffaca8d6a1bd07df6edc99aed283b405796460f760a3`; retained raw-log SHA-256 is `a4ef9827742c7ccf8603a81372df29d7bf7019fde77e84c44c8270217d1efb71`.
+The last three raw assertions did not log the driver's failing stage. A source-only reproduction decoded the same Rust fixture bytes with explicit UTF-8 and cp1252: UTF-8 reconstructs 322 bytes and the required `2a196b...45211` hash; cp1252 reconstructs 331 bytes and the observed `3cfb97...ff91b` hash. The old Java release parser accepts an LF fixture and rejects the corresponding CRLF fixture. The mocked release file used platform-translating `write_text`, and the parser runs before the first mocked child call. A Windows CRLF fixture causing those three downstream assertion failures is therefore a source-supported inference, not a directly logged runtime stage.
 
 Linux strict checks, all-feature release compilation and the complete aggregate passed in the same 0.59.0 run: **1,861 passed / 0 failed / 67 ignored across 48 suites**. The new deterministic coverage passed: 16 frontend, 12 pure proof, six parser, five backend and two client tests. These passes do not execute the ignored three-query real-JDT Parameter info proof.
 
 The Linux job then failed in **Agent/tool protocol chains** at `scripts/capability_smoke.py:74`: the exact symmetric difference was `{'language_java_signature_help'}`. The preceding stdio protocol smoke passed. Both the retained Python `TYPED_JAVA` inventory and its independent test inventory still described 31 direct capabilities, omitting the 32nd operation already advertised by the Rust implementation. This is an acceptance-inventory omission; no new Rust capability is introduced by the 0.59.1 correction. Later Linux runtime/package gates were skipped. Windows also never reached its package gates.
 
-The separate real-JDT Parameter info producer depends on the whole `test` job matrix and was **skipped** after those prerequisite failures; neither platform producer ran. The completed run produced **zero artifacts**: no Windows development, Linux agent or Linux desktop package was produced or accepted, and no real-JDT Parameter info receipt exists for this run. The terminal verification summary has SHA-256 `4cc6dd2016e4a985cf42d423283eef76c0eb1e174b0d0f1ad4aef31c9ec459ed`. The workflow's failure, Windows's five Python assertions, the Linux smoke failure and all skipped gates remain failures/skips; no unchanged retry or replacement result is substituted.
+The separate real-JDT Parameter info producer depends on the whole `test` job matrix and was **skipped** after those prerequisite failures; neither platform producer ran. The completed run produced **zero artifacts**: no Windows development, Linux agent or Linux desktop package was produced or accepted, and no real-JDT Parameter info receipt exists for this run. The workflow's failure, Windows's five Python assertions, the Linux smoke failure and all skipped gates remain failures/skips; no unchanged retry or replacement result is substituted.
 
 ## Preserved 0.59.1 terminal CI outcome
 
@@ -80,7 +194,7 @@ Source inspection identifies a specific mismatch candidate: `DriverTests.exercis
 
 The terminal Linux job passed strict checks, the complete aggregate (**1,861 passed / 0 failed / 67 ignored across 48 suites**), release compilation and all retained runtime/process gates. Both the Linux agent and Linux desktop packages were produced and independently verified against this exact 0.59.1 source. These are retained-gate and partial package results for 0.59.1; they do not establish the new independent Parameter info proof, a Windows package or 0.59.2 acceptance.
 
-The Windows failure blocked its strict Rust compilation, complete workspace aggregate, runtime gates and package production. The separate real-JDT Parameter info producer depends on the whole `test` matrix, so **both platform producer proofs were skipped**. No Windows package or real-JDT Parameter info receipt exists for this run. The workflow remains failed despite the successful Linux job and its two verified packages. Terminal verification summary `cedar-phase591-ci-38181570382/verification-summary.json` has SHA-256 `788c07e248f0f9c9c843419912492b7979a0b99728a056e0ed36778aa9d87ff6`. The six Windows failure records, skipped producer proofs and missing Windows package remain preserved; the Linux evidence cannot substitute for them or for positive native acceptance.
+The Windows failure blocked its strict Rust compilation, complete workspace aggregate, runtime gates and package production. The separate real-JDT Parameter info producer depends on the whole `test` matrix, so **both platform producer proofs were skipped**. No Windows package or real-JDT Parameter info receipt exists for this run. The workflow remains failed despite the successful Linux job and its two verified packages. The six Windows failure records, skipped producer proofs and missing Windows package remain preserved; the Linux evidence cannot substitute for them or for positive native acceptance.
 
 ## Explicit Java request and compatibility
 
@@ -112,14 +226,12 @@ Required fresh evidence includes exact-commit strict checks and complete workspa
 
 The workspace and exactly ten Cedar lockfile records move from 0.59.2 to 0.59.3. All 343 non-Cedar package records, every dependency edge and the 11 other crate/example manifests remain unchanged. Cargo dependency resolution is not run. Nine retained Duplicate/Search/report driver, test and proof files plus the Java-signature synthetic test fixture change only exact version literals. The three package source inventories and existing entry-guide link order remain unchanged: Windows 23 links, Linux agent five and Linux desktop 14. No JDK, JDT, new binary or third-party dependency is bundled.
 
-Preparation uses Python/static checks with bytecode disabled and formatter-only inspection where recorded. There is **no local Rust compile/runtime, JDT startup, new native GUI run, installation or deletion**. The approved incremental disk allowance is **40 MiB total: 18 MiB export, 20 MiB publisher and 2 MiB source/Git/logs**, with a **200 MiB free-space floor**. Existing native evidence and caches are retained. Source sealing, export, publication and CI collection are separate coordinator actions within that allowance; this report does not claim they are complete.
+This preparation used Python/static checks and formatter-only inspection. It included **no local Rust compile/runtime, JDT startup or new native GUI run**. Those checks did not establish CI, package or native acceptance.
 
 ## 0.59.3 local verification and remaining acceptance
 
-The coordinator's consolidated local Python run selected **321 tests: 320 passed, one expected Windows-only skip, zero failures**, in **5.887 seconds**, recorded in `cedar-phase593-local-python.log`. It covers the same 13 suite families as the 0.59.2 preparation, including all 24 Java-signature driver tests and retained/package suites. These are Python/static checks using synthetic payloads and mocked Rust/JDT paths; they do not execute the new Rust renderer tests or establish Windows-host, real-JDT or native behavior. The formatter-only workspace check, AST parsing of all 64 Python scripts and diff-whitespace check passed. No local Rust compile/test/runtime was used.
+The recorded local Python run selected **321 tests: 320 passed, one expected Windows-only skip, zero failures**, in **5.887 seconds**. It covers the same 13 suite families as the 0.59.2 preparation, including all 24 Java-signature driver tests and retained/package suites. These are Python/static checks using synthetic payloads and mocked Rust/JDT paths; they do not execute the new Rust renderer tests or establish Windows-host, real-JDT or native behavior. The formatter-only workspace check, AST parsing of all 64 Python scripts and diff-whitespace check passed. No local Rust compile/test/runtime was used.
 
-The read-only source/document/version audit against private base `abbdfa90e6ac13c65f4d5561e83a84413cf5457d` verifies the 241 Rust files with only the single test-module edit and three exact retained version-literal exceptions; all production source, workflows, predicates and budgets are unchanged. Exactly ten Cedar lockfile versions advance; all 343 external package records, every dependency edge and 11 other manifests stay unchanged. All 106 prior phase/hotfix reports are byte-identical, the new 30,437-byte archive equals the old current report, and ordered entry-guide links remain 23/5/14. Retained 0.59.2 final-summary and native-receipt/audit hashes are rechecked. The complete allowed change set is eight current documentation files, twelve version-only files and the test module, plus the one report archive. The Rust renderer tests are authored only until exact-commit CI executes them. Final acceptance requires both strict checks and full workspace aggregates, the unchanged retained runtime gates and real-JDT producer proofs, and all three exact-source package audits. Existing 0.59.2 native evidence may be carried by verified production equivalence, with its first cleanup failure and all limits unchanged. No current 0.59.3 public commit, CI success, package acceptance or fresh native result is claimed.
-
-An explicit syntax check of the external audit script emitted one bytecode cache outside the repository despite the `-B` flag; it is retained, accounted within the source/log allowance and excluded from export. No cleanup deletion was used.
+The recorded source-equivalence review identified only the renderer test change and product-version updates; production behavior, workflows, validators, budgets and dependencies were unchanged. At this preparation stage, the renderer tests still required exact-commit CI execution. Acceptance required strict checks, full workspace aggregates, retained runtime gates, real-JDT producer proofs and all three exact-source package audits. Carrying 0.59.2 native evidence required verified production equivalence and retained its first cleanup failure and all original limits. These preparation checks alone did not establish 0.59.3 CI, package or fresh native acceptance.
 
 The byte-identical 0.59.2 archive retains all earlier local verification results, including its 321 selected / 320 passed / one expected skip Python run, the source/version audits and the original CI/native pending state. Those historical local checks do not substitute for new 0.59.3 execution.

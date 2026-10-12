@@ -63,7 +63,15 @@ fn shortcut(event: &egui::Event) -> Option<Action> {
     if modifiers.ctrl && modifiers.mac_cmd {
         return None;
     }
-    if *key == egui::Key::J && modifiers.matches_exact(egui::Modifiers::COMMAND) {
+    if *key == egui::Key::Num1
+        && modifiers.alt
+        && !modifiers.ctrl
+        && !modifiers.shift
+        && !modifiers.command
+        && !modifiers.mac_cmd
+    {
+        Some(Action::Explorer)
+    } else if *key == egui::Key::J && modifiers.matches_exact(egui::Modifiers::COMMAND) {
         Some(Action::Toggle)
     } else if *key == egui::Key::E
         && modifiers.matches_exact(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT)
