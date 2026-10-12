@@ -1,12 +1,82 @@
-# Verification checkpoint — 0.62.0 candidate
+# Verification checkpoint — 0.62.1 candidate
 
-## 0.62.0 scope and pending acceptance
+## 0.62.1 correction and pending acceptance
 
-**0.62.0 is not accepted. The latest accepted bounded baseline is 0.61.0.**
+**0.62.1 is a pending correction candidate. The latest accepted bounded baseline
+is 0.61.0.** The public 0.62.0 run failed at the Windows scoped-search process
+driver, as recorded below. Its successful checks and Linux packages do not make
+0.62.0 accepted or establish acceptance of 0.62.1. Scoped-search native
+acceptance remains on hold pending the corrected exact-source evidence.
+
+The correction is limited to configuring the scoped-search driver's CLI stdout
+and stderr as UTF-8, plus regressions that exercise actual non-BMP output under
+cp1252 on both success and failure paths. The shared helper, receipt schema,
+validation predicates, limits and workflow remain unchanged. Shipping Rust
+behavior is unchanged apart from the product-version update. The scoped-search
+contract and intentional frontend late-completion behavior remain as described
+in the preserved 0.62.0 scope below.
+
+Local correction verification recorded **228 Python tests: 227 passed and one
+skipped**, including all ten scoped-driver tests. The cp1252 regressions preserve
+exact UTF-8 output bytes for both LF and CRLF, and keep invalid receipts and
+subprocess errors as failures. Formatting and source-equivalence checks passed:
+the workflow and shared helper are identical, the four Rust proof changes are
+version literals only, and all 343 upstream dependency records are unchanged.
+These checks do not include a rebuild of unchanged Rust. The 2,007-test Linux and 1,945-test Windows aggregate
+passes below belong to 0.62.0. No 0.62.1 strict-check, workspace aggregate,
+process-proof, package or native pass is claimed here. Acceptance still needs
+fresh exact-commit dual-platform gates,
+complete normal-agent proof receipts, all three exact-source package audits and
+the bounded exact-package native journey. The original failure is retained;
+adding an encoding correction does not retrospectively complete its receipt or
+create the missing Windows package.
+
+## Preserved 0.62.0 public CI failure
+
+Public commit
+[`4d1f1d160b4d8991c9873ab7f01befff9a40de1f`](https://github.com/LLLLimbo/cedar-ide/commit/4d1f1d160b4d8991c9873ab7f01befff9a40de1f)
+was tested by [CI 38269803398](https://github.com/LLLLimbo/cedar-ide/actions/runs/38269803398).
+**The run failed and 0.62.0 was not accepted.** Both platforms passed strict
+checks, their complete workspace aggregates and release builds. Linux recorded
+**2,007 passed / zero failed / 70 ignored** and Windows recorded
+**1,945 passed / zero failed / 114 ignored**, each across **50 suites**.
+All **13 scoped frontend frame checks** and the retained Browse proof passed on
+both platforms.
+
+The Linux scoped-search normal-agent proof passed its strict **52-field /
+12-case / 10-operation** contract, and all retained Linux normal-agent proofs
+passed. The exact-source Linux agent and Linux
+desktop packages were independently verified. These successful Linux outcomes
+are preserved separately from the failed Windows process-driver gate.
+
+On Windows, after the strict validator returned, the shared `checked_stage`
+helper attempted to print captured stdout. The cp1252 output stream raised
+`UnicodeEncodeError` for **U+1F600**. A complete Windows scoped-proof receipt was
+unavailable, and the final agent-digest check was not reached. Reaching the
+validator return does not establish a verified Windows proof; no such pass is
+claimed.
+
+The Windows development package was absent, many later Windows stages were
+skipped, and both dependent real-JDT producer jobs were skipped. Windows Maven
+and the later independently conditioned report, Search and shipping gates
+passed. Those outcomes do not complete all gates or repair the missing proof
+and package evidence. There is no accepted 0.62 native result,
+Windows GUI result or real-SSH result from this run.
+
+## Preserved 0.62.0 preparation record
+
+The following local results and pending statements describe preparation before
+the public CI outcome above. They remain evidence for their stated local scope
+and are not 0.62.1 executions.
+
+### 0.62.0 scope and acceptance state at preparation
+
+**At this preparation checkpoint, 0.62.0 was not accepted and the latest accepted
+bounded baseline was 0.61.0.**
 The new scoped Project Text path has the local evidence below, including a
 passing final versioned workspace aggregate, formatting, strict checks and
 matching-version normal-agent proofs. Exact-commit dual-platform CI, all three
-exact-source package audits and exact-package native acceptance remain pending.
+exact-source package audits and exact-package native acceptance were then pending.
 Accepted 0.61.0 evidence does not validate the new filtered-search path. No new
 Windows GUI or real-SSH acceptance is claimed.
 
@@ -58,7 +128,7 @@ existing preview Read limits remain. This is a subset of B2, with no regex,
 whole-word or case-insensitive text mode, live/debounced search, persistent
 index, broader semantic navigation or claim of IntelliJ IDEA parity.
 
-## 0.62.0 local checks and remaining gates
+### 0.62.0 local checks and then-remaining gates
 
 The recorded focused local results are bounded to the tested source state:
 
@@ -124,11 +194,11 @@ contract. These local executions use the ordinary debug-built agent and exact
 ignored test harness; the complete outer CI drivers and release packages were
 not executed locally.
 
-Acceptance still requires exact-commit dual-platform CI and the Windows
+At this preparation checkpoint, acceptance still required exact-commit dual-platform CI and the Windows
 development, Linux agent and Linux
 desktop package audits. Native scoped-search acceptance must use the exact
 candidate package and independently exercise the filter/result/dirty-draft
-journey. No package, Windows or 0.62 native pass is claimed by this checkpoint. The accepted 0.61 native shortcut limitation and
+journey. No package, Windows or 0.62 native pass was claimed at that preparation checkpoint. The accepted 0.61 native shortcut limitation and
 historical insufficient-height boundaries below remain visible.
 
 ## Accepted 0.61.0 bounded retained-results baseline

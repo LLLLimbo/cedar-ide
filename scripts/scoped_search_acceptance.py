@@ -24,7 +24,7 @@ TEST_NAME = "scoped_search_process_tests::normal_agent_scoped_search_is_explicit
 PREFIX = "scoped_search_acceptance "
 COMPILE_TIMEOUT = 120
 RUNTIME_TIMEOUT = 420
-SOURCE_VERSION = "0.62.0"
+SOURCE_VERSION = "0.62.1"
 QUERY = "needle café 😀"
 CASES = [
     "trust_off_normal_agent", "legacy_search_compatibility", "explicit_directory_and_mask",
@@ -127,6 +127,12 @@ def run(root, runner=bounded_process):
 
 
 def main():
+    # The native receipt contains literal Unicode. Windows redirected streams
+    # may otherwise use cp1252 even though the captured child output is UTF-8.
+    # Keep the original output intact; imported run() leaves stream policy to
+    # its caller, including the in-memory streams used by the driver tests.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="strict", newline="")
     try:
         require(len(sys.argv) == 1, "unexpected_arguments")
         run(Path(__file__).resolve().parents[1])

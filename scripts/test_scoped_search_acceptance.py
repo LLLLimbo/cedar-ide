@@ -17,7 +17,7 @@ from test_browse_acceptance import artifacts, encoded_artifacts
 def execution(receipt=None, platform="linux"):
     value = proof.expected_receipt(platform) if receipt is None else receipt
     return ("running 1 test\ntest " + proof.TEST_NAME + " ... " + proof.PREFIX
-            + json.dumps(value) + "\nok\n\ntest result: ok. 1 passed; 0 failed; "
+            + json.dumps(value, ensure_ascii=False) + "\nok\n\ntest result: ok. 1 passed; 0 failed; "
             "0 ignored; 0 measured; 999 filtered out; finished in 0.01s\n").encode()
 
 
@@ -134,6 +134,83 @@ class DriverTests(unittest.TestCase):
                 calls, _ = self.fixture(invalid=stage)
                 self.assertEqual(len(calls), 1 if stage == "compile" else 2)
         self.fixture(mutate_agent=True)
+
+
+class OutputEncodingTests(unittest.TestCase):
+    def stage(self, output, failure=False, completed=None):
+        def runner(*_args):
+            if failure:
+                raise CapturedFailure("subprocess_nonzero", output,
+                                      returncode=101, eof=True, cleanup="reaped")
+            return output
+
+        def validator(data):
+            receipt = proof.validate_execution(data, "windows")
+            if completed is not None:
+                completed.append(receipt)
+            return receipt
+
+        return proof.checked_stage("runtime", [], Path.cwd(), {},
+                                   proof.RUNTIME_TIMEOUT, proof.MAX_RUNTIME_BYTES,
+                                   validator, runner)
+
+    def test_unconfigured_cp1252_stdout_fails_after_receipt_validation(self):
+        output = execution(platform="windows")
+        self.assertIn("😀".encode("utf-8"), output)
+        completed = []
+        with io.BytesIO() as raw, io.TextIOWrapper(raw, encoding="cp1252") as stream:
+            with redirect_stdout(stream), self.assertRaises(UnicodeEncodeError):
+                self.stage(output, completed=completed)
+        self.assertEqual(completed, [proof.expected_receipt("windows")])
+
+    def cli(self, output, failure=False):
+        completed = []
+        with io.BytesIO() as out, io.BytesIO() as err:
+            with io.TextIOWrapper(out, encoding="cp1252") as stdout, \
+                    io.TextIOWrapper(err, encoding="cp1252") as stderr:
+                with redirect_stdout(stdout), redirect_stderr(stderr), \
+                        mock.patch.object(proof.sys, "argv", ["scoped_search_acceptance.py"]), \
+                        mock.patch.object(proof, "run", side_effect=lambda _root: self.stage(
+                            output, failure=failure, completed=completed)):
+                    result = proof.main()
+                stdout.flush()
+                stderr.flush()
+                self.assertEqual(stdout.encoding, "utf-8")
+                self.assertEqual(stderr.encoding, "utf-8")
+                return result, out.getvalue(), err.getvalue(), completed
+
+    def test_cli_emits_exact_non_bmp_utf8_receipt_to_cp1252_stdout(self):
+        for newline in (b"\n", b"\r\n"):
+            with self.subTest(newline=newline):
+                output = execution(platform="windows").replace(b"\n", newline)
+                result, stdout, stderr, completed = self.cli(output)
+                self.assertEqual(result, 0)
+                self.assertEqual(stdout, output)
+                self.assertEqual(stderr, b"")
+                self.assertEqual(completed, [proof.expected_receipt("windows")])
+                self.assertEqual(proof.validate_execution(stdout, "windows"),
+                                 proof.expected_receipt("windows"))
+
+    def test_cli_preserves_unicode_invalid_receipt_and_failure_on_stderr(self):
+        receipt = {**proof.expected_receipt("windows"), "success": False}
+        output = execution(receipt, platform="windows")
+        result, stdout, stderr, completed = self.cli(output)
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, b"")
+        self.assertEqual(stderr, output + (
+            "Scoped Search acceptance failed: runtime:fixed_receipt_contract_mismatch; "
+            "native_cleanup=unverified\n").encode("utf-8"))
+        self.assertEqual(completed, [])
+
+    def test_cli_preserves_unicode_subprocess_failure_on_stderr(self):
+        output = 'Error: "bounded generated diagnostic Ω😀"\n'.encode("utf-8")
+        result, stdout, stderr, completed = self.cli(output, failure=True)
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, b"")
+        self.assertEqual(stderr, output + (
+            "Scoped Search acceptance failed: runtime:subprocess_nonzero; returncode=101; "
+            "direct_child_cleanup=reaped; native_cleanup=unverified\n").encode("utf-8"))
+        self.assertEqual(completed, [])
 
 
 if __name__ == "__main__":
