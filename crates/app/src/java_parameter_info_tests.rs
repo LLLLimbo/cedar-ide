@@ -196,6 +196,58 @@ fn has_label(output: &egui::FullOutput, wanted: &str) -> bool {
     label_at(output, wanted).is_some()
 }
 
+fn assert_signature_emphasis(
+    app: &CedarApp,
+    output: &egui::FullOutput,
+    label: &str,
+    expected: Option<std::ops::Range<usize>>,
+) {
+    fn find<'a>(shape: &'a egui::epaint::Shape, label: &str) -> Option<&'a egui::text::LayoutJob> {
+        match shape {
+            egui::epaint::Shape::Text(text) if text.galley.job.text == label => {
+                Some(&text.galley.job)
+            }
+            egui::epaint::Shape::Vec(shapes) => shapes.iter().find_map(|shape| find(shape, label)),
+            _ => None,
+        }
+    }
+    // Parameter-detail rows can also be green. Inspect only the painted full
+    // signature and its actual byte sections, never the parser's highlight().
+    let job = output
+        .shapes
+        .iter()
+        .find_map(|shape| find(&shape.shape, label))
+        .expect("full signature must be painted by the production frame");
+    let ordinary = egui::TextFormat {
+        font_id: egui::FontId::monospace(14.0),
+        color: app.editor_ctx.style().visuals.text_color(),
+        ..Default::default()
+    };
+    let expected_sections = if let Some(range) = expected {
+        vec![
+            (0..range.start, ordinary.clone()),
+            (
+                range.clone(),
+                egui::TextFormat {
+                    color: GREEN,
+                    background: app.editor_ctx.style().visuals.selection.bg_fill,
+                    ..ordinary.clone()
+                },
+            ),
+            (range.end..label.len(), ordinary),
+        ]
+    } else {
+        vec![(0..label.len(), ordinary)]
+    };
+    assert_eq!(job.sections.len(), expected_sections.len(), "{label}");
+    for (section, (range, format)) in job.sections.iter().zip(expected_sections) {
+        assert_eq!(section.byte_range, range, "{label}");
+        assert_eq!(section.format, format, "{label}");
+        assert!(label.is_char_boundary(section.byte_range.start));
+        assert!(label.is_char_boundary(section.byte_range.end));
+    }
+}
+
 #[test]
 fn explicit_native_button_synchronizes_exact_draft_then_queries_once() {
     for opened in [false, true] {
@@ -660,10 +712,27 @@ fn stop_and_connection_loss_retire_parameter_info_without_hiding_transport_failu
 
 #[test]
 fn overload_browsing_keeps_selection_history_draft_disk_and_undo_unchanged() {
+    const UNICODE: &str = "😀call(e\u{301} first, 🦀e\u{301} second)";
+    const UNHINTED: &str = "call(int left, int right)";
+    const OWN_HINT: &str = "call(long left, long right)";
     let (mut app, commands) = app();
     settle(&mut app);
-    let cursor =
-        egui::text::CCursorRange::two(egui::text::CCursor::new(38), egui::text::CCursor::new(40));
+    let original_cursor =
+        egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 1u64)))
+            .unwrap()
+            .cursor
+            .char_range()
+            .unwrap();
+    let cursor = egui::text::CCursorRange {
+        primary: egui::text::CCursor {
+            index: 38,
+            prefer_next_row: true,
+        },
+        secondary: egui::text::CCursor {
+            index: 40,
+            prefer_next_row: false,
+        },
+    };
     let draft = SOURCE.replace("2);", "4);");
     crate::editor_state::commit_selection(
         &app.editor_ctx,
@@ -687,15 +756,28 @@ fn overload_browsing_keeps_selection_history_draft_disk_and_undo_unchanged() {
     );
     click(&mut app, "java_parameter_info", 0.3);
     let command = commands.try_recv().unwrap();
+    assert!(matches!(
+        command.op,
+        Operation::LanguageJavaSignatureHelp { version: 2, .. }
+    ));
     queued(
         &app,
         &command,
         Ok(Payload::Language {
-            value: signatures(),
+            value: json!({"signatures":[
+                {"label":UNICODE,"parameters":[{"label":[7,15]},{"label":[17,28]}]},
+                {"label":UNHINTED,"parameters":[{"label":"int left"},{"label":"int right"}]},
+                {"label":OWN_HINT,"parameters":[{"label":"long left"},{"label":"long right"}],"activeParameter":0}
+            ],"activeSignature":0,"activeParameter":1}),
         }),
     );
     frame(&mut app, 0.4, vec![]);
-    frame(&mut app, 0.5, vec![]);
+    let output = frame(&mut app, 0.5, vec![]);
+    // Both preceding text and the active parameter contain a non-BMP scalar
+    // and a combining mark. UTF-16 [17, 28] must paint exactly UTF-8 [20, 34].
+    assert_eq!(&UNICODE[20..34], "🦀e\u{301} second");
+    assert_signature_emphasis(&app, &output, UNICODE, Some(20..34));
+    assert!(has_label(&output, "Server-selected overload"));
     assert_eq!(
         app.language
             .parameter_info
@@ -718,8 +800,19 @@ fn overload_browsing_keeps_selection_history_draft_disk_and_undo_unchanged() {
         "top-level hint must not migrate to a manually selected row"
     );
     let output = frame(&mut app, 0.7, vec![]);
-    assert!(has_label(&output, SECOND));
+    // Index 1 exists on this overload too, but the top-level hint belongs only
+    // to the initial row and must not migrate through a real overload click.
+    assert_signature_emphasis(&app, &output, UNHINTED, None);
     assert!(!has_label(&output, "Server-selected overload"));
+    click(&mut app, "java_parameter_overload_2", 0.8);
+    assert_eq!(app.language.parameter_info.selected, Some(2));
+    let output = frame(&mut app, 0.9, vec![]);
+    assert_signature_emphasis(&app, &output, OWN_HINT, Some(5..14));
+    assert!(!has_label(&output, "Server-selected overload"));
+    click(&mut app, "java_parameter_overload_0", 1.0);
+    let output = frame(&mut app, 1.1, vec![]);
+    assert_signature_emphasis(&app, &output, UNICODE, Some(20..34));
+    assert!(has_label(&output, "Server-selected overload"));
     let doc = &app.documents[0];
     assert_eq!(doc.text, draft);
     assert_eq!(
@@ -749,11 +842,76 @@ fn overload_browsing_keeps_selection_history_draft_disk_and_undo_unchanged() {
     let mut undo = state.undoer();
     let before = undo.undo(&(cursor, draft.clone())).unwrap().clone();
     assert_eq!(before.1, SOURCE);
-    assert_eq!(undo.redo(&before).unwrap().1, draft);
+    assert!(crate::location_history::same_selection(
+        before.0,
+        original_cursor
+    ));
+    let after = undo.redo(&before).unwrap();
+    assert_eq!(after.1, draft);
+    assert!(crate::location_history::same_selection(after.0, cursor));
     assert!(
         commands.try_recv().is_err(),
         "viewing cannot save, resolve, navigate or launch work"
     );
+}
+
+#[test]
+fn native_signature_rendering_does_not_emphasize_missing_invalid_or_ambiguous_hints() {
+    const AMBIGUOUS: &str = "call(int value, int value)";
+    for (case, value, label) in [
+        (
+            "missing parameter hint",
+            json!({"signatures":[{"label":FIRST,"parameters":[{"label":"int first"},{"label":"int second"}]}],"activeSignature":0}),
+            FIRST,
+        ),
+        (
+            "out-of-range top-level hint",
+            json!({"signatures":[{"label":FIRST,"parameters":[{"label":"int first"},{"label":"int second"}]}],"activeSignature":0,"activeParameter":99}),
+            FIRST,
+        ),
+        (
+            "out-of-range own hint overrides valid top-level hint",
+            json!({"signatures":[{"label":FIRST,"parameters":[{"label":"int first"},{"label":"int second"}],"activeParameter":99}],"activeSignature":0,"activeParameter":1}),
+            FIRST,
+        ),
+        (
+            "ambiguous string parameter label",
+            json!({"signatures":[{"label":AMBIGUOUS,"parameters":[{"label":"int value"},{"label":"int value"}]}],"activeSignature":0,"activeParameter":1}),
+            AMBIGUOUS,
+        ),
+    ] {
+        let (mut app, commands) = app();
+        settle(&mut app);
+        let version = app.documents[0].edit_version;
+        let cursor = egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 1u64)))
+            .unwrap()
+            .cursor
+            .char_range()
+            .unwrap();
+        click(&mut app, "java_parameter_info", 0.3);
+        let command = commands.try_recv().unwrap();
+        assert!(matches!(
+            command.op,
+            Operation::LanguageJavaSignatureHelp { version: 1, .. }
+        ));
+        queued(&app, &command, Ok(Payload::Language { value }));
+        frame(&mut app, 0.4, vec![]);
+        let output = frame(&mut app, 0.5, vec![]);
+        assert_eq!(app.language.parameter_info.selected, Some(0), "{case}");
+        assert_signature_emphasis(&app, &output, label, None);
+        assert_eq!(app.documents[0].text, SOURCE, "{case}");
+        assert_eq!(app.documents[0].edit_version, version, "{case}");
+        let state =
+            egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 1u64))).unwrap();
+        assert!(crate::location_history::same_selection(
+            state.cursor.char_range().unwrap(),
+            cursor
+        ));
+        assert!(
+            commands.try_recv().is_err(),
+            "{case}: no follow-on operation"
+        );
+    }
 }
 
 #[test]

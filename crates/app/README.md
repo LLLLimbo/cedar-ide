@@ -130,8 +130,8 @@ Query/batch changes, hidden or switched tools, modals and competing input cancel
 unfinished row intent; continue with a fresh valid key or pointer action. The frontend keeps at
 most 500 rows and 512 KiB of combined path/snippet bytes in one accepted batch;
 oversized batches are rejected whole. No automatic search, new engine, protocol,
-capability or workspace operation is added by Search. The 0.58.4 accepted baseline
-and new 0.59.2 Parameter info candidate have separate evidence in the
+capability or workspace operation is added by Search. The accepted 0.59.2 Parameter info checkpoint and test-only 0.59.3
+Unicode renderer candidate have separate evidence in the
 [current report](../../docs/TEST_REPORT.md).
 
 ## Agent capabilities and trust
@@ -163,7 +163,7 @@ Cedar supports plain-text edits and explicit replacement-mode InsertReplaceEdit.
 
 No completion command is executed. The exact JDT LS callback `java.completion.onDidSelect` is deliberately skipped while its validated text edits are applied. Its selection-ranking feedback and automatic signature-help follow-up are unavailable. The official [JDT handler](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/main/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/CompletionHandler.java) handles that callback separately from text/import edits.
 
-### Explicit Java Parameter info (0.59.2 candidate)
+### Explicit Java Parameter info (0.59.2 accepted; 0.59.3 renderer tests pending)
 
 In an already running trusted **Java / JDT LS** session, **Parameter info** requests
 a read-only signature snapshot at the exact synchronized Java draft version and
@@ -187,22 +187,21 @@ not edit source, move the selection, create an Undo record or save. There is no
 automatic typing callback or new activation shortcut. Synchronization does not
 prove that JDT has finished indexing or analyzing.
 
-This remains **CI-first PARTIAL**. Version 0.59.2 canonicalizes the mocked
-driver test's owned temporary root and adds bounded test-only validator
-diagnostics. The 0.59.0 Windows text-boundary and Linux capability-inventory
-failures remain preserved. The 0.59.1 Windows gate selected 22 tests and recorded
-six failures: four success-path subcases stopped at compile/driver_error, the
-next-stage fixture observed five calls instead of six, and the partial probe was
-absent. The original exception and path were not logged; a temporary-path alias
-is a source-supported candidate. Linux passed strict checks, its 1,861-test
-aggregate, release compilation and all retained gates; both Linux packages were
-independently verified. Windows produced no package, both independent Parameter
-info producer proofs were skipped, and the workflow failed. Production Python
-behavior, Rust behavior, strict validation, workflow and deadlines are unchanged. Fresh exact-commit
-dual-platform CI, real-JDT Parameter info proof and package evidence remain
-pending. Positive native Java/UI acceptance is **DEFERRED**; the latest fully
-accepted checkpoint remains 0.58.4. See the [complete contract and LSP default
-deviation](../../docs/JAVA_PARAMETER_INFO.md).
+Version **0.59.2 passed bounded acceptance**: exact-commit dual-platform CI,
+all four jobs, three package audits, both real-JDT three-query proofs and bounded
+Linux native functional observations with a separate cleanup complement. The
+first native 125.452-second cleanup failure against its 120-second limit remains
+failed; the same-package complement completed in 28.175 seconds. Original Java
+source was unchanged, while JDT rewrote generated `.project` metadata and added
+a class file. No whole-workspace equality or native agent-reaping claim is made.
+
+Version **0.59.3 is CI-only pending**. It adds actual-renderer Unicode tests and
+updates versions/docs without changing production behavior, strict validators,
+workflow or deadlines. Native provenance is carried from 0.59.2 through production
+source equivalence; no new GUI run is performed. The 0.59.0/0.59.1 failures remain
+preserved, and the 0.59.1 temporary-path alias explanation is still unconfirmed at
+runtime. See the [complete contract and LSP default deviation](../../docs/JAVA_PARAMETER_INFO.md)
+and [current verification report](../../docs/TEST_REPORT.md).
 
 ### Problems and navigation
 

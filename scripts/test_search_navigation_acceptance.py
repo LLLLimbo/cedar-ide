@@ -95,7 +95,7 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual([item["phase"] for item in expected["operation_ledger"]],
                          ["setup"] * 4 + ["activation"] + ["refresh"] * 3 + ["reconnect"] * 3 + ["empty"])
         self.assertEqual(len(expected), 57)
-        self.assertEqual(expected["source_version"], "0.59.2")
+        self.assertEqual(expected["source_version"], "0.59.3")
         self.assertEqual((expected["requests"], expected["connections"], expected["agents_reaped"]), (12, 2, 2))
         self.assertEqual((expected["hello"], expected["list"], expected["search"], expected["read"],
                           expected["write"], expected["other_operations"]), (2, 2, 6, 2, 0, 0))
@@ -238,13 +238,13 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
                             b'[workspace]\npackage = false',
                             b'[workspace.package]\nversion = 54',
                             b'[workspace.package]\nversion = "0.53.4"',
-                            b'[workspace.package]\nversion = "0.59.2-extra"',
-                            b'[workspace.package]\nversion = "0.59.2"\nversion = "0.59.2"',
+                            b'[workspace.package]\nversion = "0.59.3-extra"',
+                            b'[workspace.package]\nversion = "0.59.3"\nversion = "0.59.3"',
                             b" " * (64 * 1024 + 1)):
                 path.write_bytes(invalid)
                 with self.subTest(data=invalid[:60]), self.assertRaises(proof.AcceptanceError):
                     proof.validate_source_version(root)
-            path.write_text('[workspace.package]\nversion = "0.59.2"\n')
+            path.write_text('[workspace.package]\nversion = "0.59.3"\n')
             proof.validate_source_version(root)
 
     def test_agent_digest_is_exact_nonempty_bounded_and_detects_same_size_change(self):
@@ -278,7 +278,7 @@ class SourceAndAgentProvenanceTests(unittest.TestCase):
 
 class DriverTests(unittest.TestCase):
     def exercise(self, platform="linux", *, failure=None, selection=None, runtime=None,
-                 missing_agent=False, invalid_artifact=False, source_version="0.59.2",
+                 missing_agent=False, invalid_artifact=False, source_version="0.59.3",
                  changed_agent=False, changed_source=False):
         with tempfile.TemporaryDirectory(prefix="cedar-search-navigation-driver-") as directory:
             root = Path(directory).resolve()

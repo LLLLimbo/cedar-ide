@@ -62,11 +62,11 @@ def package_fixture(base, platform="linux"):
         path = root / reverse.get(name, name)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
-    (root / "Cargo.toml").write_bytes(b'[workspace.package]\nversion = "0.59.2"\n')
+    (root / "Cargo.toml").write_bytes(b'[workspace.package]\nversion = "0.59.3"\n')
     payload["cedar-agent" if platform == "linux" else "cedar-agent.exe"] = synthetic_elf() if platform == "linux" else synthetic_pe()
     if platform == "windows":
         payload["cedar.exe"] = synthetic_pe()
-    manifest = module.make_manifest("0.59.2", COMMIT, RUN_URL, payload)
+    manifest = module.make_manifest("0.59.3", COMMIT, RUN_URL, payload)
     archive = module.archive_bytes(payload, manifest)
     (artifact / ("generated.tar.gz" if platform == "linux" else "generated.zip")).write_bytes(archive)
     return root, artifact, verified, module, payload, manifest
