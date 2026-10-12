@@ -1,9 +1,215 @@
-# Verification checkpoint — 0.62.1 candidate
+# Verification checkpoint — 0.62.2 candidate
 
-## 0.62.1 correction and pending acceptance
+## 0.62.2 row-click correction and pending acceptance
 
-**0.62.1 is a pending correction candidate. The latest accepted bounded baseline
-is 0.61.0.** The public 0.62.0 run failed at the Windows scoped-search process
+**0.62.2 is a pending correction candidate. The latest accepted bounded baseline
+is 0.61.0.** The 0.62.1 public CI and all three packages passed, but acceptance
+is blocked by a confirmed cross-widget result-activation defect. Its earlier
+native unexpected Open remains separately unexplained, and its narrow native
+layout remains unverified. None of those limits is cleared by preparing this
+correction.
+
+The candidate adds a row-click continuity guard to both the shared Project Text
+window and bottom FIND RESULTS tool. Ordinary Open still requires egui's own
+double-click classification and current press/release ownership, plus a prior
+accepted clean click on the exact same result in the same view and preview
+pane. Identity includes the widget, accepted result source, original row index
+and content identity, rather than only a displayed path or current selection.
+The shared window applies the same guard to its file and symbol providers.
+
+Group, control and other-row input breaks that continuity, as do rejected or
+mixed gestures, foreign or window focus loss, changes to query, filters,
+provider or results, changed workspace/session/navigation context, preview-pane
+changes and hide/reopen.
+Clicking one surface cannot qualify a click in the other. Evidence from before
+the original raw batch is kept separate from the current completion, which is
+committed only once after an accepted nonsizing response. Repeated layout
+passes cannot turn one release into its own preceding click.
+
+The guard tolerates egui temporarily clearing keyboard focus only while the
+exact eligible carried row press still owns the native widget and the primary
+button remains down. Idle missing focus or focus assigned to a foreign widget
+does not qualify for that exception.
+
+Clean held-pointer motion and idle frames retain continuity. A valid carried
+release followed by a new press in one batch also remains supported; it is not
+rejected merely because the input was coalesced. Malformed or unsupported
+multiple-edge gestures cannot establish continuity. An egui triple-click does
+not synthesize an Open. These are bounded event schedules, not a claim about
+every possible native delivery pattern.
+
+This is a frontend input correction, with no custom double-click timer,
+protocol, backend or CI-workflow change. The surfaces retain their own focus,
+keyboard and Escape behavior. The scoped-search compatibility, limits and
+intentional legacy late-completion behavior remain as described below.
+
+### 0.62.2 local correction checks and remaining gates
+
+The versioned **0.62.2 Linux workspace, all-target, all-feature, locked**
+aggregate passed **50 suites, 2,031 tests / zero failed / 70 ignored**.
+Strict workspace, all-target, all-feature Clippy with warnings denied also
+passed. The selected Python driver, package and export checks recorded
+**228 tests: 227 passed, zero failed and one skipped** across ten families.
+All **343 upstream dependency records** remain unchanged. The product version
+and retained exact-version assertions advance to 0.62.2 without changing the
+protocol, dependencies, backend or workflow.
+
+The matching **0.62.2 normal agent** passed the local proofs through their
+original strict validators: Browse retained **17 fields / seven operations**,
+Search retained **57 fields / 14 cases / 12 operations**, and scoped search
+retained **52 fields / 12 cases / ten operations**. Final formatting passed.
+These are Linux local results. Fresh exact-commit dual-platform CI, all three
+exact-source package audits and a bounded native journey remain separate
+acceptance gates; local Python package checks and debug-built normal-agent
+proofs do not establish built-package or native acceptance.
+
+### Preserved 0.62.2 preparation results
+
+The final pre-version combined focused suite passed **24 tests / zero failed**:
+**14 shared-window Browse cases and ten bottom-tool cases**. The full Search
+selection also passed **43 tests / zero failed** against the same production
+source. These checks ran before the product-version bump, with the test binary
+still labelled **0.62.1**; they are evidence for the corrected local source, not
+a new execution of the public 0.62.1 source or final versioned 0.62.2 acceptance.
+Formatting passed.
+Coverage includes rapid group/other-row sequences, duplicate-content row
+identity, both cross-surface directions, interrupted and rejected gestures,
+lifecycle changes, genuine same-row doubles, held motion, carried release/press,
+repeated layout passes and actual triple-click classification.
+
+Earlier preparation attempts remain failures: the first focused selection had
+**three passed / four failed**, and a bottom characterization attempt failed
+compilation before any test ran. An intermediate combined run had **20 passed /
+two failed** in cross-surface fixture setup. Correcting those fixtures produced
+an initial 22-test pass; the earlier runs are not relabelled as passing aggregates.
+
+The subsequent retained Search run recorded **41 passed / one failed**. Its
+unchanged dirty-buffer double-click test exposed a real compatibility regression
+in the new guard: the first row click was accepted, but egui temporarily cleared
+keyboard focus during the matching, owned second press. The release then lost
+the prior completion solely because focus was absent. The correction preserves
+that exact clean held press with current native ownership;
+foreign/window focus, mixed input and context changes remain invalidating. The
+equivalent shared-window condition was corrected preventively; its tested
+geometry did not reproduce the bottom tool's transient focus state. The earlier
+22-test pass did not clear this retained regression. The final 24-test focused
+and 43-test Search runs include the correction and pass the unchanged retained
+test. A later preparation fixture also failed by asserting history before
+Open's next-frame commit; settling that frame, as the existing tests do, yielded
+the final focused pass. These failed attempts remain part of the record.
+
+Acceptance still requires fresh exact-commit dual-platform CI, all three
+exact-source package audits and a fresh bounded native journey using that
+candidate's exact package. The native journey
+must independently observe group activation, a first click on a previously
+unselected result, explicit Preview and deliberate same-row double-click, and
+resolve the unverified narrow layout. Passing earlier headless tests or
+observing isolated later Preview actions does not supply that evidence.
+
+## 0.62.1 public CI passed; acceptance blocked
+
+Public commit
+[`f1021b8c61cc5b526a115b0f60ad9ab4907ba648`](https://github.com/LLLLimbo/cedar-ide/commit/f1021b8c61cc5b526a115b0f60ad9ab4907ba648)
+passed [CI 38272343015](https://github.com/LLLLimbo/cedar-ide/actions/runs/38272343015).
+All **four jobs**, both strict checks, both complete workspace aggregates and
+all **three exact-source packages** passed verification. Linux recorded
+**2,007 passed / zero failed / 70 ignored** and Windows recorded
+**1,945 passed / zero failed / 114 ignored**, each across **50 suites**.
+Both platforms passed all **13 scoped frontend frame checks**, **44 Browse
+checks**, the scoped **52-field / 12-case / 10-operation** normal-agent proof
+and the retained normal-agent gates. Both independent real-JDT producer jobs
+also passed.
+
+The scoped driver's UTF-8 correction passed all ten driver checks on each
+platform, including the four output-encoding regressions. Complete scoped
+proofs and the post-runtime agent checks were verified on both platforms.
+The Windows development, Linux agent and Linux desktop package results belong
+to this exact public source. They do not retrospectively repair the failed
+0.62.0 run and do not establish native acceptance of 0.62.1.
+
+### Confirmed cross-widget activation defect
+
+A separate actual-frame diagnostic of the shared Project Text window used the
+unchanged 0.62.1 production implementation with a test-only addition. It
+established three distinct outcomes:
+
+- A group click followed by a click on a different, previously unselected
+  result, **60 ms between releases and 24 pixels apart**, produced egui's
+  double-click classification and performed ordinary Open. The result selection
+  changed from the preceding row to the Unicode row; an unopened-file Read, new
+  document and Back entry confirmed the unintended Open.
+- The same group-to-result sequence spaced **760 ms** apart selected the result
+  without opening it. A subsequent explicit Preview remained Preview, with no
+  new document or history entry.
+- Two clicks on the same result **30 ms** apart performed ordinary Open, the
+  intended positive behavior.
+
+A later actual-frame characterization confirmed the same defect class in the
+bottom **FIND RESULTS** tool before changing its production input behavior.
+A group click followed by a first click on a previously unselected result
+**60 ms** later reported an egui double-click and issued one ordinary-Open Read.
+The navigation version advanced; completing that Read produced a second tab
+and one Back entry. This is independent evidence for correcting both surfaces.
+
+Pinned egui classifies double-clicks from global pointer-release timing without
+requiring the preceding click to belong to the same widget. The shared window
+validates the current row's press/release ownership but then trusts that temporal
+classification for Open. Retiring the group action does not retire egui's
+earlier click timing. The diagnostic therefore establishes a concrete
+cross-widget defect; it does **not** identify the cause of the earlier native
+three-click sequence below. The first shared-window diagnostic attempt failed
+compilation and executed no tests; the corrected test harness produced its
+observations above without changing production code. These focused diagnostics
+were neither full-suite runs nor native-window tests.
+
+### Preserved native observations and gaps
+
+The bounded Linux native journey used the exact 0.62.1 package with trust off.
+It observed directory/mask filtering, Unicode paths, group collapse and retained
+reopen, inactive edited and edited-back tuples, explicit resubmission,
+validation refusals, shared bottom-tool results, current dirty-buffer Preview,
+ordinary Open/Back and a retained Undo/Redo step. Those positive observations
+are bounded to the independently observed actions.
+
+**An earlier sequence of three dependent clicks unexpectedly performed ordinary
+Open while Preview was intended.** There was no observation between the group,
+result and anticipated Preview clicks; the later targets relied on a prior
+layout. Individual input-delivery times and exact widget ownership were not
+recorded. Product failure versus targeting failure for that particular native
+sequence remains unresolved. Later isolated Preview observations do not explain
+or erase it. The discrepancy was escalated after the sequence rather than when
+first observed, so the original broad functional-pass statement cannot support
+combined acceptance.
+
+The attempted **780 × 540** resize did not establish changed Cedar geometry.
+An incidental change to an overlapping browser's geometry was restored, and a
+later Cedar-specific resize attempt also failed to establish the narrow bounds.
+No native narrow-layout pass or failure is claimed. Normal quit established
+window and frontend-process absence within the cleanup bound, but the original
+journey did not capture an exit code or descendant reaping. Package and fixture
+integrity were checked. Pixels do not establish backend request/read counts,
+pending races or exact selection affinities; no Windows GUI or real-SSH result
+is claimed.
+
+A separate native diagnostic stopped **before connection** because its startup
+observation helper reported an absent Cedar window while later inventory found
+that window present. The failing inventory and exact per-API timings were not
+retained, so the cause is unknown. It performed zero connection, Find, group,
+result or Preview actions and provided no functional or narrow-layout coverage.
+Its owned frontend closed normally and the wrapper observed exit status **0**;
+this does not establish descendant reaping. That stopped run neither reproduces
+nor clears the earlier unexpected Open.
+
+## Preserved 0.62.1 preparation record
+
+The following local correction results and pending statements describe
+preparation before the public CI and blocked acceptance outcome above. They
+remain evidence for their stated local scope and are not 0.62.2 executions.
+
+### 0.62.1 correction and pending acceptance at preparation
+
+**At this preparation checkpoint, 0.62.1 was a pending correction candidate and
+the latest accepted bounded baseline was 0.61.0.** The public 0.62.0 run failed at the Windows scoped-search process
 driver, as recorded below. Its successful checks and Linux packages do not make
 0.62.0 accepted or establish acceptance of 0.62.1. Scoped-search native
 acceptance remains on hold pending the corrected exact-source evidence.

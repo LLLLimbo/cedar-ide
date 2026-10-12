@@ -1454,6 +1454,8 @@ struct PointerRow {
     enabled: bool,
     down: bool,
     clicked: bool,
+    double: bool,
+    triple: bool,
     cedar_click: Option<usize>,
 }
 
@@ -1469,6 +1471,8 @@ impl std::fmt::Debug for PointerRow {
             .field("enabled", &self.enabled)
             .field("down", &self.down)
             .field("clicked", &self.clicked)
+            .field("double", &self.double)
+            .field("triple", &self.triple)
             .field("cedar_click", &self.cedar_click)
             .finish()
     }
@@ -1544,6 +1548,14 @@ pub(super) fn record_pointer_response(
     cedar_click: Option<usize>,
 ) {
     let probe = egui::Id::new(POINTER_RESPONSE_PROBE);
+    if index >= MAX_ROWS
+        && !ui.ctx().data(|data| {
+            data.get_temp::<bool>(probe.with("include_groups"))
+                .unwrap_or(false)
+        })
+    {
+        return;
+    }
     let observe_all = ui
         .ctx()
         .data(|data| data.get_temp::<bool>(probe).unwrap_or(false));
@@ -1560,6 +1572,8 @@ pub(super) fn record_pointer_response(
         enabled: response.enabled(),
         down: response.is_pointer_button_down_on(),
         clicked: response.clicked_by(egui::PointerButton::Primary),
+        double: response.double_clicked_by(egui::PointerButton::Primary),
+        triple: response.triple_clicked_by(egui::PointerButton::Primary),
         cedar_click,
     };
     ui.ctx().data_mut(|data| {
@@ -2672,4 +2686,430 @@ fn search_keyboard_workspace_changing_hello_preserves_held_lifetime_until_releas
         }
         assert!(commands.try_recv().is_err());
     }
+}
+
+// Capture the native response at its production gate. Do not reconstruct it
+// after ctx.run: multi-pass rendering can change the live click-count query.
+fn continuity_frame(app: &mut CedarApp, events: Vec<egui::Event>, elapsed: f64) -> Vec<PointerRow> {
+    continuity_frame_with_discard(app, events, elapsed, false)
+}
+
+fn continuity_frame_with_discard(
+    app: &mut CedarApp,
+    events: Vec<egui::Event>,
+    elapsed: f64,
+    discard: bool,
+) -> Vec<PointerRow> {
+    let ctx = app.editor_ctx.clone();
+    let probe = egui::Id::new(POINTER_RESPONSE_PROBE);
+    let mut input = raw(app, events);
+    input.time = Some(ctx.input(|input| input.time) + elapsed);
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let mut native = eframe::Frame::_new_kittest();
+    ctx.data_mut(|data| {
+        data.insert_temp(probe, true);
+        data.insert_temp(probe.with("include_groups"), true);
+        data.insert_temp(probe.with("rows"), Vec::<PointerRow>::new());
+    });
+    let _ = ctx.run(input, |ctx| {
+        eframe::App::update(app, ctx, &mut native);
+        if discard && ctx.output(|output| output.num_completed_passes) == 0 {
+            ctx.request_discard("bottom row continuity regression");
+        }
+    });
+    ctx.data_mut(|data| {
+        data.remove::<bool>(probe);
+        data.remove::<bool>(probe.with("include_groups"));
+        data.remove_temp(probe.with("rows")).unwrap()
+    })
+}
+
+fn continuity_click(app: &mut CedarApp, probe: &str) -> Vec<PointerRow> {
+    let pos = recorded_rect(app, probe)
+        .intersect(recorded_clip(app, probe))
+        .center();
+    continuity_frame(app, vec![egui::Event::PointerMoved(pos)], 0.01);
+    continuity_frame(app, pointer(pos, true), 0.01);
+    continuity_frame(app, pointer(pos, false), 0.01)
+}
+
+#[test]
+fn search_keyboard_row_continuity_group_to_first_row_selects_without_opening() {
+    for discard in [false, true] {
+        let (mut app, commands) = app(3);
+        let group_id = recorded_response(&app, "search_group:2").id;
+        let target_id = id(&app, 2);
+        assert_ne!(group_id, target_id);
+        assert_eq!(app.search_state.selected_index(), Some(0));
+        assert!(!app
+            .documents
+            .iter()
+            .any(|document| document.path == "file-2.txt"));
+        let collapse = continuity_click(&mut app, "search_group:2");
+        assert!(collapse.iter().any(|row| row.id == group_id && row.clicked));
+        assert!(!app.search_state.group_expanded(2));
+        continuity_frame(&mut app, vec![], 1.0);
+        let expand = continuity_click(&mut app, "search_group:2");
+        assert!(expand
+            .iter()
+            .any(|row| row.id == group_id && row.clicked && !row.double && !row.triple));
+        assert!(app.search_state.group_expanded(2));
+        continuity_frame(&mut app, vec![], 0.03);
+        let document = (app.documents[0].text.clone(), app.documents[0].edit_version);
+        let epoch = app.navigation_epoch;
+        let pos = recorded_rect(&app, "search_row:2").center();
+        continuity_frame(&mut app, vec![egui::Event::PointerMoved(pos)], 0.01);
+        continuity_frame(&mut app, pointer(pos, true), 0.01);
+        let release = continuity_frame_with_discard(&mut app, pointer(pos, false), 0.01, discard);
+        assert!(
+            release.iter().any(|row| row.id == target_id
+                && row.clicked
+                && row.double
+                && !row.triple
+                && row.cedar_click == Some(2)),
+            "{release:?}"
+        );
+        assert_eq!(app.search_state.selected_index(), Some(2));
+        if discard {
+            let clicked_pass = continuity_gate(&release, 2).pass;
+            assert!(release.iter().any(|row| row.pass > clicked_pass));
+        }
+        assert_continuity_quiet(&app, &commands, 2, epoch);
+        assert_eq!(
+            (app.documents[0].text.clone(), app.documents[0].edit_version),
+            document
+        );
+    }
+}
+
+fn continuity_gate(rows: &[PointerRow], index: usize) -> &PointerRow {
+    rows.iter()
+        .find(|row| row.index == index && !row.sizing && row.clicked)
+        .unwrap_or_else(|| panic!("missing actual clicked row {index}: {rows:?}"))
+}
+
+fn assert_continuity_quiet(app: &CedarApp, commands: &Receiver<Command>, index: usize, epoch: u64) {
+    assert_eq!(app.search_state.selected_index(), Some(index));
+    assert_eq!(app.navigation_epoch, epoch);
+    assert_eq!(app.documents.len(), 1);
+    assert_eq!(app.active_document, Some(1));
+    assert_eq!(app.documents[0].text, "saved Ω😀\r\nsecond\n");
+    assert_eq!(app.documents[0].saved_text, app.documents[0].text);
+    assert!(app.location_history.back.is_empty());
+    assert!(app.location_history.forward.is_empty());
+    assert!(app.location_history.pending.is_none());
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn search_keyboard_row_continuity_same_row_double_opens_once_across_passes() {
+    for discard in [false, true] {
+        let (mut app, commands) = app(3);
+        let first = continuity_click(&mut app, "search_row:2");
+        assert!(!continuity_gate(&first, 2).double);
+        assert_continuity_quiet(&app, &commands, 2, 0);
+        let pos = recorded_rect(&app, "search_row:2").center();
+        continuity_frame(&mut app, pointer(pos, true), 0.01);
+        let second = continuity_frame_with_discard(&mut app, pointer(pos, false), 0.01, discard);
+        let row = continuity_gate(&second, 2);
+        assert!(row.double && !row.triple, "{second:?}");
+        if discard {
+            assert!(second.iter().any(|later| later.pass > row.pass));
+        }
+        let open = commands.try_recv().unwrap();
+        assert!(matches!(&open.op, Operation::Read { path } if path == "file-2.txt"));
+        assert!(matches!(app.pending.get(&open.id), Some(Job::Open { .. })));
+        assert!(commands.try_recv().is_err());
+        reply(
+            &mut app,
+            open.id,
+            Ok(Payload::File {
+                path: "file-2.txt".into(),
+                text: "first\nsecond\n".into(),
+                revision: "b".repeat(64),
+            }),
+            true,
+        );
+        settle(&mut app);
+        assert_eq!(app.documents.len(), 2);
+        assert_eq!(app.active().unwrap().path, "file-2.txt");
+        assert_eq!(app.location_history.back.len(), 1);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn search_keyboard_row_continuity_distinct_rows_duplicates_and_return_need_own_pair() {
+    for (other, returning) in [(1, false), (2, false), (1, true), (2, true)] {
+        let (mut app, commands) = app(3);
+        continuity_click(&mut app, "search_row:0");
+        if returning {
+            continuity_frame(&mut app, vec![], 0.7);
+        }
+        let different = continuity_click(&mut app, &format!("search_row:{other}"));
+        if !returning {
+            let row = continuity_gate(&different, other);
+            assert!(row.double && !row.triple, "{different:?}");
+            assert_continuity_quiet(&app, &commands, other, 0);
+        } else {
+            let returned = continuity_click(&mut app, "search_row:0");
+            let row = continuity_gate(&returned, 0);
+            assert!(row.double && !row.triple, "{returned:?}");
+            assert_continuity_quiet(&app, &commands, 0, 0);
+        }
+    }
+}
+
+#[test]
+fn search_keyboard_row_continuity_actual_triple_stays_selection_only() {
+    let (mut app, commands) = app(3);
+    continuity_click(&mut app, "search_row:0");
+    let second = continuity_click(&mut app, "search_row:2");
+    assert!(continuity_gate(&second, 2).double);
+    let third = continuity_click(&mut app, "search_row:2");
+    let row = continuity_gate(&third, 2);
+    assert!(row.triple && !row.double, "{third:?}");
+    assert_continuity_quiet(&app, &commands, 2, 0);
+}
+
+#[test]
+fn search_keyboard_row_continuity_mixed_focus_and_control_interruptions_break_pair() {
+    for event in [
+        egui::Event::Text("x".into()),
+        egui::Event::Paste("x".into()),
+        egui::Event::Ime(egui::ImeEvent::Preedit("x".into())),
+        egui::Event::WindowFocused(false),
+        egui::Event::PointerGone,
+        edge(egui::Key::Tab, true, false),
+    ] {
+        let (mut app, commands) = app(3);
+        continuity_click(&mut app, "search_row:2");
+        let cleanup = match event {
+            egui::Event::Ime(_) => vec![egui::Event::Ime(egui::ImeEvent::Disabled)],
+            egui::Event::WindowFocused(_) => vec![egui::Event::WindowFocused(true)],
+            egui::Event::Key { .. } => vec![edge(egui::Key::Tab, false, false)],
+            _ => vec![],
+        };
+        continuity_frame(&mut app, vec![event], 0.01);
+        continuity_frame(&mut app, cleanup, 0.01);
+        let release = continuity_click(&mut app, "search_row:2");
+        let row = continuity_gate(&release, 2);
+        assert!(row.double && !row.triple, "{release:?}");
+        assert_continuity_quiet(&app, &commands, 2, 0);
+    }
+    let (mut app, commands) = app(3);
+    continuity_click(&mut app, "search_row:2");
+    continuity_frame(&mut app, vec![], 0.7);
+    continuity_click(&mut app, "search_query");
+    let release = continuity_click(&mut app, "search_row:2");
+    let row = continuity_gate(&release, 2);
+    assert!(row.double && !row.triple, "{release:?}");
+    assert_continuity_quiet(&app, &commands, 2, 0);
+}
+
+#[test]
+fn search_keyboard_row_continuity_bad_press_and_rejected_release_do_not_seed_pair() {
+    for kind in [
+        "duplicate",
+        "split_duplicate",
+        "modified_press",
+        "mixed_press",
+        "modified_release",
+        "mixed_release",
+        "outside",
+    ] {
+        let (mut app, commands) = app(3);
+        let pos = recorded_rect(&app, "search_row:2").center();
+        continuity_frame(&mut app, vec![egui::Event::PointerMoved(pos)], 0.01);
+        let mut press = pointer(pos, true);
+        match kind {
+            "duplicate" => press.extend(pointer(pos, true)),
+            "modified_press" => {
+                if let egui::Event::PointerButton { modifiers, .. } = &mut press[1] {
+                    modifiers.shift = true;
+                }
+            }
+            "mixed_press" => press.push(egui::Event::Paste("x".into())),
+            _ => {}
+        }
+        continuity_frame(&mut app, press, 0.01);
+        if kind == "split_duplicate" {
+            continuity_frame(&mut app, pointer(pos, true), 0.01);
+        }
+        // Eligibility must survive neutral and relative-motion held frames.
+        continuity_frame(
+            &mut app,
+            vec![egui::Event::MouseMoved(egui::Vec2::ZERO)],
+            0.01,
+        );
+        let mut release = pointer(pos, false);
+        match kind {
+            "modified_release" => {
+                if let egui::Event::PointerButton { modifiers, .. } = &mut release[1] {
+                    modifiers.shift = true;
+                }
+            }
+            "mixed_release" => release.push(egui::Event::Paste("x".into())),
+            "outside" => release = pointer(egui::pos2(4.0, 4.0), false),
+            _ => {}
+        }
+        continuity_frame_with_discard(&mut app, release, 0.01, true);
+        assert!(commands.try_recv().is_err(), "{kind}");
+        let next = continuity_click(&mut app, "search_row:2");
+        let row = continuity_gate(&next, 2);
+        if kind != "outside" {
+            assert!(row.double && !row.triple, "{kind}: {next:?}");
+        }
+        assert_continuity_quiet(&app, &commands, 2, 0);
+    }
+}
+
+#[test]
+fn search_keyboard_row_continuity_coalesced_release_press_and_held_motion_keep_double() {
+    for coalesced in [false, true] {
+        let (mut app, commands) = app(3);
+        let pos = recorded_rect(&app, "search_row:2").center();
+        continuity_frame(&mut app, vec![egui::Event::PointerMoved(pos)], 0.01);
+        continuity_frame(&mut app, pointer(pos, true), 0.01);
+        let mut middle = pointer(pos, false);
+        if coalesced {
+            middle.extend(pointer(pos, true));
+        }
+        continuity_frame_with_discard(&mut app, middle, 0.01, true);
+        assert_continuity_quiet(&app, &commands, 2, 0);
+        if !coalesced {
+            continuity_frame(&mut app, pointer(pos, true), 0.01);
+        }
+        continuity_frame(&mut app, vec![], 0.01);
+        continuity_frame(
+            &mut app,
+            vec![egui::Event::MouseMoved(egui::Vec2::ZERO)],
+            0.01,
+        );
+        let release = continuity_frame_with_discard(&mut app, pointer(pos, false), 0.01, true);
+        let row = continuity_gate(&release, 2);
+        assert!(row.double && !row.triple, "{release:?}");
+        assert!(
+            matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "file-2.txt")
+        );
+        assert!(commands.try_recv().is_err());
+        assert_eq!(app.navigation_epoch, 1);
+    }
+}
+
+#[test]
+fn search_keyboard_row_continuity_view_pane_query_and_result_changes_break_pair() {
+    for change in [
+        "pane",
+        "hide",
+        "modal",
+        "query",
+        "result",
+        "payload",
+        "navigation",
+        "document",
+        "session",
+        "workspace",
+    ] {
+        let (mut app, commands) = app(3);
+        continuity_click(&mut app, "search_row:2");
+        match change {
+            "pane" => {
+                app.search_preview(2);
+            }
+            "hide" => app.tools_open = false,
+            "modal" => app.open_form = true,
+            "query" => {
+                app.search_query = "changed".into();
+                app.search_filters_changed();
+            }
+            "result" => {
+                app.search();
+            }
+            "payload" => app.search_results[2].text = "changed historical payload".into(),
+            "navigation" => app.navigation_changed(),
+            "document" => app.documents[0].edit_version += 1,
+            "session" => app.generation += 1,
+            "workspace" => {
+                app.root = "/other".into();
+                app.workspace_key = Some(WorkspaceKey::Local {
+                    root: "/other".into(),
+                });
+            }
+            _ => unreachable!(),
+        }
+        continuity_frame(&mut app, vec![], 0.01);
+        if change == "pane" {
+            let preview = commands.try_recv().unwrap();
+            assert!(matches!(preview.op, Operation::Read { .. }));
+            app.retire_search_preview();
+        }
+        app.tools_open = true;
+        app.open_form = false;
+        if matches!(change, "query" | "session" | "workspace") {
+            app.search();
+        }
+        if matches!(change, "query" | "result" | "session" | "workspace") {
+            let search = commands.try_recv().unwrap();
+            assert!(matches!(search.op, Operation::Search { .. }));
+            reply(
+                &mut app,
+                search.id,
+                Ok(Payload::Matches {
+                    matches: rows(3),
+                    truncated: false,
+                }),
+                true,
+            );
+        }
+        for _ in 0..3 {
+            continuity_frame(&mut app, vec![], 0.01);
+        }
+        let epoch = app.navigation_epoch;
+        let release = continuity_click(&mut app, "search_row:2");
+        let row = continuity_gate(&release, 2);
+        assert!(row.double && !row.triple, "{change}: {release:?}");
+        assert_continuity_quiet(&app, &commands, 2, epoch);
+    }
+}
+
+#[test]
+fn search_keyboard_row_continuity_browse_click_cannot_complete_bottom_pair() {
+    let (mut app, commands) = app(3);
+    continuity_click(&mut app, "search_row:2");
+    continuity_frame(&mut app, vec![], 0.7);
+    app.show_browse(browse::Provider::ProjectText);
+    for _ in 0..3 {
+        continuity_frame(&mut app, vec![], 0.01);
+    }
+    continuity_click(&mut app, "browse_row:2");
+    assert!(recorded_response(&app, "browse_row:2").clicked_by(egui::PointerButton::Primary));
+    assert_ne!(recorded_response(&app, "browse_row:2").id, id(&app, 2));
+    assert!(commands.try_recv().is_err());
+    continuity_frame(&mut app, key(egui::Key::Escape), 0.01);
+    assert!(!app.browse_marker_open());
+    for _ in 0..3 {
+        continuity_frame(&mut app, vec![], 0.01);
+    }
+    let epoch = app.navigation_epoch;
+    let release = continuity_click(&mut app, "search_row:2");
+    let row = continuity_gate(&release, 2);
+    assert!(row.double && !row.triple, "{release:?}");
+    assert_continuity_quiet(&app, &commands, 2, epoch);
+}
+
+#[test]
+fn search_keyboard_row_continuity_foreign_focus_during_owned_press_breaks_pair() {
+    let (mut app, commands) = app(3);
+    continuity_click(&mut app, "search_row:2");
+    let pos = recorded_rect(&app, "search_row:2").center();
+    continuity_frame(&mut app, pointer(pos, true), 0.01);
+    assert!(recorded_response(&app, "search_row:2").is_pointer_button_down_on());
+    let query = recorded_response(&app, "search_query");
+    query.request_focus();
+    assert_eq!(focused(&app), Some(query.id));
+    let release = continuity_frame(&mut app, pointer(pos, false), 0.01);
+    let row = continuity_gate(&release, 2);
+    assert!(row.double && !row.triple, "{release:?}");
+    assert_continuity_quiet(&app, &commands, 2, 0);
 }

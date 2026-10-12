@@ -1146,6 +1146,723 @@ fn browse_double_click_opens_current_row_and_replaced_batch_cannot_retarget_rele
     }
 }
 
+// These journeys keep egui's real clock and global click classifier. In
+// particular, a negative double-click assertion must not pass just because
+// a third click was classified as triple instead.
+#[derive(Clone, Debug)]
+struct ContinuityResponse {
+    id: egui::Id,
+    clicked: bool,
+    double: bool,
+    triple: bool,
+}
+
+pub(super) fn record_row_click_response(ui: &egui::Ui, name: &str, response: &egui::Response) {
+    let probe = egui::Id::new("browse_continuity_response");
+    if !ui.is_sizing_pass()
+        && ui
+            .ctx()
+            .data(|data| data.get_temp::<String>(probe).as_deref() == Some(name))
+    {
+        let snapshot = ContinuityResponse {
+            id: response.id,
+            clicked: response.clicked_by(egui::PointerButton::Primary),
+            double: response.double_clicked_by(egui::PointerButton::Primary),
+            triple: response.triple_clicked_by(egui::PointerButton::Primary),
+        };
+        ui.ctx().data_mut(|data| {
+            let rows =
+                data.get_temp_mut_or_default::<Vec<ContinuityResponse>>(probe.with("passes"));
+            assert!(rows.len() < 8);
+            rows.push(snapshot);
+        });
+    }
+}
+
+fn continuity_frame(
+    app: &mut CedarApp,
+    dt: f64,
+    events: Vec<egui::Event>,
+    discard: bool,
+    probe: Option<&str>,
+) -> Vec<ContinuityResponse> {
+    let ctx = app.editor_ctx.clone();
+    ctx.options_mut(|options| options.max_passes = 2.try_into().unwrap());
+    let mut input = egui::RawInput {
+        time: Some(ctx.input(|input| input.time) + dt),
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SIZE)),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let mut native = eframe::Frame::_new_kittest();
+    let probe_id = egui::Id::new("browse_continuity_response");
+    ctx.data_mut(|data| {
+        data.insert_temp(probe_id, probe.unwrap_or("").to_owned());
+        data.insert_temp(probe_id.with("passes"), Vec::<ContinuityResponse>::new());
+    });
+    let mut passes = 0;
+    let output = ctx.run(input, |ctx| {
+        eframe::App::update(app, ctx, &mut native);
+        passes += 1;
+        if discard && passes == 1 {
+            ctx.request_discard("exercise original Browse release across layout passes");
+        }
+    });
+    assert!(output
+        .shapes
+        .iter()
+        .all(|shape| shape.clip_rect.is_finite()));
+    if discard {
+        assert_eq!(
+            passes, 2,
+            "the original raw hook runs once, update runs twice"
+        );
+    }
+    ctx.data_mut(|data| {
+        data.insert_temp(probe_id, String::new());
+        data.get_temp::<Vec<ContinuityResponse>>(probe_id.with("passes"))
+            .unwrap()
+    })
+}
+
+fn continuity_tick(app: &mut CedarApp, dt: f64, events: Vec<egui::Event>) {
+    continuity_frame(app, dt, events, false, None);
+}
+
+fn continuity_click(app: &mut CedarApp, probe: &str, discard: bool) -> ContinuityResponse {
+    let pos = visible_center(app, probe);
+    let id = recorded_response(app, probe).id;
+    continuity_tick(app, 0.01, vec![egui::Event::PointerMoved(pos)]);
+    assert_eq!(recorded_response(app, probe).id, id);
+    assert!(recorded_rect(app, probe)
+        .intersect(recorded_clip(app, probe))
+        .contains(pos));
+    continuity_tick(app, 0.01, pointer(pos, true));
+    assert!(
+        recorded_response(app, probe).is_pointer_button_down_on(),
+        "probe={probe}, enabled={}, rows={:?}",
+        recorded_response(app, probe).enabled(),
+        app.browse.paths()
+    );
+    let responses = continuity_frame(app, 0.01, pointer(pos, false), discard, Some(probe));
+    let response = responses[0].clone();
+    assert_eq!(response.id, id);
+    assert!(response.clicked);
+    response
+}
+
+fn assert_continuity_selection(
+    app: &CedarApp,
+    commands: &Receiver<Command>,
+    index: usize,
+    epoch: u64,
+) {
+    assert_eq!(app.browse.selected_index(), Some(index));
+    assert!(app.browse_marker_open());
+    assert_eq!(app.navigation_epoch, epoch);
+    assert_eq!(app.active_document, Some(1));
+    assert_eq!(app.documents.len(), 1);
+    assert!(app.location_history.back.is_empty());
+    assert!(
+        commands.try_recv().is_err(),
+        "selection must dispatch no Read/Open"
+    );
+}
+
+#[test]
+fn browse_row_continuity_group_to_unselected_row_only_selects_even_across_passes() {
+    for discard in [false, true] {
+        for delay in [0.0, 0.7] {
+            let (mut app, commands) = fixture();
+            let departure = selection_signature(selection(&app));
+            let undo = undo_texts(&app);
+            enter(&mut app, true);
+            submit_text(&mut app, &commands, &["a.txt", "nested/查询-Ω😀.txt"]);
+            click(&mut app, "browse_group:1");
+            settle(&mut app);
+            continuity_tick(&mut app, 1.0, vec![]);
+            let group = continuity_click(&mut app, "browse_group:1", false);
+            assert!(!group.double);
+            for _ in 0..3 {
+                continuity_tick(&mut app, 0.01, vec![]);
+            }
+            if delay > 0.0 {
+                continuity_tick(&mut app, delay, vec![]);
+            }
+            assert_eq!(app.browse.selected_index(), Some(0));
+            let epoch = app.navigation_epoch;
+            let row = continuity_click(&mut app, "browse_row:1", discard);
+            assert_ne!(group.id, row.id);
+            assert_eq!(row.double, delay == 0.0);
+            assert!(!row.triple);
+            assert_continuity_selection(&app, &commands, 1, epoch);
+            assert!(!app.browse.preview_visible());
+            assert_draft(&app, departure, &undo);
+        }
+    }
+}
+
+#[test]
+fn browse_row_continuity_distinct_rows_and_duplicate_hits_only_select() {
+    for paths in [["a.txt", "b.txt"], ["a.txt", "a.txt"]] {
+        let (mut app, commands) = fixture();
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &paths);
+        continuity_tick(&mut app, 1.0, vec![]);
+        let first = continuity_click(&mut app, "browse_row:0", false);
+        let epoch = app.navigation_epoch;
+        let second = continuity_click(&mut app, "browse_row:1", false);
+        assert_ne!(first.id, second.id);
+        assert!(second.double);
+        assert!(!second.triple);
+        assert_continuity_selection(&app, &commands, 1, epoch);
+    }
+}
+
+#[test]
+fn browse_row_continuity_same_row_double_opens_once_for_each_provider_and_repeated_pass() {
+    for text in [false, true] {
+        for discard in [false, true] {
+            let (mut app, commands) = fixture();
+            enter(&mut app, text);
+            if text {
+                submit_text(&mut app, &commands, &["a.txt"]);
+            } else {
+                query(&mut app, "a.txt");
+                frame(&mut app, key(egui::Key::Enter));
+                settle(&mut app);
+            }
+            continuity_tick(&mut app, 1.0, vec![]);
+            let first = continuity_click(&mut app, "browse_row:0", discard);
+            assert!(!first.double);
+            assert!(commands.try_recv().is_err());
+            let second = continuity_click(&mut app, "browse_row:0", discard);
+            assert_eq!(first.id, second.id);
+            assert!(second.double);
+            assert!(!second.triple);
+            assert!(!app.browse_marker_open());
+            let open = commands.try_recv().unwrap();
+            assert!(matches!(&open.op, Operation::Read { path } if path == "a.txt"));
+            assert!(
+                commands.try_recv().is_err(),
+                "repeated pass must not dispatch twice"
+            );
+            reply(&mut app, open.id, Ok(file("a.txt", "first\nneedle\n")));
+            settle(&mut app);
+            assert_eq!(app.active().unwrap().path, "a.txt");
+            assert_eq!(app.location_history.back.len(), 1);
+        }
+    }
+}
+
+#[test]
+fn browse_row_continuity_triple_click_selects_without_synthesizing_double_open() {
+    let (mut app, commands) = fixture();
+    enter(&mut app, true);
+    submit_text(&mut app, &commands, &["a.txt", "b.txt"]);
+    continuity_tick(&mut app, 1.0, vec![]);
+    continuity_click(&mut app, "browse_row:0", false);
+    let second = continuity_click(&mut app, "browse_row:1", false);
+    assert!(second.double);
+    let epoch = app.navigation_epoch;
+    let third = continuity_click(&mut app, "browse_row:1", true);
+    assert!(third.triple);
+    assert!(!third.double);
+    assert_continuity_selection(&app, &commands, 1, epoch);
+    // A later genuine same-row double can use that accepted triple's completed
+    // row identity, provided egui itself now reports double rather than triple.
+    continuity_tick(&mut app, 0.7, vec![]);
+    continuity_click(&mut app, "browse_row:1", false);
+    let next = continuity_click(&mut app, "browse_row:1", false);
+    assert!(next.double);
+    assert!(!app.browse_marker_open());
+    assert!(matches!(
+        commands.try_recv().unwrap().op,
+        Operation::Read { .. }
+    ));
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn browse_row_continuity_mixed_and_focus_events_break_prior_completion() {
+    for event in [
+        egui::Event::Text("x".into()),
+        egui::Event::Paste("x".into()),
+        egui::Event::Ime(egui::ImeEvent::Preedit("compose".into())),
+        egui::Event::WindowFocused(false),
+        egui::Event::PointerGone,
+        edge(egui::Key::Tab, true, false),
+    ] {
+        let (mut app, commands) = fixture();
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["a.txt"]);
+        continuity_tick(&mut app, 1.0, vec![]);
+        continuity_click(&mut app, "browse_row:0", false);
+        let cleanup = match event {
+            egui::Event::Ime(_) => vec![egui::Event::Ime(egui::ImeEvent::Disabled)],
+            egui::Event::WindowFocused(_) => vec![egui::Event::WindowFocused(true)],
+            egui::Event::Key { .. } => vec![edge(egui::Key::Tab, false, false)],
+            _ => vec![],
+        };
+        continuity_tick(&mut app, 0.01, vec![event]);
+        if !cleanup.is_empty() {
+            continuity_tick(&mut app, 0.01, cleanup);
+        }
+        let epoch = app.navigation_epoch;
+        let row = continuity_click(&mut app, "browse_row:0", false);
+        assert!(row.double);
+        assert!(!row.triple);
+        assert_continuity_selection(&app, &commands, 0, epoch);
+    }
+}
+
+#[test]
+fn browse_row_continuity_rejected_release_and_multiedge_batch_cannot_seed_double() {
+    for kind in ["modified", "mixed", "outside", "multiple"] {
+        let (mut app, commands) = fixture();
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["a.txt"]);
+        continuity_tick(&mut app, 1.0, vec![]);
+        continuity_click(&mut app, "browse_row:0", false);
+        continuity_tick(&mut app, 0.7, vec![]);
+        let pos = visible_center(&app, "browse_row:0");
+        continuity_tick(&mut app, 0.01, vec![egui::Event::PointerMoved(pos)]);
+        continuity_tick(&mut app, 0.01, pointer(pos, true));
+        let mut release = pointer(pos, false);
+        match kind {
+            "modified" => {
+                if let egui::Event::PointerButton { modifiers, .. } = &mut release[1] {
+                    modifiers.shift = true;
+                }
+            }
+            "mixed" => release.push(egui::Event::Paste("x".into())),
+            "outside" => release = pointer(egui::pos2(4.0, 4.0), false),
+            "multiple" => {
+                release.extend(pointer(pos, true));
+                release.extend(pointer(pos, false));
+            }
+            _ => unreachable!(),
+        }
+        continuity_frame(&mut app, 0.01, release, true, None);
+        assert!(commands.try_recv().is_err());
+        // For the multi-pair batch, expire the global clicks; a fresh first row
+        // completion must still be selection-only before the next real double.
+        if kind == "multiple" {
+            continuity_tick(&mut app, 0.7, vec![]);
+        }
+        let epoch = app.navigation_epoch;
+        let row = continuity_click(&mut app, "browse_row:0", true);
+        if kind == "modified" || kind == "mixed" {
+            assert!(row.double);
+            assert!(!row.triple);
+        }
+        assert_continuity_selection(&app, &commands, 0, epoch);
+    }
+}
+
+#[test]
+fn browse_row_continuity_pane_and_hide_reopen_break_same_row_completion() {
+    for change in ["preview", "reopen", "foreign_modal"] {
+        let (mut app, commands) = fixture();
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["origin.txt"]);
+        continuity_tick(&mut app, 1.0, vec![]);
+        continuity_click(&mut app, "browse_row:0", false);
+        match change {
+            "preview" => {
+                continuity_tick(&mut app, 0.01, key(egui::Key::Space));
+                assert!(app.browse.preview_visible());
+                continuity_tick(&mut app, 0.01, key(egui::Key::Escape));
+                assert!(!app.browse.preview_visible());
+            }
+            "reopen" => {
+                continuity_tick(&mut app, 0.01, key(egui::Key::Escape));
+                assert!(!app.browse_marker_open());
+                continuity_tick(
+                    &mut app,
+                    0.01,
+                    modified_key(
+                        egui::Key::F,
+                        egui::Modifiers {
+                            shift: true,
+                            ..command_modifiers()
+                        },
+                    ),
+                );
+                assert!(app.browse_marker_open());
+            }
+            "foreign_modal" => {
+                app.open_form = true;
+                continuity_tick(&mut app, 0.01, vec![]);
+                app.open_form = false;
+                app.show_browse(browse::Provider::ProjectText);
+            }
+            _ => unreachable!(),
+        }
+        for _ in 0..3 {
+            continuity_tick(&mut app, 0.01, vec![]);
+        }
+        let epoch = app.navigation_epoch;
+        let row = continuity_click(&mut app, "browse_row:0", false);
+        assert!(row.double);
+        assert!(!row.triple);
+        assert_continuity_selection(&app, &commands, 0, epoch);
+    }
+}
+
+#[test]
+fn browse_row_continuity_duplicate_press_poison_survives_split_release() {
+    for split in [false, true] {
+        let (mut app, commands) = fixture();
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["a.txt"]);
+        continuity_tick(&mut app, 1.0, vec![]);
+        let pos = visible_center(&app, "browse_row:0");
+        continuity_tick(&mut app, 0.01, vec![egui::Event::PointerMoved(pos)]);
+        if split {
+            continuity_tick(&mut app, 0.01, pointer(pos, true));
+            continuity_tick(&mut app, 0.01, pointer(pos, true));
+        } else {
+            let mut presses = pointer(pos, true);
+            presses.extend(pointer(pos, true));
+            continuity_tick(&mut app, 0.01, presses);
+        }
+        continuity_frame(&mut app, 0.01, pointer(pos, false), true, None);
+        assert!(commands.try_recv().is_err());
+        let epoch = app.navigation_epoch;
+        let row = continuity_click(&mut app, "browse_row:0", false);
+        assert!(row.double);
+        assert!(!row.triple);
+        assert_continuity_selection(&app, &commands, 0, epoch);
+    }
+}
+
+#[test]
+fn browse_row_continuity_controls_query_provider_and_result_replacement_retire_prior_click() {
+    for change in ["control", "query", "filter", "provider", "result"] {
+        let (mut app, commands) = fixture();
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["a.txt"]);
+        continuity_tick(&mut app, 1.0, vec![]);
+        continuity_click(&mut app, "browse_row:0", false);
+        if change != "result" {
+            // The final row click is genuinely double with the intervening
+            // control; the old row release is outside the triple threshold.
+            continuity_tick(&mut app, 0.7, vec![]);
+            continuity_click(
+                &mut app,
+                if change == "provider" {
+                    "browse_files"
+                } else if change == "filter" {
+                    "browse_masks"
+                } else {
+                    "browse_query"
+                },
+                false,
+            );
+        }
+        if change == "query" {
+            continuity_tick(
+                &mut app,
+                0.01,
+                modified_key(egui::Key::A, command_modifiers()),
+            );
+            continuity_tick(&mut app, 0.01, vec![egui::Event::Text("new needle".into())]);
+            continuity_tick(&mut app, 0.01, key(egui::Key::Enter));
+        } else if change == "filter" {
+            continuity_tick(&mut app, 0.01, vec![egui::Event::Text("x".into())]);
+            assert_eq!(app.search_masks, "x");
+            continuity_tick(&mut app, 0.01, key(egui::Key::Backspace));
+            assert!(app.search_masks.is_empty());
+            continuity_tick(&mut app, 0.01, key(egui::Key::Enter));
+        } else if change == "result" {
+            // An externally completed rerun replaces exact result authority
+            // while Browse's epoch/widget ID need not change.
+            app.search();
+        }
+        if change == "query" || change == "filter" || change == "result" {
+            let search = commands.try_recv().unwrap();
+            assert!(matches!(search.op, Operation::Search { .. }));
+            let result = Ok(Payload::Matches {
+                matches: vec![SearchMatch {
+                    path: "a.txt".into(),
+                    line: 2,
+                    text: "new needle result".into(),
+                }],
+                truncated: false,
+            });
+            let specification = app.search_specification().unwrap();
+            reply(&mut app, search.id, result.clone());
+            if change == "result" {
+                // Apply the real requested provider result synchronously to
+                // isolate result identity without a query/epoch retirement.
+                app.apply_search_response(search.id, specification, result);
+            }
+        }
+        for _ in 0..3 {
+            continuity_tick(&mut app, 0.01, vec![]);
+        }
+        let epoch = app.navigation_epoch;
+        let row = continuity_click(&mut app, "browse_row:0", false);
+        assert!(row.double, "change={change}");
+        assert!(!row.triple, "change={change}");
+        assert_continuity_selection(&app, &commands, 0, epoch);
+    }
+}
+
+#[test]
+fn browse_row_continuity_context_change_and_held_motion_are_distinct() {
+    for context_change in [false, true] {
+        let (mut app, commands) = fixture();
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["a.txt"]);
+        continuity_tick(&mut app, 1.0, vec![]);
+        continuity_click(&mut app, "browse_row:0", false);
+        if context_change {
+            app.documents[0].edit_version += 1;
+            continuity_tick(&mut app, 0.01, vec![]);
+            assert!(!app.browse_marker_open());
+            app.show_browse(browse::Provider::ProjectText);
+            for _ in 0..3 {
+                continuity_tick(&mut app, 0.01, vec![]);
+            }
+        }
+        let pos = visible_center(&app, "browse_row:0");
+        continuity_tick(&mut app, 0.01, pointer(pos, true));
+        continuity_tick(&mut app, 0.01, vec![]);
+        continuity_tick(
+            &mut app,
+            0.01,
+            vec![egui::Event::MouseMoved(egui::Vec2::ZERO)],
+        );
+        let epoch = app.navigation_epoch;
+        let row = continuity_frame(
+            &mut app,
+            0.01,
+            pointer(pos, false),
+            false,
+            Some("browse_row:0"),
+        )[0]
+        .clone();
+        assert!(row.clicked && row.double && !row.triple);
+        if context_change {
+            assert_continuity_selection(&app, &commands, 0, epoch);
+        } else {
+            assert!(
+                !app.browse_marker_open(),
+                "ordinary held frames preserve same-row continuity"
+            );
+            assert!(matches!(
+                commands.try_recv().unwrap().op,
+                Operation::Read { .. }
+            ));
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn browse_row_continuity_session_workspace_and_navigation_reopen_need_new_click_pair() {
+    for change in ["session", "workspace", "navigation"] {
+        let (mut app, commands) = fixture();
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["a.txt"]);
+        continuity_tick(&mut app, 1.0, vec![]);
+        continuity_click(&mut app, "browse_row:0", false);
+        match change {
+            "session" => app.generation += 1,
+            "workspace" => {
+                app.workspace_key = Some(WorkspaceKey::Local {
+                    root: "/replacement".into(),
+                });
+                app.root = "/replacement".into();
+            }
+            "navigation" => app.navigation_changed(),
+            _ => unreachable!(),
+        }
+        continuity_tick(&mut app, 0.01, vec![]);
+        assert!(!app.browse_marker_open());
+        app.show_browse(browse::Provider::ProjectText);
+        continuity_tick(&mut app, 0.01, vec![]);
+        if change != "navigation" {
+            continuity_tick(&mut app, 0.01, key(egui::Key::Enter));
+            let search = commands.try_recv().unwrap();
+            reply(
+                &mut app,
+                search.id,
+                Ok(Payload::Matches {
+                    matches: vec![SearchMatch {
+                        path: "a.txt".into(),
+                        line: 2,
+                        text: "needle replacement context".into(),
+                    }],
+                    truncated: false,
+                }),
+            );
+        }
+        for _ in 0..3 {
+            continuity_tick(&mut app, 0.01, vec![]);
+        }
+        let epoch = app.navigation_epoch;
+        let row = continuity_click(&mut app, "browse_row:0", false);
+        assert!(row.double && !row.triple, "change={change}");
+        assert_continuity_selection(&app, &commands, 0, epoch);
+        continuity_tick(&mut app, 0.7, vec![]);
+        continuity_click(&mut app, "browse_row:0", false);
+        let second = continuity_click(&mut app, "browse_row:0", false);
+        assert!(second.double && !second.triple);
+        assert!(!app.browse_marker_open());
+        assert!(matches!(
+            commands.try_recv().unwrap().op,
+            Operation::Read { .. }
+        ));
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn browse_row_continuity_carried_release_then_press_preserves_native_double_click() {
+    for discard in [false, true] {
+        let (mut app, commands) = fixture();
+        enter(&mut app, true);
+        submit_text(&mut app, &commands, &["a.txt"]);
+        continuity_tick(&mut app, 1.0, vec![]);
+        let pos = visible_center(&app, "browse_row:0");
+        continuity_tick(&mut app, 0.01, vec![egui::Event::PointerMoved(pos)]);
+        continuity_tick(&mut app, 0.01, pointer(pos, true));
+        let mut boundary = pointer(pos, false);
+        boundary.extend(pointer(pos, true));
+        let first =
+            continuity_frame(&mut app, 0.01, boundary, discard, Some("browse_row:0"))[0].clone();
+        assert!(first.clicked && !first.double && !first.triple);
+        assert!(
+            commands.try_recv().is_err(),
+            "first completed gesture only selects"
+        );
+        let second = continuity_frame(
+            &mut app,
+            0.01,
+            pointer(pos, false),
+            discard,
+            Some("browse_row:0"),
+        )[0]
+        .clone();
+        assert!(second.clicked && second.double && !second.triple);
+        assert!(!app.browse_marker_open());
+        assert!(matches!(
+            commands.try_recv().unwrap().op,
+            Operation::Read { .. }
+        ));
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn browse_row_continuity_bottom_click_cannot_qualify_reopened_browse_row() {
+    let (mut app, commands) = fixture();
+    enter(&mut app, true);
+    submit_text(&mut app, &commands, &["a.txt"]);
+    continuity_tick(&mut app, 1.0, vec![]);
+    continuity_click(&mut app, "browse_row:0", false);
+    continuity_tick(&mut app, 0.01, key(egui::Key::Escape));
+    click(&mut app, "sidebar_Search");
+    for _ in 0..3 {
+        continuity_tick(&mut app, 0.01, vec![]);
+    }
+    assert!(app.tools_open && app.tool == Tool::Search);
+    continuity_tick(&mut app, 0.7, vec![]);
+    let pos = visible_center(&app, "search_row:0");
+    let bottom_id = recorded_response(&app, "search_row:0").id;
+    continuity_tick(&mut app, 0.01, vec![egui::Event::PointerMoved(pos)]);
+    continuity_tick(&mut app, 0.01, pointer(pos, true));
+    assert!(recorded_response(&app, "search_row:0").is_pointer_button_down_on());
+    continuity_tick(&mut app, 0.01, pointer(pos, false));
+    assert!(recorded_response(&app, "search_row:0").clicked_by(egui::PointerButton::Primary));
+    assert!(commands.try_recv().is_err());
+    continuity_tick(
+        &mut app,
+        0.01,
+        modified_key(
+            egui::Key::F,
+            egui::Modifiers {
+                shift: true,
+                ..command_modifiers()
+            },
+        ),
+    );
+    for _ in 0..3 {
+        continuity_tick(&mut app, 0.01, vec![]);
+    }
+    let epoch = app.navigation_epoch;
+    let row = continuity_click(&mut app, "browse_row:0", false);
+    assert_ne!(row.id, bottom_id);
+    assert!(row.double && !row.triple);
+    assert_continuity_selection(&app, &commands, 0, epoch);
+}
+
+#[test]
+fn browse_row_continuity_direct_move_press_double_keeps_dirty_buffer_open() {
+    let (mut app, commands) = fixture();
+    let departure = selection_signature(selection(&app));
+    let undo = undo_texts(&app);
+    enter(&mut app, true);
+    submit_text(&mut app, &commands, &["origin.txt"]);
+    continuity_tick(&mut app, 1.0, vec![egui::Event::PointerGone]);
+    continuity_tick(&mut app, 0.01, key(egui::Key::ArrowDown));
+    let row_id = recorded_response(&app, "browse_row:0").id;
+    assert_eq!(focused(&app), Some(row_id));
+    let pos = visible_center(&app, "browse_row:0");
+    continuity_tick(&mut app, 0.1, pointer(pos, true));
+    assert!(recorded_response(&app, "browse_row:0").is_pointer_button_down_on());
+    let first = continuity_frame(
+        &mut app,
+        0.1,
+        pointer(pos, false),
+        false,
+        Some("browse_row:0"),
+    )[0]
+    .clone();
+    assert!(first.clicked && !first.double && !first.triple);
+    assert_eq!(focused(&app), Some(row_id));
+    assert!(commands.try_recv().is_err());
+    continuity_tick(&mut app, 0.1, pointer(pos, true));
+    assert!(recorded_response(&app, "browse_row:0").is_pointer_button_down_on());
+    // Browse currently retains focus in this geometry; the bottom Find route
+    // also exercises egui's transient None. Either state must preserve this
+    // actual owned gesture, while Some(other widget) never qualifies.
+    assert!(focused(&app).is_none_or(|id| id == row_id));
+    let epoch = app.navigation_epoch;
+    let second = continuity_frame(
+        &mut app,
+        0.1,
+        pointer(pos, false),
+        false,
+        Some("browse_row:0"),
+    )[0]
+    .clone();
+    assert!(second.clicked && second.double && !second.triple);
+    assert!(!app.browse_marker_open());
+    assert!(app.navigation_epoch > epoch);
+    // Ordinary Open commits its coordinate jump/history on the next frame.
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(1));
+    assert_eq!(app.documents.len(), 1);
+    assert_eq!(app.location_history.back.len(), 1);
+    assert_eq!(app.documents[0].text, DRAFT);
+    assert_eq!(undo_texts(&app), undo);
+    assert!(
+        commands.try_recv().is_err(),
+        "dirty-buffer Open adds no Read or Write"
+    );
+    frame(
+        &mut app,
+        modified_key(egui::Key::OpenBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_draft(&app, departure, &undo);
+}
+
 fn discovery_fixture() -> (CedarApp, Receiver<Command>) {
     let (mut app, commands) = fixture();
     app.file_discovery = Some(cedar_protocol::FileDiscoveryDescriptor::V1);

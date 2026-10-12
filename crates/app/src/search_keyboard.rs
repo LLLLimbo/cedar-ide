@@ -325,6 +325,16 @@ struct Pointer {
     source: Presented,
 }
 
+// egui's click count is global. Only a prior accepted completion on this
+// exact bottom-Find row and pane may supply identity for its double timing.
+#[derive(Clone, PartialEq, Eq)]
+struct RowClick {
+    view: View,
+    hit: BrowseHit,
+    id: egui::Id,
+    pane: Option<crate::browse::PreviewTicket>,
+}
+
 #[derive(Default)]
 struct Keyboard {
     view: Option<View>,
@@ -336,6 +346,11 @@ struct Keyboard {
     key: Option<Intent>,
     pressed: Option<Pointer>,
     click: Option<Pointer>,
+    completed_row: Option<RowClick>,
+    prior_row: Option<RowClick>,
+    pressed_row_eligible: bool,
+    row_click_eligible: bool,
+    row_click_committed: bool,
     render: Option<(View, usize, egui::Id)>,
     preview_reveal: Option<(View, usize, u64)>,
 }
@@ -404,12 +419,19 @@ pub(super) fn clean_key(events: &[egui::Event]) -> Option<egui::Key> {
 }
 
 impl Keyboard {
+    fn break_row_continuity(&mut self) {
+        self.completed_row = None;
+        self.prior_row = None;
+    }
+
     fn invalidate(&mut self) {
         self.view = None;
         self.presented.clear();
         self.key = None;
         self.pressed = None;
         self.click = None;
+        self.break_row_continuity();
+        self.pressed_row_eligible = false;
         self.render = None;
         self.preview_reveal = None;
         // Lifetime ownership ends at physical release, not a focus/view change.
@@ -426,6 +448,22 @@ impl Keyboard {
 }
 
 impl CedarApp {
+    fn search_row_click(&self, index: usize, id: egui::Id) -> Option<RowClick> {
+        let row = self.search_results.get(index)?;
+        Some(RowClick {
+            view: View::of(self)?,
+            hit: BrowseHit {
+                source: std::sync::Arc::new(self.search_state.accepted.clone()?),
+                index,
+                path: row.path.clone(),
+                line: row.line,
+                text_identity: egui::Id::new(&row.text),
+            },
+            id,
+            pane: self.find_preview_identity(),
+        })
+    }
+
     pub(super) fn search_specification(&self) -> Result<Specification, String> {
         let masks = parse_masks(&self.search_masks)?;
         if self.search_scope.is_empty() && masks.is_empty() {
@@ -750,7 +788,36 @@ impl CedarApp {
         let allowed = self.search_input_allowed(ctx);
         let current = View::of(self);
         let focused = ctx.memory(|memory| memory.focused());
+        let prior_row = self
+            .search_state
+            .keyboard
+            .completed_row
+            .clone()
+            .filter(|prior| {
+                allowed
+                    && (focused == Some(prior.id)
+                        // egui may surrender keyboard focus during an owned
+                        // press. Preserve only that exact clean held gesture;
+                        // another focused control still ends continuity.
+                        || (focused.is_none()
+                            && self.search_state.keyboard.pressed_row_eligible
+                            && self.search_state.keyboard.pressed.as_ref().is_some_and(|press| {
+                                press.view == prior.view
+                                    && press.source.index == prior.hit.index
+                                    && press.source.id == prior.id
+                            })
+                            && ctx.input(|input| input.pointer.primary_down())
+                            && ctx.read_response(prior.id).is_some_and(|response| response.is_pointer_button_down_on())))
+                    && Some(prior) == self.search_row_click(prior.hit.index, prior.id).as_ref()
+                    && self.search_state.visible(prior.hit.index)
+            });
         let keyboard = &mut self.search_state.keyboard;
+        keyboard.completed_row = prior_row.clone();
+        // Freeze evidence before this original batch. A repeated render pass
+        // must never use the completion that this batch is about to produce.
+        keyboard.prior_row = prior_row;
+        keyboard.row_click_eligible = true;
+        keyboard.row_click_committed = false;
         // This continuation may scroll only after the user's existing Space.
         // Inspect the original native batch, before any surface removes events.
         if !input.modifiers.is_none() || input.events.iter().any(|event| !matches!(event,
@@ -833,7 +900,28 @@ impl CedarApp {
             || ctx.input(|input| !input.keys_down.is_empty())
         {
             keyboard.pressed = None;
+            keyboard.pressed_row_eligible = false;
+            keyboard.break_row_continuity();
+            keyboard.row_click_eligible = false;
         } else {
+            let edges: Vec<_> = input
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::PointerButton { pressed, .. } => Some(*pressed),
+                    _ => None,
+                })
+                .collect();
+            // Keep clean carried release→press pairs. Duplicate presses and
+            // multiple completions cannot establish one clean row gesture.
+            if edges.len() > 2
+                || (edges.len() == 2 && edges[0] == edges[1])
+                || (edges.first() == Some(&true) && keyboard.pressed.is_some())
+                || (edges.first() == Some(&false) && keyboard.pressed.is_none())
+            {
+                keyboard.break_row_continuity();
+                keyboard.row_click_eligible = false;
+            }
             for event in &input.events {
                 if let egui::Event::PointerButton {
                     pos,
@@ -844,9 +932,15 @@ impl CedarApp {
                 {
                     if !modifiers.is_none() {
                         keyboard.pressed = None;
+                        keyboard.pressed_row_eligible = false;
+                        keyboard.break_row_continuity();
+                        keyboard.row_click_eligible = false;
                         continue;
                     }
                     if *pressed {
+                        // Poison belongs to the held gesture, not only this
+                        // frame: a later clean release cannot repair its press.
+                        keyboard.pressed_row_eligible = keyboard.row_click_eligible;
                         keyboard.pressed = keyboard
                             .presented
                             .iter()
@@ -856,7 +950,20 @@ impl CedarApp {
                                 view: current.unwrap(),
                                 source,
                             });
+                        if !keyboard.pressed.as_ref().is_some_and(|press| {
+                            press.source.index < MAX_ROWS
+                                && keyboard.prior_row.as_ref().is_some_and(|prior| {
+                                    prior.view == press.view
+                                        && prior.hit.index == press.source.index
+                                        && prior.id == press.source.id
+                                })
+                        }) {
+                            keyboard.break_row_continuity();
+                        }
                     } else if let Some(press) = keyboard.pressed.take() {
+                        keyboard.row_click_eligible &= keyboard.pressed_row_eligible;
+                        keyboard.pressed_row_eligible = false;
+                        keyboard.completed_row = None;
                         if Some(press.view) == current
                             && press
                                 .source
@@ -870,7 +977,13 @@ impl CedarApp {
                             })
                         {
                             keyboard.click = Some(press);
+                        } else {
+                            keyboard.break_row_continuity();
+                            keyboard.row_click_eligible = false;
                         }
+                    } else {
+                        keyboard.break_row_continuity();
+                        keyboard.row_click_eligible = false;
                     }
                 }
             }
@@ -1246,6 +1359,10 @@ impl CedarApp {
                             &format!("search_group:{first}"),
                             &response,
                         );
+                        #[cfg(test)]
+                        crate::search_keyboard_tests::record_pointer_response(
+                            ui, MAX_ROWS + first, &response, click,
+                        );
                         if toggle == Some(first)
                             && (action == Some(Action::Toggle(first))
                                 || response.clicked_by(egui::PointerButton::Primary))
@@ -1286,10 +1403,22 @@ impl CedarApp {
                             if click == Some(index)
                                 && response.clicked_by(egui::PointerButton::Primary)
                             {
+                                let same_row = app.search_state.keyboard.row_click_eligible
+                                    && app.search_state.keyboard.prior_row.as_ref().is_some_and(|prior| {
+                                        Some(prior) == app.search_row_click(index, response.id).as_ref()
+                                    });
                                 app.select_search_row(index);
                                 response.request_focus();
-                                if response.double_clicked_by(egui::PointerButton::Primary) {
+                                if same_row && response.double_clicked_by(egui::PointerButton::Primary) {
                                     open = Some(index);
+                                }
+                                if !ui.is_sizing_pass()
+                                    && response.enabled()
+                                    && app.search_state.keyboard.row_click_eligible
+                                    && !app.search_state.keyboard.row_click_committed
+                                {
+                                    app.search_state.keyboard.completed_row = app.search_row_click(index, response.id);
+                                    app.search_state.keyboard.row_click_committed = true;
                                 }
                             }
                             if !ui.is_sizing_pass() && matches!(action, Some(Action::Focus(target) | Action::Preview(target) | Action::Reveal(target)) if target == index) {

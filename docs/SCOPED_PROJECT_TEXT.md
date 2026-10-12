@@ -1,10 +1,14 @@
 # Scoped Project Text search
 
-**0.62 work in progress.** This document defines the bounded directory and
-filename-mask addition to Project Text. The latest accepted baseline is
-**0.61.0**. Test sources and implementation are not acceptance evidence: the
-new behavior still needs its own recorded test, normal-agent, exact-package and
-native-window results. No 0.62 acceptance is established here.
+**0.62.2 correction candidate; acceptance pending.** This document defines the
+bounded directory and filename-mask addition to Project Text. The latest
+accepted baseline is **0.61.0**. The 0.62.1 CI and packages passed, but a confirmed
+cross-widget result-activation defect blocks acceptance; its earlier unexpected
+native Open remains unexplained and its narrow native layout is unverified.
+The 0.62.2 correction has passing local Linux checks and matching normal-agent
+proofs; fresh exact-commit dual-platform CI, exact-source packages and a bounded
+native-window journey remain required. See the
+[verification report](TEST_REPORT.md). No 0.62 acceptance is established here.
 
 This is a subset of roadmap B2. It preserves the retained grouped-result,
 explicit preview, ordinary Open and Back flow described in
@@ -200,6 +204,19 @@ scroll retention, hide/reopen and Open–Back flow is preserved. Click selects;
 Space explicitly previews; Enter or double-click performs ordinary Open.
 Hidden or fully clipped hits cannot activate. A successful rerun replaces the one
 accepted snapshot; there is no cross-restart search history.
+
+The 0.62.2 candidate requires a preceding accepted clean click on the **same
+exact result in the same view and preview pane** before either surface can use
+the interface framework's double-click classification for Open. A rapid group
+or other-row click followed by the first click on a result only selects that
+result. Intervening controls, rejected or mixed input, focus moving elsewhere or
+leaving the window, field edits, result replacement, navigation and hide/reopen
+break the sequence. Clicks do not carry double-click authority between the
+shared window and bottom tool.
+Genuine same-row doubles retain the framework's timing; repeated layout passes
+cannot count one release twice. A triple-click classification does not itself
+perform Open. The two surfaces keep their existing focus, keyboard and Escape
+behavior. These correction results still require the acceptance evidence above.
 
 Preview of an already open file uses its **current buffer**, including a dirty
 draft, with zero backend Reads. Ordinary Open reuses that dirty tab and keeps

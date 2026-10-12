@@ -196,6 +196,19 @@ struct Presented {
     rect: egui::Rect,
     clip: egui::Rect,
 }
+// egui counts clicks globally. A row may use that timing only after a clean,
+// completed click on this exact row, in the same Browse view and preview pane.
+#[derive(Clone, PartialEq, Eq)]
+struct RowClick {
+    token: Token,
+    id: egui::Id,
+    context: Context,
+    provider: Provider,
+    query: String,
+    scope: String,
+    pane: Option<PreviewTicket>,
+}
+
 #[derive(Clone)]
 struct KeyIntent {
     source: Presented,
@@ -227,7 +240,15 @@ struct Input {
     composing: bool,
     key: Option<KeyIntent>,
     pressed: Option<Presented>,
+    pressed_row_eligible: bool,
     click: Option<Presented>,
+    completed_row: Option<RowClick>,
+    // Frozen before the original raw batch; never derived from a completion
+    // accepted by an earlier layout pass of that same batch.
+    prior_row: Option<RowClick>,
+    accepted_row: Option<(Token, egui::Id)>,
+    row_click_eligible: bool,
+    row_click_committed: bool,
     shortcut: Option<(Provider, u64, Option<WorkspaceKey>)>,
     global_edges: Vec<GlobalEdge>,
     global_overflow: bool,
@@ -240,7 +261,14 @@ impl Input {
         self.presented.clear();
         self.key = None;
         self.pressed = None;
+        self.pressed_row_eligible = false;
         self.click = None;
+        self.break_row_continuity();
+        self.accepted_row = None;
+    }
+    fn break_row_continuity(&mut self) {
+        self.completed_row = None;
+        self.prior_row = None;
     }
 }
 
@@ -1104,6 +1132,22 @@ impl CedarApp {
         }
     }
 
+    pub(super) fn find_preview_identity(&self) -> Option<PreviewTicket> {
+        self.browse.desired.clone()
+    }
+
+    fn browse_row_click(&self, token: Token, id: egui::Id) -> RowClick {
+        RowClick {
+            token,
+            id,
+            context: Context::capture(self),
+            provider: self.browse.provider,
+            query: self.browse.query.clone(),
+            scope: self.browse.scope.clone(),
+            pane: self.find_preview_identity(),
+        }
+    }
+
     // Capture from the same original native batch as the legacy surfaces. Never
     // infer clean ownership from events another component already removed.
     pub(super) fn capture_browse_input(
@@ -1114,7 +1158,36 @@ impl CedarApp {
     ) {
         let allowed = self.browse_current() && !self.foreign_modal_owns_input(ctx);
         let focused = ctx.memory(|memory| memory.focused());
+        let prior_row = self.browse.input.completed_row.clone().filter(|prior| {
+            // egui may temporarily clear keyboard focus during a real owned
+            // pointer press. Only that exact clean carried gesture may bridge
+            // None; idle focus loss or another focused widget still retires it.
+            let focus_current = allowed
+                && (focused == Some(prior.id)
+                    || (focused.is_none()
+                        && self.browse.input.pressed_row_eligible
+                        && self.browse.input.pressed.as_ref().is_some_and(|press| {
+                            press.token == prior.token && press.id == prior.id
+                        })
+                        && ctx.input(|input| input.pointer.primary_down())
+                        && ctx
+                            .read_response(prior.id)
+                            .is_some_and(|response| response.is_pointer_button_down_on())));
+            focus_current
+                && prior.token == self.browse.token(prior.token.target.clone())
+                && *prior == self.browse_row_click(prior.token.clone(), prior.id)
+                && prior
+                    .token
+                    .row
+                    .as_ref()
+                    .is_some_and(|row| self.browse_row_current(row))
+        });
         let input = &mut self.browse.input;
+        input.completed_row = prior_row.clone();
+        input.prior_row = prior_row;
+        input.accepted_row = None;
+        input.row_click_eligible = true;
+        input.row_click_committed = false;
         input.pass = Some(ctx.cumulative_pass_nr());
         input.key = None;
         input.click = None;
@@ -1190,7 +1263,29 @@ impl CedarApp {
             || ctx.input(|state| !state.keys_down.is_empty())
         {
             input.pressed = None;
+            input.pressed_row_eligible = false;
+            input.break_row_continuity();
+            input.row_click_eligible = false;
         } else {
+            // A carried release followed by a fresh press is a normal
+            // coalesced double-click. Duplicate edges or more than one completed
+            // gesture cannot prove clean continuity in this original batch.
+            let edges: Vec<_> = raw
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::PointerButton { pressed, .. } => Some(*pressed),
+                    _ => None,
+                })
+                .collect();
+            if edges.len() > 2
+                || (edges.len() == 2 && edges[0] == edges[1])
+                || (edges.first() == Some(&true) && input.pressed.is_some())
+                || (edges.first() == Some(&false) && input.pressed.is_none())
+            {
+                input.break_row_continuity();
+                input.row_click_eligible = false;
+            }
             for event in &raw.events {
                 if let egui::Event::PointerButton {
                     pos,
@@ -1201,15 +1296,34 @@ impl CedarApp {
                 {
                     if !modifiers.is_none() {
                         input.pressed = None;
+                        input.pressed_row_eligible = false;
+                        input.break_row_continuity();
+                        input.row_click_eligible = false;
                         continue;
                     }
                     if *pressed {
+                        // Preserve poison across frames until this gesture's
+                        // release; a clean later batch cannot launder its press.
+                        input.pressed_row_eligible = input.row_click_eligible;
                         input.pressed = input
                             .presented
                             .iter()
                             .find(|item| item.rect.intersect(item.clip).contains(*pos))
                             .cloned();
+                        if !input.pressed.as_ref().is_some_and(|press| {
+                            matches!(press.token.target, Target::Row(_))
+                                && input.prior_row.as_ref().is_some_and(|prior| {
+                                    prior.token == press.token && prior.id == press.id
+                                })
+                        }) {
+                            input.break_row_continuity();
+                        }
                     } else if let Some(press) = input.pressed.take() {
+                        input.row_click_eligible &= input.pressed_row_eligible;
+                        input.pressed_row_eligible = false;
+                        // A rejected/disabled release must not leave an older
+                        // accepted completion available for a subsequent click.
+                        input.completed_row = None;
                         if press.rect.intersect(press.clip).contains(*pos)
                             && input.presented.iter().any(|item| {
                                 item.token == press.token
@@ -1218,7 +1332,13 @@ impl CedarApp {
                             })
                         {
                             input.click = Some(press);
+                        } else {
+                            input.break_row_continuity();
+                            input.row_click_eligible = false;
                         }
+                    } else {
+                        input.break_row_continuity();
+                        input.row_click_eligible = false;
                     }
                 }
             }
@@ -1450,6 +1570,7 @@ impl CedarApp {
                 Target::PreviewPane => "browse_preview_content".into(),
             };
             crate::workspace_access_tests::record(ui, &name, response);
+            crate::browse_tests::record_row_click_response(ui, &name, response);
         }
         if !response.enabled() || ui.is_sizing_pass() || !self.browse_input_current(ui.ctx()) {
             return false;
@@ -1469,6 +1590,13 @@ impl CedarApp {
         });
         if click {
             response.request_focus();
+            if matches!(target, Target::Row(_))
+                && self.browse.input.row_click_eligible
+                && !self.browse.input.row_click_committed
+            {
+                self.browse.input.accepted_row = Some((token, response.id));
+                self.browse.input.row_click_committed = true;
+            }
         }
         click || key
     }
@@ -1600,7 +1728,16 @@ impl CedarApp {
                         }
                         if self.browse_response(ui, target, &response) {
                             *select = Some(index);
-                            if response.double_clicked_by(egui::PointerButton::Primary) {
+                            if response.double_clicked_by(egui::PointerButton::Primary)
+                                && self.browse.input.row_click_eligible
+                                && self.browse.input.prior_row.as_ref().is_some_and(|prior| {
+                                    *prior
+                                        == self.browse_row_click(
+                                            self.browse.token(Target::Row(index)),
+                                            response.id,
+                                        )
+                                })
+                            {
                                 *open = true;
                             }
                         }
@@ -1907,6 +2044,14 @@ impl CedarApp {
             }
             if open {
                 self.browse_open();
+            }
+        }
+        // Commit only an accepted non-sizing response, after its selection has
+        // settled the preview pane. Taking the candidate makes this once-only
+        // even if egui discards the pass and renders the same raw batch again.
+        if let Some((token, id)) = self.browse.input.accepted_row.take() {
+            if self.browse_current() && token == self.browse.token(token.target.clone()) {
+                self.browse.input.completed_row = Some(self.browse_row_click(token, id));
             }
         }
         self.browse.input.key = None;
