@@ -36,6 +36,7 @@ jobs:
       - run: python -B scripts/test_report_triage_acceptance.py
       - run: python -B scripts/test_search_navigation_acceptance.py
       - run: python -B scripts/test_browse_acceptance.py
+      - run: python -B scripts/test_scoped_search_acceptance.py
       - run: python scripts/test_copy_draft_acceptance.py
       - run: python scripts/test_save_close_acceptance.py
       - run: python scripts/test_linux_java_acceptance.py
@@ -64,6 +65,11 @@ jobs:
         # 180s, app 330s, plus bounded direct-child reap and orchestration.
         timeout-minutes: 12
         run: python -B scripts/browse_acceptance.py
+      - name: Scoped text search and exact return (normal agent, both platforms)
+        # Reuse aggregate feature artifacts: compile 120s, runtime observation
+        # 420s. Native proof keeps shared 340s active / 30s cleanup / 390s watchdog.
+        timeout-minutes: 10
+        run: python -B scripts/scoped_search_acceptance.py
       - name: Selected-block indentation stays local (Unix, normal agent)
         timeout-minutes: 3
         if: runner.os != 'Windows'

@@ -19,6 +19,7 @@ mod java_maven;
 #[cfg(feature = "windows-language-validation")]
 mod java_validation;
 mod language;
+mod scoped_search;
 mod tasks;
 #[cfg(all(test, windows))]
 mod windows_test_process;
@@ -189,6 +190,7 @@ impl Workspace {
             Operation::Hello => Ok(Payload::Hello {
                 protocol: PROTOCOL_VERSION,
                 file_discovery: Some(cedar_protocol::FileDiscoveryDescriptor::V1),
+                scoped_search: Some(cedar_protocol::ScopedSearchDescriptor::V1),
                 root: self.root.to_string_lossy().into_owned(),
                 agent: Some({
                     let mut info = capabilities::agent_info(self.backend_mode);
@@ -206,6 +208,7 @@ impl Workspace {
                 expected_revision,
             } => self.write(&path, &text, expected_revision.as_deref()),
             Operation::Search { query, limit } => self.search(&query, limit),
+            Operation::SearchIn { request } => self.search_in(request),
             Operation::FindFiles {
                 query,
                 scope,

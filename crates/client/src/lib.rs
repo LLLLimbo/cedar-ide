@@ -30,7 +30,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// One connection generation's cancellation signal. Cancellation is permanent;
 /// create a fresh token for a replacement connection.
 ///
-/// Process Hello/List/Read/Search/FindFiles waits observe this at most every 50 ms,
+/// Process Hello/List/Read/Search/SearchIn/FindFiles waits observe this at most every 50 ms,
 /// subject to scheduling. Already enqueued mutation, Git, language, and task
 /// operations retain their normal replies and deadlines. Synchronous embedded
 /// workspace calls, OS process creation, and kernel cleanup are not interrupted.
@@ -244,6 +244,11 @@ impl Client {
     pub fn supports_file_discovery(&self) -> bool {
         matches!(&self.handshake, Payload::Hello { file_discovery: Some(descriptor), .. } if descriptor.supported())
     }
+    /// Scoped search is enabled only by the first validated Hello descriptor.
+    /// A flat capability claim cannot enable this request or upgrade a session.
+    pub fn supports_scoped_search(&self) -> bool {
+        matches!(&self.handshake, Payload::Hello { scoped_search: Some(descriptor), .. } if descriptor.supported())
+    }
     /// Wake the connection owner when the existing process reader or writer
     /// publishes transport activity. This performs no I/O and starts no thread.
     /// Registration also wakes for activity published before registration.
@@ -314,6 +319,12 @@ impl Client {
         } else {
             None
         };
+        let scoped_search = if let Operation::SearchIn { request } = &op {
+            request.validate().map_err(|e| e.to_string())?;
+            Some(request.clone())
+        } else {
+            None
+        };
         let response = match &mut self.backend {
             #[cfg(not(windows))]
             Backend::Local(ws) => ws.handle(op).map_err(|e| e.to_string()),
@@ -335,11 +346,30 @@ impl Client {
                 });
             }
         }
+        if let (Some(request), Ok(payload)) = (scoped_search, &response) {
+            let validation = match payload {
+                Payload::ScopedMatches { result } => {
+                    result.validate_for(&request).map_err(|e| e.to_string())
+                }
+                _ => Err("invalid_scoped_search: expected scoped_matches payload".into()),
+            };
+            if let Err(failure) = validation {
+                let message = format!("protocol_error: {failure}");
+                return Err(match &mut self.backend {
+                    #[cfg(not(windows))]
+                    Backend::Local(_) => message,
+                    Backend::Process(process) => process.fail(message),
+                });
+            }
+        }
         response
     }
     fn require_capabilities(&self, op: &Operation) -> Result<(), String> {
         if matches!(op, Operation::FindFiles { .. }) && !self.supports_file_discovery() {
             return Err("unsupported_operation: agent does not advertise supported file_discovery v1; reconnect with a compatible agent".into());
+        }
+        if matches!(op, Operation::SearchIn { .. }) && !self.supports_scoped_search() {
+            return Err("unsupported_operation: agent does not advertise supported scoped_search v1; reconnect with a compatible agent".into());
         }
         let Payload::Hello { agent, .. } = &self.handshake else {
             unreachable!("client handshake is validated before construction");
@@ -457,6 +487,7 @@ fn validate_handshake(handshake: &Payload) -> Result<(), String> {
         protocol,
         agent,
         file_discovery,
+        scoped_search,
         ..
     } = handshake
     else {
@@ -471,6 +502,9 @@ fn validate_handshake(handshake: &Payload) -> Result<(), String> {
         agent.validate().map_err(|e| e.to_string())?;
     }
     if let Some(descriptor) = file_discovery {
+        descriptor.validate().map_err(|e| e.to_string())?;
+    }
+    if let Some(descriptor) = scoped_search {
         descriptor.validate().map_err(|e| e.to_string())?;
     }
     for capability in ["list", "read"] {
@@ -1243,6 +1277,7 @@ impl ProcessClient {
                     | Operation::List { .. }
                     | Operation::Read { .. }
                     | Operation::Search { .. }
+                    | Operation::SearchIn { .. }
                     | Operation::FindFiles { .. }
             );
         self.next_id = self.next_id.checked_add(1).ok_or("request id exhausted")?;

@@ -83,6 +83,7 @@ impl CedarApp {
         self.connecting_form = None;
         self.agent_info = None;
         self.file_discovery = None;
+        self.scoped_search = None;
         self.language.reset();
         self.pending.clear();
         self.explorer.reset_connection();

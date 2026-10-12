@@ -853,7 +853,7 @@ fn lost_or_replaced_job_after_cancel_marks_only_original_owner_unknown() {
             app.pending.insert(
                 command.id,
                 Job::Search {
-                    query: "other job".into(),
+                    specification: search_keyboard::Specification::legacy("other job".into()),
                 },
             );
         }

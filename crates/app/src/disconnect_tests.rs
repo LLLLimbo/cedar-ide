@@ -456,6 +456,7 @@ fn current_connecting_worker_terminal_error_cannot_leave_an_attempt_stuck() {
         0,
         Payload::Hello {
             file_discovery: None,
+            scoped_search: None,
             protocol: cedar_protocol::PROTOCOL_VERSION,
             root: ROOT.into(),
             agent: Some(agent_support::full_test_agent()),
@@ -557,6 +558,7 @@ fn cleanup_unverified_is_sticky_across_terminal_duplicates_and_replacement_hello
         0,
         Payload::Hello {
             file_discovery: None,
+            scoped_search: None,
             protocol: cedar_protocol::PROTOCOL_VERSION,
             root: ROOT.into(),
             agent: Some(agent_support::full_test_agent()),

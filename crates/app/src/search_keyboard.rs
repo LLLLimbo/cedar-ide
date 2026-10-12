@@ -2,12 +2,77 @@
 //! A row is historical evidence from one workspace/session/request/index. Its
 //! line is an ordinary Open hint, never a claim about current disk or draft text.
 use crate::{CedarApp, Tool, WorkspaceKey, AMBER, GREEN, MUTED};
-use cedar_protocol::{Payload, SearchMatch};
+use cedar_protocol::{Payload, ScopedSearchIncompleteReason, ScopedSearchRequest, SearchMatch};
 use eframe::egui::{self, RichText};
 use std::collections::HashSet;
 
 pub(super) const MAX_ROWS: usize = 500;
 pub(super) const MAX_TEXT_BYTES: usize = 512 * 1024;
+
+pub(super) const SCOPED_UNAVAILABLE: &str = "Directory and file masks require scoped search support from this agent. Clear both filters for a workspace search, or upgrade the agent.";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Specification {
+    pub request: ScopedSearchRequest,
+    // None deliberately preserves the legacy operation for root/no-mask search.
+    pub version: Option<u32>,
+}
+impl Specification {
+    pub(super) fn legacy(query: String) -> Self {
+        Self {
+            request: ScopedSearchRequest {
+                query,
+                scope: String::new(),
+                masks: Vec::new(),
+                limit: MAX_ROWS,
+            },
+            version: None,
+        }
+    }
+    pub(super) fn description(&self) -> String {
+        let directory = if self.request.scope.is_empty() {
+            "workspace root".into()
+        } else {
+            format!("directory {:?}", self.request.scope)
+        };
+        let masks = if self.request.masks.is_empty() {
+            "all files".into()
+        } else {
+            format!("masks {}", self.request.masks.join(";"))
+        };
+        format!(
+            "{:?} · {directory} · {masks} · limit {}",
+            self.request.query, self.request.limit
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ScanStatus {
+    pub reasons: Vec<ScopedSearchIncompleteReason>,
+    pub examined_entries: usize,
+    pub read_bytes: usize,
+}
+
+pub(super) fn parse_masks(raw: &str) -> Result<Vec<String>, String> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut masks = Vec::new();
+    let mut bytes = 0usize;
+    for token in raw.split(';') {
+        let mask = token.trim();
+        if mask.is_empty() {
+            return Err("File masks must be nonempty patterns separated by semicolons (for example *.rs;*.toml).".into());
+        }
+        bytes = bytes.saturating_add(mask.len());
+        if masks.len() == 8 || bytes > 256 {
+            return Err("Use at most 8 file masks and 256 UTF-8 bytes in total.".into());
+        }
+        masks.push(mask.to_owned());
+    }
+    Ok(masks)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Batch {
@@ -23,6 +88,7 @@ pub(super) struct Source {
     pub generation: u64,
     pub request: u64,
     pub query: String,
+    pub specification: Specification,
 }
 
 impl Source {
@@ -39,7 +105,8 @@ impl Source {
 pub(super) struct Search {
     pub accepted: Option<Source>,
     pub pending: Option<Source>,
-    completed: Option<(u64, String, Result<Payload, String>)>,
+    completed: Option<(u64, Specification, Result<Payload, String>)>,
+    pub status: Option<ScanStatus>,
     submission: Option<(u64, Option<(u64, u64)>)>,
     keyboard: Keyboard,
     // Only indexes are grouped; snippets live once in CedarApp::search_results.
@@ -144,6 +211,7 @@ impl Search {
 
     pub(super) fn clear_owned(&mut self) {
         self.accepted = None;
+        self.status = None;
         self.groups.clear();
         self.collapsed.clear();
         self.selected = None;
@@ -160,6 +228,22 @@ impl Search {
 
     pub(super) fn invalidate(&mut self) {
         self.keyboard.invalidate();
+    }
+}
+
+fn scoped_reason(reason: ScopedSearchIncompleteReason) -> &'static str {
+    match reason {
+        ScopedSearchIncompleteReason::PermissionDenied => "permission denied",
+        ScopedSearchIncompleteReason::IoError => "I/O error",
+        ScopedSearchIncompleteReason::DepthLimit => "depth limit",
+        ScopedSearchIncompleteReason::TimeLimit => "time limit",
+        ScopedSearchIncompleteReason::EntryLimit => "entry limit",
+        ScopedSearchIncompleteReason::StackLimit => "pending directory limit",
+        ScopedSearchIncompleteReason::ResponseLimit => "response size limit",
+        ScopedSearchIncompleteReason::ResultLimit => "result limit",
+        ScopedSearchIncompleteReason::UnrepresentablePath => "unrepresentable path",
+        ScopedSearchIncompleteReason::UnsafePath => "unsafe path",
+        ScopedSearchIncompleteReason::ReadByteLimit => "read byte limit",
     }
 }
 
@@ -342,6 +426,166 @@ impl Keyboard {
 }
 
 impl CedarApp {
+    pub(super) fn search_specification(&self) -> Result<Specification, String> {
+        let masks = parse_masks(&self.search_masks)?;
+        if self.search_scope.is_empty() && masks.is_empty() {
+            return Ok(Specification::legacy(self.search_query.clone()));
+        }
+        let request = ScopedSearchRequest {
+            query: self.search_query.clone(),
+            scope: self.search_scope.clone(),
+            masks,
+            limit: MAX_ROWS,
+        };
+        request.validate().map_err(|error| error.to_string())?;
+        if !self.backend_scoped_search_supported() {
+            return Err(SCOPED_UNAVAILABLE.into());
+        }
+        Ok(Specification {
+            request,
+            version: self.scoped_search.map(|descriptor| descriptor.version),
+        })
+    }
+
+    pub(super) fn search_filters_changed(&mut self) {
+        self.search_state.deactivate();
+        self.retire_project_text_preview();
+    }
+
+    pub(super) fn search_submission_supported(&self) -> bool {
+        if self.search_scope.is_empty() && self.search_masks.is_empty() {
+            self.backend_supports("search")
+        } else {
+            self.backend_scoped_search_supported()
+        }
+    }
+
+    // Both text-search surfaces render these exact drafts. Width is measured in
+    // the current body font so larger text naturally switches to two rows.
+    pub(super) fn search_filter_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        scope_id: egui::Id,
+        masks_id: egui::Id,
+    ) -> (egui::Response, egui::Response) {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let required = ui.fonts(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    "Directory  workspace/root    File masks  *.rs;*.toml".into(),
+                    font,
+                    MUTED,
+                )
+                .size()
+                .x
+        }) + ui.spacing().item_spacing.x * 6.0
+            + ui.spacing().button_padding.x * 4.0;
+        let field = |ui: &mut egui::Ui, label: &str, value: &mut String, id, hint: &str| {
+            ui.horizontal(|ui| {
+                ui.label(label);
+                ui.add(
+                    egui::TextEdit::singleline(value)
+                        .id(id)
+                        .desired_width(ui.available_width())
+                        .hint_text(hint),
+                )
+            })
+            .inner
+        };
+        let responses = if ui.available_width() >= required {
+            ui.columns(2, |columns| {
+                let scope = field(
+                    &mut columns[0],
+                    "Directory",
+                    &mut self.search_scope,
+                    scope_id,
+                    "Exact relative directory; blank = root",
+                );
+                let masks = field(
+                    &mut columns[1],
+                    "File masks",
+                    &mut self.search_masks,
+                    masks_id,
+                    "*.rs;*.toml",
+                );
+                (scope, masks)
+            })
+        } else {
+            let scope = field(
+                ui,
+                "Directory",
+                &mut self.search_scope,
+                scope_id,
+                "Exact relative directory; blank = root",
+            );
+            let masks = field(
+                ui,
+                "File masks",
+                &mut self.search_masks,
+                masks_id,
+                "*.rs;*.toml",
+            );
+            (scope, masks)
+        };
+        ui.label(
+            RichText::new(format!(
+                "Excluded directories: {}",
+                cedar_protocol::FILE_DISCOVERY_EXCLUDED_DIRECTORIES.join(", ")
+            ))
+            .small()
+            .color(MUTED),
+        );
+        (
+            responses.0.on_hover_text("Exact workspace-relative directory. Blank searches the workspace root. The path is not trimmed or normalized."),
+            responses.1.on_hover_text("Whole filename masks, case-sensitive. Separate alternatives with semicolons. * matches zero or more characters; ? matches one Unicode character. Blank includes all filenames."),
+        )
+    }
+
+    pub(super) fn search_filter_explanation(&self) -> Option<String> {
+        if self.search_scope.is_empty() && self.search_masks.is_empty() {
+            return None;
+        }
+        if !self.backend_scoped_search_supported() {
+            return Some(SCOPED_UNAVAILABLE.into());
+        }
+        // A placeholder query validates filters before a query has been entered.
+        let masks = match parse_masks(&self.search_masks) {
+            Ok(masks) => masks,
+            Err(error) => return Some(error),
+        };
+        ScopedSearchRequest {
+            query: "x".into(),
+            scope: self.search_scope.clone(),
+            masks,
+            limit: MAX_ROWS,
+        }
+        .validate()
+        .err()
+        .map(|error| error.to_string())
+    }
+
+    pub(super) fn search_scan_description(&self) -> Option<String> {
+        self.search_state.status.as_ref().map(|status| {
+            let counts = format!(
+                "{} entries examined · {} bytes read",
+                status.examined_entries, status.read_bytes
+            );
+            if status.reasons.is_empty() {
+                counts
+            } else {
+                format!(
+                    "{counts} · Incomplete: {}",
+                    status
+                        .reasons
+                        .iter()
+                        .map(|reason| scoped_reason(*reason))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        })
+    }
+
     pub(super) fn search_rows_active(&self) -> bool {
         self.ready()
             && self.search_state.active
@@ -352,6 +596,7 @@ impl CedarApp {
                     && self.generation == source.generation
                     && self.search_request == source.request
                     && self.search_query == source.query
+                    && self.search_specification().as_ref() == Ok(&source.specification)
             })
     }
 
@@ -384,10 +629,10 @@ impl CedarApp {
     pub(super) fn stage_search_response(
         &mut self,
         request: u64,
-        query: String,
+        specification: Specification,
         result: Result<Payload, String>,
     ) {
-        self.search_state.completed = Some((request, query, result));
+        self.search_state.completed = Some((request, specification, result));
     }
     pub(super) fn finish_search_frame(&mut self, ctx: &egui::Context) {
         let visible = self.tools_open
@@ -413,9 +658,9 @@ impl CedarApp {
             // Retire intent, never the physical Job::Search slot. Reopening is not a rerun.
             self.search_state.retire();
         }
-        if let Some((request, query, result)) = self.search_state.completed.take() {
+        if let Some((request, specification, result)) = self.search_state.completed.take() {
             if visible {
-                self.apply_search_response(request, query, result);
+                self.apply_search_response(request, specification, result);
                 ctx.request_repaint();
             } else if self
                 .search_state
@@ -435,13 +680,14 @@ impl CedarApp {
     pub(super) fn apply_search_response(
         &mut self,
         request: u64,
-        query: String,
+        specification: Specification,
         result: Result<Payload, String>,
     ) {
         let current = self.search_state.pending.as_ref().is_some_and(|source| {
             source.request == request
                 && self.search_request == request
-                && source.query == query
+                && source.specification == specification
+                && self.search_specification().as_ref() == Ok(&specification)
                 && source.generation == self.generation
                 && self.workspace_key.as_ref() == Some(&source.workspace)
                 && self.root == source.root
@@ -452,8 +698,22 @@ impl CedarApp {
         let source = self.search_state.pending.take().unwrap();
         self.search_state.submission = None;
         self.search_state.invalidate();
-        let (matches, truncated) = match result {
-            Ok(Payload::Matches { matches, truncated }) => (matches, truncated),
+        let (matches, truncated, status) = match result {
+            Ok(Payload::Matches { matches, truncated }) if specification.version.is_none() => {
+                (matches, truncated, None)
+            }
+            Ok(Payload::ScopedMatches { result }) if specification.version.is_some() => {
+                if let Err(error) = result.validate_for(&specification.request) {
+                    self.error = Some(error.to_string());
+                    return;
+                }
+                let status = ScanStatus {
+                    reasons: result.reasons,
+                    examined_entries: result.examined_entries,
+                    read_bytes: result.read_bytes,
+                };
+                (result.matches, result.incomplete, Some(status))
+            }
             Ok(_) => {
                 self.error = Some("Unexpected search response; no results were accepted".into());
                 return;
@@ -467,7 +727,12 @@ impl CedarApp {
             self.error = Some(error.into());
             return;
         }
-        self.notice = format!("{} matches for {:?}", matches.len(), source.query);
+        self.notice = format!(
+            "{} matches for {}",
+            matches.len(),
+            source.specification.description()
+        );
+        self.search_state.status = status;
         self.search_state.install(&matches);
         self.search_results = matches;
         self.search_truncated = truncated;
@@ -750,37 +1015,68 @@ impl CedarApp {
     }
 
     fn find_results_panel(&mut self, ui: &mut egui::Ui) {
-        if self.ready() && !self.backend_supports("search") {
+        if self.ready()
+            && !self.backend_supports("search")
+            && !self.backend_scoped_search_supported()
+        {
             ui.colored_label(AMBER, self.unsupported_message("search"));
         }
+        let mut submit_requested = false;
         ui.horizontal(|ui| {
+            let button_font = egui::TextStyle::Button.resolve(ui.style());
+            let button_width = ui.fonts(|fonts| {
+                fonts
+                    .layout_no_wrap("Search".into(), button_font, MUTED)
+                    .size()
+                    .x
+            }) + ui.spacing().button_padding.x * 2.0;
             let edit = ui.add(
                 egui::TextEdit::singleline(&mut self.search_query)
-                    .hint_text("Find text across the workspace...")
-                    .desired_width((ui.available_width() - 170.0).max(80.0)),
+                    .hint_text("Case-sensitive literal text")
+                    .desired_width(
+                        (ui.available_width() - button_width - ui.spacing().item_spacing.x)
+                            .max(1.0),
+                    ),
             );
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "search_query", &edit);
             if edit.changed() {
-                self.search_state.deactivate();
-                self.retire_search_preview();
+                self.search_filters_changed();
             }
             let enter = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            let enabled = self.ready() && self.backend_supports("search") && !self.search_busy();
+            let enabled = self.search_submission_supported() && !self.search_busy();
             let submit = ui.add_enabled(enabled, egui::Button::new("Search"));
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "search_submit", &submit);
-            if enabled && (submit.clicked() || enter) {
-                self.search();
-            }
-            ui.label(
-                RichText::new(format!("{} results", self.search_results.len()))
-                    .small()
-                    .color(MUTED),
-            );
+            submit_requested = enabled && (submit.clicked() || enter);
         });
+        let scope_id = ui.id().with("search_scope");
+        let masks_id = ui.id().with("search_masks");
+        let (scope, masks) = self.search_filter_controls(ui, scope_id, masks_id);
+        #[cfg(test)]
+        {
+            crate::workspace_access_tests::record(ui, "search_scope", &scope);
+            crate::workspace_access_tests::record(ui, "search_masks", &masks);
+        }
+        if scope.changed() || masks.changed() {
+            self.search_filters_changed();
+            submit_requested = false;
+        } else if (scope.lost_focus() || masks.lost_focus())
+            && ui.input(|input| input.key_pressed(egui::Key::Enter))
+        {
+            submit_requested = self.search_submission_supported() && !self.search_busy();
+        }
+        if let Some(explanation) = self.search_filter_explanation() {
+            ui.colored_label(AMBER, explanation);
+        }
+        if submit_requested {
+            self.search();
+        }
         if let Some(source) = &self.search_state.accepted {
-            let label = ui.label(RichText::new(format!("Historical results for {:?}. Lines may have changed; Open uses the current buffer.", source.query)).small().color(MUTED));
+            let history = format!("Historical results for {} · {} results. Lines may have changed; Open uses the current buffer.", source.specification.description(), self.search_results.len());
+            let label = ui
+                .add(egui::Label::new(RichText::new(&history).small().color(MUTED)).truncate())
+                .on_hover_text(history);
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "search_history", &label);
             #[cfg(not(test))]
@@ -790,7 +1086,7 @@ impl CedarApp {
         if self.search_state.accepted.is_some() && !active {
             let label = ui.colored_label(
                 AMBER,
-                "Previous results are inactive. Run Search for the current query and connection.",
+                "Previous results are inactive. Run Search for the current query, filters and connection.",
             );
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "search_inactive", &label);
@@ -799,6 +1095,9 @@ impl CedarApp {
         }
         if self.search_busy() {
             ui.label(RichText::new("Searching...").small().color(MUTED));
+        }
+        if let Some(description) = self.search_scan_description() {
+            ui.label(RichText::new(description).small().color(MUTED));
         }
         if self.search_truncated {
             let label = ui.colored_label(AMBER, "Search incomplete; more matches may exist.");
@@ -935,7 +1234,9 @@ impl CedarApp {
                         );
                         let response = ui
                             .add_enabled_ui(active, |ui| row_control(ui, id, &label, false))
-                            .inner;
+                            .inner
+                            .on_hover_text(&result.path)
+                            .on_disabled_hover_text(&result.path);
                         app.search_state
                             .keyboard
                             .record(ui, MAX_ROWS + first, &response);

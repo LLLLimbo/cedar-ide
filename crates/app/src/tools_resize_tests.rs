@@ -498,6 +498,7 @@ fn tools_resize_hide_tool_switch_disconnect_and_reconnect_keep_runtime_preferenc
         connected: true,
         result: Ok(Payload::Hello {
             file_discovery: None,
+            scoped_search: None,
             protocol: cedar_protocol::PROTOCOL_VERSION,
             root: "tools-resize-fixture".into(),
             agent: None,
@@ -544,6 +545,18 @@ fn tools_resize_content_overflow_does_not_become_the_stored_height() {
     settle(&mut app, narrow);
     assert_eq!(app.tools_height, Some(150.0));
     app.tool = Tool::Search;
+    let search = settle(&mut app, SIZE);
+    // Scoped Find's filters make its content taller than this preference too.
+    // Content overflow must not replace the stored native allocation.
+    assert_eq!(search.preferred, Some(150.0));
+    assert!(search.panel.unwrap().height() > 150.0);
+    near(
+        native(&app).rect.center().y,
+        search.available.bottom() - 150.0,
+    );
+    // Commands contains its body in a ScrollArea: rendering it (without any
+    // action) proves that prior overflowing content did not replace allocation.
+    app.tool = Tool::Run;
     assert_height(settle(&mut app, SIZE), 150.0);
     assert!(commands.try_recv().is_err());
 }
@@ -1094,6 +1107,7 @@ fn tools_automatic_height_close_switch_disconnect_and_reconnect_retain_automatic
         connected: true,
         result: Ok(Payload::Hello {
             file_discovery: None,
+            scoped_search: None,
             protocol: cedar_protocol::PROTOCOL_VERSION,
             root: "tools-automatic-height-fixture".into(),
             agent: None,

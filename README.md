@@ -2,14 +2,15 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。正在准备 **0.61.0 候选**：在 0.60.0 浏览基线上增加同会话保留的分组文本结果、共享显式预览和局部紧凑布局；0.61.0 本地聚合通过 1,943 项、失败 0 项、忽略 69 项（49 个套件），格式及严格检查通过；同版本普通 agent 的 Browse/Search 进程证明通过；**完整双平台 CI、精确分发包和原生窗口验收仍待完成**。操作与限制见[Find and return](docs/FIND_AND_RETURN.md)，产品方向见[浏览路线](docs/BROWSING_PRODUCT_ROADMAP.md)。本候选只覆盖 B2 的保留结果子集，既有 Build/Run 功能保留，不声明视觉等价或性能优势。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。**0.62 正在开发**：在已限定验收的 0.61.0 保留分组结果基线上，为 Project Text 增加共享的 Directory 和 File masks 控件，由后端从指定目录遍历并在读取内容前匹配文件名。仍须显式提交；新路径的测试、普通 agent、精确包及原生验收需要单独证据，本文不宣称通过。操作与限制见[Find and return](docs/FIND_AND_RETURN.md)及[范围搜索契约](docs/SCOPED_PROJECT_TEXT.md)，产品方向见[浏览路线](docs/BROWSING_PRODUCT_ROADMAP.md)。本次只覆盖 B2 的目录/文件名掩码子集，既有 Build/Run 功能保留，不声明视觉等价或性能优势。
 
-最新已限定验收基线为 **0.60.0**：公开提交 [`bd5cf9fc38635545d94941044f18d9ee436df2ea`](https://github.com/LLLLimbo/cedar-ide/commit/bd5cf9fc38635545d94941044f18d9ee436df2ea) 的 [CI 38206608526](https://github.com/LLLLimbo/cedar-ide/actions/runs/38206608526) 四项作业与三种精确源码包均通过，并完成限定 Linux 原生浏览验收。原生覆盖文件发现/预览/Open/工具栏 Back/脏稿 Undo/Redo，以及 Project Text 提交和当前草稿预览；未操作文本结果 Open–Back、重开查询保留、键盘 Back/Forward 别名及 Forward，不代表 Windows GUI 或真实 SSH。其余遗漏、0.59.0/0.59.1 失败及 0.59.2 原生清理失败与补验均保留于[当前报告](docs/TEST_REPORT.md)。基线证据不替代新候选验收。Cedar **不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+最新已限定验收基线为 **0.61.0**：公开提交 [`7ec8e2f13ce82c57185c705929c0c17c61fcbdfa`](https://github.com/LLLLimbo/cedar-ide/commit/7ec8e2f13ce82c57185c705929c0c17c61fcbdfa) 的 [CI 38213817089](https://github.com/LLLLimbo/cedar-ide/actions/runs/38213817089) 四项作业、三种精确源码包、44 项 Browse 帧测试、17 字段/7 操作 Browse 证明、保留的 12 操作 Search 证明及两项真实 JDT 证明均通过。限定 Linux 原生验收在信任关闭时覆盖分组选择、Space 预览、折叠/展开、脏稿历史位置 Open、未打开文件的重复命中、Ctrl+[ Back / Ctrl+] Forward、隐藏/重开保留、Undo/Redo 及显式丢弃退出，并核对夹具和包完整性。**Ctrl+Alt+Left/Right 在有历史时尝试后未观察到导航，原因未定，保留为明确限制。** 不代表 Windows GUI、真实 SSH、性能或原生精确选区亲和性/操作计数证明。其余历史失败和限制见[当前报告](docs/TEST_REPORT.md)；基线证据不替代 0.62 验收。Cedar **不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
-- **0.61.0 候选待验收**：[Find and return](docs/FIND_AND_RETURN.md) 的 Project Text 与底部 FIND RESULTS 共用一份有界结果，按精确路径分组；单击选择、Space 只读预览、Enter/双击普通 Open。隐藏/重开和 Open–Back 保留查询、选择与分组；查询修改、重跑或重连后旧行停用，须显式成功重跑。过短的显式工具高度可能隐藏结果；完全不可见的行不能激活，可用 Automatic height 恢复空间。没有新增筛选、防抖或跨重启持久化。
-- **0.60.0 浏览基线已限定验收**：Find…、Ctrl+Shift+N / Ctrl+Shift+F 进入文件与项目文本查询。协商支持的 Project files 可查找未展开目录；否则明确回退到打开及已加载文件。文件名按 Unicode 小写后的字面量匹配，不支持正则、CamelCase 或输入即搜索。新分组/保留行为的验证仍待完成。
+- **0.61.0 保留分组结果已限定验收**：[Find and return](docs/FIND_AND_RETURN.md) 的 Project Text 与底部 FIND RESULTS 共用一份有界结果，按精确路径分组；单击选择、Space 只读预览、Enter/双击普通 Open。隐藏/重开和 Open–Back 保留查询、选择与分组；查询修改、重跑或重连后旧行停用，须显式成功重跑。过短的显式工具高度可能隐藏结果；完全不可见的行不能激活，可用 Automatic height 恢复空间。没有防抖或跨重启持久化。
+- **0.62 范围搜索开发中**：Project Text 的 Directory 留空表示根目录；File masks 接受以分号分隔、区分大小写的完整文件名 `*` / `?` 掩码。任一筛选要求协商 `scoped_search` v1；旧版或未知版本 agent 收到零次范围搜索请求，且不自动扩大为全工作区搜索。两个筛选均为空时继续使用原有 Search。修改或改回任一字段都使旧行停用；完整匹配、排除项及不完整扫描边界见[契约](docs/SCOPED_PROJECT_TEXT.md)。
+- **0.60.0 浏览基线已限定验收**：Find…、Ctrl+Shift+N / Ctrl+Shift+F 进入文件与项目文本查询。协商支持的 Project files 可查找未展开目录；否则明确回退到打开及已加载文件。文件名按 Unicode 小写后的字面量匹配，不支持正则、CamelCase 或输入即搜索。
 - 原生 egui/Glow 桌面界面，无 WebView、Electron 或前端 JVM
 - [Linux agent 独立开发包](docs/LINUX_AGENT_QUICKSTART.zh-CN.md)：面向 Ubuntu 24.04 amd64 的无界面后端，附源码/CI/逐文件哈希与实际 ELF 要求；不自动部署、不代表真实 SSH 验收
 - 本地目录与 SSH 工作区，共用同一文件、搜索、工具和语言服务后端
@@ -40,7 +41,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完�
 - **测试结果**：显式读取一个工作区内的 Surefire/JUnit 风格 XML 报告，按状态筛选、查看历史耗时和失败详情；筛选结果 Up/Down/Home/End 导航、详情显示与 Back to case 返回已在 0.55.4 的限定范围内验收。信任关闭可用，不运行测试或扫描目录，见[支持范围](docs/TEST_RESULTS.md)
 - **Java 编译位置**：显式提取已完成任务的英文 javac 输出，通过工作区读取边界跳转相对路径；保留脏稿，行号仅为历史提示，见[范围与限制](docs/BUILD_PROBLEMS.md)
 - **保存的命令配置**：显式加载/编辑/保存工作区 `cedar.tasks.json`，保留空参数、中文和 shell 字面量；复用编辑器版本冲突与恢复路径，加载/保存/重连都不自动运行
-- **0.57.6 历史搜索基线已限定验收**：有序键盘导航、边界停止、滚动显示与普通打开保留脏稿和 Undo；文本命中定位到历史行并记录 Back 出发位置。0.61.0 候选将结果交互改为单击选择、Space 预览、Enter/双击打开，新行为仍待验收。查询须显式提交；展示已提交查询与历史磁盘结果，未保存草稿不参与搜索。Git、命令和语言服务仍要求显式工作区信任
+- **0.57.6 历史搜索基线已限定验收**：有序键盘导航、边界停止、滚动显示与普通打开保留脏稿和 Undo；文本命中定位到历史行并记录 Back 出发位置。0.61.0 已限定验收的交互为单击选择、Space 预览、Enter/双击打开。查询须显式提交；展示已提交查询与历史磁盘结果，未保存草稿不参与搜索。Git、命令和语言服务仍要求显式工作区信任
 - **显式 Git 变更查看**：配置工作区主机上的 Git 2.45+，刷新结构化状态、查看单文件暂存/未暂存差异；不自动轮询，不提供提交/暂存/重置/抓取，差异不会改动草稿
 - agent 侧真实 LSP：启动、初始化、文件同步、补全/定义/悬浮请求、诊断事件、停止与重启
 - 350ms 防抖自动同步、自动诊断列表、F12 定义跳转、类型悬浮、Ctrl+Space 补全
@@ -195,4 +196,4 @@ python3 scripts/package_checkpoint.py --output /absolute/path/cedar-checkpoint.z
 
 Public source history and omitted machine-specific evidence are described in [PUBLICATION.md](PUBLICATION.md).
 
-Linux GUI 的 Local folder 在 0.41 使用与前端同目录、同版本的独立 agent；缺失或不匹配会报错，没有内嵌回退。面向库调用者的 Client Local 仍保留内嵌模式。新的 Ubuntu 24.04 amd64 桌面包范围与运行依赖见 [Linux 桌面指南](docs/LINUX_DESKTOP_QUICKSTART.zh-CN.md)。0.59.2 的完整双平台 CI、真实 JDT 参数证明、三种包与限定 Linux 原生功能及独立清理补验已通过；0.59.3 仅新增渲染器 Unicode 测试，精确 CI 与三种包已验收，不新增原生运行；0.60.0 已完成精确双平台 CI、三种包及限定 Linux 原生浏览验收；0.61.0 候选 的保留分组结果仍须完成自己的验证。
+Linux GUI 的 Local folder 在 0.41 使用与前端同目录、同版本的独立 agent；缺失或不匹配会报错，没有内嵌回退。面向库调用者的 Client Local 仍保留内嵌模式。新的 Ubuntu 24.04 amd64 桌面包范围与运行依赖见 [Linux 桌面指南](docs/LINUX_DESKTOP_QUICKSTART.zh-CN.md)。0.59.2 的完整双平台 CI、真实 JDT 参数证明、三种包与限定 Linux 原生功能及独立清理补验已通过；0.59.3 仅新增渲染器 Unicode 测试，精确 CI 与三种包已验收，不新增原生运行；0.60.0 已完成精确双平台 CI、三种包及限定 Linux 原生浏览验收；0.61.0 保留分组结果已完成上述限定验收；0.62 范围搜索仍须自己的验证。

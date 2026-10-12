@@ -63,6 +63,7 @@ fn hello(info: AgentInfo) -> Response {
             root: "/fixture".into(),
             agent: Some(info),
             file_discovery: None,
+            scoped_search: None,
         }),
     }
 }

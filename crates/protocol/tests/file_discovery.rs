@@ -35,6 +35,7 @@ fn hello(descriptor: Option<FileDiscoveryDescriptor>) -> Response {
             root: "/fixture".into(),
             agent: Some(agent()),
             file_discovery: descriptor,
+            scoped_search: None,
         }),
     }
 }
@@ -192,6 +193,7 @@ fn accepted_0593_reader_ignores_extension_and_preserves_all_old_validation() {
         current.result,
         Ok(Payload::Hello {
             file_discovery: None,
+            scoped_search: None,
             ..
         })
     ));
@@ -206,6 +208,7 @@ fn absent_null_and_future_descriptors_preserve_unavailable_or_unsupported_state(
             current.result,
             Ok(Payload::Hello {
                 file_discovery: None,
+                scoped_search: None,
                 ..
             })
         ));

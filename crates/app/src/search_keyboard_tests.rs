@@ -168,11 +168,26 @@ fn id(app: &CedarApp, index: usize) -> egui::Id {
     row_id(app.search_state.accepted.as_ref().unwrap(), index)
 }
 
-fn tab_from_search_submit_to_first_row(app: &mut CedarApp) {
+fn tab_from_search_submit_through_filters(app: &mut CedarApp) {
     assert_eq!(
         focused(app),
         Some(recorded_response(app, "search_submit").id)
     );
+    // The shared filter editors are real native Tab stops before results.
+    for probe in ["search_scope", "search_masks"] {
+        let response = recorded_response(app, probe);
+        assert!(response.enabled() && response.sense.is_focusable());
+        frame(app, key(egui::Key::Tab));
+        assert_eq!(
+            focused(app),
+            Some(response.id),
+            "native Tab must visit {probe}"
+        );
+    }
+}
+
+fn tab_from_search_submit_to_first_row(app: &mut CedarApp) {
+    tab_from_search_submit_through_filters(app);
     let area_id = recorded_scroll_id(app).with("area");
     if app
         .editor_ctx
@@ -252,6 +267,7 @@ fn search_keyboard_bounds_count_exact_utf8_bytes_and_distinct_identities() {
         generation: 3,
         request: 17,
         query: "second".into(),
+        specification: search_keyboard::Specification::legacy("second".into()),
     };
     assert_ne!(row_id(&source, 0), row_id(&source, 1));
     for changed in [
@@ -356,6 +372,7 @@ fn search_keyboard_native_tab_and_explicit_query_enter_remain_available() {
 fn search_keyboard_native_tab_overflow_visits_actual_scroll_area_then_rows() {
     let (mut app, commands) = app(160);
     focus(&mut app, "search_submit");
+    tab_from_search_submit_through_filters(&mut app);
     let area_id = recorded_scroll_id(&app).with("area");
     let area = app.editor_ctx.read_response(area_id).unwrap();
     assert!(area.sense.is_focusable() && area.sense.senses_drag());
@@ -519,6 +536,25 @@ fn search_keyboard_unopened_activation_dispatches_one_ordinary_read_and_no_repea
 fn search_keyboard_history_uses_submitted_query_and_old_rows_stay_inactive() {
     let (mut app, commands) = app(8);
     let old = id(&app, 0);
+    let old_source = app.search_state.accepted.clone().unwrap();
+    let old_rows = app
+        .search_results
+        .iter()
+        .map(|row| (row.path.clone(), row.line, row.text.clone()))
+        .collect::<Vec<_>>();
+    let edit_query = |app: &mut CedarApp, value: &str| {
+        let rect = recorded_rect(app, "search_query").intersect(recorded_clip(app, "search_query"));
+        assert!(rect.is_positive());
+        let pos = rect.center();
+        frame(app, vec![egui::Event::PointerMoved(pos)]);
+        frame(app, pointer(pos, true));
+        frame(app, pointer(pos, false));
+        assert!(recorded_response(app, "search_query").clicked());
+        frame(app, modified_key(egui::Key::A, egui::Modifiers::COMMAND));
+        frame(app, vec![egui::Event::Text(value.into())]);
+        settle(app);
+        assert_eq!(app.search_query, value);
+    };
     app.search_query = "replacement".into();
     app.search();
     let search = commands.try_recv().unwrap();
@@ -528,7 +564,9 @@ fn search_keyboard_history_uses_submitted_query_and_old_rows_stay_inactive() {
     assert_eq!(app.search_state.accepted.as_ref().unwrap().query, "second");
     assert!(!recorded_response(&app, "search_row:0").enabled());
     let _ = recorded_rect(&app, "search_inactive");
-    app.search_query = "edited while pending".into();
+    // The current Find UI contract retires pending intent on a query edit.
+    // Its late completion must not replace the previous historical snapshot.
+    edit_query(&mut app, "edited while pending");
     reply(
         &mut app,
         search.id,
@@ -539,6 +577,44 @@ fn search_keyboard_history_uses_submitted_query_and_old_rows_stay_inactive() {
         true,
     );
     settle(&mut app);
+    assert_eq!(app.search_state.accepted.as_ref(), Some(&old_source));
+    assert_eq!(
+        app.search_results
+            .iter()
+            .map(|row| (row.path.clone(), row.line, row.text.clone()))
+            .collect::<Vec<_>>(),
+        old_rows
+    );
+    assert_eq!(id(&app, 0), old);
+    assert!(!app.search_rows_active());
+    assert!(
+        commands.try_recv().is_err(),
+        "a retired completion cannot automatically resubmit"
+    );
+
+    // A fresh explicit submission establishes the replacement snapshot. A
+    // later local edit leaves its submitted query and incompleteness visible.
+    edit_query(&mut app, "replacement");
+    frame(&mut app, key(egui::Key::Enter));
+    let fresh = commands.try_recv().unwrap();
+    assert!(fresh.id > search.id);
+    assert!(matches!(&fresh.op, Operation::Search { query, limit: 500 } if query == "replacement"));
+    reply(
+        &mut app,
+        fresh.id,
+        Ok(Payload::Matches {
+            matches: rows(3),
+            truncated: true,
+        }),
+        true,
+    );
+    settle(&mut app);
+    assert!(app.search_rows_active());
+    assert_eq!(
+        app.search_state.accepted.as_ref().unwrap().request,
+        fresh.id
+    );
+    edit_query(&mut app, "edited after acceptance");
     assert_eq!(
         app.search_state.accepted.as_ref().unwrap().query,
         "replacement"
@@ -2536,6 +2612,7 @@ fn search_keyboard_workspace_changing_hello_preserves_held_lifetime_until_releas
             0,
             Ok(Payload::Hello {
                 file_discovery: None,
+                scoped_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: "/other".into(),
                 agent: Some(agent_support::full_test_agent()),

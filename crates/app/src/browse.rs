@@ -171,6 +171,8 @@ impl Preview {
 enum Target {
     Query,
     Scope,
+    TextScope,
+    Masks,
     Files,
     Text,
     Submit,
@@ -258,7 +260,7 @@ pub(super) struct Browse {
     truncated: bool,
     message: Option<String>,
     text_request: Option<u64>,
-    search_completed: Option<(u64, String, Result<Payload, String>)>,
+    search_completed: Option<(u64, search_keyboard::Specification, Result<Payload, String>)>,
     desired: Option<PreviewTicket>,
     // A fresh explicit intent never reuses an earlier in-flight Read ticket,
     // including A → B → A and collapse → expand → preview of the same row.
@@ -362,6 +364,8 @@ impl Browse {
                 target,
                 Target::Query
                     | Target::Scope
+                    | Target::TextScope
+                    | Target::Masks
                     | Target::Files
                     | Target::Text
                     | Target::Submit
@@ -438,7 +442,7 @@ impl CedarApp {
         self.browse.truncated = self.search_truncated;
         if self.search_state.accepted.is_some() && !self.search_rows_active() {
             self.browse.message = Some(
-                "Previous results are inactive. Run Find for the current query and connection."
+                "Previous results are inactive. Run Find for the current query, filters and connection."
                     .into(),
             );
         }
@@ -565,6 +569,8 @@ impl CedarApp {
                     item.token.target,
                     Target::Query
                         | Target::Scope
+                        | Target::TextScope
+                        | Target::Masks
                         | Target::Files
                         | Target::Text
                         | Target::Submit
@@ -637,17 +643,25 @@ impl CedarApp {
                     return;
                 }
                 self.search_query = self.browse.query.clone();
-                if !self.search_query.trim().is_empty() && self.backend_supports("search") {
+                if !self.search_query.trim().is_empty() && self.search_submission_supported() {
                     self.search();
                     self.browse.text_request = self
                         .search_state
                         .pending
                         .as_ref()
                         .map(|source| source.request);
+                    if self.browse.text_request.is_none() {
+                        self.browse.message = self.error.clone();
+                        self.restore_browse_text();
+                    }
                 } else {
-                    self.browse.message = Some(
-                        "Enter a case-sensitive literal query, then press Enter to search.".into(),
-                    );
+                    self.browse.message = self.search_filter_explanation().or_else(|| {
+                        Some(
+                            "Enter a case-sensitive literal query, then press Enter to search."
+                                .into(),
+                        )
+                    });
+                    self.restore_browse_text();
                 }
             }
         }
@@ -655,7 +669,7 @@ impl CedarApp {
     fn browse_query_changed(&mut self) {
         if self.browse.provider == Provider::ProjectText {
             self.search_query = self.browse.query.clone();
-            self.search_state.deactivate();
+            self.search_filters_changed();
         }
         if self.browse.text_request.take().is_some() {
             self.search_state.retire();
@@ -754,6 +768,18 @@ impl CedarApp {
             self.request_find_preview(ticket);
         }
     }
+    pub(super) fn retire_project_text_preview(&mut self) {
+        if self
+            .browse
+            .desired
+            .as_ref()
+            .is_some_and(|ticket| ticket.provider == Provider::ProjectText)
+        {
+            self.browse.desired = None;
+            self.browse.preview = None;
+            self.browse.replacement = None;
+        }
+    }
     pub(super) fn retire_search_preview(&mut self) {
         if self
             .browse
@@ -774,6 +800,10 @@ impl CedarApp {
     #[cfg(test)]
     pub(super) fn has_search_preview(&self) -> bool {
         self.search_preview_current()
+    }
+    #[cfg(test)]
+    pub(super) fn browse_preview_text(&self) -> Option<&str> {
+        self.current_preview_text(PreviewSurface::Browse)
     }
     #[cfg(test)]
     pub(super) fn search_preview_text(&self) -> Option<&str> {
@@ -955,21 +985,31 @@ impl CedarApp {
     pub(super) fn stage_browse_search(
         &mut self,
         request: u64,
-        query: String,
+        specification: search_keyboard::Specification,
         result: Result<Payload, String>,
     ) {
-        self.browse.search_completed = Some((request, query, result));
+        self.browse.search_completed = Some((request, specification, result));
     }
     pub(super) fn browse_finish_frame(&mut self, ctx: &egui::Context) {
         self.finish_browse_discovery(ctx);
         let owns_view = self.browse_current() && !self.foreign_modal_owns_input(ctx);
-        if let Some((request, query, result)) = self.browse.search_completed.take() {
+        if let Some((request, specification, result)) = self.browse.search_completed.take() {
             if owns_view
                 && self.browse.text_request == Some(request)
-                && self.browse.query == query
-                && self.browse.submitted == query
+                && self.browse.query == specification.request.query
+                && self.browse.submitted == specification.request.query
             {
-                self.apply_search_response(request, query, result);
+                self.apply_search_response(request, specification, result);
+                if self
+                    .search_state
+                    .accepted
+                    .as_ref()
+                    .is_some_and(|source| source.request == request)
+                {
+                    self.browse.message = None;
+                } else {
+                    self.browse.message = self.error.clone();
+                }
                 ctx.request_repaint();
             }
         }
@@ -1397,6 +1437,8 @@ impl CedarApp {
             let name = match &target {
                 Target::Query => "browse_query".into(),
                 Target::Scope => "browse_scope".into(),
+                Target::TextScope => "browse_text_scope".into(),
+                Target::Masks => "browse_masks".into(),
                 Target::Files => "browse_files".into(),
                 Target::Text => "browse_text".into(),
                 Target::Submit => "browse_submit".into(),
@@ -1440,9 +1482,20 @@ impl CedarApp {
         let id = self.browse.id(&target);
         let response = ui
             .add_enabled_ui(enabled, |ui| {
-                navigation::candidate_row(ui, id, false, label, false)
+                if matches!(target, Target::Group(_)) {
+                    text_group_control(ui, id, label)
+                } else {
+                    navigation::candidate_row(ui, id, false, label, false)
+                }
             })
             .inner;
+        let response = if let Target::Group(first) = target {
+            response
+                .on_hover_text(self.browse.rows[first].path())
+                .on_disabled_hover_text(self.browse.rows[first].path())
+        } else {
+            response
+        };
         self.browse_response(ui, target, &response)
     }
     fn browse_results_panel(
@@ -1680,8 +1733,14 @@ impl CedarApp {
                         close = true;
                     }
                 }
-                (Target::Query | Target::Scope, egui::Key::Enter) => submit = true,
-                (Target::Query | Target::Scope, egui::Key::ArrowDown) => {
+                (
+                    Target::Query | Target::Scope | Target::TextScope | Target::Masks,
+                    egui::Key::Enter,
+                ) => submit = true,
+                (
+                    Target::Query | Target::Scope | Target::TextScope | Target::Masks,
+                    egui::Key::ArrowDown,
+                ) => {
                     select = if self.browse.provider == Provider::ProjectText {
                         self.search_state.visible_indices().first().copied()
                     } else {
@@ -1721,7 +1780,7 @@ impl CedarApp {
             ui.heading("Find and return");
             ui.horizontal(|ui| {
                 if self.browse_button(ui, Target::Files, "Files", true) { switch = Some(Provider::Files); }
-                if self.browse_button(ui, Target::Text, "Project Text", self.backend_supports("search")) { switch = Some(Provider::ProjectText); }
+                if self.browse_button(ui, Target::Text, "Project Text", self.backend_supports("search") || self.backend_scoped_search_supported()) { switch = Some(Provider::ProjectText); }
                 if self.browse_button(ui, Target::Close, "Close · Esc", true) { close = true; }
             });
             let discovery_available = self.backend_file_discovery_supported();
@@ -1751,17 +1810,36 @@ impl CedarApp {
                     ui.label(RichText::new("Directory scope is unavailable for Open and loaded files.").small().color(MUTED));
                 }
             }
-            ui.horizontal(|ui| {
-                submit |= self.browse_button(ui, Target::Submit, "Find", self.browse.provider == Provider::Files || (self.backend_supports("search") && !self.search_busy()));
+            if self.browse.provider == Provider::ProjectText {
+                let scope_id = self.browse.id(&Target::TextScope);
+                let masks_id = self.browse.id(&Target::Masks);
+                let (scope, masks) = self.search_filter_controls(ui, scope_id, masks_id);
+                if scope.changed() || masks.changed() {
+                    self.browse_query_changed(); submit = false; select = None; preview = false; open = false;
+                }
+                self.browse_response(ui, Target::TextScope, &scope);
+                self.browse_response(ui, Target::Masks, &masks);
+                if let Some(explanation) = self.search_filter_explanation() { ui.colored_label(AMBER, explanation); }
+            }
+            ui.horizontal_wrapped(|ui| {
+                submit |= self.browse_button(ui, Target::Submit, "Find", self.browse.provider == Provider::Files || (self.search_submission_supported() && !self.search_busy()));
                 ui.label(RichText::new("Enter submits · ↓ selects · Space previews · Enter opens").small().color(MUTED));
             });
             if self.browse.provider == Provider::ProjectText {
                 if let Some(source) = &self.search_state.accepted {
-                    ui.label(RichText::new(format!("Historical results for {:?}. Lines may have changed; Open uses current source.", source.query)).small().color(MUTED));
-                    if !self.search_rows_active() { ui.colored_label(AMBER, "Previous results are inactive. Run Find for the current query and connection."); }
+                    let history = format!("Historical results for {} · {} results. Lines may have changed; Open uses current source.", source.specification.description(), self.search_results.len());
+                    let label = ui.add(egui::Label::new(RichText::new(&history).small().color(MUTED)).truncate()).on_hover_text(history);
+                    #[cfg(test)]
+                    crate::workspace_access_tests::record(ui, "browse_history", &label);
+                    #[cfg(not(test))]
+                    let _ = label;
+                    if !self.search_rows_active() { ui.colored_label(AMBER, "Previous results are inactive. Run Find for the current query, filters and connection."); }
                 }
             }
-            if self.browse.provider == Provider::ProjectText && self.search_busy() { ui.label("Searching…"); }
+            if self.browse.provider == Provider::ProjectText {
+                if self.search_busy() { ui.label("Searching…"); }
+                if let Some(description) = self.search_scan_description() { ui.label(RichText::new(description).small().color(MUTED)); }
+            }
             if self.browse.provider == Provider::Files {
                 if let Some(source) = &self.browse.discovery.accepted {
                     ui.label(RichText::new(format!("Project files for {:?} · scope /{} · {} entries examined", source.ticket.query, source.ticket.scope, source.examined)).small().color(MUTED));
@@ -1842,7 +1920,9 @@ impl CedarApp {
 fn owns_key(target: &Target, key: egui::Key) -> bool {
     key == egui::Key::Escape
         || match target {
-            Target::Query | Target::Scope => matches!(key, egui::Key::Enter | egui::Key::ArrowDown),
+            Target::Query | Target::Scope | Target::TextScope | Target::Masks => {
+                matches!(key, egui::Key::Enter | egui::Key::ArrowDown)
+            }
             Target::Row(_) => matches!(
                 key,
                 egui::Key::Enter
@@ -1856,6 +1936,41 @@ fn owns_key(target: &Target, key: egui::Key) -> bool {
             _ => matches!(key, egui::Key::Enter | egui::Key::Space),
         }
 }
+// Keep the original native group ID and interaction size, while a long exact
+// path stays on one visual line instead of consuming the results viewport.
+fn text_group_control(ui: &mut egui::Ui, id: egui::Id, label: &str) -> egui::Response {
+    let padding = ui.spacing().button_padding;
+    let galley = egui::WidgetText::from(label).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (ui.available_width() - 2.0 * padding.x).max(0.0),
+        egui::TextStyle::Button,
+    );
+    let (_, rect) = ui.allocate_space(egui::vec2(
+        galley.size().x + 2.0 * padding.x,
+        (galley.size().y + 2.0 * padding.y).max(ui.spacing().interact_size.y),
+    ));
+    let response = ui.interact(rect, id, egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::SelectableLabel, ui.is_enabled(), label)
+    });
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, false);
+        if response.hovered() || response.has_focus() {
+            ui.painter().rect(
+                rect,
+                visuals.corner_radius,
+                visuals.weak_bg_fill,
+                visuals.bg_stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        ui.painter()
+            .galley(rect.min + padding, galley, visuals.text_color());
+    }
+    response
+}
+
 fn shortcut_provider(key: egui::Key, modifiers: egui::Modifiers) -> Option<Provider> {
     (modifiers.ctrl && modifiers.shift && !modifiers.alt && !modifiers.mac_cmd)
         .then_some(match key {

@@ -1,11 +1,18 @@
 //! Connection-scoped, unverified agent support claims. Trust stays user-owned.
-use crate::{CedarApp, Operation};
+use crate::{search_keyboard, CedarApp, Operation};
 use cedar_protocol::{
     supports_capability, JAVA_LANGUAGE_SESSION_CAPABILITIES, JAVA_STARTUP_CAPABILITIES,
     LANGUAGE_SESSION_CAPABILITIES, RUN_TASK_CAPABILITIES,
 };
 
 impl CedarApp {
+    pub(super) fn backend_scoped_search_supported(&self) -> bool {
+        self.ready()
+            && self
+                .scoped_search
+                .is_some_and(|descriptor| descriptor.supported())
+    }
+
     pub(super) fn backend_file_discovery_supported(&self) -> bool {
         self.ready()
             && self
@@ -55,6 +62,13 @@ impl CedarApp {
         }
     }
     pub(super) fn operation_problem(&self, operation: &Operation) -> Option<String> {
+        if let Operation::SearchIn { request } = operation {
+            if !self.backend_scoped_search_supported() {
+                return Some(search_keyboard::SCOPED_UNAVAILABLE.into());
+            }
+            return request.validate().err().map(|error| error.to_string());
+        }
+
         if let Operation::FindFiles {
             query,
             scope,
@@ -302,6 +316,7 @@ mod tests {
             connected: true,
             result: Ok(Payload::Hello {
                 file_discovery: None,
+                scoped_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: root.into(),
                 agent,
@@ -612,6 +627,7 @@ mod tests {
             connected: true,
             result: Ok(Payload::Hello {
                 file_discovery: None,
+                scoped_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION + 1,
                 root: "/unaccepted".into(),
                 agent: Some(full_test_agent()),

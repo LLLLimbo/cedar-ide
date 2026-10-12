@@ -22,6 +22,7 @@ fn hello(root: &str) -> Payload {
     Payload::Hello {
         protocol: PROTOCOL_VERSION,
         file_discovery: None,
+        scoped_search: None,
         root: root.into(),
         agent: Some(AgentInfo {
             schema: AGENT_INFO_SCHEMA,

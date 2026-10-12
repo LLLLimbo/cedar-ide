@@ -5,6 +5,9 @@ use cedar_protocol::{JAVA_MAVEN_DEPENDENCIES_GROUP, JAVA_MAVEN_LEAF_GROUP};
 use std::{fs, sync::OnceLock};
 use tempfile::TempDir;
 
+#[path = "scoped_search_tests.rs"]
+mod scoped_search_tests;
+
 struct PeerBinary {
     _directory: TempDir,
     path: PathBuf,

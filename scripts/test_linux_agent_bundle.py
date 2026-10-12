@@ -396,7 +396,7 @@ class LinuxAgentBundleTests(unittest.TestCase):
     def test_current_guide_links_target_packaged_files(self):
         root = Path(__file__).resolve().parent.parent
         payload = dict(self.payload)
-        for name in ("FIND_AND_RETURN.md", "MAVEN_PROJECTS.md", "MAVEN_DEPENDENCIES.md", "JAVA_PARAMETER_INFO.md"):
+        for name in ("FIND_AND_RETURN.md", "SCOPED_PROJECT_TEXT.md", "MAVEN_PROJECTS.md", "MAVEN_DEPENDENCIES.md", "JAVA_PARAMETER_INFO.md"):
             self.assertEqual(bundle.SOURCE_FILES["docs/" + name], name)
             payload[name] = (root / "docs" / name).read_bytes()
         payload[bundle.GUIDE] = (root / "docs" / bundle.GUIDE).read_bytes()

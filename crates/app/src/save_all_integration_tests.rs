@@ -346,7 +346,9 @@ fn missing_save_owner_and_same_frame_undo_retain_owned_recovery_without_another_
                 app.pending.insert(
                     first.id,
                     Job::Search {
-                        query: "unrelated replacement job".into(),
+                        specification: search_keyboard::Specification::legacy(
+                            "unrelated replacement job".into(),
+                        ),
                     },
                 );
             }

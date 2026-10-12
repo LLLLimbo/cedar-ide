@@ -4,7 +4,7 @@
 
 Cedar is a native Rust application using `eframe`/`egui` 0.31.1 and the Glow renderer. It does not embed a browser or a JVM. The remote workspace agent and optional language server run separately from the UI.
 
-## Find and return: 0.61.0 candidate
+## Find and return: accepted 0.61.0, scoped search in progress
 
 Use **Find…**, **Ctrl+Shift+N** for Files, or **Ctrl+Shift+F** for Project Text.
 Select **Search** in the sidebar for the retained **FIND RESULTS** tool. Both
@@ -15,41 +15,77 @@ preserved. Single-click selects,
 **Space** explicitly previews, and **Enter** or double-click uses ordinary
 **Open**. Use **Back** to return to a valid departure location.
 
-The submitted query, selection, group expansion and each view's scroll position
-survive hiding/reopening and Open–Back. Query edits, pending or failed reruns,
-and reconnect leave old rows inactive until an explicit successful search.
+The submitted query and filters, selection, group expansion and each view's
+scroll position survive hiding/reopening and Open–Back. Query or filter edits,
+pending or failed reruns, and reconnect leave old rows inactive until an explicit
+successful search. Editing a field back does not reactivate its old results.
 An outstanding request disables duplicate text submissions. Preview is limited
 to 1 MiB and uses one shared Read in flight; an existing open draft previews with
 zero Reads. Browsing never implicitly saves. Both Find views use compact local
 spacing, with side-by-side results/preview at wide sizes and stacked content at
 narrower sizes. See the [usage and limits](../../docs/FIND_AND_RETURN.md).
 
-**This 0.61.0 candidate is not accepted.** The 44 Browse frame checks, including
-17 new retained-result cases, the 33 retained Search checks and both normal-agent
-proofs passed locally with the matching 0.61.0 agent. The versioned Linux aggregate passed 1,943 tests
-with zero failures and 69 ignored across 49 suites; formatting and strict checks
-also passed. Exact-commit dual-platform CI, all three package audits and native
-acceptance remain pending. This candidate covers retained grouped results only. There are
-no new directory/file-mask or case/word filters, debounce, regular expressions,
-CamelCase matching, disk persistence, global-theme, protocol or JDT changes.
-Existing Build/Run features remain available; no visual-parity or performance
-advantage is claimed.
+**0.62 is in progress.** Both text-search views share **Directory** and **File
+masks** controls. Empty Directory means the workspace root; otherwise it is an
+exact relative directory, without trimming or normalization. File masks accepts
+up to eight semicolon-separated alternatives totaling 256 UTF-8 bytes after
+separator-whitespace trimming. Masks match the whole basename case-sensitively:
+`*` matches zero or more Unicode scalar values and `?` exactly one. Search starts
+at the selected backend directory and applies masks before content opens.
 
-The latest accepted bounded baseline is **0.60.0**, public commit
-[`bd5cf9fc38635545d94941044f18d9ee436df2ea`](https://github.com/LLLLimbo/cedar-ide/commit/bd5cf9fc38635545d94941044f18d9ee436df2ea),
+Both filters empty keeps unchanged legacy Search. Any filter requires the
+optional supported `scoped_search` v1 Hello descriptor; old or unknown-version
+peers receive zero scoped requests, with no broad fallback. The full submitted
+tuple and extension version or legacy mode stay attached to historical results.
+The [scoped-search contract](../../docs/SCOPED_PROJECT_TEXT.md) defines validation,
+independent scan/read/result limits, exclusions and incomplete reasons. Its
+tests, normal-agent, exact-package and native-window evidence remain separate
+pending gates. No 0.62 acceptance is established here.
+
+The latest accepted bounded baseline is **0.61.0**, public commit
+[`7ec8e2f13ce82c57185c705929c0c17c61fcbdfa`](https://github.com/LLLLimbo/cedar-ide/commit/7ec8e2f13ce82c57185c705929c0c17c61fcbdfa),
 with all four jobs and three exact-source packages verified in
-[CI 38206608526](https://github.com/LLLLimbo/cedar-ide/actions/runs/38206608526).
-Its scoped Linux native run covered Files discovery/preview/Open/toolbar Back,
-dirty-draft Undo/Redo, and Project Text submission/current-draft preview.
-Project Text Open–Back, reopened query retention, keyboard Back/Forward aliases
-and Forward were not exercised natively. Windows GUI and real SSH also remain
-unverified; the [report](../../docs/TEST_REPORT.md) records the full omissions.
-These baseline results do not validate the new B2 paths.
+[CI 38213817089](https://github.com/LLLLimbo/cedar-ide/actions/runs/38213817089).
+The 44 Browse frame checks include 17 retained-result cases; the 33 retained
+Search checks, exact 17-field/seven-operation Browse proof, retained
+12-operation Search proof and
+both real-JDT proofs passed. The matching-version local Linux aggregate recorded
+1,943 passed, zero failed and 69 ignored across 49 suites, with formatting and
+strict checks also passing.
+
+Its bounded Linux native run, with execution trust off, covered grouped
+selection, Space preview, collapse/expand, dirty-buffer historical-position
+Open, an unopened duplicate hit, Ctrl+[ Back and Ctrl+] Forward, hide/reopen
+retention, Undo/Redo and explicit discard/exit. Fixture and package integrity
+were checked. **Ctrl+Alt+Left/Right were attempted with history available but
+produced no observed navigation; the cause remains unknown.** That explicit
+limitation is preserved. These results do not establish Windows GUI, real SSH,
+performance, raw selection affinities or native operation counts. The
+[report](../../docs/TEST_REPORT.md) retains earlier evidence and omissions.
+Acceptance of 0.61 does not validate the new filtered-search paths.
+
+The 0.62 addition is only B2's directory/file-mask subset. Case/word options,
+debounce or live queries, regular expressions, CamelCase matching and
+cross-restart search history remain outside it. Existing Build/Run features
+remain available; no visual-parity or performance advantage is claimed.
 
 Negotiated Project files discovery includes untouched directories; its labelled
 fallback searches only open and loaded files. Filename queries use explicit
 submission and literal Unicode lowercase matching. There is no search-as-you-type
 mode, persistent filename index or automatic filesystem watcher.
+
+### Earlier 0.60.0 browsing evidence
+
+The earlier accepted **0.60.0** baseline, public commit
+[`bd5cf9fc38635545d94941044f18d9ee436df2ea`](https://github.com/LLLLimbo/cedar-ide/commit/bd5cf9fc38635545d94941044f18d9ee436df2ea),
+had all four jobs and three exact-source packages verified in
+[CI 38206608526](https://github.com/LLLLimbo/cedar-ide/actions/runs/38206608526).
+Its scoped Linux native run covered Files discovery/preview/Open/toolbar Back,
+dirty-draft Undo/Redo, and Project Text submission/current-draft preview.
+Project Text Open–Back, reopened query retention, keyboard Back/Forward aliases
+and Forward were not exercised in that native run. Windows GUI and real SSH
+were also unverified. The later 0.61 evidence above supplements these omissions;
+it does not change what the original run exercised.
 
 ## Run
 
@@ -67,7 +103,7 @@ The optional argument prefills the local workspace field. Select **Connect works
 - Directory navigation, new-file drafts, up to 32 tabs, and path-based quick open
 - UTF-8 editing, line numbers, Java/Kotlin/Rust lexical colors, and case-sensitive find
 - Revision-checked saves, disk-version inspection, and explicit confirmation before discarding a dirty tab or quitting
-- Explicit project text search with historical disk lines; the 0.61.0 candidate adds shared retained groups and preview with validation pending. The accepted 0.57.6 historical evidence and its inactive-row pointer-hit limitation remain recorded below
+- Explicit project text search with historical disk lines; accepted 0.61.0 retains shared groups and preview, while 0.62 directory/file-mask search remains in progress. The accepted 0.57.6 historical evidence and its inactive-row pointer-hit limitation remain recorded below
 - Trusted-workspace Git status and explicit executable commands with literal argument rows, cancellable task output, and saved project profiles in `cedar.tasks.json`
 
 Shortcuts:
@@ -156,11 +192,13 @@ changes only a mixed-input test's focus/key-ownership expectation and bounded
 diagnostics, with no added frames, forced focus or shipping change. Deterministic
 already-arrived-pointer cases do not guarantee arbitrary merged native input.
 
-## Retained Find interaction (0.61.0 candidate, pending verification)
+## Retained Find interaction and pending 0.62 filters
 
 Enter a case-sensitive literal query and explicitly select **Search** in FIND
 RESULTS, or **Find** in the shared Project Text window. Enter in the query field
-also submits. The accepted result snapshot labels the submitted query. These are
+also submits. In 0.62, Directory and File masks remain shared between these
+views, and edits still require explicit submission. The accepted result snapshot
+labels the submitted query and filters. These are
 historical disk lines, without file revisions or current-draft freshness:
 unsaved changes are not search input, and a recorded line may now point somewhere
 else. A limit warning may reflect traversal, time or response limits as well as
@@ -195,13 +233,14 @@ unopened file uses the ordinary root-confined Read path; preview bytes never
 become an editable tab without ordinary Open. No match-column or current-draft
 position guarantee is made, and no action implicitly saves.
 
-Query edits, pending or failed reruns, and connection changes keep old rows
-visible but inactive. Restoring the earlier query text cannot reactivate them;
+Query or filter edits, pending or failed reruns, and connection changes keep old
+rows visible but inactive. Restoring the earlier field values cannot reactivate them;
 explicitly submit again and wait for a successful current response. Hiding or
 switching tools retires unfinished input and preview intent, without losing an
 accepted snapshot. Late success/error cannot revive a hidden preview or redirect
-an action to a different row. All new retained/grouped interaction and layout
-checks remain separate from the historical 0.57.6 evidence above.
+an action to a different row. The accepted 0.61 retained/grouped evidence remains
+separate from the historical 0.57.6 evidence above and from the pending 0.62
+filtered-search evidence.
 
 ## Agent capabilities and trust
 

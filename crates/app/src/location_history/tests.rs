@@ -1222,14 +1222,54 @@ fn selected_search_result_admits_after_its_line_selection() {
     });
     // The first update admits the staged batch; subsequent frames present its
     // native grouped row before any pointer event is captured.
-    for _ in 0..3 {
+    for index in 0..3 {
         frame(&mut app, vec![]);
+        let panel =
+            egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("tools"))
+                .map(|state| state.rect);
+        let row = app.search_state.accepted.as_ref().and_then(|source| {
+            app.editor_ctx
+                .read_response(crate::search_keyboard::row_id(source, 0))
+        });
+        let row_geometry = row.map(|_| {
+            (
+                crate::workspace_access_tests::recorded_rect(&app, "search_row:0"),
+                crate::workspace_access_tests::recorded_clip(&app, "search_row:0"),
+            )
+        });
+        let scroll = app.editor_ctx.data(|data| {
+            data.get_temp::<(egui::Id, egui::Rect, egui::Vec2)>(egui::Id::new(
+                "bottom_results_scroll_probe",
+            ))
+        });
+        eprintln!(
+            "surface=Bottom case=selected_search_result_admits frame={index} body_font={:?} button_font={:?} window={:?} pass={} focus={:?} preference={:?} panel={panel:?} row_rect_clip={row_geometry:?} query_rect={:?} scope_rect={:?} masks_rect={:?} scroll={scroll:?}",
+            egui::TextStyle::Body.resolve(&app.editor_ctx.style()),
+            egui::TextStyle::Button.resolve(&app.editor_ctx.style()),
+            app.editor_ctx.screen_rect(),
+            app.editor_ctx.cumulative_pass_nr(),
+            app.editor_ctx.memory(|memory| memory.focused()),
+            app.tools_height,
+            crate::workspace_access_tests::recorded_rect(&app, "search_query"),
+            crate::workspace_access_tests::recorded_rect(&app, "search_scope"),
+            crate::workspace_access_tests::recorded_rect(&app, "search_masks"),
+        );
     }
     let response = crate::workspace_access_tests::recorded_response(&app, "search_row:0");
+    // After end_pass, egui read_response can prefer the preceding pass's rect.
+    // Pair the current recorded allocation with its current recorded clip.
+    let rect = crate::workspace_access_tests::recorded_rect(&app, "search_row:0");
     let clip = crate::workspace_access_tests::recorded_clip(&app, "search_row:0");
-    let visible = response.rect.intersect(clip);
+    let visible = rect.intersect(clip);
     assert!(response.enabled() && response.sense.senses_click());
-    assert!(visible.is_finite() && visible.width() > 0.0 && visible.height() > 0.0);
+    assert!(
+        visible.is_finite() && visible.width() > 0.0 && visible.height() > 0.0,
+        "case=selected_search_result_admits probe=search_row:0 rect={:?} clip={clip:?} pass={} focus={:?} preference={:?}",
+        rect,
+        app.editor_ctx.cumulative_pass_nr(),
+        app.editor_ctx.memory(|memory| memory.focused()),
+        app.tools_height
+    );
     let at = visible.center();
     let epoch = app.navigation_epoch;
     let departure = selection(&app, 1);

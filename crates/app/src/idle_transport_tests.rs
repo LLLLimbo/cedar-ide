@@ -244,6 +244,7 @@ fn cancelled_attempt_ignores_its_late_loss_and_hello() {
             connected: true,
             result: Ok(Payload::Hello {
                 file_discovery: None,
+                scoped_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: "/wrong-root".into(),
                 agent: None,

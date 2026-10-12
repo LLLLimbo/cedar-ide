@@ -5,6 +5,8 @@ mod maven_dependencies;
 pub use maven_dependencies::*;
 mod file_discovery;
 pub use file_discovery::*;
+mod scoped_search;
+pub use scoped_search::*;
 pub const PROTOCOL_VERSION: u32 = 4;
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_FILE_BYTES: usize = 1024 * 1024;
@@ -199,6 +201,9 @@ pub enum Operation {
         query: String,
         limit: usize,
     },
+    SearchIn {
+        request: ScopedSearchRequest,
+    },
     FindFiles {
         query: String,
         scope: String,
@@ -352,8 +357,8 @@ impl Operation {
     /// available so support discovery cannot depend on its own result.
     pub fn capability_name(&self) -> Option<&'static str> {
         Some(match self {
-            // FindFiles is gated by its independent retained Hello descriptor.
-            Self::Hello | Self::FindFiles { .. } => return None,
+            // Search extensions are gated by independent retained Hello descriptors.
+            Self::Hello | Self::FindFiles { .. } | Self::SearchIn { .. } => return None,
             Self::List { .. } => "list",
             Self::Read { .. } => "read",
             Self::Write { .. } => "write",
@@ -414,6 +419,8 @@ pub enum Payload {
         agent: Option<AgentInfo>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         file_discovery: Option<FileDiscoveryDescriptor>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scoped_search: Option<ScopedSearchDescriptor>,
     },
     Entries {
         entries: Vec<Entry>,
@@ -429,6 +436,9 @@ pub enum Payload {
     Matches {
         matches: Vec<SearchMatch>,
         truncated: bool,
+    },
+    ScopedMatches {
+        result: ScopedSearchResult,
     },
     FilePaths {
         result: FileDiscoveryResult,

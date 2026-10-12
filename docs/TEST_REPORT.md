@@ -1,12 +1,175 @@
-# Verification checkpoint — 0.61.0 candidate
+# Verification checkpoint — 0.62.0 candidate
 
-## 0.61.0 scope and pending acceptance
+## 0.62.0 scope and pending acceptance
 
-**The 0.61.0 candidate is not accepted.** Focused local tests and normal-agent
+**0.62.0 is not accepted. The latest accepted bounded baseline is 0.61.0.**
+The new scoped Project Text path has the local evidence below, including a
+passing final versioned workspace aggregate, formatting, strict checks and
+matching-version normal-agent proofs. Exact-commit dual-platform CI, all three
+exact-source package audits and exact-package native acceptance remain pending.
+Accepted 0.61.0 evidence does not validate the new filtered-search path. No new
+Windows GUI or real-SSH acceptance is claimed.
+
+The shared **Project Text** window and bottom **FIND RESULTS** tool now edit the
+same query, **Directory** and **File masks** fields. Submission remains explicit.
+Directory selects an exact workspace-relative subtree; empty means the root.
+Masks are an optional, semicolon-separated list of at most eight whole-basename
+patterns, totaling 256 UTF-8 bytes after interface separator trimming. Matching
+is case-sensitive and supports only `*` and `?`, measured in Unicode scalar
+values without normalization. Text matching remains a case-sensitive literal
+substring of disk text. The complete validation, compatibility, exclusion and
+limit contract is in [Scoped Project Text search](SCOPED_PROJECT_TEXT.md).
+
+Protocol 4, AgentInfo schema 1 and existing capability meanings remain
+unchanged. A strictly validated optional Hello `scoped_search` version-1
+descriptor enables the dedicated `SearchIn` operation. Empty filters continue
+to use legacy `Search`, including on a supported peer. Filtered submissions to
+absent, null or unsupported positive-version descriptors send zero scoped
+requests and never silently widen to a workspace search. Malformed descriptors
+reject the handshake. The accepted 0.61 reader remains a compatibility gate.
+
+Traversal begins at the selected directory and tests filename masks before
+opening file contents. Independent limits include 20,000 examined entries,
+depth 64, a cooperative five-second budget, 4,096 pending directories, 512 KiB
+of pending path text, 1 MiB per eligible file and 32 MiB of actual content bytes
+read. Results are bounded to 1,000 backend rows, with 500 requested by the
+interface, and 512 KiB of compact encoded result JSON. Existing fixed directory,
+link/reparse-point, special-file, binary and invalid-UTF-8 exclusions remain
+explicit. Incomplete reasons and counters describe the submitted scan; zero
+matches in an incomplete scan do not establish absence. Blocking filesystem
+calls can outlast the cooperative deadline.
+
+The retained snapshot now records the full submitted query/directory/mask-list/
+limit tuple, extension version or legacy mode, workspace, connection generation
+and request identity. Editing any field deactivates historical rows and retires
+pending preview/Open intent; editing back, including to equivalent mask spelling,
+does not restore it. **This intentionally changes late-completion handling for
+in-flight legacy `Search` too:** after a query edit, its late completion is
+discarded and the prior snapshot stays visible and inactive until a fresh
+explicit submission succeeds. Legacy wire messages and search-engine behavior
+are unchanged. This is a frontend behavior change, not a claim of complete
+0.61 interface equivalence.
+
+Exact-path grouping, selection, bounded scroll retention, hide/reopen and
+Open–Back remain part of the retained flow. Preview of an open dirty draft uses
+its current buffer with zero backend Reads; ordinary Open reuses that tab and
+Undo history without implicit Save. The one-outstanding-search boundary and
+existing preview Read limits remain. This is a subset of B2, with no regex,
+whole-word or case-insensitive text mode, live/debounced search, persistent
+index, broader semantic navigation or claim of IntelliJ IDEA parity.
+
+## 0.62.0 local checks and remaining gates
+
+The recorded focused local results are bounded to the tested source state:
+
+- **24 protocol checks passed:** 13 new checks and 11 checks using the accepted
+  0.61 reader. **15 Linux backend checks** and **10 client checks** also passed.
+- Two new cancellation checks and the retained eligible-operation check passed.
+- An earlier run passed **13 new scoped frontend frame checks** before the
+  invalid-mask and edit-away/edit-back strengthening. The final integrated app
+  run below also passed all 13 with those assertions included. These are
+  headless egui checks, not native-window evidence.
+- Strict workspace, all-target, all-feature Clippy with warnings denied passed
+  against the final versioned source. The final formatting check also passed.
+- The matching-version **0.62.0 scoped normal-agent proof** passed its strict
+  **52-field / 12-case / 10-operation** contract and **one owned-agent reap**.
+  Its earlier pre-version pass is retained separately, not substituted for this run.
+- The versioned **0.62.0 Python selection recorded 224 tests: 223 passed, zero
+  failed and one skipped**. These checks do not establish Rust aggregate,
+  Windows-host, exact-package or native acceptance.
+
+A prior versioned workspace aggregate attempt failed in the app suite, which recorded
+**1,278 passed / 13 failed / 53 ignored**. The 13 failures were in retained app
+cases; that attempt was not a successful complete workspace aggregate. After adapting
+retained fixtures to the actual Tab order with the new filter fields and the
+intentional legacy late-completion rule, **all 33 retained Search checks passed**.
+An intermediate Browse run had **43 passed / one clipping failure / one
+ignored**, with two additional geometry checks still unresolved at that stage.
+
+The final versioned local Linux **workspace, all-target, all-feature, locked**
+aggregate passed **50 suites, 2,007 passed / zero failed / 70 ignored**.
+The integrated **0.62.0 app suite passed 1,291 tests / zero failed /
+53 ignored**. This includes all **13 new scoped checks, 44 Browse checks,
+33 Search checks and 27 retained resize checks**. The previously failing clipping
+and geometry cases passed in this integrated run. The passing aggregate does not
+substitute for exact-source package audits, Windows execution or native
+acceptance.
+
+### Preserved 0.62.0 failures and pending verification
+
+An initial bottom-tool Escape fixture assumed an unsupported action. A long
+path-group wrapping failure required a production layout fix. A strict Clippy
+failure involved a test-only enum name and was corrected. Retained Tab fixtures
+needed the new Directory/File masks controls, and a retained Search history
+expectation needed the intentional late-completion change described above.
+The earlier failures remain part of the record and are not relabelled as passes.
+
+The history geometry fixture now checks the already-recorded current rectangle
+against the current clip instead of reconstructing an egui response from the
+previous pass. Its same three frames and ownership assertions are retained.
+The clipping fixture uses a measured visible positive case at 210 points, then
+restores 150 points for the hidden negative case. Strict input and activation
+guards are unchanged; the original 150-point hidden-row boundary remains.
+
+The tools-height fixture retains its original 150-point preference. Search
+content may overflow that requested allocation. A separate scroll-contained
+Run render verifies recovery of the 150-point allocation without a Run action
+or backend operations; its operation ledger stays empty. These fixture
+corrections and the integrated pass do not turn insufficient-height Search
+content into a general usability pass.
+
+The matching-version retained Browse proof also passed its strict 17-field /
+seven-operation contract, and Search passed its 57-field / 14-case / 12-operation
+contract. These local executions use the ordinary debug-built agent and exact
+ignored test harness; the complete outer CI drivers and release packages were
+not executed locally.
+
+Acceptance still requires exact-commit dual-platform CI and the Windows
+development, Linux agent and Linux
+desktop package audits. Native scoped-search acceptance must use the exact
+candidate package and independently exercise the filter/result/dirty-draft
+journey. No package, Windows or 0.62 native pass is claimed by this checkpoint. The accepted 0.61 native shortcut limitation and
+historical insufficient-height boundaries below remain visible.
+
+## Accepted 0.61.0 bounded retained-results baseline
+
+Public commit
+[`7ec8e2f13ce82c57185c705929c0c17c61fcbdfa`](https://github.com/LLLLimbo/cedar-ide/commit/7ec8e2f13ce82c57185c705929c0c17c61fcbdfa)
+passed [CI 38213817089](https://github.com/LLLLimbo/cedar-ide/actions/runs/38213817089).
+All **four jobs** and **three exact-source packages** passed verification,
+including the **44 Browse frame tests**, the **17-field / seven-operation Browse
+proof**, the retained **12-operation Search proof** and both independent
+real-JDT proofs. These headless and package results remain separate from native
+GUI evidence.
+
+The bounded Linux native run used the exact accepted package with trust off.
+It exercised grouped selection, explicit Space preview, collapse/expand,
+historical-position Open into a dirty draft, duplicate hits in an unopened file,
+**Ctrl+[ Back / Ctrl+] Forward**, hide/reopen retention, Undo/Redo and explicit
+discard on exit. Fixture and package integrity were checked. This accepts the
+stated 0.61 retained-results milestone, not every roadmap journey or the new
+0.62 filtered-search behavior.
+
+**Ctrl+Alt+Left/Right were attempted with history available but produced no
+observed navigation. The cause remains unknown.** Passing bracket shortcuts and
+headless alias tests do not turn that native limitation into a pass. This run
+does not establish Windows GUI, real SSH, performance, native exact selection
+affinities or native backend operation counts. Historical failures and layout
+limits remain preserved below.
+
+## Preserved 0.61.0 preparation record
+
+The following 0.61.0 preparation results precede its accepted public
+CI/package/native evidence above. Their pending statements describe that earlier
+checkpoint; they do not make accepted 0.61.0 pending again or validate 0.62.0.
+
+### 0.61.0 scope and acceptance state at preparation
+
+**At this preparation checkpoint, the 0.61.0 candidate was not accepted.** Focused local tests and normal-agent
 proofs passed, and the versioned 0.61.0 local aggregate and strict checks passed.
 Both matching-version normal-agent proofs also passed. Exact-commit dual-platform
 CI, all three exact-source package audits and native-window
-acceptance remain pending. The accepted 0.60.0 baseline below does not validate these new frontend
+acceptance were then pending. The accepted 0.60.0 baseline below did not validate these new frontend
 paths. No new Windows GUI or real-SSH acceptance is claimed.
 
 The candidate keeps one same-session Project Text snapshot, bounded to 500 rows
@@ -44,7 +207,7 @@ changes or Java/JDT features. Existing filename discovery and its extension
 contract remain unchanged. The user-facing contract is in
 [Find and return](FIND_AND_RETURN.md).
 
-## 0.61.0 local checks and remaining gates
+### 0.61.0 local checks and then-remaining gates
 
 The integrated local Linux **workspace, all-target, all-feature, locked** aggregate
 passed **49 suites, 1,943 passed / 0 failed / 69 ignored** against the versioned
@@ -75,8 +238,8 @@ substituted for these final executions:
 
 The complete outer CI driver was **not run locally**. These local executions do
 not establish Windows execution, exact release-package audits or native GUI
-acceptance. Public
-exact-commit CI is pending, and no 0.61.0 native run has occurred.
+acceptance. At this preparation checkpoint, public
+exact-commit CI was pending, and no 0.61.0 native run had occurred.
 
 ### Preserved local failures and layout boundary
 
@@ -109,9 +272,9 @@ are not presented as earlier failed test executions. A separate local monitoring
 observation failure, not a failed product test or a substitute for its terminal
 result.
 
-### Remaining native gate
+### 0.61.0 native gate at preparation
 
-The 0.61.0 native gate must independently exercise Project Text result Open–Back,
+The 0.61.0 native gate required independent exercise of Project Text result Open–Back,
 reopening the retained query/selection/group state, and the keyboard Back/Forward
 aliases against the exact candidate package. The 0.60.0 native omissions below
 cannot be filled by headless tests or inherited as new native evidence. The

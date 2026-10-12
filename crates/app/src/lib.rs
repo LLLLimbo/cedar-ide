@@ -97,6 +97,10 @@ mod save_all_tests;
 mod save_close_process_tests;
 #[cfg(test)]
 mod save_close_tests;
+#[cfg(test)]
+mod scoped_search_process_tests;
+#[cfg(test)]
+mod scoped_search_tests;
 mod search_keyboard;
 #[cfg(test)]
 mod search_keyboard_tests;
@@ -329,7 +333,7 @@ enum Job {
         submission: Option<interrupted_save::InterruptedSave>,
     },
     Search {
-        query: String,
+        specification: search_keyboard::Specification,
     },
     Git,
     GitRead(git_ui::Action),
@@ -371,6 +375,7 @@ pub struct CedarApp {
     // Validated, immutable support claims for this accepted connection only.
     agent_info: Option<AgentInfo>,
     file_discovery: Option<cedar_protocol::FileDiscoveryDescriptor>,
+    scoped_search: Option<cedar_protocol::ScopedSearchDescriptor>,
     root: String,
     generation: u64,
     next_request: u64,
@@ -403,6 +408,8 @@ pub struct CedarApp {
     tools_height: Option<f32>,
     tools_height_reset: tools_resize::ResetGuard,
     search_query: String,
+    search_scope: String,
+    search_masks: String,
     search_results: Vec<SearchMatch>,
     search_truncated: bool,
     search_request: u64,
@@ -487,6 +494,7 @@ impl CedarApp {
             connecting_form: None,
             agent_info: None,
             file_discovery: None,
+            scoped_search: None,
             root: String::new(),
             generation: 0,
             next_request: 1,
@@ -518,6 +526,8 @@ impl CedarApp {
             tools_height: None,
             tools_height_reset: tools_resize::ResetGuard::default(),
             search_query: String::new(),
+            search_scope: String::new(),
+            search_masks: String::new(),
             search_results: Vec::new(),
             search_truncated: false,
             search_request: 0,
@@ -625,6 +635,7 @@ impl CedarApp {
         }
         self.agent_info = None;
         self.file_discovery = None;
+        self.scoped_search = None;
         self.state = ConnectionState::Connecting;
         self.notice = format!("Connecting to {}...", form.label());
         self.error = None;
@@ -648,6 +659,7 @@ impl CedarApp {
         self.disk_review.outstanding = None;
         self.agent_info = None;
         self.file_discovery = None;
+        self.scoped_search = None;
         self.search_state.retire();
         self.generation += 1;
         self.location_history.clear();
@@ -711,6 +723,7 @@ impl CedarApp {
         self.connecting_form = None;
         self.agent_info = None;
         self.file_discovery = None;
+        self.scoped_search = None;
         self.language.disconnected();
         self.worker = None;
         self.pending.clear();
@@ -1012,6 +1025,7 @@ impl CedarApp {
             match event.result {
                 Ok(Payload::Hello {
                     file_discovery,
+                    scoped_search,
                     protocol,
                     root,
                     agent,
@@ -1023,6 +1037,12 @@ impl CedarApp {
                         return;
                     }
                     if let Some(descriptor) = &file_discovery {
+                        if let Err(error) = descriptor.validate() {
+                            self.disconnected(error.to_string());
+                            return;
+                        }
+                    }
+                    if let Some(descriptor) = &scoped_search {
                         if let Err(error) = descriptor.validate() {
                             self.disconnected(error.to_string());
                             return;
@@ -1090,6 +1110,7 @@ impl CedarApp {
                     self.root = root;
                     self.agent_info = agent;
                     self.file_discovery = file_discovery;
+                    self.scoped_search = scoped_search;
                     self.state = ConnectionState::Ready;
                     self.error = None;
                     self.notice = "Workspace connected".into();
@@ -1187,7 +1208,7 @@ impl CedarApp {
             self.apply_browse_preview(event.id, ticket, event.result, event.connected);
             return;
         }
-        if let Job::Search { query } = job {
+        if let Job::Search { specification } = job {
             // Retired search outcomes cannot replace the current view/error,
             // but a current transport failure still disconnects the workspace.
             if !event.connected {
@@ -1196,9 +1217,9 @@ impl CedarApp {
                 }));
             } else {
                 if self.browse_owns_search(event.id) {
-                    self.stage_browse_search(event.id, query, event.result);
+                    self.stage_browse_search(event.id, specification, event.result);
                 } else {
-                    self.stage_search_response(event.id, query, event.result);
+                    self.stage_search_response(event.id, specification, event.result);
                 }
             }
             return;
@@ -1721,20 +1742,32 @@ impl CedarApp {
         if self.search_query.trim().is_empty() || self.search_busy() {
             return;
         }
-        let query = self.search_query.clone();
-        self.search_state.deactivate();
-        self.retire_search_preview();
+        self.search_filters_changed();
+        let specification = match self.search_specification() {
+            Ok(specification) => specification,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
         if self.next_request == 0 || self.next_request == u64::MAX {
             self.error = Some("Search cannot submit: the request identity counter is exhausted. Reopen Cedar to start a new session.".into());
             return;
         }
-        self.search_request = self.request(
+        let operation = if specification.version.is_some() {
+            Operation::SearchIn {
+                request: specification.request.clone(),
+            }
+        } else {
             Operation::Search {
-                query: query.clone(),
-                limit: 500,
-            },
+                query: specification.request.query.clone(),
+                limit: specification.request.limit,
+            }
+        };
+        self.search_request = self.request(
+            operation,
             Job::Search {
-                query: query.clone(),
+                specification: specification.clone(),
             },
         );
         self.search_state.pending = if self.search_request == 0 {
@@ -1747,7 +1780,8 @@ impl CedarApp {
                     root: self.root.clone(),
                     generation: self.generation,
                     request: self.search_request,
-                    query,
+                    query: specification.request.query.clone(),
+                    specification,
                 })
         };
         self.begin_search_submission();
@@ -3360,6 +3394,8 @@ impl eframe::App for CedarApp {
                 || system_fonts::contains_cjk(&self.form.local_root)
                 || system_fonts::contains_cjk(&self.form.remote_root)
                 || system_fonts::contains_cjk(&self.search_query)
+                || system_fonts::contains_cjk(&self.search_scope)
+                || system_fonts::contains_cjk(&self.search_masks)
                 || system_fonts::contains_cjk(&self.find_query)
                 || system_fonts::contains_cjk(&self.replace.replacement)
                 || self.navigation.has_cjk()
@@ -3517,6 +3553,7 @@ mod tests {
             connected: true,
             result: Ok(Payload::Hello {
                 file_discovery: None,
+                scoped_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 agent: None,
                 root: root.into(),
@@ -3710,6 +3747,7 @@ mod tests {
             connected: true,
             result: Ok(Payload::Hello {
                 file_discovery: None,
+                scoped_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 agent: None,
                 root: "wrong".into(),
@@ -3806,6 +3844,7 @@ mod tests {
             connected: true,
             result: Ok(Payload::Hello {
                 file_discovery: None,
+                scoped_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 agent: None,
                 root: "/new".into(),

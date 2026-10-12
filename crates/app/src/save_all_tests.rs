@@ -638,7 +638,9 @@ fn exact_written_after_pending_save_is_missing_or_replaced_is_counted_unknown() 
             app.pending.insert(
                 first.id,
                 Job::Search {
-                    query: "unrelated replacement".into(),
+                    specification: search_keyboard::Specification::legacy(
+                        "unrelated replacement".into(),
+                    ),
                 },
             );
         }
@@ -691,6 +693,7 @@ fn exact_written_after_pending_save_is_missing_or_replaced_is_counted_unknown() 
             connected: true,
             result: Ok(Payload::Hello {
                 file_discovery: None,
+                scoped_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: app.root.clone(),
                 agent: None,

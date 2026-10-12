@@ -4,13 +4,12 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-This guide describes the **0.61.0 candidate**: one retained, grouped Project
-Text result set with explicit preview and Open. Local tests and normal-agent
-proofs have passed against the versioned candidate. Exact-commit CI, package
-audits and native acceptance remain pending. The latest accepted bounded baseline is
-**0.60.0**; its evidence and native omissions are recorded in the
-[verification report](TEST_REPORT.md). That acceptance does not transfer to the
-new retained-result behavior.
+The latest accepted bounded baseline is **0.61.0**, including the retained,
+grouped Project Text result flow. **0.62 is in progress** and adds the shared
+Directory and File masks controls described below. Its
+[scoped-search contract](SCOPED_PROJECT_TEXT.md) requires separate test,
+normal-agent, exact-package and native-window evidence. This guide does not
+establish acceptance of the new filtered-search behavior.
 
 ## Start with a connected workspace
 
@@ -34,6 +33,10 @@ under [Retained Project Text results](#retained-project-text-results).
 retained **Ctrl/Cmd+Shift+E**, hides tools and focuses the enabled Explorer
 **Refresh** control. It does not refresh, scan or read a file by itself. These
 shortcuts retain the existing modal, mixed-input and held-key guards.
+In the accepted 0.61 Linux native run, Ctrl+[ and Ctrl+] navigated successfully,
+but Ctrl+Alt+Left/Right did not produce observed navigation when history was
+available. The cause remains unknown; those aliases retain this explicit
+native limitation.
 
 In this shared window, Tab and Shift+Tab move between controls. Escape when no
 preview is open, or
@@ -42,10 +45,11 @@ that editor context remains current. Hiding the window keeps an accepted Project
 Text snapshot for this session. It retires pending preview and activation intent;
 late replies cannot reopen a hidden preview or activate a different result.
 
-Query edits make previous results inactive. Project files scope edits also retire
-that discovery result. Submit explicitly to activate a new set; changing a query
-back to its earlier text does not reactivate the old rows. Switching provider
-retires pending intent without discarding the retained Project Text snapshot.
+Query or Project Text filter edits make previous text results inactive. Project
+files scope edits also retire that discovery result. Submit explicitly to
+activate a new set; changing a field back to its earlier text does not
+reactivate the old rows. Switching provider retires pending intent without
+discarding the retained Project Text snapshot.
 Reconnect requires a new explicit successful text search before historical rows
 can be used again.
 
@@ -60,8 +64,9 @@ not create a persistent index or watch the filesystem.
 Leave **Directory scope** empty to search the workspace. To search one subtree,
 enter its exact workspace-relative directory, such as `src/main`. Use `/`
 separators; absolute paths, backslashes, empty components, `.` and `..` are
-rejected. A nonempty scope still requires a filename query. Scope applies to
-Project files only; it is not a Project Text filter.
+rejected. A nonempty scope still requires a filename query. This control belongs
+to Project files; Project Text has its own shared **Directory** and **File
+masks** controls described below.
 
 An empty filename query shows open buffers and already loaded Explorer files,
 without starting discovery. If discovery is unavailable, the label explicitly
@@ -120,7 +125,8 @@ policy. A discovered binary or large file can still be refused by Open or Previe
 
 **Project Text** explicitly submits a case-sensitive literal search of disk text.
 It does not search unsaved draft bytes. Results display the submitted query and
-historical line hints; those coordinates may no longer identify the same text.
+filters with historical line hints; those coordinates may no longer identify
+the same text.
 The existing engine is bounded, and the interface retains one accepted snapshot
 of at most **500 results** and **512 KiB** of combined path/snippet text. The
 shared Find and return window and the **FIND RESULTS** tool show that same
@@ -134,6 +140,49 @@ shared **Project Text** entry continues to use **Find**. Both are explicit
 submissions. While a search request is outstanding, another text submission is
 disabled, including after an edit makes its original intent inactive. Typing,
 hiding, reopening and switching views do not start a search.
+
+### Directory and file masks (0.62 in progress)
+
+Both text-search views edit the same **Directory** and **File masks** fields.
+Leave Directory empty for the workspace root, or enter an exact relative
+directory such as `src/main`. It is not trimmed or normalized. Absolute paths,
+backslashes, colons, control characters, empty components, `.` and `..` are
+rejected; the path is limited to 4,096 UTF-8 bytes. A scope inside an excluded
+directory is invalid.
+
+Leave File masks empty for all eligible files, or enter semicolon-separated
+alternatives such as `*.rs; *.toml`. Whitespace around each pattern is trimmed;
+empty patterns are rejected. Use at most eight patterns totaling 256 UTF-8
+bytes. Masks match the whole basename, case-sensitively: `*` matches zero or
+more Unicode scalar values, and `?` exactly one. There is no regex, gitignore,
+character-class or path-pattern mode. The precise syntax and exclusions are
+in [Scoped Project Text search](SCOPED_PROJECT_TEXT.md#submit-a-directory-and-filename-mask).
+
+With both filters empty, submission uses unchanged legacy Search. Any filter
+requires the connected agent's supported scoped-search version 1 descriptor.
+An older or future-version peer receives zero scoped requests; an explanation
+asks you to clear both filters or use a compatible agent. Cedar does not
+silently run a broad workspace search instead.
+
+Filtered search starts backend traversal at Directory and tests masks before
+opening content, including in folders never loaded in Explorer. Its independent
+bounds are 20,000 entries, depth 64, a cooperative five-second budget, 4,096
+pending directories with 512 KiB of path text, 1 MiB per file, 32 MiB actually
+read, 500 requested interface rows and 512 KiB of compact encoded
+`ScopedSearchResult` data, excluding enclosing response framing. The backend
+supports at most 1,000 rows. Blocking filesystem calls can exceed the elapsed
+budget.
+
+The fixed directory exclusions are `.git`, `target`, `build`, `dist`,
+`node_modules`, `.idea`, `.venv`, `venv` and `__pycache__`. Links, reparse points,
+special files, binary or invalid-UTF-8 text and oversized files are excluded.
+The view shows examined entries, bytes read and distinct incomplete reasons.
+**No matches in an incomplete scan does not establish absence**; even a complete
+no-match result applies only to the submitted scope, masks and exclusions. A
+narrower Directory may reduce traversal; narrower masks alone may not. See the
+[backend bounds and incomplete contract](SCOPED_PROJECT_TEXT.md#backend-work-and-limits).
+
+### Group, inspect and return
 
 Results are grouped by their exact original path. Groups follow the first
 appearance of each path in the accepted response, and each group's hits retain
@@ -155,18 +204,22 @@ Use the existing tool close/hide control or **Ctrl/Cmd+J** to return to the edit
 Escape action. The shared Find and return window keeps its preview/dismiss
 Escape behavior described above.
 
-The submitted query, selected hit and group expansion state survive hiding and
-reopening, switching between the two text-search views, and Open followed by
-Back, within the same session. Each view retains its scroll position within the
+The submitted query and filters, selected hit and group expansion state survive
+hiding and reopening, switching between the two text-search views, and Open
+followed by Back, within the same session. Each view retains its scroll position within the
 current layout's scroll limits; resizing can clamp it. Preview intent is separate:
 request it again after reopening. A successful rerun replaces the accepted
 snapshot; no history is stored across application restarts.
 
-Editing the query, starting a rerun, a failed rerun or reconnecting leaves old
-rows visible as **inactive** historical results. They cannot preview or Open.
-Neither restoring the old query text nor reopening the view renews their
+Editing the query or either filter, starting a rerun, a failed rerun or
+reconnecting leaves old rows visible as **inactive** historical results. They
+cannot preview or Open. Neither restoring the old field values nor reopening
+the view renews their
 authority. Run **Search** in FIND RESULTS, or **Find** in Project Text, and wait
-for a successful result for the current query and connection.
+for a successful result for the current query, filters and connection. The
+accepted snapshot retains the complete submitted tuple and extension version
+or legacy mode; newer field edits cannot change what its historical results
+describe.
 
 Both Find views use compact local spacing and place results and preview side by
 side when there is enough width. In narrower views, preview stacks below the
@@ -179,9 +232,9 @@ Then focus a visible hit before previewing or opening it. The stored height is a
 preference, not a guarantee that all Find content fits.
 
 These local changes do not change the application's global theme or promise
-usability at every tiny viewport. Directory/file-mask filters, case/word options,
-regular expressions, debounced queries and disk-persistent search history are
-not part of this candidate.
+usability at every tiny viewport. Case/word options, regular expressions,
+debounced or live queries, CamelCase matching and disk-persistent search history
+are not part of the 0.62 scoped-search addition.
 
 ## Explicit read-only preview
 

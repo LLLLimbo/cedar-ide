@@ -5,7 +5,7 @@
 mod harness;
 
 use cedar_client::{Client, ConnectionCancellation, ConnectionSpec};
-use cedar_protocol::{LanguageQueryKind, Operation, Payload};
+use cedar_protocol::{LanguageQueryKind, Operation, Payload, ScopedSearchRequest};
 use harness::*;
 use std::{
     fs,
@@ -154,6 +154,7 @@ fn cancellation_interrupts_each_eligible_file_operation() {
             scope: "".into(),
             limit: 5,
         },
+        scoped_search(),
     ] {
         let fixture = Fixture::new("held_reply");
         if matches!(&operation, Operation::FindFiles { .. }) {
@@ -162,6 +163,9 @@ fn cancellation_interrupts_each_eligible_file_operation() {
                 serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             hello["file_discovery"] = serde_json::json!({"version": 1});
             fs::write(path, serde_json::to_vec(&hello).unwrap()).unwrap();
+        }
+        if matches!(&operation, Operation::SearchIn { .. }) {
+            enable_scoped_search(&fixture);
         }
         let token = ConnectionCancellation::new();
         let mut client = fixture.connect(token.clone());
@@ -211,6 +215,92 @@ fn response_cancel_race_never_allows_another_request_or_replays_the_first() {
         client.close_and_wait(CLEANUP_BOUND).unwrap();
         fixture.assert_closed(2);
     }
+}
+
+fn scoped_search() -> Operation {
+    Operation::SearchIn {
+        request: ScopedSearchRequest {
+            query: "fixture".into(),
+            scope: "src".into(),
+            masks: vec!["*.txt".into()],
+            limit: 5,
+        },
+    }
+}
+
+fn enable_scoped_search(fixture: &Fixture) {
+    let path = fixture.root().join("hello.json");
+    let mut hello: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    hello["scoped_search"] = serde_json::json!({"version": 1});
+    fs::write(path, serde_json::to_vec(&hello).unwrap()).unwrap();
+    let Operation::SearchIn { request } = scoped_search() else {
+        unreachable!();
+    };
+    fs::write(
+        fixture.root().join("response-2.json"),
+        serde_json::json!({
+            "Ok": {"type": "scoped_matches", "result": {
+                "request": request,
+                "matches": [{"path": "src/fixture.txt", "line": 1, "text": "fixture"}],
+                "incomplete": false, "reasons": [], "examined_entries": 1, "read_bytes": 7,
+            }}
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn scoped_search_response_cancel_race_never_replays_or_accepts_a_later_request() {
+    let _watchdog = Watchdog::start(Duration::from_secs(12));
+    for _ in 0..8 {
+        let fixture = Fixture::new("held_reply");
+        enable_scoped_search(&fixture);
+        let token = ConnectionCancellation::new();
+        let mut client = fixture.connect(token.clone());
+        let (finished, result) = mpsc::channel();
+        let caller = thread::spawn(move || {
+            let outcome = client.request(scoped_search());
+            finished.send((client, outcome)).unwrap();
+        });
+        fixture.ready(2);
+        fixture.release(2);
+        token.cancel();
+        let (mut client, outcome) = result.recv_timeout(CALLER_BOUND).unwrap();
+        match outcome {
+            Ok(Payload::ScopedMatches { result }) => {
+                let Operation::SearchIn { request } = scoped_search() else {
+                    unreachable!();
+                };
+                result.validate_for(&request).unwrap();
+            }
+            Err(error) => assert_cancelled(&error),
+            other => panic!("unexpected scoped-search response/cancel result: {other:?}"),
+        }
+        assert_cancelled(&client.request(scoped_search()).unwrap_err());
+        assert_cancelled(&client.request(list()).unwrap_err());
+        caller.join().unwrap();
+        client.close_and_wait(CLEANUP_BOUND).unwrap();
+        fixture.assert_closed(2);
+        assert!(matches!(
+            fixture.requests()[1].op,
+            Operation::SearchIn { .. }
+        ));
+    }
+}
+
+#[test]
+fn scoped_search_cancelled_before_enqueue_sends_no_request() {
+    let _watchdog = Watchdog::start(Duration::from_secs(12));
+    let fixture = Fixture::new("capability_peer");
+    enable_scoped_search(&fixture);
+    let token = ConnectionCancellation::new();
+    let mut client = fixture.connect(token.clone());
+    assert!(client.supports_scoped_search());
+    token.cancel();
+    assert_cancelled(&client.request(scoped_search()).unwrap_err());
+    client.close_and_wait(CLEANUP_BOUND).unwrap();
+    fixture.assert_closed(1);
 }
 
 #[test]

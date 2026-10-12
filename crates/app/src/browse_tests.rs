@@ -164,7 +164,18 @@ fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
 
 fn visible_center(app: &CedarApp, probe: &str) -> egui::Pos2 {
     let rect = recorded_rect(app, probe).intersect(recorded_clip(app, probe));
-    assert!(rect.is_finite() && rect.width() > 0.0 && rect.height() > 0.0);
+    assert!(
+        rect.is_finite() && rect.width() > 0.0 && rect.height() > 0.0,
+        "probe={probe}, rect={:?}, clip={:?}, screen={:?}, pass={}, focus={:?}, tools_preference={:?}, tools_panel={:?}",
+        recorded_rect(app, probe),
+        recorded_clip(app, probe),
+        app.editor_ctx.screen_rect(),
+        app.editor_ctx.cumulative_pass_nr(),
+        focused(app),
+        app.tools_height,
+        egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("tools"))
+            .map(|state| state.rect)
+    );
     rect.center()
 }
 
@@ -1461,6 +1472,7 @@ fn browse_file_discovery_uses_first_hello_and_resets_support_after_disconnect() 
         root: "/workspace".into(),
         agent: Some(agent_support::full_test_agent()),
         file_discovery: descriptor,
+        scoped_search: None,
     };
     for replacement in [
         None,
@@ -2186,6 +2198,7 @@ fn browse_retained_reconnect_cannot_revive_preview_or_search_authority() {
                 root: "/workspace".into(),
                 agent: Some(agent_support::full_test_agent()),
                 file_discovery: None,
+                scoped_search: None,
             }),
         );
         let list = commands.try_recv().unwrap();
@@ -2464,11 +2477,16 @@ fn browse_retained_native_tab_and_geometry_at_standard_and_narrow_sizes() {
                 focused(&app),
                 Some(recorded_response(&app, "browse_query").id)
             );
-            frame_at_size(&mut app, size, key(egui::Key::Tab));
-            assert_eq!(
-                focused(&app),
-                Some(recorded_response(&app, "browse_submit").id)
-            );
+            for probe in ["browse_text_scope", "browse_masks", "browse_submit"] {
+                let response = recorded_response(&app, probe);
+                assert!(response.enabled() && response.sense.is_focusable());
+                frame_at_size(&mut app, size, key(egui::Key::Tab));
+                assert_eq!(
+                    focused(&app),
+                    Some(response.id),
+                    "font={font}, size={size:?}: native Tab must visit {probe}"
+                );
+            }
             let group = recorded_response(&app, "browse_group:0").id;
             let first_row = recorded_response(&app, "browse_row:0").id;
             let mut native_tab_focus = Vec::new();
@@ -3053,7 +3071,31 @@ fn browse_retained_focused_clipped_row_rejects_keyboard_until_visible_again() {
         let (mut app, commands) = fixture();
         let departure = selection_signature(selection(&app));
         let undo = undo_texts(&app);
-        app.tools_height = Some(150.0);
+        // With shared filters, the 150-point wide/13pt layout placed the row's
+        // bottom at 918 versus content bottom 859: a measured 59-point deficit.
+        // Round the sufficient initial allocation up to the next ten points;
+        // the negative phase below retains the documented 150-point boundary.
+        app.tools_height = Some(210.0);
+        let geometry = |app: &CedarApp, font: f32, size: egui::Vec2, stage: &str, frame: usize| {
+            let panel =
+                egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("tools"))
+                    .map(|state| state.rect);
+            let (scroll, viewport, content) = recorded_results_geometry(app, true);
+            let offset =
+                egui::scroll_area::State::load(&app.editor_ctx, scroll).map(|state| state.offset);
+            eprintln!(
+                "surface=Bottom case=retained_focused_clipped activation={activation:?} stage={stage} frame={frame} font={font} window={size:?} pass={} focus={:?} preference={:?} panel={panel:?} row_rect={:?} row_clip={:?} group_rect={:?} query_rect={:?} scope_rect={:?} masks_rect={:?} scroll={scroll:?} viewport={viewport:?} content={content:?} offset={offset:?}",
+                app.editor_ctx.cumulative_pass_nr(),
+                focused(app),
+                app.tools_height,
+                recorded_rect(app, "search_row:0"),
+                recorded_clip(app, "search_row:0"),
+                recorded_rect(app, "search_group:0"),
+                recorded_rect(app, "search_query"),
+                recorded_rect(app, "search_scope"),
+                recorded_rect(app, "search_masks"),
+            );
+        };
         app.editor_ctx.style_mut(|style| {
             style
                 .text_styles
@@ -3096,8 +3138,9 @@ fn browse_retained_focused_clipped_row_rejects_keyboard_until_visible_again() {
             wide,
             modified_key(egui::Key::J, command_modifiers()),
         );
-        for _ in 0..4 {
+        for index in 0..4 {
             frame_at_size(&mut app, wide, vec![]);
+            geometry(&app, 13.0, wide, "initial visible row", index);
         }
         click_at_size(&mut app, wide, "search_row:0");
         let row = recorded_response(&app, "search_row:0").id;
@@ -3108,6 +3151,7 @@ fn browse_retained_focused_clipped_row_rejects_keyboard_until_visible_again() {
             .is_positive());
         // Change the actual frame layout while retaining genuine native focus.
         // No test writes a pointer owner, focus owner, scroll state or key ticket.
+        app.tools_height = Some(150.0);
         app.editor_ctx.style_mut(|style| {
             style
                 .text_styles
@@ -3120,8 +3164,9 @@ fn browse_retained_focused_clipped_row_rejects_keyboard_until_visible_again() {
                 .insert(egui::TextStyle::Monospace, FontId::monospace(18.0));
         });
         let narrow = egui::vec2(780.0, 540.0);
-        for _ in 0..4 {
+        for index in 0..4 {
             frame_at_size(&mut app, narrow, vec![]);
+            geometry(&app, 18.0, narrow, "fully clipped row", index);
         }
         let clipped_rect = recorded_rect(&app, "search_row:0");
         let clipped_view = recorded_clip(&app, "search_row:0");

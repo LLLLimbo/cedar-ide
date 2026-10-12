@@ -99,6 +99,14 @@ The response is an observation, not a filesystem lease. Result activation valida
 | C: semantic accuracy | Accurate Java project/dependency source navigation, then usages and hierarchy workflows | Existing JDT integration is reused; real projects, provider freshness and resource behavior are separately demonstrated. |
 | Later | Persistent file index/watchers, split editors, richer recent locations and additional languages | Add only when measured user journeys justify the storage/lifecycle cost. |
 
+Implementation note: the latest accepted browsing baseline is **0.61.0** with
+same-session retained grouped text results. The **0.62 work in progress** adds
+only B2's bounded Directory/File masks subset under the
+[Scoped Project Text contract](SCOPED_PROJECT_TEXT.md), preserving explicit
+submission and that retained flow. Its tests and native behavior need separate
+evidence. This does not mark B2 complete or add case/word options, regex, live
+queries or a parity claim; the original roadmap decisions above remain unchanged.
+
 Non-goals for A/B1: new Build/Run/DAP/test-execution features; deleting existing modules; package management; arbitrary Gradle/Maven execution; multi-file refactoring; SSH deployment/credential automation; persistent indexes; complete IDEA plugin compatibility; Windows privacy integration; unrestricted large files; generic Unicode search equivalence; automatic trust; or an unmeasured “faster/lighter than IDEA” claim.
 
 Semantic navigation still needs source roots, classpaths, dependencies and language tooling. A Java language service can index and create generated metadata even without an exposed Build/Run action. Keep this optional and explain its resource/trust boundary. Directory/filename/text browsing must remain useful without enabling it.

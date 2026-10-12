@@ -238,6 +238,32 @@ intersect agent support with language-server capabilities.
 See [REMOTE_CAPABILITIES.md](REMOTE_CAPABILITIES.md) for the wire bounds,
 intentional legacy policy change, platform boundaries and regression matrix.
 
+## Scoped Project Text extension (0.62 in progress)
+
+The latest accepted browsing baseline is 0.61.0. The new scoped-search contract
+adds an optional strict `scoped_search` version-1 descriptor beside filename
+discovery in protocol-4 Hello. It leaves AgentInfo and existing capability lists
+unchanged. A nonempty Directory or mask list selects the dedicated `SearchIn`
+operation; root/no-mask requests retain legacy `Search`. Absent or unsupported
+descriptors send zero scoped requests and never trigger a broader fallback.
+Support is retained from the first valid Hello until reconnect.
+
+Workspace traversal begins at the exact validated directory and applies masks
+before any content open. The backend owns traversal, path/ancestor checks,
+independent entry/depth/time/pending-directory/read/result bounds and explicit
+incomplete reasons. The client validates the exact echoed request and complete
+result before exposing it. The frontend shares query/filter drafts and one
+retained grouped snapshot across both Find views, bound to the submitted tuple,
+extension version, workspace, connection generation and request identity.
+Field edits, including edit-back, retire activation; explicit successful
+resubmission is required. Ordinary dirty-buffer preview/Open and location
+history retain their existing semantics and historical-coordinate limits.
+
+See [Scoped Project Text search](SCOPED_PROJECT_TEXT.md) for the full product,
+wire, matching and resource contract, and [Find and return](FIND_AND_RETURN.md)
+for the user journey. This in-progress extension needs separate execution and
+native evidence; its documentation does not establish 0.62 acceptance.
+
 ## Failure semantics
 
 - Transport errors close the session; a remote application error such as `conflict` keeps it usable

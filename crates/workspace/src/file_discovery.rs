@@ -262,7 +262,7 @@ impl Workspace {
         Ok(result)
     }
 
-    fn resolve_discovery_path(
+    pub(super) fn resolve_discovery_path(
         &self,
         relative: &str,
         expired: &mut impl FnMut() -> bool,
@@ -329,7 +329,7 @@ fn check_deadline(expired: &mut impl FnMut() -> bool) -> Result<(), RemoteError>
     }
 }
 
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+pub(super) fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
     }
