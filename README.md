@@ -2,9 +2,9 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。最新已限定验收基线为 **0.67.1**：[精确双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38431261412) 四项作业及三种包通过；File Structure 的正向符号路径由两端帧检查与 Linux 普通 agent/mock 证明覆盖。限定 Linux 原生检查仅覆盖 Trust OFF 时 **Tools → File Structure…** 的不可用说明、筛选、Escape、重开和脏稿 Undo/Redo。原生 Ctrl+F12、真实符号和真实 JDT 弹窗正向路径仍未测量，不声称修复快捷键。0.67.0 原生入口失败和独立探针的 raw-input hook 未收到 F12 按下记录继续保留；它们未证明操作系统或其他上游原因，见[阶段报告](docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md)。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。最新已限定验收基线为 **0.68.0 当前文件 Find**：[精确双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38444382093) 四项作业及三种包通过；Linux 2,176/0/71、Windows 2,114/0/114（通过/失败/忽略），两端各 50 套件。第二次限定 Linux 原生检查在 Trust OFF 下覆盖完整选区种子、F3/Shift+F3、Next/Previous、Escape/Back、无命中不移动与脏稿 Undo/Redo，计时和完整性检查通过。第一次启动观察超时仍为未完成记录，未尝试 Connect，不归因为产品启动故障。原生 10,000 命中上限、原始选区 affinity、Windows/macOS GUI、真实 SSH、广泛 IME/CJK，以及正向 File Structure/JDT GUI 与 Ctrl+F12 仍未验收，见[当前报告](docs/TEST_REPORT.md#accepted-0680-bounded-baseline)。
 
-当前推进 **0.68 当前文件 Find 候选，尚未验收**：Ctrl/Cmd+F 可从有效单行选区完整填入查询；F3、Shift+F3、Next/Previous 和查询框 Enter 按当前光标/选区定位字面量、区分大小写、互不重叠的命中。一次连续查找只记录一个 Back 出发位置，查询输入不移动编辑器光标，脏稿、Undo 与既有 Replace 保持原有边界。最多保留 10,000 个命中，达到上限明确显示保留范围。无后端请求、自动保存、正则或新语言 provider。完整离线用法见[当前文件 Find](docs/FIND_AND_RETURN.md#current-file-find-loop-068-candidate)，验证状态见[阶段报告](docs/TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md)。0.68.0 本地全量 Rust **2,176/0/71（50 套件）**、Python **804 项/0 失败/10 跳过（29 套件）**、严格 Clippy/格式检查和独立输入审查通过；当前默认产物的 Browse v5 **57 字段/14 操作/零新增 Find 操作**及 Structure/Scoped/Search 保留证明通过。最终封存、精确 CI、包与原生门槛仍待完成，不继承 0.67.1 的验收。
+当前推进 **0.69 Files 输入即搜索候选，尚未验收**：仅 Files 的查询与 Directory scope 在有效已提交输入停稳 **250 毫秒**后自动更新；Enter / Find 可立即提交，完全相同的待处理请求不会重复发送。最多一个 FindFiles 在途、一个最新候选；编辑立即停用旧行、预览与激活意图，改回原文字也需新身份。根目录空查询仅显示打开/已加载文件，空查询加非空范围无效；旧版或不支持发现的 agent 仍为本地回退，零 FindFiles。自动更新与晚到响应不抢焦点，不自动读内容、重试、轮询或保存，Project Text 继续显式提交。输入法取消或结束不明确时保留可见输入，提示暂停自动搜索，直到新的有效已提交编辑或干净的显式 Find；不回写查询或范围。既有 v1 字面量排序、预算与不完整状态不变。完整用法见[离线指南](docs/FIND_AND_RETURN.md#files-search-as-you-type-069-candidate)，独立验证门槛见[阶段报告](docs/TEST_REPORT_PHASE69_FILES_LIVE_SEARCH.md)。 0.69.0 本地全量 Rust **2,200/0/71（50 套件）**、Python **805 项/10 跳过/零失败套件（29 套件）**、严格检查与独立输入审查通过；当前产物 Browse v6 **64 字段/16 操作/零自动 Read**及 Structure、Scoped Search、Search 保留证明通过。首次旧界面文案断言失败保留；最终封存、精确 CI、三种包及原生门槛仍待完成。
 
 此前已限定验收的 **0.65.1**：公开提交 [`bc65427bb1fc2c0da3b7391c65a8340ed0619db4`](https://github.com/LLLLimbo/cedar-ide/commit/bc65427bb1fc2c0da3b7391c65a8340ed0619db4) 的 [CI 38371007337](https://github.com/LLLLimbo/cedar-ide/actions/runs/38371007337) 四项作业和三种包均通过；两端各 50 套件，Linux 2,111/0/70，Windows 2,049/0/114（通过/失败/忽略）。限定 Linux 原生检查中 `src/层/Target.rs` 可读，Tree/Flat 当前文件选择、Down/Up、脏稿选区、Undo/Redo 与 Find 状态保留通过。既有有界本地 CJK 字体加载器不下载或安装字体，也不保证完整字形覆盖。0.65.0 因中文路径方框提前停止的记录，以及 0.64.0 发起退出晚 **20.436 秒**、严格计时门槛失败的记录继续保留。原生取消、Windows/macOS GUI、真实 SSH、任意视口与广泛 CJK 覆盖仍未验收，见[当前报告](docs/TEST_REPORT.md#accepted-0651-bounded-baseline)。
 
@@ -14,7 +14,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完�
 
 - **0.61.0 保留分组结果已限定验收**：[Find and return](docs/FIND_AND_RETURN.md) 的 Project Text 与底部 FIND RESULTS 共用一份有界结果，按精确路径分组；单击选择、Space 只读预览、Enter/双击普通 Open。隐藏/重开和 Open–Back 保留查询、选择与分组；查询修改、重跑或重连后旧行停用，须显式成功重跑。过短的显式工具高度可能隐藏结果；完全不可见的行不能激活，可用 Automatic height 恢复空间。查询仍须显式提交，无跨重启持久化。
 - **0.62.2 范围搜索已限定验收**：Project Text 的 Directory 留空表示根目录；File masks 接受以分号分隔、区分大小写的完整文件名 `*` / `?` 掩码。任一筛选要求协商 `scoped_search` v1；旧版或未知版本 agent 收到零次范围搜索请求，且不自动扩大为全工作区搜索。两个筛选均为空时继续使用原有 Search。修改或改回任一字段都使旧行停用；完整匹配、排除项及不完整扫描边界见[契约](docs/SCOPED_PROJECT_TEXT.md)。
-- **0.60.0 浏览基线已限定验收**：Find…、Ctrl+Shift+N / Ctrl+Shift+F 进入文件与项目文本查询。协商支持的 Project files 可查找未展开目录；否则明确回退到打开及已加载文件。文件名按 Unicode 小写后的字面量匹配，不支持正则、CamelCase 或输入即搜索。
+- **0.60.0 浏览基线已限定验收**：Find…、Ctrl+Shift+N / Ctrl+Shift+F 进入文件与项目文本查询。协商支持的 Project files 可查找未展开目录；否则明确回退到打开及已加载文件。文件名按 Unicode 小写后的字面量匹配，不支持正则或 CamelCase；0.69 候选的 Files 自动提交边界见上文。
 - 原生 egui/Glow 桌面界面，无 WebView、Electron 或前端 JVM
 - [Linux agent 独立开发包](docs/LINUX_AGENT_QUICKSTART.zh-CN.md)：面向 Ubuntu 24.04 amd64 的无界面后端，附源码/CI/逐文件哈希与实际 ELF 要求；不自动部署、不代表真实 SSH 验收
 - 本地目录与 SSH 工作区，共用同一文件、搜索、工具和语言服务后端
@@ -22,7 +22,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完�
 - 平面目录浏览与显式展开的[有界目录树](docs/EXPLORER_TREE.md)、多标签编辑、新建文件、行号、简单 Java/Kotlin/Rust 高亮
 - 选中一段文字后可用 **Preview selection** 预览仅该选区内的字面量替换，再显式 Apply；选区外字节不变，一次 Undo 恢复原文和完整选区，保存另行操作（[0.53.4 已验收](docs/TEST_REPORT_PHASE53_SELECTION_REPLACE.md#final-accepted-0534-evidence)）
 - Ctrl/Cmd+D 复制当前行或选中范围涉及的完整行，保留 LF/CRLF 字节与选区方向，一次 Undo 恢复原文和选区；仅修改草稿，保存另行操作（[0.54.0 已验收](docs/TEST_REPORT_PHASE54_DUPLICATE_LINES.md#final-accepted-0540-evidence)）
-- Ctrl/Cmd+P 键盘选择已打开标签/当前目录文件或输入路径、Ctrl/Cmd+G 跳到行或行:列、Ctrl/Cmd+F 文件内查找与单文档字面量替换预览；0.68 候选的 F3 / Shift+F3 按当前选区查找下一处/上一处。Ctrl/Cmd+S 保存、Ctrl/Cmd+W 关闭标签
+- Ctrl/Cmd+P 键盘选择已打开标签/当前目录文件或输入路径、Ctrl/Cmd+G 跳到行或行:列、Ctrl/Cmd+F 文件内查找与单文档字面量替换预览；已限定验收的 0.68 F3 / Shift+F3 按当前选区查找下一处/上一处。Ctrl/Cmd+S 保存、Ctrl/Cmd+W 关闭标签
 - 选中代码块后用 Tab / Shift+Tab 缩进或减少缩进，保留选区与一次撤销；有界处理，保存仍需明确操作（0.47.4 已通过双平台 CI；原生 GUI 范围见[验收报告](docs/TEST_REPORT_PHASE47_INDENT.md#final-verified-acceptance--0474)）
 - [显式 Save All](docs/SAVE_ALL.md)：逐个保存本次捕获的脏标签，首个冲突或未知结果停止后续提交，保留更新的输入和撤销；不自动构建或运行
 - [保存回执与未知结果核对](docs/INTERRUPTED_SAVES.md)：核对原提交内容与身份；异常回执保留草稿和恢复副本，只能显式读回核对，不自动重写

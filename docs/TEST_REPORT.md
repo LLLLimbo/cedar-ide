@@ -1,25 +1,81 @@
-# Verification checkpoint — 0.68 current-file Find candidate
+# Verification checkpoint — 0.69 Files search-as-you-type candidate
 
-## Current 0.68 current-file Find candidate
+## Current 0.69 Files search-as-you-type candidate
 
-**0.68 is not yet accepted.** This local editor slice adds whole-selection
-seeding, caret-relative F3/Shift+F3 and Next/Previous navigation, query-field
-Enter, an exact bounded match cache and one Back departure per contiguous loop.
-It retains literal, case-sensitive, non-overlapping matching, current draft
-bytes, Undo/Redo, explicit Replace and zero backend operations.
-The [usage contract](FIND_AND_RETURN.md#current-file-find-loop-068-candidate) and
-[phase report](TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md) separate intended
-behavior, verified receipts and outstanding gates. Versioned **0.68.0** local
-workspace/all-target/all-feature checks passed **2,176/0/71 across 50 Rust
-suites**, Python **804 total / zero failures / ten skipped across 29 suites**,
-strict Clippy and formatting. Independent input review passed. Current
-default-feature app/agent proofs passed: Structure **45 fields / 11 operations**,
-Browse v5 **57 / 14 with zero added Find operations**, Scoped Search **57 / ten**,
-and Search **57 / twelve**. The canonical compile drivers were not run locally;
-these are verified selected-artifact executions. The first aggregate failure
-and intended strict-input contract correction remain in the phase report.
-Final sealing, exact candidate CI/package checks and any native claim remain
-pending.
+**0.69 is not yet accepted.** The candidate adds fixed **250 ms** settlement for
+valid committed Files query/directory edits, one in-flight discovery with only
+the latest replacement, and Enter/Find flush with identical-pending deduplication.
+Editing immediately retires old rows, preview and activation identity. Automatic
+settlement and late replies preserve focus; content preview remains explicit.
+Root-empty and unsupported-peer fallback use zero FindFiles. Project Text stays
+explicit, with unchanged v1 matching, ranking, caps and incomplete reporting.
+Ambiguous IME cancellation pauses automatic search while preserving the visible
+query/scope bytes; a fresh valid committed edit or clean explicit Find can resume.
+
+The [offline contract](FIND_AND_RETURN.md#files-search-as-you-type-069-candidate)
+and [phase report](TEST_REPORT_PHASE69_FILES_LIVE_SEARCH.md) distinguish behavior
+from evidence. **0.69.0** local workspace/all-target/all-feature Rust checks
+passed **2,200/0/71 across 50 suites**, with strict Clippy and formatting. Python
+passed **805 tests total / ten skipped / zero failed suites across 29 suites**.
+Independent input review, the proof-observer review and final-version addendum
+passed. All 24 new Files checks ran in the final versioned aggregate.
+
+The current default-feature application and matching normal agent passed
+Structure **45 fields / 11 operations**, Browse v6 **64/16**, Scoped Search
+**57/10**, and Search **57/12**. Browse preserves the previous 57-field contract
+and fourteen-operation prefix, adds exactly two FindFiles and zero automatic
+Reads, and verifies owned-agent cleanup. File Structure uses the explicit mock
+provider. These are local selected-artifact executions; canonical compile drivers
+were not run locally. **Final sealing, exact CI, three package audits and native
+validation remain pending.**
+
+The first versioned aggregate remains failed at the application suite's
+**1,483/1/54** result: a welcome-entry assertion still expected the old explicit
+filename-search label. Only the expected prefix changed to the approved typing-
+pause label, retaining the visible entry and zero-request assertions. This is an
+intentional UI-copy contract update, with no production change. The replacement
+application suite passed **1,484/0/54** within the complete aggregate above.
+Earlier focused failures and the early normal-agent disk-only preview-observer
+failure remain in the phase report. Its two helper substitutions and six added
+positive assertions changed no production input behavior. Those early artifacts
+still reported 0.68.0 and remain distinct from the final local 0.69.0 receipts.
+
+## Accepted 0.68.0 bounded baseline
+
+The [public source revision](https://github.com/LLLLimbo/cedar-ide/commit/a525c547aeb2f1fc1d80d3d872801c1f4d986963)
+passed all **four jobs** in
+[CI 38444382093](https://github.com/LLLLimbo/cedar-ide/actions/runs/38444382093)
+and all **three exact-source package audits**. Linux recorded **2,176/0/71** and
+Windows **2,114/0/114** (passed/failed/ignored), each across **50 suites**.
+Browse v5 retained **57 fields / 14 operations / zero added current-file Find
+operations**; retained Structure, Scoped Search, Search and platform/JDT proofs
+passed within their individual scopes. The local versioned Rust aggregate,
+Python **804 total / zero failures / ten skipped across 29 suites**, strict
+Clippy, formatting and independent input review also passed.
+
+The second bounded Linux native journey, with Trust off, passed visible
+whole-selection seeding, F3/Shift+F3, labelled Next/Previous, Escape and Back to
+the departure, no-hit F3 stability, dirty Undo/Redo and normal discard/quit.
+Startup **18.209 seconds**, connected cases to quit initiation **245.663 seconds**
+and owned frontend exit **13.508 seconds** after quit passed their fixed bounds.
+Separate integrity and visual review passed for the matching package and one
+generated short ASCII/Unicode fixture. Exit code zero and window absence support
+owned frontend cleanup, not descendant reaping.
+
+The first native attempt remains **incomplete**: its startup observation exceeded
+the budget before any Connect or functional input. This is not evidence of a
+product startup defect, and the second result does not rewrite it. Native
+10,000-match-cap behavior, raw selection affinities, backend operation counts,
+adjacent-frame latency, large buffers and tiny viewports remain unmeasured.
+There is no Windows/macOS GUI, real SSH, broad IME/CJK or positive native
+File Structure/JDT claim. The earlier native Ctrl+F12 and other historical
+failures retain their classifications.
+
+The [phase 68 report](TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md) adds an accepted
+follow-up while retaining the original preparation text unchanged, including its
+first aggregate failure and intended strict-input contract correction. Historical
+pending statements describe that earlier checkpoint; the terminal result above
+supersedes it without treating old local checks as new release evidence.
 
 ## Accepted 0.67.1 bounded baseline
 
@@ -259,8 +315,8 @@ statements describe that earlier stage and do not validate later candidates.
 
 ## Preserved 0.64 Recent Files preparation
 
-**0.64.0 is an unaccepted candidate. The latest accepted bounded baseline is
-0.63.3.** Recent Files is limited to 64 settled, known-revision active file paths
+**At this preparation checkpoint, 0.64.0 was an unaccepted candidate and the
+latest accepted bounded baseline was 0.63.3.** Recent Files is limited to 64 settled, known-revision active file paths
 in the current connection, with 256 KiB total path bytes and 4,096 bytes per path.
 Closing a tab retains its path without retaining closed text or caret state.
 Clear, disconnect, reconnect, workspace change and restart clear the list; idle
@@ -345,8 +401,8 @@ they do not make 0.63.3 pending again or validate 0.64.
 
 ## Preserved 0.63.3 Alt+1 companion preparation
 
-**0.63.3 is a correction candidate; the latest accepted bounded baseline remains
-0.62.2.** It addresses only the Project shortcut's exact clean input sequence:
+**At this preparation checkpoint, 0.63.3 was a correction candidate; the latest
+accepted bounded baseline was 0.62.2.** It addresses only the Project shortcut's exact clean input sequence:
 Alt+Num1 followed by a single `Text("1")` companion. The companion is consumed at
 validated shortcut admission, before an editor can receive it. A same-held-key
 repeat fence may be armed only after the final guarded Project focus succeeds.
@@ -405,8 +461,8 @@ See the [candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
 
 ## Preserved 0.63.2 pointer lifecycle checkpoint
 
-**0.63.2 remains a correction candidate**; the latest accepted bounded baseline
-remains **0.62.2**. A controlled actual-frame journey established that Find Results
+**At this checkpoint, 0.63.2 remained a correction candidate**; the latest
+accepted bounded baseline was **0.62.2**. A controlled actual-frame journey established that Find Results
 accepts a clean owned pointer gesture but rejects it when a standalone IME Enabled
 or Disabled lifecycle notification arrives while the pointer is held, even though
 egui reports the actual button click. Preedit and Commit controls were also rejected.
@@ -475,8 +531,8 @@ missing originals or stronger native conclusion is claimed.
 
 ## Preserved 0.63.1 correction and blocked predecessor
 
-**0.63.1 is a correction candidate; the latest accepted bounded baseline remains
-0.62.2.** It closes only the currently owned Workspace or Tools menu when the
+**At this checkpoint, 0.63.1 was a correction candidate; the latest accepted
+bounded baseline was 0.62.2.** It closes only the currently owned Workspace or Tools menu when the
 existing generic Escape handler receives the key. Earlier navigation, modal and
 language Escape owners retain their existing priority. Without an owned menu,
 the previous generic dismissal behavior remains. It adds no backend operation,
@@ -521,8 +577,8 @@ CI/native statements describe that earlier point, not current acceptance.
 
 ## Preserved 0.63.0 local preparation record
 
-**0.63.0 has passed its final local checks; release acceptance remains pending.
-The latest accepted bounded baseline is 0.62.2.** The candidate concentrates the
+**At this checkpoint, 0.63.0 had passed its final local checks; release acceptance
+was pending. The latest accepted bounded baseline was 0.62.2.** The candidate concentrates the
 connected workspace on Project, the editor and Find; groups setup under
 Workspace and existing tools under Tools; moves Back/Forward into the tab band;
 and adjusts Project/Find/editor focus routes. Recovery, error, dirty-draft and
@@ -1297,7 +1353,7 @@ preserved and are not reclassified as passes.
 
 ### Final accepted 0.59.3 evidence, verified 2026-10-12
 
-**0.59.3 is the latest accepted bounded checkpoint.** Public commit
+**0.59.3 was the accepted bounded checkpoint at this stage.** Public commit
 [`1e2a26d6dd38c17ed3723ced54797fcb43255eb6`](https://github.com/LLLLimbo/cedar-ide/commit/1e2a26d6dd38c17ed3723ced54797fcb43255eb6),
 tree `d3f951aa8acd77efebad5aa42c8d773563016c5e`, passed
 [CI 38192432380](https://github.com/LLLLimbo/cedar-ide/actions/runs/38192432380).

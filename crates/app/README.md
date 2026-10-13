@@ -4,39 +4,56 @@
 
 Cedar is a native Rust application using `eframe`/`egui` 0.31.1 and the Glow renderer. It does not embed a browser or a JVM. The remote workspace agent and optional language server run separately from the UI.
 
-## Current baseline and current-file Find candidate
+## Current baseline and Files search-as-you-type candidate
 
-The latest accepted baseline is **0.67.1**, with bounded acceptance led by
-[exact dual-platform CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38431261412)
-and all three package audits. Both platforms passed 32 File Structure frame
-checks; the Linux normal-agent/mock proof covers positive snapshot, filter and
-activation behavior. The bounded Linux native journey covers only the Trust-off
-**Tools → File Structure…** unavailable-provider path, filter entry, Escape,
-reopen and dirty-draft Undo/Redo. It does not establish positive native symbols,
-a real-JDT popup or native Ctrl+F12 delivery. The earlier shortcut-entry failure
-and independent raw-hook observation remain in the
-[phase report](../../docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
+The latest accepted baseline is **0.68.0 current-file Find**. All four jobs in
+[exact dual-platform CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38444382093)
+and all three package audits passed: Linux **2,176/0/71**, Windows
+**2,114/0/114** (passed/failed/ignored), each across **50 suites**. The second
+bounded Trust-off Linux native journey covered selection seeding, F3/Shift+F3,
+Next/Previous, Escape/Back, no-hit stability and dirty-draft Undo/Redo; timing
+and integrity checks passed. The first startup observation timed out before
+Connect and remains incomplete, without a product startup-failure inference.
+The [current report](../../docs/TEST_REPORT.md#accepted-0680-bounded-baseline)
+records the accepted scope. Native cap behavior, raw selection affinity,
+Windows/macOS GUI, real SSH and broad IME/CJK remain unmeasured. Earlier positive
+File Structure/JDT GUI and native Ctrl+F12 limitations also remain.
 
-**0.68 current-file Find is a candidate, not an accepted release.** Ctrl/Cmd+F
-can copy an eligible complete editor selection into Find. F3, Shift+F3,
-Next/Previous and query-field Enter use one caret-relative, literal,
-case-sensitive occurrence command. A contiguous loop creates one Back departure,
-while query typing leaves the editor selection in place. Matches come from the
-current draft, including unsaved text, with at most 10,000 retained hits and an
-explicit retained-range label at the cap. No backend operation, Save, provider
-startup or Trust change is needed. The existing Replace preview/Apply and Undo
-boundaries remain in place.
+**0.69 Files search-as-you-type is a candidate, not an accepted release.** Only
+Files query and Directory scope edits settle automatically after a fixed
+**250 ms** pause. Enter or Find flushes the current candidate without duplicating
+an identical pending request. One discovery request may run with at most one
+latest replacement. Editing retires old rows, gestures and preview immediately;
+returning to the same text creates a fresh identity. Automatic results and late
+replies do not transfer focus or read file contents.
 
-The [offline usage contract](../../docs/FIND_AND_RETURN.md#current-file-find-loop-068-candidate)
-defines selection seeding, boundary and wrap behavior, query retention, history
-and cancellation. The [phase report](../../docs/TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md)
-keeps local verification, process proofs and remaining release gates separate.
-Versioned **0.68.0** local checks passed **2,176/0/71 across 50 Rust suites**,
-**804 Python tests / zero failures / ten skipped across 29 suites**, formatting
-and strict Clippy. Independent input review and current default-artifact
-Structure, Browse v5, Scoped Search and Search proofs passed; Browse retains
-**57 fields / 14 operations / zero added Find operations**. Final sealing, exact
-CI, package audits and native validation remain pending.
+An empty root query shows the loaded-file snapshot with zero FindFiles; an empty
+query with a nonempty scope is invalid. Older or unsupported peers keep the
+labelled local fallback with zero FindFiles. Busy, failed or unsupported outcomes
+do not start automatic retries or polling. Project Text remains explicit. The
+existing v1 matching, ranking, scan budgets and incomplete-result semantics stay
+unchanged; this adds no index, CamelCase, provider or hard filesystem cancellation.
+
+IME composition blocks automatic dispatch. A clear terminal commit starts a full
+250 ms interval. An ambiguous ending or cancellation preserves exactly the text
+visible in the query and scope and pauses automatic search until a fresh valid
+committed edit or clean explicit Find. No rollback or broad native IME guarantee
+is implied. See the [complete offline usage contract](../../docs/FIND_AND_RETURN.md#files-search-as-you-type-069-candidate)
+and [phase report](../../docs/TEST_REPORT_PHASE69_FILES_LIVE_SEARCH.md).
+**0.69.0** local checks passed **2,200/0/71 across 50 Rust suites**, strict
+Clippy and formatting, plus **805 Python tests / ten skipped / zero failed suites
+across 29 suites**. Independent input/version review and current-artifact
+Structure **45/11**, Browse v6 **64/16**, Scoped Search **57/10** and Search
+**57/12** proofs passed (fields/operations); Browse adds zero automatic Reads.
+The first old-label assertion failure remains preserved. Final sealing, exact
+CI, three package audits and native validation remain pending.
+
+Current-file Find retains whole-selection seeding, caret-relative literal,
+case-sensitive occurrence navigation, one Back departure per contiguous loop,
+and the first 10,000 matches with an explicit retained-range label. It searches
+the current draft with zero backend operations and preserves explicit Replace,
+Save and Undo boundaries. Its [usage](../../docs/FIND_AND_RETURN.md#current-file-find-loop-068-bounded-acceptance)
+is separate from Files discovery and Project Text disk search.
 
 Recent Files retains its **0.64 bounded functional acceptance**, including the
 preserved strict native timing failure. Its per-connection path list, local
@@ -112,10 +129,11 @@ debounce or live queries, regular expressions, CamelCase matching and
 cross-restart search history remain outside it. Existing Build/Run features
 remain available; no visual-parity or performance advantage is claimed.
 
-Negotiated Project files discovery includes untouched directories; its labelled
-fallback searches only open and loaded files. Filename queries use explicit
-submission and literal Unicode lowercase matching. There is no search-as-you-type
-mode, persistent filename index or automatic filesystem watcher.
+At that historical checkpoint, negotiated Project files discovery included
+untouched directories, while its labelled fallback searched only open and loaded
+files. Submission was explicit. The 0.69 candidate above changes only Files
+submission timing; literal Unicode lowercase matching remains, with no persistent
+filename index or automatic filesystem watcher.
 
 ### Earlier 0.60.0 browsing evidence
 
@@ -160,8 +178,8 @@ Shortcuts:
 | Ctrl/Cmd+[ or Ctrl+Alt+Left | Back to an unchanged open-buffer location |
 | Ctrl/Cmd+] or Ctrl+Alt+Right | Forward to an unchanged open-buffer location |
 | Ctrl/Cmd+G | Go to a 1-based line in the current buffer |
-| Ctrl/Cmd+F | Open current-file Find; seed from an eligible complete editor selection in the 0.68 candidate; existing literal Replace preview remains available |
-| F3 / Shift+F3 | In the 0.68 candidate, next / previous current-file occurrence from the editor or Find query field |
+| Ctrl/Cmd+F | Open current-file Find; seed from an eligible complete editor selection in the accepted 0.68 loop; existing literal Replace preview remains available |
+| F3 / Shift+F3 | In the accepted 0.68 loop, next / previous current-file occurrence from the editor or Find query field |
 | Ctrl/Cmd+S | Save |
 | Ctrl/Cmd+W | Close the current tab |
 | Ctrl/Cmd+J | Hide tools and return to the editor, or reopen the selected tool |
@@ -440,7 +458,7 @@ This remains an independent prototype, not a complete replacement for a mature I
 - The backend opens/saves files up to 1 MiB; the frontend allows 32 tabs
 - Pasted text is retained, never silently truncated. An oversized draft must be shortened or copied before saving or using language features
 - Undo retains at most 16 full-text snapshots per tab, initialized once. Completion creates one transaction; tab close/workspace replacement releases its stored history. Large tabs can still use significant memory; this is not a fixed-memory guarantee or a delta-based undo engine
-- In-file Find retains at most 10,000 matches. The 0.68 candidate labels a full cache as the first 10,000 retained matches, without claiming the complete document total; navigation wraps within that cache. Project search requests and retains at most 500, with 512 KiB of combined path/snippet bytes
+- In-file Find retains at most 10,000 matches. The accepted 0.68 loop labels a full cache as the first 10,000 retained matches, without claiming the complete document total; navigation wraps within that cache. Project search requests and retains at most 500, with 512 KiB of combined path/snippet bytes
 - Syntax coloring falls back to plain text above 256 KiB
 - Completion retains up to 256 candidates/4 MiB, applies at most 128 edits, and enforces a 1 MiB resulting document
 - Diagnostic display is bounded to 2,000 entries, 128 files, and 512 KiB of text

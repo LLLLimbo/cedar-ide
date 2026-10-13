@@ -1,3 +1,37 @@
+# 0.68 current-file Find — bounded acceptance
+
+## Accepted 0.68.0 follow-up
+
+The [public source revision](https://github.com/LLLLimbo/cedar-ide/commit/a525c547aeb2f1fc1d80d3d872801c1f4d986963)
+passed all four jobs in
+[CI 38444382093](https://github.com/LLLLimbo/cedar-ide/actions/runs/38444382093)
+and all three exact-source package audits. Linux recorded **2,176/0/71** and
+Windows **2,114/0/114** (passed/failed/ignored), each across **50 suites**.
+Browse v5 passed **57 fields / 14 operations / zero added current-file Find
+operations**, alongside the retained independently scoped proofs.
+
+The second Trust-off Linux native journey passed selection seeding,
+F3/Shift+F3, Next/Previous, Escape/Back, no-hit F3 stability, dirty Undo/Redo and
+normal discard/quit. Startup **18.209 s**, connected cases to quit initiation
+**245.663 s** and owned frontend exit **13.508 s** after quit passed their bounds;
+separate visual and integrity reviews passed. The first attempt remains
+**incomplete** after exceeding its startup observation budget before any Connect
+or functional input. It does not establish a product startup failure.
+
+This is bounded acceptance for one short ASCII/Unicode fixture on cloud Linux.
+Native cap behavior, raw selection affinity, request counts, adjacent-frame
+latency, large buffers, tiny viewports, Windows/macOS GUI, real SSH, broad IME/CJK
+and positive File Structure/JDT GUI remain unmeasured. Native Ctrl+F12 limitations
+and all earlier failures remain. Owned frontend exit and window absence do not
+prove descendant reaping. See the [current report](TEST_REPORT.md#accepted-0680-bounded-baseline).
+
+## Preserved original preparation checkpoint
+
+The original preparation text below is retained unchanged. Its candidate and
+pending statements describe that historical checkpoint, not the final 0.68
+status above. It preserves the original development failures and distinguishes
+them from the later passing results.
+
 # 0.68 current-file Find — candidate verification
 
 ## Status and accepted baseline

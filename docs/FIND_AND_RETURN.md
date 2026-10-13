@@ -4,6 +4,10 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
+The latest accepted bounded baseline is **0.68.0 current-file Find**. The
+**0.69 Files search-as-you-type candidate is not yet accepted**; its complete
+[offline interaction contract](#files-search-as-you-type-069-candidate) is below.
+
 **0.66.2 passed bounded continuous-preview acceptance.** Exact dual-platform
 CI, all three package audits and a fresh bounded Linux native journey passed.
 The native journey covered following selection in both Text views, the previously
@@ -31,12 +35,111 @@ symbols, real-JDT popup behavior and native Ctrl+F12 remain unmeasured. The
 preserved in the
 [phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
 
-## Current-file Find loop (0.68 candidate)
+## Files search-as-you-type (0.69 candidate)
 
-**This is a candidate contract; 0.68 is not yet accepted.** Current-file Find
-searches the active editor draft, including unsaved text. It is separate from
-Project Text, whose results describe historical disk content. This local flow
-needs no language provider or execution Trust and sends no backend operation.
+**0.69.0 is a candidate and is not yet accepted.** Local versioned aggregate,
+strict/input-review and current-artifact process checks passed; final sealing,
+exact CI, packages and native validation remain pending. This changes only the **Files**
+provider in Find and return. **Project Text** still searches only after explicit
+Enter or Find. Current-file Find remains a separate local editor feature.
+The full interaction below is available offline; the
+[0.69 verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE69_FILES_LIVE_SEARCH.md)
+records new validation gates separately from the accepted 0.68 baseline.
+
+### Type, settle, or search immediately
+
+1. In a connected workspace, open **Files** or press **Ctrl+Shift+N**. Check the
+   provider label below to see whether Project files or the loaded-file fallback
+   is available. Opening the window alone does not start a whole-project scan.
+2. Enter a filename query. With Project files, optionally enter an exact
+   **Directory scope**, such as `src/main`. Every committed query or scope edit
+   starts a fresh **250 ms** pause for the complete current query/directory pair.
+   The message **Waiting for typing to pause… Enter searches now.** identifies
+   the waiting state. Repainting, caret movement and a Delete that changes no
+   text do not restart the interval. A fresh committed text or paste edit gets
+   a new identity and interval even if its final bytes match the prior value.
+3. Leave the valid input unchanged for that interval to submit automatically, or
+   press **Enter** in the query field or select **Find** to search immediately.
+   Explicit submission cancels the pending timer. Repeating Enter/Find while
+   that exact request is pending does not send it twice. A later deliberate
+   rerun after the request finishes remains an explicit action.
+4. Automatic submission and arriving results keep the current control focus.
+   Use **Down** to enter the results and the ordinary selection, Preview, Open
+   and Back actions below. Automatic search does not select text in the editor,
+   open a file, save a draft or request content preview.
+
+Only **one FindFiles** request can run at a time, with at most **one latest
+replacement**. If an older scan is still finishing, later edits replace the
+waiting candidate; they do not create one queued scan per keystroke. Both the
+query and directory must still match when a request is admitted and when its
+result is accepted. Editing either field immediately retires old rows, pointer
+press/release tickets, Open/Preview intent and the old preview. Changing A to B
+and back to A creates a fresh identity; the first A result cannot become active
+again. A stale success or error cannot overwrite the new view or move focus.
+
+### Empty input, unavailable discovery and interruptions
+
+- **Empty query and root scope:** show only open buffers and the already loaded
+  Explorer snapshot, with **zero FindFiles**. There is no automatic root scan.
+- **Empty query and nonempty scope:** show **Enter a filename query before
+  searching this directory scope.** It sends zero FindFiles; either add a valid
+  query or clear the scope. It does not silently broaden the scope.
+- **Old or unsupported peer:** keep **Open and loaded files** local filtering
+  and zero FindFiles. Directory discovery remains unavailable. This fallback
+  cannot find a file in an untouched directory.
+- **Busy, rejected or failed request:** keep the explanation and inactive old
+  results. No idle polling, automatic retry or resubmission occurs when the
+  busy condition disappears. Make a fresh valid edit or explicitly select Find
+  after the condition is resolved. Waiting behind an already-running Files scan
+  is only the single latest replacement described above.
+- **Hide, Close, Escape, provider switch, connection/context change or competing
+  modal ownership:** retire the pending timer and intent. Late completion cannot
+  reopen the view, restore obsolete rows or focus another control. Reopening
+  does not replay cancelled work. Retiring an intent does not close the transport
+  or forcibly interrupt a blocked filesystem call.
+- **Interrupted timing:** **Typing pause was interrupted. Press Enter to search.**
+  requires a fresh edit or explicit submission; an invalid clock does not create
+  an immediate or repeated scan.
+
+### IME composition and cancellation
+
+Composition in the query or directory field sends no automatic request. A clear
+terminal nonempty Commit can start a **full new 250 ms** interval, even when the
+final text equals an earlier query. It is not permission to use the remaining
+part of an older timer. Ordinary request validation still applies.
+
+An empty Commit, Disabled without a clear terminal commit, or a new preedit
+followed by an ambiguous ending/cancellation pauses automatic settlement. The
+message is **Automatic search paused after composition. Edit the query or press
+Find to search.** Cedar preserves the visible TextEdit query and scope exactly;
+it never rolls them back, restores a saved string or rewrites the user's input.
+A fresh valid committed edit or clean explicit Find can resume searching.
+Neither lifecycle notifications nor elapsed time alone resume a paused query.
+Active composition and mixed or stale input cannot authorize an explicit search.
+This conservative rule does not establish broad native IME support.
+
+The existing literal matching, ranking, scan budgets and **Incomplete scan**
+meaning below apply unchanged to automatic and explicit submissions. The fixed
+pause is an admission rule, not a response-time guarantee. No CamelCase, full
+case folding, persistent index, filesystem watcher, hard cancellation or
+performance advantage is implied. Preview stays explicit and adds **zero
+automatic Reads**.
+
+<a id="current-file-find-loop-068-candidate"></a>
+
+## Current-file Find loop (0.68 bounded acceptance)
+
+**0.68.0 passed bounded acceptance.** Exact dual-platform CI and all three
+package audits passed, followed by the second Trust-off Linux native core
+Find/return and dirty Undo/Redo journey, with timing and integrity verified.
+The first native startup observation remains incomplete, without a product
+startup-failure inference. Native cap behavior, raw affinities, wider platforms
+and broad IME coverage remain unmeasured; see the
+[current report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md#accepted-0680-bounded-baseline).
+Current-file Find searches the active editor draft, including unsaved text. It
+is separate from Project Text, whose results describe historical disk content.
+This local flow needs no language provider or execution Trust and sends no
+backend operation.
 
 ### Start from the editor
 
@@ -112,7 +215,7 @@ input and stale press/release context cannot authorize a Find move. Clean native
 IME availability notifications do not themselves compose text.
 
 The [0.68 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md)
-records validation as it becomes available. The
+records bounded acceptance and preserves the earlier preparation evidence. The
 [normal-agent proof contract](#current-file-occurrence-process-contract-068-candidate)
 is a separate headless gate; neither a contract nor supplied-input frame tests
 establish native Windows/macOS shortcuts, real SSH or wider language support.
@@ -247,7 +350,9 @@ Use its provider buttons to switch between filenames and text. The steps below
 describe this shared window; the retained bottom tool is described separately
 under [Retained Project Text results](#retained-project-text-results).
 
-1. Enter a query, then press **Enter** in the query field or select **Find**.
+1. Enter a query. In the **0.69 Files candidate**, leave valid committed input
+   unchanged for 250 ms, or press **Enter** / **Find** to submit immediately.
+   **Project Text** still requires Enter or Find.
 2. Press **Down** to focus the first result. Use **Up/Down** or **Home/End** to move
    through results, or single-click a row to select it.
 3. With a result focused, press **Space**, or select **Preview**, to inspect it.
@@ -277,11 +382,12 @@ that editor context remains current. Hiding the window keeps an accepted Project
 Text snapshot for this session. It retires pending preview and activation intent;
 late replies cannot reopen a hidden preview or activate a different result.
 
-Query or Project Text filter edits make previous text results inactive. Project
-files scope edits also retire that discovery result. Submit explicitly to
-activate a new set; changing a field back to its earlier text does not
-reactivate the old rows. Switching provider retires pending intent without
-discarding the retained Project Text snapshot.
+Query or Project Text filter edits make previous text results inactive; only a
+new explicit successful text search activates them. Files query/scope edits
+immediately retire discovery rows and preview, then follow the 0.69 settlement
+rules above. Changing a field back to its earlier text does not reactivate old
+rows. Switching provider retires pending intent without discarding the retained
+Project Text snapshot.
 Reconnect requires a new explicit successful text search before historical rows
 can be used again.
 
@@ -300,8 +406,9 @@ rejected. A nonempty scope still requires a filename query. This control belongs
 to Project files; Project Text has its own shared **Directory** and **File
 masks** controls described below.
 
-An empty filename query shows open buffers and already loaded Explorer files,
-without starting discovery. If discovery is unavailable, the label explicitly
+An empty filename query with root scope shows open buffers and already loaded
+Explorer files, without starting discovery. An empty query with a nonempty scope
+is invalid and does not silently fall back. If discovery is unavailable, the label explicitly
 reads **Open and loaded files**. Searches then filter that bounded snapshot only;
 they cannot find files in untouched directories, and directory scope is
 unavailable. At most 64 matching rows are shown. Reopen Files after loading more
@@ -320,8 +427,8 @@ Project files accepts a nonempty single-line query of at most **256 UTF-8 bytes*
 without control characters. Matching compares the Rust Unicode lowercase form of
 the query and path. It does not perform Unicode normalization or full case folding,
 regular expressions, typo correction or CamelCase matching. Results retain their
-exact original path spelling. Searches require explicit submission; there is no
-live search-as-you-type mode.
+exact original path spelling. The 0.69 candidate changes only Files submission
+timing as described above; explicit Enter/Find remains available.
 
 Results rank by exact basename, basename prefix, basename substring, then path
 substring. Equal ranks sort by original path. Ordering covers the candidates
@@ -342,9 +449,10 @@ Each submitted scan is bounded by:
 - 4,096 UTF-8 bytes per relative path and 512 KiB of encoded result data
 
 A blocking filesystem call can outlast the elapsed budget. Only one discovery
-request runs at a time, with at most one newer submission waiting to replace it.
-Typing alone starts no scan or content Read, and retiring a query does not
-disconnect the transport or forcibly interrupt a filesystem call.
+request runs at a time, with at most one latest candidate waiting to replace it.
+In the 0.69 candidate, valid committed Files input can admit one scan after the
+fixed pause; it never admits a content Read. Retiring a query does not disconnect
+the transport or forcibly interrupt a filesystem call.
 
 **Incomplete scan** identifies permission or I/O errors, unsafe or unrepresentable
 paths, or depth, time, entry, pending-directory, response or result limits. Try a
@@ -570,7 +678,9 @@ start it automatically or provide every-language symbol search. It makes no IDEA
 parity or unmeasured performance claim.
 
 
-## Current-file occurrence process contract (0.68 candidate)
+<a id="current-file-occurrence-process-contract-068-candidate"></a>
+
+## Current-file occurrence process contract (0.68 bounded acceptance)
 
 The versioned **0.68.0** current-artifact normal-agent Browse proof passed its
 strict **57-field / 14-operation** version-5 receipt, including **zero added
@@ -579,7 +689,9 @@ normal agent were verified; source/fixture integrity and owned-agent cleanup
 passed. The retained Structure **45 fields / 11 operations**, Scoped Search
 **57 / ten** and Search **57 / twelve** proofs also passed. These are selected
 current-artifact executions; the canonical compile drivers were not run locally.
-Exact CI, package audits and native current-file Find validation remain pending.
+Exact 0.68 CI, all three package audits and the second bounded Linux native
+core Find journey subsequently passed. The earlier local executions remain
+separate from that terminal acceptance; native scope limits still apply.
 
 The first local normal-agent Browse integration passed on the development
 snapshot still labelled **0.67.1**, before the 0.68 version bump: one exact test
@@ -624,3 +736,38 @@ previous fields and nested values, alongside their original prefix assertions.
 This contract is headless normal-agent evidence only when executed and strictly
 validated against current artifacts. It does not establish native GUI input,
 Windows/macOS GUI, real SSH, JDT/provider behavior or broader language support.
+
+
+## Files settlement process contract (0.69 candidate)
+
+The Browse **version-6** contract requires **exactly 64 typed fields and 16
+operations**. All 57 prior fields remain. Restoring the old schema version and
+removing only the two new ledger entries reconstructs the exact version-5
+contract, including its original fourteen-operation prefix. The retained
+current-file Find flow still adds zero backend operations. The only new suffix
+is exactly **FindFiles("Needle", "untouched", 100)** followed by
+**FindFiles("origin.txt", "", 100)**; no automatic Read is allowed.
+
+Actual production frames must demonstrate the complete pause before admission,
+latest query/directory identity, immediate old-row retirement and identical
+explicit-submission deduplication. The process then exercises explicit dirty
+preview, ordinary Open and exact Back while preserving dirty bytes and Undo.
+The new seven strict fields attest to these observations and zero automatic
+Reads; malformed, missing, extra, false or wrongly typed observations and extra
+operations must be rejected. The old 57-field contract and prior prefix retain
+independent equality checks, including the earlier fixed version-4 contract.
+
+The suffix has a 60-second admission budget inside the unchanged
+**240/30/300-second active/cleanup/watchdog** bounds. Source/fixture integrity,
+Trust off, owned-agent shutdown/reaping and the strict receipt remain required.
+The existing driver bounds and package inventory remain unchanged. An early
+default-feature normal-agent run passed **64 fields / 16 operations / zero
+automatic Reads** with verified cleanup, while still reporting development
+version **0.68.0**. Its earlier disk-only proof-observer failure and bounded
+proof-only correction remain in the 0.69 report. The later **0.69.0** selected-
+artifact execution also passed **64 fields / 16 operations / zero automatic
+Reads**, alongside retained Structure **45/11**, Scoped Search **57/10** and
+Search **57/12** proofs. Structure uses the explicit mock; the canonical compile
+drivers were not run locally. Final sealing, exact CI, package and native
+acceptance remain pending. This headless evidence cannot establish native
+timing, raw event delivery, broad IME, Windows/macOS GUI or real SSH.

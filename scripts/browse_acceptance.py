@@ -77,7 +77,7 @@ def select_artifacts(data, root, platform):
 
 def expected_receipt():
     return {
-        "receipt_version": 5,
+        "receipt_version": 6,
         "operation_ledger": [
             {"op": "Hello"}, {"op": "List", "path": ""},
             {"op": "Read", "path": "origin.txt"},
@@ -91,6 +91,8 @@ def expected_receipt():
             {"op": "List", "path": ""},
             {"op": "Read", "path": TARGET},
             {"op": "Read", "path": TARGET},
+            {"op": "FindFiles", "query": "Needle", "scope": "untouched", "limit": 100},
+            {"op": "FindFiles", "query": "origin.txt", "scope": "", "limit": 100},
         ],
         "source_sha256": [
             ["origin.txt", hashlib.sha256("saved Ω😀\r\nneedle second\nlast\n".encode()).hexdigest()],
@@ -145,6 +147,13 @@ def expected_receipt():
         "current_file_find_undo_redo_preserved": True,
         "current_file_find_state_preserved": True,
         "current_file_find_additional_operations": 0,
+        "files_live_debounce_ms": 250,
+        "files_live_burst_latest_only": True,
+        "files_live_explicit_flush_deduplicated": True,
+        "files_live_automatic_reads": 0,
+        "files_live_dirty_preview_open_reads": 0,
+        "files_live_open_back_exact": True,
+        "files_live_state_preserved": True,
     }
 
 

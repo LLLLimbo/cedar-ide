@@ -1923,7 +1923,7 @@ fn browse_project_files_discovers_untouched_path_then_previews_opens_and_returns
     query(&mut app, "Needle.rs");
     assert!(
         commands.try_recv().is_err(),
-        "typing must not traverse or Read"
+        "typing before the 250 ms pause must not traverse or Read"
     );
     frame(&mut app, key(egui::Key::Enter));
     let discovery = expect_discovery(&commands, "Needle.rs", "");
@@ -2107,9 +2107,7 @@ fn browse_project_files_distinguishes_incomplete_empty_scan_from_complete_no_mat
 }
 
 fn scope(app: &mut CedarApp, value: &str) {
-    click(app, "browse_scope");
-    frame(app, modified_key(egui::Key::A, command_modifiers()));
-    frame(app, vec![egui::Event::Text(value.into())]);
+    files_live::edit(app, "browse_scope", value);
 }
 
 #[test]
@@ -2122,7 +2120,7 @@ fn browse_project_files_scope_validation_and_same_frame_scope_edit_retire_old_co
     scope(&mut app, "../escape");
     assert!(
         commands.try_recv().is_err(),
-        "scope and query typing cannot perform I/O"
+        "scope and query edits before settlement cannot perform I/O"
     );
     frame(&mut app, key(egui::Key::Enter));
     assert!(
@@ -2150,18 +2148,24 @@ fn browse_project_files_scope_validation_and_same_frame_scope_edit_retire_old_co
         }))
         .unwrap();
     frame(&mut app, vec![egui::Event::Text("other".into())]);
-    settle(&mut app);
+    let edited = app.editor_ctx.input(|input| input.time);
+    files_live::at(&mut app, edited + 0.249, vec![]);
     assert_eq!(app.browse.scope(), "other");
     assert!(
         app.browse.paths().is_empty(),
-        "scope edit wins over a reply queued for the same frame"
+        "scope edit wins over a same-frame reply"
     );
     assert!(
         commands.try_recv().is_err(),
-        "editing scope cannot enqueue an implicit replacement"
+        "new scope needs its own full interval"
     );
-    frame(&mut app, key(egui::Key::Enter));
+    files_live::at(&mut app, edited + 0.25, vec![]);
     let current = expect_discovery(&commands, "needle", "other");
+    frame(&mut app, key(egui::Key::Enter));
+    assert!(
+        commands.try_recv().is_err(),
+        "Enter must not duplicate the live request"
+    );
     let generation = app.generation;
     app.generation += 1;
     app.file_discovery = None;
@@ -4310,6 +4314,9 @@ fn browse_retained_preview_serial_exhaustion_refuses_new_intent_and_drains_old_f
     }
 }
 
+#[path = "files_live_tests.rs"]
+mod files_live;
+
 const NORMAL_TARGET: &str = "untouched/deep/Needle.rs";
 const NORMAL_TARGET_TEXT: &str = "first\nneedle target\nlast\n";
 const NORMAL_ACTIVE: std::time::Duration = std::time::Duration::from_secs(240);
@@ -4445,6 +4452,12 @@ struct NormalBrowse {
     current_file_find_undo_redo_preserved: bool,
     current_file_find_state_preserved: bool,
     current_file_find_additional_operations: Option<usize>,
+    files_live_burst_latest_only: bool,
+    files_live_explicit_flush_deduplicated: bool,
+    files_live_automatic_reads: Option<usize>,
+    files_live_dirty_preview_open_reads: Option<usize>,
+    files_live_open_back_exact: bool,
+    files_live_state_preserved: bool,
 }
 
 fn source_digest(path: &std::path::Path) -> String {
@@ -4468,7 +4481,7 @@ fn normal_operation(operation: &Operation) -> serde_json::Value {
             serde_json::json!({"op": "Search", "query": query, "limit": limit})
         }
         _ => panic!(
-            "normal Browse proof dispatched an operation outside its fourteen-operation contract"
+            "normal Browse proof dispatched an operation outside its sixteen-operation contract"
         ),
     }
 }
@@ -4568,6 +4581,12 @@ impl NormalBrowse {
             current_file_find_undo_redo_preserved: false,
             current_file_find_state_preserved: false,
             current_file_find_additional_operations: None,
+            files_live_burst_latest_only: false,
+            files_live_explicit_flush_deduplicated: false,
+            files_live_automatic_reads: None,
+            files_live_dirty_preview_open_reads: None,
+            files_live_open_back_exact: false,
+            files_live_state_preserved: false,
         };
         proof.admit_call();
         // Client's constructor performs one ordinary 30-second Hello. Register
@@ -4677,6 +4696,13 @@ impl NormalBrowse {
         assert!(self.current_file_find_undo_redo_preserved);
         assert!(self.current_file_find_state_preserved);
         assert_eq!(self.current_file_find_additional_operations, Some(0));
+        assert!(self.files_live_burst_latest_only);
+        assert!(self.files_live_explicit_flush_deduplicated);
+        assert_eq!(self.files_live_automatic_reads, Some(0));
+        assert_eq!(self.files_live_dirty_preview_open_reads, Some(0));
+        assert!(self.files_live_open_back_exact);
+        assert!(self.files_live_state_preserved);
+        assert_eq!(browse::FILES_DEBOUNCE_SECONDS, 0.250);
         assert_eq!(browse::PROJECT_TEXT_REVIEW_DEBOUNCE_SECONDS, 0.150);
         assert_eq!(browse::MAX_PROJECT_TEXT_CONTEXT_LINES, 41);
         assert_eq!(browse::MAX_PROJECT_TEXT_CONTEXT_BYTES, 64 * 1024);
@@ -4698,10 +4724,17 @@ impl NormalBrowse {
             ]
         );
         assert_eq!(
-            self.ledger[12..],
+            self.ledger[12..14],
             [
                 serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
                 serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
+            ]
+        );
+        assert_eq!(
+            self.ledger[14..],
+            [
+                serde_json::json!({"op": "FindFiles", "query": "Needle", "scope": "untouched", "limit": 100}),
+                serde_json::json!({"op": "FindFiles", "query": "origin.txt", "scope": "", "limit": 100}),
             ]
         );
         for (path, hash) in &self.hashes {
@@ -4728,7 +4761,7 @@ impl NormalBrowse {
         std::fs::remove_dir_all(&self.root).expect("remove verified completed fixture");
         self.success = true;
         let mut receipt = serde_json::json!({
-            "receipt_version": 5,
+            "receipt_version": 6,
             "operation_ledger": self.ledger, "source_sha256": self.hashes,
             "connections": 1, "agents_reaped": 1, "trust": false,
             "active_budget_seconds": 240, "cleanup_timeout_seconds": 30,
@@ -4792,6 +4825,19 @@ impl NormalBrowse {
             .as_object_mut()
             .unwrap()
             .extend(current_file.as_object().unwrap().clone());
+        let files_live = serde_json::json!({
+            "files_live_debounce_ms": (browse::FILES_DEBOUNCE_SECONDS * 1000.0) as u64,
+            "files_live_burst_latest_only": self.files_live_burst_latest_only,
+            "files_live_explicit_flush_deduplicated": self.files_live_explicit_flush_deduplicated,
+            "files_live_automatic_reads": self.files_live_automatic_reads.unwrap(),
+            "files_live_dirty_preview_open_reads": self.files_live_dirty_preview_open_reads.unwrap(),
+            "files_live_open_back_exact": self.files_live_open_back_exact,
+            "files_live_state_preserved": self.files_live_state_preserved,
+        });
+        receipt
+            .as_object_mut()
+            .unwrap()
+            .extend(files_live.as_object().unwrap().clone());
         println!("browse_normal_acceptance {receipt}");
     }
 }
@@ -4865,6 +4911,14 @@ fn normal_origin_state(app: &CedarApp) -> serde_json::Value {
         .find(|document| document["path"] == "origin.txt")
         .expect("dirty origin must remain open")
         .clone()
+}
+
+// Only the frontend clock is controlled. Input still passes through the real
+// raw hook and update; every operation below uses the same normal Client.
+fn normal_files_edit(app: &mut CedarApp, probe: &str, text: &str) {
+    continuity_click(app, probe, false);
+    continuity_tick(app, 0.01, modified_key(egui::Key::A, command_modifiers()));
+    continuity_tick(app, 0.01, vec![egui::Event::Text(text.into())]);
 }
 
 // Review is allowed to change the selected result and preview visibility only.
@@ -6042,5 +6096,134 @@ fn browse_normal_agent_find_recent_project_reveal_continuous_preview_and_exact_r
     assert_eq!(proof.ledger, file_find_ledger);
     proof.current_file_find_additional_operations =
         Some(proof.ledger.len() - file_find_ledger.len());
+
+    // Preserve the complete v5 prefix. Admit the two new full ordinary calls
+    // against the original deadline before beginning the suffix. This is
+    // bounded-deadline admission, not a worst-case sum for all sixteen calls.
+    assert_eq!(proof.ledger.len(), 14);
+    assert!(proof.started.elapsed() + NORMAL_CALL * 2 < NORMAL_ACTIVE);
+    let live_origin = normal_origin_state(&app);
+    let live_departure = normal_editor_position(&app);
+    let live_undo = undo_texts(&app);
+    let live_documents = app.documents.len();
+    assert!(app
+        .documents
+        .iter()
+        .any(|document| document.path == NORMAL_TARGET));
+    let live_start = proof.ledger.len();
+
+    enter(&mut app, false);
+    assert!(commands.try_recv().is_err());
+    normal_files_edit(&mut app, "browse_scope", "untouched");
+    assert!(commands.try_recv().is_err());
+    normal_files_edit(&mut app, "browse_query", "N");
+    continuity_tick(&mut app, 0.02, vec![egui::Event::Text("ee".into())]);
+    assert!(commands.try_recv().is_err());
+    continuity_tick(&mut app, 0.02, vec![egui::Event::Text("dle".into())]);
+    assert!(commands.try_recv().is_err());
+    let last_edit = app.editor_ctx.input(|input| input.time);
+    continuity_tick(&mut app, 0.249, vec![]);
+    assert!(commands.try_recv().is_err(), "249 ms must not dispatch");
+    let to_deadline =
+        last_edit + browse::FILES_DEBOUNCE_SECONDS - app.editor_ctx.input(|input| input.time);
+    continuity_tick(&mut app, to_deadline, vec![]);
+    proof.exchange(
+        &mut app,
+        &commands,
+        serde_json::json!({"op": "FindFiles", "query": "Needle", "scope": "untouched", "limit": 100}),
+    );
+    settle(&mut app);
+    assert_eq!(app.browse.paths(), vec![NORMAL_TARGET]);
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, "browse_query").id)
+    );
+    assert!(commands.try_recv().is_err());
+    assert_eq!(proof.ledger.len() - live_start, 1);
+    proof.files_live_burst_latest_only = true;
+
+    // The target is already normally loaded by the preserved v5 journey.
+    // Explicit preview and ordinary Open reuse it without another Read.
+    click(&mut app, "browse_row:0");
+    assert_eq!(app.browse.selected_index(), Some(0));
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, "browse_row:0").id)
+    );
+    frame(&mut app, key(egui::Key::Space));
+    settle(&mut app);
+    assert!(app.browse.preview_visible());
+    assert_eq!(app.browse_preview_text(), Some(NORMAL_TARGET_TEXT));
+    assert!(commands.try_recv().is_err());
+    frame(&mut app, key(egui::Key::Escape));
+    frame(&mut app, key(egui::Key::Enter));
+    settle(&mut app);
+    assert_eq!(app.active().unwrap().path, NORMAL_TARGET);
+    assert!(commands.try_recv().is_err());
+    frame(
+        &mut app,
+        modified_key(egui::Key::OpenBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_eq!(app.active().unwrap().path, "origin.txt");
+    assert_eq!(normal_editor_position(&app), live_departure);
+    assert_eq!(normal_origin_state(&app), live_origin);
+    assert_eq!(undo_texts(&app), live_undo);
+    assert!(commands.try_recv().is_err());
+    proof.files_live_open_back_exact = true;
+
+    enter(&mut app, false);
+    normal_files_edit(&mut app, "browse_query", "ori");
+    continuity_tick(&mut app, 0.02, vec![egui::Event::Text("gin.txt".into())]);
+    assert!(commands.try_recv().is_err());
+    // Explicit Enter flushes before 250 ms. Another Enter and the visible
+    // Find control refer to the same pending identity and cannot duplicate it.
+    continuity_tick(&mut app, 0.01, key(egui::Key::Enter));
+    continuity_tick(&mut app, 0.01, key(egui::Key::Enter));
+    continuity_click(&mut app, "browse_submit", false);
+    proof.exchange(
+        &mut app,
+        &commands,
+        serde_json::json!({"op": "FindFiles", "query": "origin.txt", "scope": "", "limit": 100}),
+    );
+    settle(&mut app);
+    continuity_tick(&mut app, 1.0, vec![]);
+    assert_eq!(app.browse.paths(), vec!["origin.txt"]);
+    assert!(commands.try_recv().is_err());
+    assert_eq!(proof.ledger.len() - live_start, 2);
+    proof.files_live_explicit_flush_deduplicated = true;
+    proof.files_live_automatic_reads = Some(
+        proof.ledger[live_start..]
+            .iter()
+            .filter(|operation| operation["op"] == "Read")
+            .count(),
+    );
+
+    let dirty_live_start = proof.ledger.len();
+    click(&mut app, "browse_row:0");
+    assert_eq!(app.browse.selected_index(), Some(0));
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, "browse_row:0").id)
+    );
+    frame(&mut app, key(egui::Key::Space));
+    settle(&mut app);
+    assert!(app.browse.preview_visible());
+    assert_eq!(app.browse_preview_text(), Some(DRAFT));
+    assert_eq!(normal_origin_state(&app), live_origin);
+    assert!(commands.try_recv().is_err());
+    frame(&mut app, key(egui::Key::Escape));
+    frame(&mut app, key(egui::Key::Enter));
+    settle(&mut app);
+    assert_eq!(app.active().unwrap().path, "origin.txt");
+    assert_eq!(normal_editor_position(&app), live_departure);
+    assert_eq!(normal_origin_state(&app), live_origin);
+    assert_eq!(undo_texts(&app), live_undo);
+    assert_eq!(app.documents.len(), live_documents);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert!(!app.execution_trusted());
+    assert!(commands.try_recv().is_err());
+    proof.files_live_dirty_preview_open_reads = Some(proof.ledger.len() - dirty_live_start);
+    proof.files_live_state_preserved = true;
     proof.finish();
 }

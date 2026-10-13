@@ -1,6 +1,6 @@
 # Cedar: project browsing and navigation roadmap
 
-Design decision, 2026-10-12, with delivery status updated for the accepted 0.67.1 bounded baseline and the 0.68 current-file Find candidate. This roadmap does not itself establish a new release or acceptance.
+Design decision, 2026-10-12, with delivery status updated on 2026-10-13 for the accepted 0.68.0 bounded baseline and the 0.69 Files search-as-you-type candidate. This roadmap does not itself establish a new release or acceptance.
 
 ## Product decision and baseline
 
@@ -9,24 +9,25 @@ Cedar will prioritize understanding and navigating projects: finding files and t
 The interaction reference is **IntelliJ IDEA 2026.2, Windows New UI, Dark theme, Compact density and default Windows shortcuts**. This is a design reference, not a claim of pixel-perfect, platform, language or feature parity. Cedar keeps its own product identity. Linux validation does not establish Windows GUI behavior.
 
 The original design baseline was accepted Cedar **0.59.3**. The latest accepted
-bounded baseline is **0.67.1**. All four jobs in
-[exact dual-platform CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38431261412)
-and all three package audits passed. File Structure positive behavior is
-established by 32 actual-frame checks on each platform and the Linux
-normal-agent/mock proof. Bounded Linux native coverage is limited to Trust-off
-visible menu entry, unavailable-provider explanation, filter, Escape/reopen and
-dirty-selection Undo/Redo. Positive native symbols, real-JDT File Structure GUI
-and native Ctrl+F12 remain unmeasured.
+bounded baseline is **0.68.0 current-file Find**. All four jobs in
+[exact dual-platform CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38444382093)
+and all three package audits passed. The second Trust-off Linux native journey
+passed the core occurrence/return and dirty Undo/Redo flow, with timing and
+integrity verified. The first startup observation remains incomplete, without
+a product startup-failure inference. Native cap behavior and raw affinities,
+positive File Structure/JDT GUI and native Ctrl+F12 remain unmeasured.
 
-**0.68 current-file Find is the current candidate, not an accepted release.**
-It improves the local occurrence-and-return loop over the current draft:
-whole-selection seeding, caret-relative next/previous, retained-count feedback
-and one Back departure per uninterrupted loop. It adds no backend operation,
-provider, Trust change or project-search option. Versioned 0.68.0 local
-aggregate/strict checks, independent input review and current-artifact process
-proofs passed. Final sealing, exact CI, packages and native validation remain
-pending; the
-[phase report](TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md) records its evidence.
+**0.69 Files search-as-you-type is the current candidate, not an accepted release.**
+It adds a fixed 250 ms pause after valid committed Files query/scope input,
+one in-flight discovery and only the latest replacement, explicit flush with
+pending-request deduplication, immediate retirement of obsolete rows/preview,
+and no automatic focus transfer. Empty-root and old-peer fallback remain local;
+Project Text stays explicit. Ambiguous IME endings pause automatic search without
+rewriting the visible query/scope. Existing matching, traversal and incomplete
+reporting stay unchanged. Versioned local strict/aggregate checks, independent
+input review and current-artifact process proofs passed; final sealing, exact CI,
+packages and native validation remain pending in the
+[phase report](TEST_REPORT_PHASE69_FILES_LIVE_SEARCH.md).
 
 Original 0.67.0 passed exact CI and packages but failed its native Ctrl+F12 entry
 gate. Its independent complete raw-input probe did not observe F12 press events,
@@ -112,7 +113,7 @@ Matching initially uses case-insensitive literal filename/path matching with a d
 
 Use an explicit, visible exclusion policy. The initial policy may reuse current excluded directory names (`.git`, `target`, `build`, `dist`, `node_modules`, `.idea`, `.venv`, `venv`, `__pycache__`), but must label that scope. Nested .gitignore semantics and IDE module-exclusion equivalence are not implied. Permission errors, depth/time/entry/stack/encoded-response/result limits and unrepresentable paths must yield bounded reason categories and an incomplete status. A narrower folder can address traversal cutoffs; merely narrowing query text may not. **No matches within an incomplete scan is not “file does not exist”.**
 
-Only one discovery request may be in flight. A newer query retires its results immediately and retains at most one replacement intent; it does not queue every keystroke. Initial implementation uses explicit submission while preserving the common popup's keyboard flow. Debounced search-as-you-type may follow once remote latency and cancellation behavior are measured. Do not close a transport merely to cancel an ordinary filename query or claim hard cancellation of a blocked filesystem operation.
+Only one discovery request may be in flight. A newer query retires its results immediately and retains at most one replacement intent; it does not queue every keystroke. The accepted initial implementation uses explicit submission. The 0.69 candidate adds the fixed Files-only settlement contract below, with independent deterministic, process and native gates; it does not establish measured remote responsiveness. Do not close a transport merely to cancel an ordinary filename query or claim hard cancellation of a blocked filesystem operation.
 
 The response is an observation, not a filesystem lease. Result activation validates captured identity and uses ordinary Open; files may have changed since discovery. Dirty open buffers are reused without another Read and retain text and Undo. A filename-only reopen or preview preserves their selection; a text-hit activation intentionally navigates to its historical line hint and records the departure for Back. No implicit Save or retargeting occurs.
 
@@ -135,10 +136,10 @@ added Recent Files with bounded functional acceptance and a preserved native
 strict timing failure. **0.65.1** accepted explicit current-file Project selection
 and the narrow accepted-search CJK font trigger. **0.66.2** accepted continuous
 Text preview. **0.67.0** passed exact CI and packages but failed its native
-shortcut entry gate. **0.67.1** is the latest bounded accepted baseline, adding
-the visible File Structure menu with only Trust-off negative native coverage;
-this does not complete Phase C. **0.68** prepares the local current-file Find
-loop below and does not complete B2 or add semantic navigation.
+shortcut entry gate. **0.67.1** accepted the visible File Structure menu with only Trust-off negative
+native coverage; this does not complete Phase C. **0.68.0** accepted the bounded
+local current-file Find loop. **0.69** prepares Files-only automatic settlement
+below; it does not complete B2, add semantic navigation or establish performance.
 
 ### Recent Files (0.64 bounded functional acceptance)
 
@@ -301,7 +302,7 @@ inherited-member query or general IDEA parity is added. See
 [File Structure](FILE_STRUCTURE.md) and the
 [phase report](TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
 
-### Current 0.68 current-file Find candidate
+### Accepted 0.68.0 current-file Find loop
 
 Complete the occurrence-and-return loop on the active draft, including unsaved
 text. Reuse the existing literal, case-sensitive, non-overlapping match engine,
@@ -327,20 +328,63 @@ Undo/Redo, explicit Replace preview/Apply and retained Project Text state.
 There are zero additional backend operations, provider or protocol changes,
 Trust changes, new regex/case/word options, global highlighting or persistence.
 
-The [offline guide](FIND_AND_RETURN.md#current-file-find-loop-068-candidate)
-contains the complete interaction contract. The 0.68.0 local aggregate passed
-**2,176/0/71 across 50 Rust suites**, with strict checks, Python **804 total /
-zero failures / ten skipped across 29 suites**, independent input review and all
-four current-artifact process proofs passing. Browse v5 keeps **57 fields / 14
-operations / zero added Find operations**. Exact CI, packages and any bounded
-native claim remain separate pending gates in the
-[0.68 report](TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md).
+The [offline guide](FIND_AND_RETURN.md#current-file-find-loop-068-bounded-acceptance)
+contains the complete interaction contract. Exact dual-platform CI, all three
+packages and the second bounded Linux native journey passed as recorded in the
+[current report](TEST_REPORT.md#accepted-0680-bounded-baseline). Browse v5 keeps
+**57 fields / 14 operations / zero added Find operations**. The original
+[0.68 preparation report](TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md) retains its
+local development failures and earlier pending state.
+
+### Current 0.69 Files search-as-you-type candidate
+
+Only Files query and Directory scope receive automatic settlement. Each valid
+committed edit starts a fresh fixed **250 ms** interval; repainting does not
+renew it. Enter or Find flushes the current tuple immediately, deduplicating an
+identical already-pending request. Preserve one FindFiles in flight and at most
+one latest replacement; do not queue every edit. Changing any query/scope byte
+immediately retires old rows, gestures, preview and activation tickets. A → B → A
+is a fresh request identity, never permission to revive the first A result.
+
+Automatic settlement and accepted/late replies cannot steal focus. Hiding,
+Escape, provider/context/connection changes and foreign ownership retire the
+pending intent. Retiring intent is not hard cancellation of backend work. Busy,
+error and unsupported states must remain visible without automatic polling or
+retry. A new valid edit or clean explicit submission is needed after such a stop.
+
+An empty query with root scope displays only open/loaded context with zero
+FindFiles; an empty query with a nonempty scope is invalid. Old or unsupported
+peers keep labelled local snapshot filtering with zero FindFiles. Project Text
+still requires explicit Enter/Find. File preview remains explicitly requested,
+so settling a query adds no content Read or editor mutation. Keep v1 literal
+Unicode-lowercase matching, ranking, exclusions, caps and incomplete-result
+semantics unchanged; no CamelCase, index, watcher or performance claim is added.
+
+While IME composition is active, admit no automatic search. A clear terminal
+commit may start the entire 250 ms interval. Empty Commit, Disabled without a
+clear committed ending, or a new preedit followed by ambiguous cancellation
+pauses automatic settlement and explains how to resume. Never roll back or
+rewrite the visible TextEdit query/scope. Resume only after a fresh valid
+committed edit or clean explicit Find; lifecycle notifications are not proof of
+committed bytes. Supplied-event coverage is not a broad native IME guarantee.
+
+The [full offline contract](FIND_AND_RETURN.md#files-search-as-you-type-069-candidate)
+and [0.69 report](TEST_REPORT_PHASE69_FILES_LIVE_SEARCH.md) keep implementation,
+proof and native evidence distinct. The versioned **0.69.0** local aggregate
+passed **2,200/0/71 across 50 Rust suites**, strict Clippy and formatting; Python
+passed **805 total / ten skipped / zero failed suites across 29 suites**. Input
+and version review passed. Current-artifact Browse v6 passed **64 strict fields /
+16 operations**, preserving the prior 57-field contract and fourteen-operation
+prefix, with exactly two FindFiles and zero automatic Reads; all three retained
+process proofs passed too. The first versioned old-label assertion failure
+remains preserved. Final sealing, exact CI, packages and native validation
+remain pending.
 
 Connected-header **40/48** logical pixels and tools **28/34** title-row minima
 remain local frame checks at **13/18** font sizes, not arbitrary native viewport
 or IDEA pixel guarantees. Tool margins, separator and body add height; wrapping
 or scrolling must preserve reachability. The 0.63.3 accepted bounded journey
-does not validate the 0.68 candidate or erase earlier omitted narrow-window observations.
+does not validate the 0.69 candidate or erase earlier omitted narrow-window observations.
 
 Non-goals for A/B1: new Build/Run/DAP/test-execution features; deleting existing modules; package management; arbitrary Gradle/Maven execution; multi-file refactoring; SSH deployment/credential automation; persistent indexes; complete IDEA plugin compatibility; Windows privacy integration; unrestricted large files; generic Unicode search equivalence; automatic trust; or an unmeasured “faster/lighter than IDEA” claim.
 

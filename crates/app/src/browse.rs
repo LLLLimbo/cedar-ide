@@ -1,4 +1,4 @@
-//! Common, explicitly submitted Find and return entry. Provider adapters retain
+//! Common Find and return entry. Provider adapters retain
 //! authority; this view owns only selection, native input and one bounded preview.
 use crate::{
     navigation, search_keyboard, CedarApp, ConnectionState, Job, Tool, WorkspaceKey, AMBER, MUTED,
@@ -118,6 +118,19 @@ impl Discovery {
         self.replacement = None;
     }
 }
+
+// One committed Files edit owns one deadline. Repaints never renew it, and
+// an A → B → A edit gets a new epoch even when its strings match an old flight.
+struct FilesSettlement {
+    context: Context,
+    epoch: u64,
+    query: String,
+    scope: String,
+    version: Option<u32>,
+    deadline: f64,
+    last_seen: f64,
+}
+pub(super) const FILES_DEBOUNCE_SECONDS: f64 = 0.250;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PreviewSurface {
@@ -346,6 +359,9 @@ struct Input {
     held: HashSet<egui::Key>,
     claimed: HashSet<egui::Key>,
     composing: bool,
+    files_ime_commit: bool,
+    files_ime_cancel: bool,
+    files_edit: Option<Target>,
     key: Option<KeyIntent>,
     pressed: Option<Presented>,
     pressed_row_eligible: bool,
@@ -388,6 +404,10 @@ pub(super) struct Browse {
     scope: String,
     submitted: String,
     discovery: Discovery,
+    files_settlement: Option<FilesSettlement>,
+    // egui writes preedit into its String. Keep native text intact and pause
+    // automatic admission until a clear commit or a later explicit action.
+    files_composition: bool,
     epoch: u64,
     exhausted: bool,
     snapshot: Option<navigation::LoadedSnapshot>,
@@ -472,6 +492,7 @@ impl Browse {
         }
         self.search_completed = None;
         self.discovery.retire();
+        self.files_settlement = None;
         self.rows.clear();
         self.selected = None;
         self.desired = None;
@@ -537,6 +558,7 @@ impl CedarApp {
         self.browse_switch(provider);
     }
     fn browse_switch(&mut self, provider: Provider) {
+        self.browse.files_composition = false;
         if self.browse.text_request.take().is_some() {
             self.search_state.retire();
         }
@@ -606,6 +628,7 @@ impl CedarApp {
         self.browse.focus = Some(Target::Group(first));
     }
     pub(super) fn browse_retire(&mut self) {
+        self.browse.files_composition = false;
         if self.browse.text_request.take().is_some() {
             self.search_state.retire();
         }
@@ -703,33 +726,27 @@ impl CedarApp {
         {
             return;
         }
-        let controls: Vec<_> = self
-            .browse
-            .input
-            .presented
-            .iter()
-            .filter(|item| {
-                matches!(
-                    item.token.target,
-                    Target::Query
-                        | Target::Scope
-                        | Target::TextScope
-                        | Target::Masks
-                        | Target::Files
-                        | Target::Text
-                        | Target::Submit
-                        | Target::Close
-                )
-            })
-            .cloned()
-            .collect();
-        self.browse.retire_view();
+        if self.browse.provider == Provider::Files {
+            if self.browse.files_composition || self.browse.input.composing {
+                return;
+            }
+            // Enter/Find flush a waiting edit, but never duplicate its already
+            // admitted flight or latest replacement.
+            if self.browse.discovery.pending_current()
+                && self
+                    .browse
+                    .discovery
+                    .desired
+                    .as_ref()
+                    .is_some_and(|ticket| self.discovery_ticket_current(ticket))
+            {
+                self.browse.files_settlement = None;
+                return;
+            }
+        }
+        self.retire_browse_view_keep_controls();
         if self.browse_refuse_exhaustion() {
             return;
-        }
-        for mut control in controls {
-            control.token = self.browse.token(control.token.target.clone());
-            self.browse.input.presented.push(control);
         }
         self.browse.submitted = self.browse.query.clone();
         self.browse.focus = Some(Target::Query);
@@ -750,36 +767,7 @@ impl CedarApp {
             }
         }
         match self.browse.provider {
-            Provider::Files => {
-                if self.backend_file_discovery_supported() && !self.browse.query.is_empty() {
-                    if let Err(error) = cedar_protocol::validate_file_discovery_request(
-                        &self.browse.query,
-                        &self.browse.scope,
-                        DEFAULT_FILE_DISCOVERY_RESULTS,
-                    ) {
-                        self.browse.message = Some(error.to_string());
-                        return;
-                    }
-                    let ticket = DiscoveryTicket {
-                        context: self.browse.context.as_ref().unwrap().clone(),
-                        epoch: self.browse.epoch,
-                        query: self.browse.query.clone(),
-                        scope: self.browse.scope.clone(),
-                        version: self.file_discovery.unwrap().version,
-                    };
-                    self.browse.discovery.desired = Some(ticket.clone());
-                    self.browse.discovery.replacement = Some(ticket);
-                } else if self.backend_file_discovery_supported() && !self.browse.scope.is_empty() {
-                    self.browse.message = Some(
-                        "Enter a filename query before searching this directory scope.".into(),
-                    );
-                } else if let Some(snapshot) = &self.browse.snapshot {
-                    let (rows, truncated) = snapshot.matching(&self.browse.query);
-                    self.browse.rows = rows.into_iter().map(Row::File).collect();
-                    self.browse.truncated = truncated;
-                    self.browse.selected = (!self.browse.rows.is_empty()).then_some(0);
-                }
-            }
+            Provider::Files => self.browse_admit_files(),
             Provider::ProjectText => {
                 self.search_state.deactivate();
                 if self.next_request == 0 || self.next_request == u64::MAX {
@@ -810,6 +798,155 @@ impl CedarApp {
             }
         }
     }
+    // Edits retire row gestures immediately, while the unchanged query/scope
+    // controls remain usable in the next native batch (including IME commit).
+    fn retire_browse_view_keep_controls(&mut self) {
+        let controls: Vec<_> = self
+            .browse
+            .input
+            .presented
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item.token.target,
+                    Target::Query
+                        | Target::Scope
+                        | Target::TextScope
+                        | Target::Masks
+                        | Target::Files
+                        | Target::Text
+                        | Target::Submit
+                        | Target::Close
+                )
+            })
+            .cloned()
+            .collect();
+        self.browse.retire_view();
+        for mut control in controls {
+            control.token = self.browse.token(control.token.target.clone());
+            self.browse.input.presented.push(control);
+        }
+    }
+
+    // Shared preparation only: automatic settlement must never run the
+    // explicit submit wrapper's retirement or keyboard-focus behavior.
+    fn browse_admit_files(&mut self) {
+        self.browse.submitted = self.browse.query.clone();
+        if self.backend_file_discovery_supported() && !self.browse.query.is_empty() {
+            if let Err(error) = cedar_protocol::validate_file_discovery_request(
+                &self.browse.query,
+                &self.browse.scope,
+                DEFAULT_FILE_DISCOVERY_RESULTS,
+            ) {
+                self.browse.message = Some(error.to_string());
+                return;
+            }
+            let ticket = DiscoveryTicket {
+                context: self.browse.context.as_ref().unwrap().clone(),
+                epoch: self.browse.epoch,
+                query: self.browse.query.clone(),
+                scope: self.browse.scope.clone(),
+                version: self.file_discovery.unwrap().version,
+            };
+            self.browse.discovery.desired = Some(ticket.clone());
+            self.browse.discovery.replacement = Some(ticket);
+        } else if self.browse.query.is_empty() && !self.browse.scope.is_empty() {
+            self.browse.message =
+                Some("Enter a filename query before searching this directory scope.".into());
+        } else if let Some(snapshot) = &self.browse.snapshot {
+            let (rows, truncated) = snapshot.matching(&self.browse.query);
+            self.browse.rows = rows.into_iter().map(Row::File).collect();
+            self.browse.truncated = truncated;
+            self.browse.selected = (!self.browse.rows.is_empty()).then_some(0);
+        }
+    }
+
+    fn arm_files_settlement(&mut self) {
+        if !self.browse_current() || self.browse.files_composition || self.browse.input.composing {
+            return;
+        }
+        let now = self.editor_ctx.input(|input| input.time);
+        if !now.is_finite() {
+            return;
+        }
+        self.browse.files_settlement = Some(FilesSettlement {
+            context: self.browse.context.as_ref().unwrap().clone(),
+            epoch: self.browse.epoch,
+            query: self.browse.query.clone(),
+            scope: self.browse.scope.clone(),
+            version: self.file_discovery.map(|descriptor| descriptor.version),
+            deadline: now + FILES_DEBOUNCE_SECONDS,
+            last_seen: now,
+        });
+        self.browse.message = Some("Waiting for typing to pause… Enter searches now.".into());
+    }
+
+    pub(super) fn finish_files_settlement(&mut self, ctx: &egui::Context, now: f64) {
+        let Some(mut settlement) = self.browse.files_settlement.take() else {
+            return;
+        };
+        if !self.browse_current()
+            || self.foreign_modal_owns_input(ctx)
+            || self.browse.provider != Provider::Files
+            || self.browse.files_composition
+            || self.browse.input.composing
+            || !settlement.context.current(self)
+            || settlement.epoch != self.browse.epoch
+            || settlement.query != self.browse.query
+            || settlement.scope != self.browse.scope
+            || settlement.version != self.file_discovery.map(|descriptor| descriptor.version)
+        {
+            if self.browse_current() && self.browse.provider == Provider::Files {
+                self.browse.message = Some("Automatic search paused because the search context changed. Edit the query or press Find to search.".into());
+                ctx.request_repaint();
+            }
+            return;
+        }
+        match preview_settlement_remaining(now, settlement.last_seen, settlement.deadline) {
+            None => {
+                self.browse.message =
+                    Some("Typing pause was interrupted. Press Enter to search.".into());
+                ctx.request_repaint();
+            }
+            Some(remaining) if remaining <= 0.0 => {
+                self.browse.message = None;
+                self.browse_admit_files();
+                ctx.request_repaint();
+            }
+            Some(remaining) => {
+                settlement.last_seen = now;
+                self.browse.files_settlement = Some(settlement);
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(remaining));
+            }
+        }
+    }
+
+    fn finish_files_composition(&mut self) {
+        if self.browse.provider != Provider::Files || self.browse.input.composing {
+            return;
+        }
+        if self.browse.files_composition
+            && (self.browse.input.files_ime_commit || self.browse.input.files_ime_cancel)
+        {
+            self.browse.files_composition = false;
+            if self.browse.input.files_ime_commit {
+                // A clear commit (even identical text) gets a full interval.
+                self.browse_query_changed();
+            } else {
+                // Disabled, empty Commit and ambiguous endings do not prove
+                // the final String committed. Preserve it exactly; only a new
+                // committed edit or explicit Find may admit these bytes.
+                self.retire_browse_view_keep_controls();
+                if self.browse_refuse_exhaustion() {
+                    return;
+                }
+                self.browse.submitted.clear();
+                self.browse.message = Some("Automatic search paused after composition. Edit the query or press Find to search.".into());
+                self.editor_ctx.request_repaint();
+            }
+        }
+    }
+
     fn browse_query_changed(&mut self) {
         if self.browse.provider == Provider::ProjectText {
             self.search_query = self.browse.query.clone();
@@ -818,7 +955,7 @@ impl CedarApp {
         if self.browse.text_request.take().is_some() {
             self.search_state.retire();
         }
-        self.browse.retire_view();
+        self.retire_browse_view_keep_controls();
         if self.browse_refuse_exhaustion() {
             return;
         }
@@ -829,7 +966,11 @@ impl CedarApp {
             // an empty intermediate layout would clamp its scroll to zero.
             self.restore_browse_text();
         }
-        self.browse.message = Some("Press Enter to submit this query.".into());
+        if self.browse.provider == Provider::Files {
+            self.arm_files_settlement();
+        } else {
+            self.browse.message = Some("Press Enter to submit this query.".into());
+        }
     }
     pub(super) fn browse_select(&mut self, index: usize) {
         self.validate_project_text_review();
@@ -1419,6 +1560,7 @@ impl CedarApp {
                 }
             }
         }
+        self.finish_files_settlement(ctx, ctx.input(|input| input.time));
         self.finish_browse_discovery(ctx);
         let owns_view = self.browse_current() && !self.foreign_modal_owns_input(ctx);
         if let Some((request, specification, result)) = self.browse.search_completed.take() {
@@ -1583,6 +1725,76 @@ impl CedarApp {
                     .as_ref()
                     .is_some_and(|row| self.browse_row_current(row))
         });
+        self.browse.input.files_ime_commit = false;
+        self.browse.input.files_ime_cancel = false;
+        self.browse.input.files_edit = None;
+        if allowed && self.browse.provider == Provider::Files {
+            // Conservative edit intent from the original owned batch, never
+            // replayed. Even a final-same Text/Paste is a fresh intent; a no-op
+            // Delete/Backspace alone is not. Widgets consume this once.
+            if raw.events.iter().any(|event| match event {
+                egui::Event::Text(_) | egui::Event::Paste(_) => true,
+                egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                    !text.is_empty() && text != "\n" && text != "\r"
+                }
+                _ => false,
+            }) {
+                self.browse.input.files_edit = self
+                    .browse
+                    .input
+                    .presented
+                    .iter()
+                    .find(|item| {
+                        Some(item.id) == focused
+                            && matches!(item.token.target, Target::Query | Target::Scope)
+                            && item.token == self.browse.token(item.token.target.clone())
+                    })
+                    .map(|item| item.token.target.clone());
+            }
+            let edits_files = focused == Some(self.browse.id(&Target::Query))
+                || focused == Some(self.browse.id(&Target::Scope));
+            if edits_files
+                && raw.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_))
+                    )
+                })
+                && !self.browse.files_composition
+            {
+                self.browse.files_composition = true;
+                self.browse_query_changed();
+            }
+            if self.browse.files_composition {
+                // Preserve order: a new preedit after a commit makes the
+                // final buffer uncommitted again, even if Disabled follows it.
+                for event in &raw.events {
+                    match event {
+                        egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_)) => {
+                            self.browse.input.files_ime_commit = false;
+                        }
+                        egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                            self.browse.input.files_ime_commit =
+                                !text.is_empty() && text != "\n" && text != "\r";
+                            self.browse.input.files_ime_cancel = true;
+                        }
+                        egui::Event::Ime(egui::ImeEvent::Disabled) => {
+                            self.browse.input.files_ime_cancel = true;
+                        }
+                        _ => {}
+                    }
+                }
+                if !raw.focused
+                    || raw
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, egui::Event::WindowFocused(false)))
+                {
+                    self.browse.input.files_ime_commit = false;
+                    self.browse.input.files_ime_cancel = true;
+                }
+            }
+        }
         let input = &mut self.browse.input;
         input.completed_row = prior_row.clone();
         input.prior_row = prior_row;
@@ -2323,15 +2535,19 @@ impl CedarApp {
             });
             let discovery_available = self.backend_file_discovery_supported();
             ui.label(RichText::new(match self.browse.provider {
-                Provider::Files if discovery_available => "Project files · explicit filename search · empty query shows open and loaded files",
+                Provider::Files if discovery_available => "Project files · search after a short typing pause · empty query shows open and loaded files",
                 Provider::Files => "Open and loaded files · project discovery unavailable · no folders are scanned",
                 Provider::ProjectText => "Project Text · case-sensitive literal disk search",
             }).small().color(MUTED));
             ui.label(RichText::new(format!("Workspace: {}", self.root)).small().color(MUTED));
             let query_id = self.browse.id(&Target::Query);
             if self.browse.focus == Some(Target::Query) && !ui.is_sizing_pass() { ui.memory_mut(|memory| memory.request_focus(query_id)); }
-            let query = ui.add(egui::TextEdit::singleline(&mut self.browse.query).id(query_id).char_limit(4096).desired_width(f32::INFINITY).hint_text("Enter query, then press Enter"));
-            let changed = query.changed();
+            let previous_query = (self.browse.provider == Provider::Files).then(|| self.browse.query.clone());
+            let query = ui.add(egui::TextEdit::singleline(&mut self.browse.query).id(query_id).char_limit(4096).desired_width(f32::INFINITY).hint_text(if self.browse.provider == Provider::Files { "Type a filename; Enter searches now" } else { "Enter query, then press Enter" }));
+            let edit_intent = self.browse.input.files_edit == Some(Target::Query);
+            if edit_intent { self.browse.input.files_edit = None; }
+            let changed = (query.changed() && previous_query.as_ref() != Some(&self.browse.query))
+                || (edit_intent && (query.changed() || query.has_focus()));
             if changed { self.browse_query_changed(); submit = false; select = None; preview = false; open = false; }
             self.browse_response(ui, Target::Query, &query);
             if self.browse.provider == Provider::Files {
@@ -2339,8 +2555,12 @@ impl CedarApp {
                     ui.horizontal(|ui| {
                         ui.label("Directory scope");
                         let id = self.browse.id(&Target::Scope);
+                        let previous_scope = self.browse.scope.clone();
                         let response = ui.add(egui::TextEdit::singleline(&mut self.browse.scope).id(id).char_limit(4096).desired_width(ui.available_width()).hint_text("Workspace-relative directory; empty searches workspace"));
-                        if response.changed() { self.browse_query_changed(); submit = false; select = None; preview = false; open = false; }
+                        let edit_intent = self.browse.input.files_edit == Some(Target::Scope);
+                        if edit_intent { self.browse.input.files_edit = None; }
+                        if (response.changed() && previous_scope != self.browse.scope)
+                            || (edit_intent && (response.changed() || response.has_focus())) { self.browse_query_changed(); submit = false; select = None; preview = false; open = false; }
                         self.browse_response(ui, Target::Scope, &response);
                     });
                     ui.label(RichText::new(format!("Excluded directories: {}. Literal matching uses Unicode lowercase, without normalization.", cedar_protocol::FILE_DISCOVERY_EXCLUDED_DIRECTORIES.join(", "))).small().color(MUTED));
@@ -2408,6 +2628,7 @@ impl CedarApp {
             });
             if !wide { self.browse_preview_panel(ui, (ctx.screen_rect().height() - 400.0).clamp(45.0, 180.0)); }
         });
+        self.finish_files_composition();
         // Same modal quarantine as the legacy chooser: entry/exit events cannot
         // become edits in the underlying editor, even before focus settles.
         ctx.input_mut(|input| {
