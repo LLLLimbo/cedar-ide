@@ -1,6 +1,6 @@
 # Cedar: project browsing and navigation roadmap
 
-Design decision, 2026-10-12, with delivery status updated for the 0.63.3 shell candidate. This roadmap does not itself establish a new release or acceptance.
+Design decision, 2026-10-12, with delivery status updated for the 0.64 Recent Files candidate. This roadmap does not itself establish a new release or acceptance.
 
 ## Product decision and baseline
 
@@ -9,16 +9,15 @@ Cedar will prioritize understanding and navigating projects: finding files and t
 The interaction reference is **IntelliJ IDEA 2026.2, Windows New UI, Dark theme, Compact density and default Windows shortcuts**. This is a design reference, not a claim of pixel-perfect, platform, language or feature parity. Cedar keeps its own product identity. Linux validation does not establish Windows GUI behavior.
 
 The original design baseline was accepted Cedar **0.59.3**. The current accepted
-bounded engineering baseline is **0.62.2**, public commit
-[`91aa84cb79547207ed4deb296a61834df26089ef`](https://github.com/LLLLimbo/cedar-ide/commit/91aa84cb79547207ed4deb296a61834df26089ef),
-with [CI 38282992861](https://github.com/LLLLimbo/cedar-ide/actions/runs/38282992861),
+bounded engineering baseline is **0.63.3**, public commit
+[`5b6af6c51bfa8e460fc4b4b6367d09d744b1df78`](https://github.com/LLLLimbo/cedar-ide/commit/5b6af6c51bfa8e460fc4b4b6367d09d744b1df78),
+with [CI 38346482830](https://github.com/LLLLimbo/cedar-ide/actions/runs/38346482830),
 three exact-source packages and a separate bounded Linux native journey.
-[The verification report](TEST_REPORT.md#accepted-0622-bounded-scoped-search-baseline)
-keeps those evidence types and their limitations distinct. **0.63.3 is an
-unaccepted frontend shell candidate**. Its 0.63.2 predecessor passed CI and
-package checks but did not complete native acceptance; neither replaces 0.62.2.
-The original compatibility and phase decisions below retain their stated
-historical reference versions.
+[The verification report](TEST_REPORT.md#accepted-0633-bounded-browsing-shell-baseline)
+keeps those evidence types, earlier failures and their limitations distinct.
+**0.64 Recent Files is an unaccepted candidate** and does not replace that
+accepted baseline. Original compatibility and phase decisions retain their
+stated historical reference versions.
 
 ### Delivery decision
 
@@ -110,46 +109,55 @@ The response is an observation, not a filesystem lease. Result activation valida
 | Later | Persistent file index/watchers, split editors, richer recent locations and additional languages | Add only when measured user journeys justify the storage/lifecycle cost. |
 
 Delivery status: **0.61.0** accepted same-session retained grouped text results;
-**0.62.2** is the latest accepted bounded baseline, adding B2's Directory/File
-masks subset under the [Scoped Project Text contract](SCOPED_PROJECT_TEXT.md)
-and the corrected same-row double-click guard. Explicit submission remains.
-This does not mark all of B2 complete or add case/word options, regex, live
-queries or a parity claim.
+**0.62.2** accepted the Directory/File masks subset and corrected same-row
+activation under the [scoped-search contract](SCOPED_PROJECT_TEXT.md). Explicit
+submission remains; this does not complete all B2 options. **0.63.3** is the latest
+accepted bounded baseline, adding the connected browsing shell and its narrow
+Alt+1 companion correction. Its native evidence is limited to the recorded Linux
+journey; earlier failures and ambiguous observations remain preserved.
 
-### Current 0.63.3 shell candidate
+### Current 0.64 Recent Files candidate
 
-The next slice improves the connected Project/editor/Find journey using the
-existing providers and state. Workspace setup moves behind a **Workspace** menu
-while connection, errors, recovery and dirty state remain accessible. A **Tools**
-menu keeps Git, Commands, Language and Tests reachable. Back/Forward appears in
-the editor tab band without changing the underlying location history.
-**Alt+1** should focus a useful Project control while preserving Find;
-**Ctrl/Cmd+J** should reopen Find at an active visible selected hit, otherwise its
-query, and hiding it should restore the captured editor context.
+The next slice adds a bounded path list for **This connection**. It remembers only
+settled active files with known revisions, at most **64 paths**, **256 KiB of
+path bytes** in total and **4,096 bytes per path**. Closing a tab retains its path,
+not its text or caret. Clear, disconnect, reconnect, workspace changes and app
+restart empty the list; idle repaint cannot repopulate it.
 
-The current correction is narrowly limited to the clean Alt+Num1 shortcut with
-one matching `Text("1")` companion. It must preserve the draft while focusing
-Project and allow a same-held-key repeat fence only after guarded focus succeeds.
-The prior shipping native check retained Find but lacked a functional focus
-witness; a separate local diagnostic exposed text reaching the editor. Those
-observations remain distinct. The new correction has passed its local focused,
-aggregate and retained normal-agent checks; exact-commit CI, packages and native
-acceptance remain pending.
+**Ctrl+E on Windows/Linux** and **Cmd+E on macOS** open the candidate. macOS Ctrl+E
+keeps its editor behavior. A local filter narrows remembered paths, with
+**Open/Closed** state visible. Opening an already-live dirty file reuses its
+buffer with zero Read. Opening a closed path uses ordinary Open/Read with its
+default caret position. Recent Files stores and restores no closed draft, caret
+or selection.
 
-Connected-header heights of **40/48** logical pixels and tools **title-row
-minimum heights of 28/34** are design targets for the **13/18** font-size checks.
-The tools' enclosing margins, separator and body add height; 28/34 is not the
-whole header or panel height. These are not measured IDEA pixels or accepted
-fixed bounds. At **780 × 540**, wrapping or scrolling must keep
-controls reachable; larger text or state messages may need more height. These
-geometry and focus claims remain pending in the
-[0.63.3 candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+This slice adds no preview, edited-only switch, background index, protocol or
+backend operation, persistence, caret history, execution permission or IDEA
+parity claim. Filename discovery and project text search remain in Find; exact
+return positions remain the responsibility of open-buffer location history.
+See the [Recent Files guide](RECENT_FILES.md).
 
-This slice adds no backend or protocol behavior, new search flags, Build/Run
-features, semantic provider, execution trust, theme-parity or performance claim.
-The exact candidate must pass its changed focus/geometry paths and retained
-safety checks before it can be accepted. The 0.62.2 native journey did not run
-its optional narrow-layout checks and cannot supply that evidence.
+The final 0.64.0 local aggregate passed 2,082/0/70 across 50 suites, including
+19 new Recent Files/control tests. The updated Python aggregate reported
+791 total tests, zero failures and 10 skips across 28 suites; strict Clippy passed.
+The final format check and current-version normal-agent proofs passed. Exact
+CI, packages and native acceptance remain pending. The Browse process proof
+keeps its historical seven-operation prefix and all assertions, then adds the
+recent closed-file reopen and dirty-buffer reuse for an eight-operation version-2
+receipt. Its first caret-assumption failure is preserved; the expected cursor
+now comes from the ordinary-Open baseline. A full eight-operation runtime
+receipt passed before the version bump; the final 0.64.0 rerun passed the strict
+29-field version-2 validator, alongside the retained ten-operation scoped proof.
+The canonical compile/release pipeline was not run locally. Focused, aggregate,
+process, exact CI, package and native gates are reported separately in the
+[candidate report](TEST_REPORT_PHASE64_RECENT_FILES.md).
+Existing seven-operation historical evidence is unchanged.
+
+Connected-header **40/48** logical pixels and tools **28/34** title-row minima
+remain local frame checks at **13/18** font sizes, not arbitrary native viewport
+or IDEA pixel guarantees. Tool margins, separator and body add height; wrapping
+or scrolling must preserve reachability. The 0.63.3 accepted bounded journey
+does not validate 0.64 or erase earlier omitted narrow-window observations.
 
 Non-goals for A/B1: new Build/Run/DAP/test-execution features; deleting existing modules; package management; arbitrary Gradle/Maven execution; multi-file refactoring; SSH deployment/credential automation; persistent indexes; complete IDEA plugin compatibility; Windows privacy integration; unrestricted large files; generic Unicode search equivalence; automatic trust; or an unmeasured “faster/lighter than IDEA” claim.
 

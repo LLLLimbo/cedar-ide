@@ -72,6 +72,7 @@ struct Dialog {
 
 enum Kind {
     Browse,
+    Recent,
     Files {
         selected: Option<Arc<str>>,
         scope: FileScope,
@@ -568,7 +569,7 @@ fn is_keyboard(event: &egui::Event) -> bool {
     )
 }
 
-fn discard_keyboard(ctx: &egui::Context) {
+pub(super) fn discard_keyboard(ctx: &egui::Context) {
     ctx.input_mut(|input| {
         input.events.retain(|event| !is_keyboard(event));
     });
@@ -709,6 +710,9 @@ impl CedarApp {
     pub(super) fn dismiss_navigation(&mut self) {
         if let Some(dialog) = self.navigation.dialog.take() {
             self.navigation.blocked_frame = true;
+            if matches!(dialog.kind, Kind::Recent) {
+                self.recent_retire();
+            }
             if matches!(dialog.kind, Kind::Browse) {
                 self.browse_retire();
                 self.navigation.restore_focus = false;
@@ -738,6 +742,23 @@ impl CedarApp {
             deferred_input: Vec::new(),
             deferred_line_refusal: None,
             kind: Kind::Browse,
+        });
+        self.navigation.blocked_frame = true;
+    }
+
+    pub(super) fn show_recent_marker(&mut self) {
+        self.navigation_changed();
+        self.navigation.restore_focus = false;
+        self.navigation.dialog = Some(Dialog {
+            document: self.active_document,
+            generation: self.generation,
+            mode_epoch: self.explorer.mode_epoch,
+            mode: self.explorer.mode,
+            serial: self.navigation_epoch,
+            focus: false,
+            deferred_input: Vec::new(),
+            deferred_line_refusal: None,
+            kind: Kind::Recent,
         });
         self.navigation.blocked_frame = true;
     }
@@ -924,6 +945,15 @@ impl CedarApp {
             self.navigation.blocked_frame = true;
             return;
         }
+        if self
+            .navigation
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| matches!(dialog.kind, Kind::Recent))
+        {
+            self.recent_window(ctx);
+            return;
+        }
         if self.browse_marker_open() {
             self.browse_window(ctx);
             return;
@@ -1018,7 +1048,7 @@ impl CedarApp {
         let modal = egui::Modal::new(egui::Id::new("navigation_modal")).show(ctx, |ui| {
             ui.set_width((ctx.screen_rect().width() - 64.0).clamp(240.0, 560.0));
             match &mut dialog.kind {
-                Kind::Browse => unreachable!("Browse has its own presentation"),
+                Kind::Browse | Kind::Recent => unreachable!("Local provider has its own presentation"),
                 Kind::Files { selected, scope, snapshot, loaded_directories, error, refused, scope_epoch, presented, pressed } => {
                     // Preserve the identity that was actually displayed before a
                     // List reply or buffer update in this frame can move rows.
@@ -1235,7 +1265,7 @@ impl CedarApp {
             ctx.request_repaint();
         }
         let input_id = match &dialog.kind {
-            Kind::Browse => unreachable!("Browse has its own presentation"),
+            Kind::Browse | Kind::Recent => unreachable!("Local provider has its own presentation"),
             Kind::Files { .. } => FILE_INPUT,
             Kind::Line { .. } => LINE_INPUT,
         };

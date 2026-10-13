@@ -69,6 +69,7 @@ impl CedarApp {
         }
         // Intent starts here, after this frame's ordered response drain. Never
         // reclassify an acknowledged save or preempt an earlier completed read.
+        self.reset_recent_files();
         self.state = ConnectionState::Disconnecting;
         self.navigation_changed();
         self.workspace_access = workspace_access::Access::default();

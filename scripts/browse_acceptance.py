@@ -18,7 +18,7 @@ from copy_draft_acceptance import (
 from report_triage_diagnostics import CapturedFailure, bounded_process
 
 BACKEND_TEST = "file_discovery_normal_agent_finds_untouched_binary_and_large_paths_without_trust"
-APP_TEST = "browse_tests::browse_normal_agent_find_preview_open_and_exact_return"
+APP_TEST = "browse_tests::browse_normal_agent_find_recent_reopen_and_exact_return"
 PREFIX = "browse_normal_acceptance "
 COMPILE_TIMEOUT = 120
 BACKEND_TIMEOUT = 180
@@ -77,12 +77,14 @@ def select_artifacts(data, root, platform):
 
 def expected_receipt():
     return {
+        "receipt_version": 2,
         "operation_ledger": [
             {"op": "Hello"}, {"op": "List", "path": ""},
             {"op": "Read", "path": "origin.txt"},
             {"op": "FindFiles", "query": "Needle.rs", "scope": "", "limit": 100},
             {"op": "Read", "path": TARGET}, {"op": "Read", "path": TARGET},
             {"op": "Search", "query": "needle", "limit": 500},
+            {"op": "Read", "path": TARGET},
         ],
         "source_sha256": [
             ["origin.txt", hashlib.sha256("saved Ω😀\r\nneedle second\nlast\n".encode()).hexdigest()],
@@ -103,6 +105,12 @@ def expected_receipt():
         "shell_hide_exact_editor_return": True,
         "shell_state_preserved": True,
         "shell_transition_operations": 0,
+        "recent_popup_filter_select_operations": 0,
+        "recent_closed_reopen_reads": 1,
+        "recent_closed_reopen_normal_position": True,
+        "recent_live_dirty_reuse_reads": 0,
+        "recent_live_dirty_reuse_exact": True,
+        "recent_find_state_preserved": True,
     }
 
 

@@ -4,7 +4,28 @@
 
 Cedar is a native Rust application using `eframe`/`egui` 0.31.1 and the Glow renderer. It does not embed a browser or a JVM. The remote workspace agent and optional language server run separately from the UI.
 
-## Find and return: accepted 0.61.0, scoped search in progress
+## Current baseline and Recent Files candidate
+
+The latest accepted bounded baseline is **0.63.3**, with exact-commit CI, three
+package audits and a separate bounded Linux native journey recorded in the
+[verification report](../../docs/TEST_REPORT.md#accepted-0633-bounded-browsing-shell-baseline).
+The **0.64 Recent Files candidate remains unaccepted**. It keeps up to 64 paths
+from settled active files with known revisions in the current connection, within
+256 KiB total path bytes and 4,096 bytes per path. Clear, disconnect, reconnect,
+workspace change and restart clear it; idle frames do not repopulate it.
+
+Ctrl+E on Windows/Linux and Cmd+E on macOS open its local filter and Open/Closed
+rows. macOS Ctrl+E keeps its editor behavior. A live dirty file is reused with
+zero Read; a closed path uses ordinary Open/Read with its default caret position.
+Only the path survives tab closure; Recent Files stores and restores no closed
+text, caret or selection. See the
+[guide](../../docs/RECENT_FILES.md) and [candidate report](../../docs/TEST_REPORT_PHASE64_RECENT_FILES.md).
+
+## Preserved Find and return: 0.61.0 / 0.62 preparation
+
+The following historical delivery states precede the accepted 0.62.2 scoped
+search and 0.63.3 shell checkpoints. Their old pending statements do not revoke
+those later results or validate 0.64.
 
 Use **Find…**, **Ctrl+Shift+N** for Files, or **Ctrl+Shift+F** for Project Text.
 Select **Search** in the sidebar for the retained **FIND RESULTS** tool. Both
@@ -103,7 +124,7 @@ The optional argument prefills the local workspace field. Select **Connect works
 - Directory navigation, new-file drafts, up to 32 tabs, and path-based quick open
 - UTF-8 editing, line numbers, Java/Kotlin/Rust lexical colors, and case-sensitive find
 - Revision-checked saves, disk-version inspection, and explicit confirmation before discarding a dirty tab or quitting
-- Explicit project text search with historical disk lines; accepted 0.61.0 retains shared groups and preview, while 0.62 directory/file-mask search remains in progress. The accepted 0.57.6 historical evidence and its inactive-row pointer-hit limitation remain recorded below
+- Explicit project text search with historical disk lines; accepted 0.61.0 retains shared groups and preview, 0.62.2 adds bounded directory/file masks, and 0.63.3 provides the connected browsing shell. The accepted 0.57.6 historical evidence and its inactive-row pointer-hit limitation remain recorded below
 - Trusted-workspace Git status and explicit executable commands with literal argument rows, cancellable task output, and saved project profiles in `cedar.tasks.json`
 
 Shortcuts:
@@ -111,6 +132,7 @@ Shortcuts:
 | Shortcut | Action |
 | --- | --- |
 | Ctrl/Cmd+P | Choose an open buffer or current-directory file; explicitly open a relative path |
+| Ctrl+E on Windows/Linux; Cmd+E on macOS | Open candidate Recent Files for this connection; macOS Ctrl+E is unchanged |
 | Ctrl+Shift+N | Open Find and return with Files selected |
 | Ctrl+Shift+F | Open Find and return with Project Text selected |
 | Ctrl/Cmd+[ or Ctrl+Alt+Left | Back to an unchanged open-buffer location |
@@ -120,7 +142,7 @@ Shortcuts:
 | Ctrl/Cmd+S | Save |
 | Ctrl/Cmd+W | Close the current tab |
 | Ctrl/Cmd+J | Hide tools and return to the editor, or reopen the selected tool |
-| Ctrl/Cmd+Shift+E or Alt+1 | Candidate Project focus route, preserving Find and its current row and issuing no request; acceptance pending |
+| Ctrl/Cmd+Shift+E or Alt+1 | Focus Project, preserving Find and its current row and issuing no request |
 | Ctrl+Space | Request completion |
 | F12 | Go to definition |
 | Ctrl/Cmd+K | Show hover information |
@@ -133,12 +155,12 @@ language services. The tools **x** button also returns to the editor. Without an
 open document, hiding tools uses an available sidebar anchor. Access shortcuts
 yield to modal input and ignore mixed input batches rather than diverting text,
 paste or another action. Holding the shortcut does not repeatedly toggle tools.
-The 0.63.3 candidate narrowly admits a clean Alt+Num1 followed by one matching
+The accepted 0.63.3 correction narrowly admits a clean Alt+Num1 followed by one matching
 `Text("1")` companion, consuming that companion before editor handling. Only
 successful guarded Project focus arms its same-held-key repeat fence. Other
 text and mixed input retain their rejection rules. Space, Ctrl/Cmd+J and the
-key-only route are unchanged. See the [candidate report](../../docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md)
-for validation limits; the latest accepted bounded baseline remains 0.62.2.
+key-only route are unchanged. See the [0.63.3 report](../../docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md)
+for the bounded acceptance and preserved earlier limitations.
 These shortcuts provide an alternative at small window heights; expanded forms
 and crowded center controls still have separate responsive-layout limitations.
 

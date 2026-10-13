@@ -33,6 +33,7 @@ SOURCE_FILES = {
     "THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
     "docs/WINDOWS_QUICKSTART.zh-CN.md": "WINDOWS_QUICKSTART.zh-CN.md",
     "docs/FIND_AND_RETURN.md": "FIND_AND_RETURN.md",
+    "docs/RECENT_FILES.md": "RECENT_FILES.md",
     "docs/SCOPED_PROJECT_TEXT.md": "SCOPED_PROJECT_TEXT.md",
     "docs/WINDOWS_JAVA_SETUP.md": "WINDOWS_JAVA_SETUP.md",
     "docs/GIT_VIEWS.md": "GIT_VIEWS.md",
@@ -91,19 +92,33 @@ def require(condition, message):
         raise BundleError(message)
 
 
-def validate_entry_guide_links(payload):
-    """Check inline links used by our two entry guides, not arbitrary Markdown.
+MAX_GUIDE_DEPTH = 32
+MAX_GUIDE_BYTES = 16 * 1024 * 1024
 
-    Remote links are never fetched. Local targets must name an exact packaged
-    file; a fragment refers only to a section and does not change that target.
+
+def validate_packaged_guide_links(payload, entries):
+    """Follow this bundle's inline local guide links, once per exact payload name.
+
+    This is the existing bounded inline-link format, not arbitrary Markdown.
+    Remote URLs are never fetched. Local links must name a packaged file exactly;
+    only a section fragment is stripped. No path decoding or traversal occurs.
     """
-    for name in ("WINDOWS_QUICKSTART.zh-CN.md", "JAVA_IMPLEMENTATIONS.md"):
+    pending = [(name, 0) for name in dict.fromkeys(entries)]
+    discovered = {name for name, _ in pending}
+    require(len(discovered) <= MAX_FILES, "Guide link file limit exceeded")
+    total_bytes = 0
+    # Appending while traversing this list gives breadth-first discovery, so a
+    # cycle cannot grow the queue or make the depth depend on link ordering.
+    for name, depth in pending:
         try:
-            text = payload[name].decode("utf-8")
+            data = payload[name]
+            require(len(data) <= MAX_TEXT_BYTES, "Guide text size limit exceeded")
+            total_bytes += len(data)
+            require(total_bytes <= MAX_GUIDE_BYTES, "Guide link text budget exceeded")
+            text = data.decode("utf-8")
         except (KeyError, UnicodeDecodeError) as error:
             raise BundleError(f"Missing or invalid UTF-8 entry guide: {name}") from error
-        # Disjoint delimiters prevent rescanning a long malformed marker suffix
-        # from every '['. Nested Markdown labels/targets are outside this format.
+        # Disjoint delimiters prevent rescanning malformed marker suffixes.
         for match in re.finditer(r"\[[^\[\]\r\n]+\]\(([^()\[\]\r\n]+)\)", text):
             target = match.group(1)
             if target.startswith(("https://", "http://", "#")):
@@ -111,6 +126,16 @@ def validate_entry_guide_links(payload):
             filename = target.split("#", 1)[0]
             require(filename in payload,
                     f"Entry guide {name} links an unpackaged target: {target}")
+            if filename.endswith(".md") and filename not in discovered:
+                require(depth < MAX_GUIDE_DEPTH, "Guide link depth limit exceeded")
+                require(len(discovered) < MAX_FILES, "Guide link file limit exceeded")
+                discovered.add(filename)
+                pending.append((filename, depth + 1))
+
+
+def validate_entry_guide_links(payload):
+    validate_packaged_guide_links(payload,
+                                 ("WINDOWS_QUICKSTART.zh-CN.md", "JAVA_IMPLEMENTATIONS.md"))
 
 
 def safe_name(name):

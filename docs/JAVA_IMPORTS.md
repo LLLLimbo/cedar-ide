@@ -49,4 +49,4 @@ rather than request client application. The command disables the interactive
 chooser; the [pinned import operation](https://github.com/eclipse-jdt/eclipse.jdt.ui/blob/54bd63e6453a7eb5db0bfc1d60f17e9568095619/org.eclipse.jdt.core.manipulation/common/org/eclipse/jdt/core/manipulation/OrganizeImportsOperation.java#L740)
 leaves ambiguous choices unresolved. No general execute-command route is exposed.
 
-Actual acceptance for this checkpoint is tracked in [the verification report](TEST_REPORT.md).
+Actual acceptance for this checkpoint is tracked in [the verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md).

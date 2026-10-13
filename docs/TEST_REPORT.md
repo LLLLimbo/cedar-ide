@@ -1,6 +1,92 @@
-# Verification checkpoint — 0.63.3 Alt+1 companion correction candidate
+# Verification checkpoint — 0.64.0 Recent Files candidate
 
-## Current Alt+1 companion correction candidate
+## Current Recent Files candidate
+
+**0.64.0 is an unaccepted candidate. The latest accepted bounded baseline is
+0.63.3.** Recent Files is limited to 64 settled, known-revision active file paths
+in the current connection, with 256 KiB total path bytes and 4,096 bytes per path.
+Closing a tab retains its path without retaining closed text or caret state.
+Clear, disconnect, reconnect, workspace change and restart clear the list; idle
+frames cannot repopulate it. Open dirty buffers are reused with zero Read;
+closed paths use ordinary Open/Read with its ordinary default caret position.
+Recent Files stores and restores no closed caret or selection.
+
+The entry shortcut is Ctrl+E on Windows/Linux and Cmd+E on macOS, preserving
+macOS Ctrl+E. The UI provides a local filter, Open/Closed state, This connection
+scope and Clear. No preview, edited-only switch, index, protocol extension,
+persistence or parity claim is included. The version-2 Browse receipt appends
+Recent Files checks after the preserved seven-operation prefix, for eight
+operations total. See the
+[candidate report](TEST_REPORT_PHASE64_RECENT_FILES.md) and [guide](RECENT_FILES.md).
+
+The first new process attempt failed when a test assumed line 1, column 1 but
+observed line 4, column 1. This failure remains recorded. The pinned egui editor's
+ordinary fresh Open defaults to the end of the file. Actual-frame controls then
+passed with Recent and ordinary Open producing the same settled cursor and
+selection for identical bytes and for changed shorter bytes, using a new
+document and current revision without restoring historical caret state. The
+production Open behavior was unchanged. The process proof now binds its expected
+caret to the exact ordinary-Open baseline. An earlier preparation checkpoint
+passed 18/18 tests; a subsequent checkpoint passed 19 focused tests and the full
+eight-operation Browse runtime proof before the final version bump. These
+successes do not substitute for checks of the final 0.64.0 artifacts.
+
+### Current 0.64.0 local results
+
+The final Linux workspace/all-target/all-feature/locked aggregate passed
+**2,082/0/70 across 50 suites**, including app **1,366/0/53** and **19 new Recent
+Files/control tests**. The updated Python aggregate reported **791 total tests /
+zero failures / 10 skipped across 28 suites**. Strict Clippy passed. The first
+strict Clippy attempt failed on a test fixture's reassignment
+after default construction; equivalent direct initialization fixed that lint
+without production changes or a waiver. The failed attempt remains recorded.
+The final formatting check passed.
+
+Final-version normal-agent proofs passed their strict validators with the current
+app selected from Cargo JSON and the matching current agent: Browse uses the
+new exact **eight-operation / 29-field version-2** contract, while scoped search
+retains **ten operations**. These are direct local process proofs; the canonical
+compile/release pipeline was not run locally. Exact-commit CI, all three
+exact-source package audits and new bounded native acceptance remain pending.
+Earlier seven-operation historical Browse claims are unchanged.
+
+A prepublication documentation gap was corrected in the three bundle builders:
+they now include the Recent Files guide, with bounded validation of nested
+relative guide links and public repository URLs for reports. The focused package
+suite reported **119 total tests / zero failures / one skipped**, separately from
+the pending exact-source package audits. Three new corruption tests initially
+hit the size guard after changing file length; same-length mutations corrected
+the fixtures to exercise the intended SHA boundary without weakening validation.
+Those failures remain recorded. Application Rust, Cargo and workflow bytes were
+unchanged, so the existing Rust evidence is retained without claiming a new run.
+
+## Accepted 0.63.3 bounded browsing-shell baseline
+
+Public commit
+[`5b6af6c51bfa8e460fc4b4b6367d09d744b1df78`](https://github.com/LLLLimbo/cedar-ide/commit/5b6af6c51bfa8e460fc4b4b6367d09d744b1df78)
+passed all **four jobs** in
+[CI 38346482830](https://github.com/LLLLimbo/cedar-ide/actions/runs/38346482830)
+and all **three exact-source package audits**. Each platform ran **50 suites**:
+Linux **2,063 passed / zero failed / 70 ignored** and Windows
+**2,001 passed / zero failed / 114 ignored**.
+
+A fresh bounded Linux native journey observed functional Project Tree focus
+after Alt+1 without inserting `1` into the dirty draft, retained Find state,
+Ctrl+J focus transitions, explicit Preview, ordinary Open, Back and Undo, and
+Workspace/Tools menu Escape. These observations establish that bounded native
+journey separately from headless input and process proofs. They do not establish
+Windows/macOS GUI, real SSH, arbitrary viewport behavior or full IDEA parity.
+
+The earlier native failures, the ambiguous 0.63.2 Flat-mode observation, missing
+original evidence and diagnostic timing/setup limitations remain below. The new
+accepted journey neither reconstructs missing originals nor proves that earlier
+runs delivered the same native input batches.
+
+The following 0.63.3 preparation record predates its accepted checkpoint. Its
+then-pending CI, package and native statements describe that earlier point;
+they do not make 0.63.3 pending again or validate 0.64.
+
+## Preserved 0.63.3 Alt+1 companion preparation
 
 **0.63.3 is a correction candidate; the latest accepted bounded baseline remains
 0.62.2.** It addresses only the Project shortcut's exact clean input sequence:

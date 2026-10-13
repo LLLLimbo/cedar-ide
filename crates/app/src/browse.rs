@@ -17,6 +17,12 @@ pub(super) enum Provider {
     ProjectText,
 }
 
+#[derive(Clone, Copy)]
+enum GlobalEntry {
+    Browse(Provider),
+    Recent,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 enum Row {
     Project(ProjectCandidate),
@@ -249,7 +255,7 @@ struct Input {
     accepted_row: Option<(Token, egui::Id)>,
     row_click_eligible: bool,
     row_click_committed: bool,
-    shortcut: Option<(Provider, u64, Option<WorkspaceKey>)>,
+    shortcut: Option<(GlobalEntry, u64, Option<WorkspaceKey>)>,
     global_edges: Vec<GlobalEdge>,
     global_overflow: bool,
     retained_events: Option<usize>,
@@ -1242,18 +1248,7 @@ impl CedarApp {
             && !input.composing
             && input.held.is_empty()
             && !ctx.input(|state| state.pointer.any_down() || !state.keys_down.is_empty());
-        let pointer_only = raw.events.iter().all(|event| {
-            matches!(
-                event,
-                egui::Event::PointerMoved(_)
-                    | egui::Event::MouseMoved(_)
-                    | egui::Event::PointerButton {
-                        button: egui::PointerButton::Primary,
-                        ..
-                    }
-                    | egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Disabled)
-            )
-        });
+        let pointer_only = pointer_only(&raw.events);
         if !allowed
             || !pointer_only
             || was_composing
@@ -1361,8 +1356,8 @@ impl CedarApp {
             // completion and other shortcut classifiers see original evidence.
             // Only their later dispatch copy is consumed by browse_shortcuts.
             let shortcut = shortcut_provider(*key, *modifiers);
-            let global =
-                shortcut.is_some() || (claimed && matches!(key, egui::Key::N | egui::Key::F));
+            let global = shortcut.is_some()
+                || (claimed && matches!(key, egui::Key::N | egui::Key::F | egui::Key::E));
             if global && !input.global_overflow {
                 if input.global_edges.len() == MAX_GLOBAL_EDGES {
                     input.global_edges.clear();
@@ -1527,7 +1522,10 @@ impl CedarApp {
                 && !self.open_form
                 && !self.new_file
             {
-                self.show_browse(provider);
+                match provider {
+                    GlobalEntry::Browse(provider) => self.show_browse(provider),
+                    GlobalEntry::Recent => self.show_recent_files(),
+                }
             }
         }
     }
@@ -2116,18 +2114,36 @@ fn text_group_control(ui: &mut egui::Ui, id: egui::Id, label: &str) -> egui::Res
     response
 }
 
-fn shortcut_provider(key: egui::Key, modifiers: egui::Modifiers) -> Option<Provider> {
+fn shortcut_provider(key: egui::Key, modifiers: egui::Modifiers) -> Option<GlobalEntry> {
+    if crate::recent_files::shortcut(key, modifiers) {
+        return Some(GlobalEntry::Recent);
+    }
     (modifiers.ctrl && modifiers.shift && !modifiers.alt && !modifiers.mac_cmd)
         .then_some(match key {
-            egui::Key::N => Some(Provider::Files),
-            egui::Key::F => Some(Provider::ProjectText),
+            egui::Key::N => Some(GlobalEntry::Browse(Provider::Files)),
+            egui::Key::F => Some(GlobalEntry::Browse(Provider::ProjectText)),
             _ => None,
         })
         .flatten()
 }
 // One exact press, optional matching release and the native Space companion.
 // Mixed text, paste, IME, pointer, repeated or additional edges never activate.
-fn clean_press(events: &[egui::Event]) -> Option<(egui::Key, egui::Modifiers)> {
+pub(super) fn pointer_only(events: &[egui::Event]) -> bool {
+    events.iter().all(|event| {
+        matches!(
+            event,
+            egui::Event::PointerMoved(_)
+                | egui::Event::MouseMoved(_)
+                | egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    ..
+                }
+                | egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Disabled)
+        )
+    })
+}
+
+pub(super) fn clean_press(events: &[egui::Event]) -> Option<(egui::Key, egui::Modifiers)> {
     let mut press = None;
     let mut release = false;
     let mut space = false;
@@ -2153,7 +2169,7 @@ fn clean_press(events: &[egui::Event]) -> Option<(egui::Key, egui::Modifiers)> {
     press.filter(|(key, _)| !space || *key == egui::Key::Space)
 }
 
-fn valid_preview_path(path: &str) -> bool {
+pub(super) fn valid_preview_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 4096
         && !path.contains(['\0', '\\', ':'])

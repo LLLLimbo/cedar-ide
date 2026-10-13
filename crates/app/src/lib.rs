@@ -72,6 +72,7 @@ mod location_history_process_tests;
 mod model;
 mod navigation;
 mod profile_ui;
+mod recent_files;
 mod recovery;
 mod recovery_actor;
 #[cfg(test)]
@@ -440,6 +441,7 @@ pub struct CedarApp {
     language: language_ui::LanguagePanel,
     navigation: navigation::Navigation,
     browse: browse::Browse,
+    recent_files: recent_files::RecentFiles,
     location_history: location_history::LocationHistory,
     workspace_access: workspace_access::Access,
     new_file: bool,
@@ -558,6 +560,7 @@ impl CedarApp {
             language: language_ui::LanguagePanel::default(),
             navigation: navigation::Navigation::default(),
             browse: browse::Browse::default(),
+            recent_files: recent_files::RecentFiles::default(),
             location_history: location_history::LocationHistory::default(),
             workspace_access: workspace_access::Access::default(),
             new_file: false,
@@ -642,6 +645,7 @@ impl CedarApp {
         self.worker = None;
         self.language.reset();
         self.search_state.retire();
+        self.reset_recent_files();
         self.generation += 1;
         self.location_history.clear();
         self.pending.clear();
@@ -679,6 +683,7 @@ impl CedarApp {
         self.file_discovery = None;
         self.scoped_search = None;
         self.search_state.retire();
+        self.reset_recent_files();
         self.generation += 1;
         self.location_history.clear();
         self.explorer.reset_connection();
@@ -720,6 +725,7 @@ impl CedarApp {
     }
 
     fn disconnected(&mut self, message: String) {
+        self.reset_recent_files();
         self.settle_tab_close_transport_loss();
         self.cancel_tab_close();
         self.location_history.cancel_pending();
@@ -1137,6 +1143,7 @@ impl CedarApp {
                     self.file_discovery = file_discovery;
                     self.scoped_search = scoped_search;
                     self.state = ConnectionState::Ready;
+                    self.recent_connected();
                     self.error = None;
                     self.notice = "Workspace connected".into();
                     self.open_form = false;
@@ -2195,6 +2202,10 @@ impl CedarApp {
         workspace_access_tests::record(ui, "workspace_loaded_files", &loaded);
         if loaded.gained_focus() { loaded.scroll_to_me(None); }
         if loaded.clicked() { self.show_file_chooser(); ui.close_menu(); }
+        let recent = ui.add_enabled(self.ready(), egui::Button::new("Recent files · Ctrl/Cmd+E"));
+        #[cfg(test)]
+        workspace_access_tests::record(ui, "workspace_recent_files", &recent);
+        if recent.clicked() { self.show_recent_files(); ui.close_menu(); }
         });
     }
 
@@ -3388,6 +3399,7 @@ impl eframe::App for CedarApp {
         // Classify every surface from the same ordered native batch. Filtering
         // sooner could create a new clean action or hide a held key's release.
         let mut consumed = vec![false; raw_input.events.len()];
+        self.capture_recent_input(ctx, raw_input, &mut consumed);
         self.capture_browse_input(ctx, raw_input, &mut consumed);
         self.capture_test_report_input(ctx, raw_input, &mut consumed);
         self.capture_search_input(ctx, raw_input, &mut consumed);
@@ -3492,6 +3504,7 @@ impl eframe::App for CedarApp {
         self.finish_java_parameter_info_frame();
         self.finish_search_frame(ctx);
         self.browse_finish_frame(ctx);
+        self.finish_recent_frame(ctx);
     }
 }
 

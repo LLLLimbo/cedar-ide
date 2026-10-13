@@ -96,7 +96,8 @@ class ReceiptTests(unittest.TestCase):
         for name in (proof.BACKEND_TEST, proof.APP_TEST):
             proof.validate_execution(execution(name), name)
         receipt = proof.expected_receipt()
-        self.assertEqual(len(receipt["operation_ledger"]), 7)
+        self.assertEqual(len(receipt["operation_ledger"]), 8)
+        self.assertEqual(receipt["receipt_version"], 2)
         self.assertEqual({key: receipt[key] for key in (
             "retained_text_snapshot", "grouped_original_indices",
             "text_open_back_exact", "reopen_keeps_selection",
@@ -160,6 +161,41 @@ class ReceiptTests(unittest.TestCase):
             missing = {name: value for name, value in receipt.items() if name != key}
             with self.subTest(missing=key), self.assertRaises(proof.AcceptanceError):
                 proof.validate_execution(execution(proof.APP_TEST, missing), proof.APP_TEST)
+
+    def test_recent_contract_and_previous_seven_operation_receipt_are_strict(self):
+        expected = {
+            "receipt_version": 2,
+            "recent_popup_filter_select_operations": 0,
+            "recent_closed_reopen_reads": 1,
+            "recent_closed_reopen_normal_position": True,
+            "recent_live_dirty_reuse_reads": 0,
+            "recent_live_dirty_reuse_exact": True,
+            "recent_find_state_preserved": True,
+        }
+        receipt = proof.expected_receipt()
+        self.assertEqual(len(receipt), 29)
+        self.assertEqual({key: receipt[key] for key in expected}, expected)
+        self.assertEqual(receipt["operation_ledger"][-1], {"op": "Read", "path": proof.TARGET})
+        # Historical receipts remain historical evidence and cannot satisfy the
+        # new exact test/receipt contract by merely retaining a successful exit.
+        old = {key: value for key, value in receipt.items() if key not in expected}
+        old["operation_ledger"] = old["operation_ledger"][:7]
+        with self.assertRaises(proof.AcceptanceError):
+            proof.validate_execution(execution(proof.APP_TEST, old), proof.APP_TEST)
+        for key, required in expected.items():
+            self.assertIs(type(receipt[key]), type(required))
+            wrong = (False, 1, "true", None) if required is True else (True, float(required), "0", None, required + 1)
+            for value in wrong:
+                with self.subTest(key=key, value=value), self.assertRaises(proof.AcceptanceError):
+                    proof.validate_execution(execution(proof.APP_TEST, {**receipt, key: value}), proof.APP_TEST)
+        for suffix in ([], [{"op": "Read", "path": "origin.txt"}],
+                       [{"op": "Read", "path": proof.TARGET}] * 2):
+            changed = {**receipt, "operation_ledger": receipt["operation_ledger"][:7] + suffix}
+            with self.subTest(suffix=suffix), self.assertRaises(proof.AcceptanceError):
+                proof.validate_execution(execution(proof.APP_TEST, changed), proof.APP_TEST)
+        old_name = "browse_tests::browse_normal_agent_find_preview_open_and_exact_return"
+        with self.assertRaises(proof.AcceptanceError):
+            proof.validate_execution(execution(proof.APP_TEST).replace(proof.APP_TEST.encode(), old_name.encode()), proof.APP_TEST)
 
     def test_exact_test_and_single_strict_json_receipt_required(self):
         good = execution(proof.APP_TEST)

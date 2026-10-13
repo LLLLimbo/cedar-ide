@@ -29,7 +29,7 @@ from package_windows_bundle import (
     BundleError, COMPONENT, HEX_COMMIT, HEX_HASH, MAX_BINARY_BYTES, MAX_FILES,
     MAX_TEXT_BYTES, REPOSITORY, RUN_URL, VERSION, blob_hash, canonical_json,
     checked_path, clean_commit, exact_keys, git, is_notice, no_duplicate_keys,
-    read_regular, require, safe_name, source_bytes,
+    read_regular, require, safe_name, source_bytes, validate_packaged_guide_links,
 )
 
 TARGET = "x86_64-unknown-linux-gnu"
@@ -42,6 +42,7 @@ SOURCE_FILES = {
     "THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
     "docs/" + GUIDE: GUIDE,
     "docs/FIND_AND_RETURN.md": "FIND_AND_RETURN.md",
+    "docs/RECENT_FILES.md": "RECENT_FILES.md",
     "docs/SCOPED_PROJECT_TEXT.md": "SCOPED_PROJECT_TEXT.md",
     "docs/MAVEN_PROJECTS.md": "MAVEN_PROJECTS.md",
     "docs/MAVEN_DEPENDENCIES.md": "MAVEN_DEPENDENCIES.md",
@@ -326,14 +327,7 @@ def archive_bytes(payload, manifest):
 
 
 def validate_guide_links(payload):
-    try:
-        text = payload[GUIDE].decode("utf-8")
-    except (KeyError, UnicodeDecodeError) as error:
-        raise BundleError("Missing or invalid UTF-8 Linux entry guide") from error
-    for match in re.finditer(r"\[[^\[\]\r\n]+\]\(([^()\[\]\r\n]+)\)", text):
-        target = match.group(1)
-        if not target.startswith(("https://", "http://", "#")):
-            require(target.split("#", 1)[0] in payload, f"Entry guide links unpackaged target: {target}")
+    validate_packaged_guide_links(payload, (GUIDE,))
 
 
 def verify_bytes(data, expected_commit=None, expected_ci=None):

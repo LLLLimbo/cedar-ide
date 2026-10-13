@@ -393,13 +393,49 @@ class LinuxAgentBundleTests(unittest.TestCase):
         payload[bundle.GUIDE] = b"\xff"
         self.assert_invalid(bundle.archive_bytes(payload, bundle.make_manifest("0.35.0", COMMIT, RUN_URL, payload)), "UTF-8")
 
+    def test_nested_guide_links_are_checked_after_matching_hashes(self):
+        for target in ("MISSING.md", "../LICENSE-MIT", "RECENT%5fFILES.md", "RECENT_FILES.md?download=1"):
+            payload = dict(self.payload)
+            payload[bundle.GUIDE] = b"[Find](FIND_AND_RETURN.md#choose)\n"
+            payload["FIND_AND_RETURN.md"] = b"[Recent](RECENT_FILES.md)\n"
+            payload["RECENT_FILES.md"] = f"[Missing]({target})\n".encode()
+            manifest = bundle.make_manifest("0.35.0", COMMIT, RUN_URL, payload)
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(bundle.BundleError, "unpackaged target"):
+                    bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+
+    def test_nested_guide_cycles_and_utf8_are_bounded(self):
+        payload = dict(self.payload)
+        payload[bundle.GUIDE] = b"[Find](FIND_AND_RETURN.md)\n"
+        payload["FIND_AND_RETURN.md"] = b"[Recent](RECENT_FILES.md#open)\n"
+        payload["RECENT_FILES.md"] = (b"[Find](FIND_AND_RETURN.md) [Section](#local) "
+                                       b"[Report](https://example.invalid/report)\n")
+        manifest = bundle.make_manifest("0.35.0", COMMIT, RUN_URL, payload)
+        bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+        payload["RECENT_FILES.md"] = b"\xff"
+        manifest = bundle.make_manifest("0.35.0", COMMIT, RUN_URL, payload)
+        with self.assertRaisesRegex(bundle.BundleError, "UTF-8 entry guide: RECENT_FILES.md"):
+            bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+
+    def test_recent_guide_is_required_and_hash_bound(self):
+        payload = dict(self.payload)
+        del payload["RECENT_FILES.md"]
+        manifest = copy.deepcopy(self.manifest)
+        manifest["files"] = [item for item in manifest["files"] if item["path"] != "RECENT_FILES.md"]
+        with self.assertRaisesRegex(bundle.BundleError, "required payload"):
+            bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+        payload = dict(self.payload)
+        payload["RECENT_FILES.md"] = b"X" + payload["RECENT_FILES.md"][1:]
+        with self.assertRaisesRegex(bundle.BundleError, "SHA256 mismatch: RECENT_FILES.md"):
+            bundle.verify_bytes(bundle.archive_bytes(payload, self.manifest))
+
     def test_current_guide_links_target_packaged_files(self):
         root = Path(__file__).resolve().parent.parent
         payload = dict(self.payload)
-        for name in ("FIND_AND_RETURN.md", "SCOPED_PROJECT_TEXT.md", "MAVEN_PROJECTS.md", "MAVEN_DEPENDENCIES.md", "JAVA_PARAMETER_INFO.md"):
-            self.assertEqual(bundle.SOURCE_FILES["docs/" + name], name)
-            payload[name] = (root / "docs" / name).read_bytes()
-        payload[bundle.GUIDE] = (root / "docs" / bundle.GUIDE).read_bytes()
+        self.assertEqual(bundle.SOURCE_FILES["docs/RECENT_FILES.md"], "RECENT_FILES.md")
+        for source, target in bundle.SOURCE_FILES.items():
+            if source.startswith("docs/"):
+                payload[target] = (root / source).read_bytes()
         manifest = bundle.make_manifest("0.35.0", COMMIT, RUN_URL, payload)
         bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
 

@@ -2,11 +2,11 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。**0.63.3 浏览外壳候选尚未验收**：在已限定验收的 0.62.2 基线上，让连接后的 Project、编辑器和 Find 成为主要界面，将连接设置收进 Workspace 菜单、工具入口收进 Tools 菜单，并整理 Back/Forward 与键盘焦点。0.63.3 仅新增 Alt+Num1 搭配单个 `Text("1")` 的精确伴随输入处理：在快捷键准入时消费该文本，仅在最终 Project 焦点成功后建立同次按住的重复输入保护；其他文本、粘贴、IME、AltGr 与混合输入仍按原规则拒绝。0.63.2 的四项 CI 与三种精确源码包已通过，但原生焦点观察仍不明确，未完成验收。当前范围、几何目标及待验证项目见[0.63.3 候选报告](docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md)。这次不增加后端、协议、搜索选项或 Build/Run 行为，也不声明视觉等价或性能优势。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。**0.64 Recent Files 尚未验收**：候选功能只记录本次连接中已稳定激活且有已知 revision 的文件路径，最多 64 条、路径总量 256 KiB、单路径 4,096 字节。Windows/Linux 用 Ctrl+E，macOS 用 Cmd+E；macOS Ctrl+E 保留编辑器行为。本地筛选、Open/Closed 状态、This connection only 与 Clear recent 的范围见[使用指南](docs/RECENT_FILES.md)。打开现有脏稿零 Read 复用；关闭后的路径沿用普通 Open/Read 的默认光标位置，不保存或恢复已关闭文件的旧文本、光标或选区。Clear、断线、重连、工作区切换及重启都会清空，空闲帧不重新填充。最终版本本地 Rust 聚合已通过 50 套、2,082/0/70（app 1,366/0/53，含 19 项新增 Recent/位置对照测试），28 套 Python 合计 791 项、零失败、10 项跳过；严格 Clippy 通过；最终格式检查与当前版本普通 agent 的 Browse 8 操作/29 字段 v2、范围搜索 10 操作严格证明均通过；本地未运行规范编译/release 流程，精确 CI、包和原生验收仍待完成，见[0.64 候选报告](docs/TEST_REPORT_PHASE64_RECENT_FILES.md)。
 
-0.63.3 本地检查已通过：40 项焦点/输入检查（其中 6 项新增），50 套 Rust 检查共 2,063/0/70（通过/失败/忽略），格式与严格 Clippy，以及 28 套 Python 共 779 项。当前普通 agent 的 Browse / 范围搜索直接证明分别保持精确 7/10 操作且无新增外壳或移动操作。本地未运行规范 release / 完整 CI 驱动；精确提交 CI、三种源码包与新的限定原生验收仍待完成。
+最新已限定验收基线为 **0.63.3**：公开提交 [`5b6af6c51bfa8e460fc4b4b6367d09d744b1df78`](https://github.com/LLLLimbo/cedar-ide/commit/5b6af6c51bfa8e460fc4b4b6367d09d744b1df78) 的 [CI 38346482830](https://github.com/LLLLimbo/cedar-ide/actions/runs/38346482830) 四项作业与三种精确源码包均通过；两端各 50 套件，Linux 2,063/0/70，Windows 2,001/0/114（通过/失败/忽略）。新的限定 Linux 原生旅程观察到 Alt+1 的 Tree 功能焦点、脏稿未插入 `1`、Find 保留、Ctrl+J、显式 Preview、普通 Open、Back、Undo 及两种菜单 Escape。其范围与早先失败、模糊观察、缺失原始证据及诊断计时限制在[当前报告](docs/TEST_REPORT.md#accepted-0633-bounded-browsing-shell-baseline)中分开记录。Windows/macOS GUI、真实 SSH 与任意视口保证仍未验收，旧版本结果不替代 0.64 的新验证。
 
-最新已限定验收基线为 **0.62.2**：公开提交 [`91aa84cb79547207ed4deb296a61834df26089ef`](https://github.com/LLLLimbo/cedar-ide/commit/91aa84cb79547207ed4deb296a61834df26089ef) 的 [CI 38282992861](https://github.com/LLLLimbo/cedar-ide/actions/runs/38282992861) 四项作业和三种精确源码包均通过。Linux 为 2,031/0/70，Windows 为 1,969/0/114（通过/失败/忽略）；58 项 Browse、43 项 Search、13 项范围搜索帧检查，以及精确 7/12/10 操作的 Browse/Search/范围搜索普通 agent 证明通过。新的精确包 Linux 原生旅程分别观察两个 Find 视图的单击选择、显式 Preview、真实系统双击 Open、`src` / `*.rs` 范围、分组折叠/展开、脏稿出发位置 Back、Undo/Redo 及正常退出码 0。该轮未覆盖可选的无效范围、空掩码、较宽 OR 掩码、编辑后历史行停用、模态重开或窄窗口；已有确定性证明与新原生观察分开记录。Windows GUI 与真实 SSH 仍未验收，历史原生 Ctrl+Alt+Left/Right 无导航及原因未知的 0.62.1 意外 Open 记录保留。完整范围和历史失败见[当前报告](docs/TEST_REPORT.md)。基线证据不替代 0.63.3 验收。Cedar **不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+Recent Files 不增加预览、仅编辑文件筛选、后台索引、协议、持久化、光标历史或 Build/Run 行为。Cedar **不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识，不声明视觉等价或性能优势。
 
 ## 已能实际使用
 
@@ -198,4 +198,4 @@ python3 scripts/package_checkpoint.py --output /absolute/path/cedar-checkpoint.z
 
 Public source history and omitted machine-specific evidence are described in [PUBLICATION.md](PUBLICATION.md).
 
-Linux GUI 的 Local folder 在 0.41 使用与前端同目录、同版本的独立 agent；缺失或不匹配会报错，没有内嵌回退。面向库调用者的 Client Local 仍保留内嵌模式。新的 Ubuntu 24.04 amd64 桌面包范围与运行依赖见 [Linux 桌面指南](docs/LINUX_DESKTOP_QUICKSTART.zh-CN.md)。0.59.2 的完整双平台 CI、真实 JDT 参数证明、三种包与限定 Linux 原生功能及独立清理补验已通过；0.59.3 仅新增渲染器 Unicode 测试，精确 CI 与三种包已验收，不新增原生运行；0.60.0 已完成精确双平台 CI、三种包及限定 Linux 原生浏览验收；0.61.0 保留分组结果及 0.62.2 范围搜索/双击保护均已完成各自限定验收；0.63.3 浏览外壳仍须自己的验证。
+Linux GUI 的 Local folder 在 0.41 使用与前端同目录、同版本的独立 agent；缺失或不匹配会报错，没有内嵌回退。面向库调用者的 Client Local 仍保留内嵌模式。新的 Ubuntu 24.04 amd64 桌面包范围与运行依赖见 [Linux 桌面指南](docs/LINUX_DESKTOP_QUICKSTART.zh-CN.md)。0.59.2 的完整双平台 CI、真实 JDT 参数证明、三种包与限定 Linux 原生功能及独立清理补验已通过；0.59.3 仅新增渲染器 Unicode 测试，精确 CI 与三种包已验收，不新增原生运行；0.60.0 已完成精确双平台 CI、三种包及限定 Linux 原生浏览验收；0.61.0 保留分组结果及 0.62.2 范围搜索/双击保护均已完成各自限定验收；0.63.3 浏览外壳已完成自己的限定验收；0.64 Recent Files 仍须独立验证。

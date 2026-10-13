@@ -4412,6 +4412,12 @@ struct NormalBrowse {
     shell_hide_exact_editor_return: bool,
     shell_state_preserved: bool,
     shell_transition_operations: Option<usize>,
+    recent_popup_filter_select_operations: Option<usize>,
+    recent_closed_reopen_reads: Option<usize>,
+    recent_closed_reopen_normal_position: bool,
+    recent_live_dirty_reuse_reads: Option<usize>,
+    recent_live_dirty_reuse_exact: bool,
+    recent_find_state_preserved: bool,
 }
 
 fn source_digest(path: &std::path::Path) -> String {
@@ -4435,7 +4441,7 @@ fn normal_operation(operation: &Operation) -> serde_json::Value {
             serde_json::json!({"op": "Search", "query": query, "limit": limit})
         }
         _ => panic!(
-            "normal Browse proof dispatched an operation outside its seven-operation contract"
+            "normal Browse proof dispatched an operation outside its eight-operation contract"
         ),
     }
 }
@@ -4506,6 +4512,12 @@ impl NormalBrowse {
             shell_hide_exact_editor_return: false,
             shell_state_preserved: false,
             shell_transition_operations: None,
+            recent_popup_filter_select_operations: None,
+            recent_closed_reopen_reads: None,
+            recent_closed_reopen_normal_position: false,
+            recent_live_dirty_reuse_reads: None,
+            recent_live_dirty_reuse_exact: false,
+            recent_find_state_preserved: false,
         };
         proof.admit_call();
         // Client's constructor performs one ordinary 30-second Hello. Register
@@ -4581,6 +4593,12 @@ impl NormalBrowse {
         assert!(self.shell_hide_exact_editor_return);
         assert!(self.shell_state_preserved);
         assert_eq!(self.shell_transition_operations, Some(0));
+        assert_eq!(self.recent_popup_filter_select_operations, Some(0));
+        assert_eq!(self.recent_closed_reopen_reads, Some(1));
+        assert!(self.recent_closed_reopen_normal_position);
+        assert_eq!(self.recent_live_dirty_reuse_reads, Some(0));
+        assert!(self.recent_live_dirty_reuse_exact);
+        assert!(self.recent_find_state_preserved);
         assert_eq!(
             self.ledger,
             vec![
@@ -4591,6 +4609,7 @@ impl NormalBrowse {
                 serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
                 serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
                 serde_json::json!({"op": "Search", "query": "needle", "limit": 500}),
+                serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
             ]
         );
         for (path, hash) in &self.hashes {
@@ -4619,6 +4638,7 @@ impl NormalBrowse {
         println!(
             "browse_normal_acceptance {}",
             serde_json::json!({
+                "receipt_version": 2,
                 "operation_ledger": self.ledger, "source_sha256": self.hashes,
                 "connections": 1, "agents_reaped": 1, "trust": false,
                 "active_budget_seconds": 240, "cleanup_timeout_seconds": 30,
@@ -4635,6 +4655,12 @@ impl NormalBrowse {
                 "shell_hide_exact_editor_return": self.shell_hide_exact_editor_return,
                 "shell_state_preserved": self.shell_state_preserved,
                 "shell_transition_operations": self.shell_transition_operations.unwrap(),
+                "recent_popup_filter_select_operations": self.recent_popup_filter_select_operations.unwrap(),
+                "recent_closed_reopen_reads": self.recent_closed_reopen_reads.unwrap(),
+                "recent_closed_reopen_normal_position": self.recent_closed_reopen_normal_position,
+                "recent_live_dirty_reuse_reads": self.recent_live_dirty_reuse_reads.unwrap(),
+                "recent_live_dirty_reuse_exact": self.recent_live_dirty_reuse_exact,
+                "recent_find_state_preserved": self.recent_find_state_preserved,
             })
         );
     }
@@ -4667,9 +4693,154 @@ impl Drop for NormalBrowse {
     }
 }
 
+// Recent extends the same actual-frame/normal-agent journey. These helpers
+// use rendered controls only; the recorded path is never an open shortcut.
+fn normal_recent_select(app: &mut CedarApp, query_text: &str, path: &str) {
+    frame(app, modified_key(egui::Key::E, command_modifiers()));
+    settle(app);
+    assert_eq!(
+        focused(app),
+        Some(recorded_response(app, "recent_query").id)
+    );
+    click(app, "recent_query");
+    frame(app, modified_key(egui::Key::A, command_modifiers()));
+    frame(app, vec![egui::Event::Text(query_text.into())]);
+    settle(app);
+    assert_eq!(app.recent_files.visible_paths(), vec![path]);
+    let probe = format!("recent_row:{path}");
+    let response = recorded_response(app, &probe);
+    assert!(response.enabled() && recorded_clip(app, &probe).contains_rect(response.rect));
+    click(app, &probe);
+    settle(app);
+    assert_eq!(app.recent_files.selected_path(), Some(path));
+    assert!(recorded_response(app, "recent_open").enabled());
+}
+
+fn normal_editor_position(app: &CedarApp) -> ((usize, usize), (usize, usize, bool, bool)) {
+    let doc = app.active().unwrap();
+    let selection = egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", doc.id)))
+        .unwrap()
+        .cursor
+        .char_range()
+        .unwrap();
+    (doc.cursor, selection_signature(selection))
+}
+
+fn normal_origin_state(app: &CedarApp) -> serde_json::Value {
+    let snapshot = normal_shell_snapshot(app);
+    snapshot["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|document| document["path"] == "origin.txt")
+        .expect("dirty origin must remain open")
+        .clone()
+}
+
+#[test]
+fn recent_closed_reopen_matches_independent_ordinary_open_after_native_settling() {
+    for current_text in [NORMAL_TARGET_TEXT, "changed shorter\n"] {
+        let mut positions = Vec::new();
+        for through_recent in [false, true] {
+            let (mut app, commands) = fixture();
+            let mut closed_id = None;
+            let mut closed_selection = None;
+            if through_recent {
+                app.open(NORMAL_TARGET.into(), None);
+                let old = commands.try_recv().unwrap();
+                assert!(matches!(&old.op, Operation::Read { path } if path == NORMAL_TARGET));
+                reply(
+                    &mut app,
+                    old.id,
+                    Ok(file(NORMAL_TARGET, NORMAL_TARGET_TEXT)),
+                );
+                settle(&mut app);
+                closed_id = app.active_document;
+                assert_eq!(focused(&app), Some(recorded_response(&app, "editor").id));
+                frame(&mut app, modified_key(egui::Key::Home, command_modifiers()));
+                frame(&mut app, key(egui::Key::ArrowDown));
+                frame(
+                    &mut app,
+                    modified_key(egui::Key::ArrowRight, egui::Modifiers::SHIFT),
+                );
+                settle(&mut app);
+                let range = egui::TextEdit::load_state(
+                    &app.editor_ctx,
+                    egui::Id::new(("editor", closed_id.unwrap())),
+                )
+                .unwrap()
+                .cursor
+                .char_range()
+                .unwrap();
+                assert_ne!(range.primary.index, range.secondary.index);
+                closed_selection = Some(selection_signature(range));
+                assert!(!app.active().unwrap().dirty());
+                frame(&mut app, modified_key(egui::Key::W, command_modifiers()));
+                settle(&mut app);
+                assert!(!app.documents.iter().any(|doc| doc.path == NORMAL_TARGET));
+                normal_recent_select(&mut app, "Needle", NORMAL_TARGET);
+                assert!(commands.try_recv().is_err());
+                click(&mut app, "recent_open");
+            } else {
+                app.open(NORMAL_TARGET.into(), None);
+            }
+            let read = commands.try_recv().unwrap();
+            assert!(matches!(&read.op, Operation::Read { path } if path == NORMAL_TARGET));
+            assert!(
+                matches!(
+                    app.pending.get(&read.id),
+                    Some(Job::Open { line: None, .. })
+                ),
+                "ordinary and Recent reads must carry no stored line hint"
+            );
+            assert!(commands.try_recv().is_err());
+            reply(
+                &mut app,
+                read.id,
+                Ok(Payload::File {
+                    path: NORMAL_TARGET.into(),
+                    text: current_text.into(),
+                    revision: "c".repeat(64),
+                }),
+            );
+            settle(&mut app);
+            let doc = app.active().unwrap();
+            assert_eq!(doc.path, NORMAL_TARGET);
+            assert_eq!(doc.text, current_text);
+            assert_eq!(doc.revision.as_deref(), Some("c".repeat(64).as_str()));
+            assert_ne!(Some(doc.id), closed_id);
+            let range =
+                egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", doc.id)))
+                    .unwrap()
+                    .cursor
+                    .char_range()
+                    .unwrap();
+            let position = (doc.cursor, selection_signature(range));
+            assert_ne!(
+                Some(position.1),
+                closed_selection,
+                "closed caret is not restored"
+            );
+            assert_eq!(
+                range.primary.index,
+                current_text.chars().count(),
+                "pinned ordinary TextEdit default"
+            );
+            assert_eq!(range.primary.index, range.secondary.index);
+            assert_eq!(focused(&app), Some(recorded_response(&app, "editor").id));
+            assert!(commands.try_recv().is_err());
+            positions.push(position);
+        }
+        assert_eq!(
+            positions[0], positions[1],
+            "Recent must match the independent ordinary Open default for current bytes"
+        );
+    }
+}
+
 #[test]
 #[ignore = "requires CEDAR_BROWSE_AGENT_BIN selecting the normal shipping agent"]
-fn browse_normal_agent_find_preview_open_and_exact_return() {
+fn browse_normal_agent_find_recent_reopen_and_exact_return() {
     let mut proof = NormalBrowse::new();
     let mut app = CedarApp::empty();
     app.open_form = false;
@@ -4768,6 +4939,9 @@ fn browse_normal_agent_find_preview_open_and_exact_return() {
     settle(&mut app);
     assert_eq!(app.active().unwrap().path, NORMAL_TARGET);
     assert_eq!(app.active().unwrap().text, NORMAL_TARGET_TEXT);
+    // Measure the settled ordinary Open(None) default from the existing
+    // first-open operation, independently of the later Recent reopen.
+    let ordinary_target_position = normal_editor_position(&app);
     frame(
         &mut app,
         modified_key(egui::Key::OpenBracket, command_modifiers()),
@@ -4969,6 +5143,161 @@ fn browse_normal_agent_find_preview_open_and_exact_return() {
     );
     assert_eq!(app.documents[0].text, DRAFT);
     assert!(commands.try_recv().is_err());
+    assert!(!app.execution_trusted());
+
+    // Keep every earlier Browse assertion and its seven-operation prefix.
+    // Recent begins only after the existing Undo/Redo round trip has passed.
+    assert_eq!(proof.ledger.len(), 7);
+    assert_eq!(app.active().unwrap().path, "origin.txt");
+    frame(
+        &mut app,
+        modified_key(egui::Key::ArrowLeft, egui::Modifiers::SHIFT),
+    );
+    settle(&mut app);
+    assert!(
+        selection(&app).primary.index != selection(&app).secondary.index,
+        "Recent starts with an actual dirty selection"
+    );
+    let recent_origin = normal_origin_state(&app);
+    let recent_find = retained_snapshot(&app);
+    let recent_find_selection = app.search_state.selected_index();
+    let recent_groups = app.search_state.group_rows();
+    let recent_expanded: Vec<_> = recent_groups
+        .iter()
+        .map(|group| (group[0], app.search_state.group_expanded(group[0])))
+        .collect();
+    let recent_ui_start = proof.ledger.len();
+    let closed = app
+        .documents
+        .iter()
+        .find(|doc| doc.path == NORMAL_TARGET)
+        .unwrap();
+    let closed_id = closed.id;
+    let closed_revision = closed.revision.clone().unwrap();
+    assert!(!closed.dirty());
+    click(&mut app, &format!("editor_tab:{closed_id}"));
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(closed_id));
+    assert_eq!(app.active().unwrap().path, NORMAL_TARGET);
+    assert!(
+        !app.active().unwrap().dirty(),
+        "only the clean target may be closed"
+    );
+    let closed_position = normal_editor_position(&app);
+    assert_ne!(
+        closed_position, ordinary_target_position,
+        "the earlier Search Open must leave a distinct historical caret"
+    );
+    frame(&mut app, modified_key(egui::Key::W, command_modifiers()));
+    settle(&mut app);
+    assert!(!app.documents.iter().any(|doc| doc.path == NORMAL_TARGET));
+    assert_eq!(app.active().unwrap().path, "origin.txt");
+    assert_eq!(normal_origin_state(&app), recent_origin);
+    assert!(
+        commands.try_recv().is_err(),
+        "closing the clean target performs no work"
+    );
+
+    normal_recent_select(&mut app, "Needle", NORMAL_TARGET);
+    assert_eq!(
+        app.active().unwrap().path,
+        "origin.txt",
+        "single click selects only"
+    );
+    assert_eq!(normal_origin_state(&app), recent_origin);
+    assert!(
+        commands.try_recv().is_err(),
+        "Recent popup/filter/selection must perform no I/O"
+    );
+    frame(&mut app, key(egui::Key::Escape));
+    settle(&mut app);
+    assert_eq!(focused(&app), Some(recorded_response(&app, "editor").id));
+    assert_eq!(normal_origin_state(&app), recent_origin);
+    normal_recent_select(&mut app, "Needle", NORMAL_TARGET);
+    assert!(commands.try_recv().is_err());
+    proof.recent_popup_filter_select_operations = Some(proof.ledger.len() - recent_ui_start);
+    assert!(has_text(&frame(&mut app, vec![]), "Open closed file"));
+    let reopen_start = proof.ledger.len();
+    click(&mut app, "recent_open");
+    assert!(
+        app.pending.values().any(|job| matches!(job,
+        Job::Open { path, line: None, .. } if path == NORMAL_TARGET)),
+        "closed Recent reopen carries no historical line hint"
+    );
+    proof.exchange(
+        &mut app,
+        &commands,
+        serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
+    );
+    settle(&mut app);
+    proof.recent_closed_reopen_reads = Some(proof.ledger.len() - reopen_start);
+    let reopened = app.active().unwrap();
+    assert_ne!(
+        reopened.id, closed_id,
+        "closed Recent entry must use an ordinary new document"
+    );
+    assert_eq!(reopened.path, NORMAL_TARGET);
+    assert_eq!(reopened.text, NORMAL_TARGET_TEXT);
+    assert_eq!(reopened.revision.as_deref(), Some(closed_revision.as_str()));
+    assert!(!reopened.dirty());
+    assert_eq!(
+        reopened.cursor, ordinary_target_position.0,
+        "closed file uses the measured ordinary Open(None) position"
+    );
+    let position =
+        egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", reopened.id)))
+            .unwrap()
+            .cursor
+            .char_range()
+            .unwrap();
+    assert_eq!(selection_signature(position), ordinary_target_position.1);
+    assert_ne!(
+        normal_editor_position(&app),
+        closed_position,
+        "Recent does not restore the historical closed-file caret"
+    );
+    proof.recent_closed_reopen_normal_position = true;
+    assert_eq!(normal_origin_state(&app), recent_origin);
+    assert!(commands.try_recv().is_err());
+
+    let live_start = proof.ledger.len();
+    normal_recent_select(&mut app, "origin", "origin.txt");
+    assert_eq!(
+        app.active().unwrap().path,
+        NORMAL_TARGET,
+        "filtering and selecting do not open"
+    );
+    assert!(commands.try_recv().is_err());
+    proof.recent_popup_filter_select_operations = Some(
+        proof.recent_popup_filter_select_operations.unwrap() + proof.ledger.len() - live_start,
+    );
+    click(&mut app, "recent_open");
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(1));
+    assert_eq!(app.active().unwrap().path, "origin.txt");
+    assert_eq!(
+        normal_origin_state(&app),
+        recent_origin,
+        "live dirty reuse preserves full selection, Undo/Redo and known revision"
+    );
+    assert_eq!(focused(&app), Some(recorded_response(&app, "editor").id));
+    assert!(
+        commands.try_recv().is_err(),
+        "live dirty Recent reuse must issue no Read or other operation"
+    );
+    proof.recent_live_dirty_reuse_reads = Some(proof.ledger.len() - live_start);
+    proof.recent_live_dirty_reuse_exact = true;
+    assert_eq!(retained_snapshot(&app), recent_find);
+    assert_eq!(app.search_state.selected_index(), recent_find_selection);
+    assert_eq!(app.search_state.group_rows(), recent_groups);
+    assert_eq!(
+        recent_expanded,
+        recent_groups
+            .iter()
+            .map(|group| (group[0], app.search_state.group_expanded(group[0])))
+            .collect::<Vec<_>>()
+    );
+    proof.recent_find_state_preserved = true;
     assert!(!app.execution_trusted());
     proof.finish();
 }

@@ -1,4 +1,26 @@
-# 0.63.3 browsing shell Alt+1 companion correction candidate
+# 0.63.3 browsing shell — bounded acceptance
+
+## Accepted checkpoint
+
+Public [0.63.3 source](https://github.com/LLLLimbo/cedar-ide/commit/5b6af6c51bfa8e460fc4b4b6367d09d744b1df78)
+passed all four jobs in
+[CI 38346482830](https://github.com/LLLLimbo/cedar-ide/actions/runs/38346482830)
+and all three exact-source package audits. Each platform ran 50 suites: Linux
+**2,063/0/70**, Windows **2,001/0/114** (passed/failed/ignored).
+
+A fresh bounded Linux native journey observed functional Project Tree focus
+after Alt+1 with the dirty draft intact and no inserted `1`, retained Find state,
+Ctrl+J transitions, explicit Preview, ordinary Open, Back, Undo and both menu
+Escape cases. This is separate from the headless tests and earlier native
+attempts. Windows/macOS GUI, real SSH and arbitrary viewport behavior remain
+unverified. The [current report](TEST_REPORT.md#accepted-0633-bounded-browsing-shell-baseline)
+records the accepted scope and preserves earlier evidence limitations.
+
+## Preserved preparation record
+
+The following preparation and then-pending statements predate that accepted
+checkpoint. They do not revoke the bounded acceptance or establish a result for
+the separate [0.64 Recent Files candidate](TEST_REPORT_PHASE64_RECENT_FILES.md).
 
 **Acceptance pending. The latest accepted bounded baseline remains 0.62.2.**
 Its exact public source, CI, package and limited native evidence are recorded in
