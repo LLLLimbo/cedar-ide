@@ -1,6 +1,6 @@
 # 0.64.0 Recent Files bounded functional acceptance
 
-**0.64.0 is the latest accepted bounded functional baseline. The strict native
+**0.64.0 was accepted as a bounded functional baseline. The strict native
 timing gate failed; this is not an all-gates pass.**
 
 ## Accepted source, CI and bounded native result

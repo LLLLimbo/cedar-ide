@@ -18,7 +18,7 @@ from copy_draft_acceptance import (
 from report_triage_diagnostics import CapturedFailure, bounded_process
 
 BACKEND_TEST = "file_discovery_normal_agent_finds_untouched_binary_and_large_paths_without_trust"
-APP_TEST = "browse_tests::browse_normal_agent_find_recent_project_reveal_and_exact_return"
+APP_TEST = "browse_tests::browse_normal_agent_find_recent_project_reveal_continuous_preview_and_exact_return"
 PREFIX = "browse_normal_acceptance "
 COMPILE_TIMEOUT = 120
 BACKEND_TIMEOUT = 180
@@ -77,7 +77,7 @@ def select_artifacts(data, root, platform):
 
 def expected_receipt():
     return {
-        "receipt_version": 3,
+        "receipt_version": 4,
         "operation_ledger": [
             {"op": "Hello"}, {"op": "List", "path": ""},
             {"op": "Read", "path": "origin.txt"},
@@ -89,6 +89,8 @@ def expected_receipt():
             {"op": "List", "path": "untouched"},
             {"op": "List", "path": "untouched/deep"},
             {"op": "List", "path": ""},
+            {"op": "Read", "path": TARGET},
+            {"op": "Read", "path": TARGET},
         ],
         "source_sha256": [
             ["origin.txt", hashlib.sha256("saved Ω😀\r\nneedle second\nlast\n".encode()).hexdigest()],
@@ -124,6 +126,18 @@ def expected_receipt():
         "project_reveal_cancelled_followup_operations": 0,
         "project_reveal_intent_timeout_seconds": 30,
         "project_reveal_max_ancestor_lists": 32,
+        "continuous_preview_unarmed_operations": 0,
+        "continuous_preview_browse_armed_follow": True,
+        "continuous_preview_bottom_armed_follow": True,
+        "continuous_preview_dirty_additional_reads": 0,
+        "continuous_preview_latest_candidate": True,
+        "continuous_preview_unopened_reads": 1,
+        "continuous_preview_open_reads": 1,
+        "continuous_preview_open_back_exact": True,
+        "continuous_preview_state_preserved": True,
+        "continuous_preview_debounce_ms": 150,
+        "continuous_preview_max_context_lines": 41,
+        "continuous_preview_max_context_bytes": 64 * 1024,
     }
 
 

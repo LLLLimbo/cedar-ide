@@ -12,6 +12,22 @@ from unittest import mock
 import browse_acceptance as proof
 
 
+CONTINUOUS_PREVIEW_EXPECTED = {
+    "continuous_preview_unarmed_operations": 0,
+    "continuous_preview_browse_armed_follow": True,
+    "continuous_preview_bottom_armed_follow": True,
+    "continuous_preview_dirty_additional_reads": 0,
+    "continuous_preview_latest_candidate": True,
+    "continuous_preview_unopened_reads": 1,
+    "continuous_preview_open_reads": 1,
+    "continuous_preview_open_back_exact": True,
+    "continuous_preview_state_preserved": True,
+    "continuous_preview_debounce_ms": 150,
+    "continuous_preview_max_context_lines": 41,
+    "continuous_preview_max_context_bytes": 65536,
+}
+
+
 def artifacts(root, platform="linux"):
     suffix = ".exe" if platform == "windows" else ""
     output = []
@@ -96,8 +112,8 @@ class ReceiptTests(unittest.TestCase):
         for name in (proof.BACKEND_TEST, proof.APP_TEST):
             proof.validate_execution(execution(name), name)
         receipt = proof.expected_receipt()
-        self.assertEqual(len(receipt["operation_ledger"]), 12)
-        self.assertEqual(receipt["receipt_version"], 3)
+        self.assertEqual(len(receipt["operation_ledger"]), 14)
+        self.assertEqual(receipt["receipt_version"], 4)
         self.assertEqual({key: receipt[key] for key in (
             "retained_text_snapshot", "grouped_original_indices",
             "text_open_back_exact", "reopen_keeps_selection",
@@ -164,7 +180,7 @@ class ReceiptTests(unittest.TestCase):
 
     def test_recent_contract_and_previous_seven_operation_receipt_are_strict(self):
         expected = {
-            "receipt_version": 3,
+            "receipt_version": 4,
             "recent_popup_filter_select_operations": 0,
             "recent_closed_reopen_reads": 1,
             "recent_closed_reopen_normal_position": True,
@@ -173,12 +189,13 @@ class ReceiptTests(unittest.TestCase):
             "recent_find_state_preserved": True,
         }
         receipt = proof.expected_receipt()
-        self.assertEqual(len(receipt), 38)
+        self.assertEqual(len(receipt), 50)
         self.assertEqual({key: receipt[key] for key in expected}, expected)
         self.assertEqual(receipt["operation_ledger"][7], {"op": "Read", "path": proof.TARGET})
         # Historical receipts remain historical evidence and cannot satisfy the
         # new exact test/receipt contract by merely retaining a successful exit.
-        old = {key: value for key, value in receipt.items() if key not in expected}
+        old = {key: value for key, value in receipt.items()
+               if key not in expected and key not in CONTINUOUS_PREVIEW_EXPECTED}
         old["operation_ledger"] = old["operation_ledger"][:7]
         with self.assertRaises(proof.AcceptanceError):
             proof.validate_execution(execution(proof.APP_TEST, old), proof.APP_TEST)
@@ -211,8 +228,8 @@ class ReceiptTests(unittest.TestCase):
         }
         receipt = proof.expected_receipt()
         self.assertEqual({key: receipt[key] for key in expected}, expected)
-        self.assertEqual(receipt["receipt_version"], 3)
-        self.assertEqual(len(receipt), 38)
+        self.assertEqual(receipt["receipt_version"], 4)
+        self.assertEqual(len(receipt), 50)
         prefix = [
             {"op": "Hello"}, {"op": "List", "path": ""},
             {"op": "Read", "path": "origin.txt"},
@@ -228,7 +245,7 @@ class ReceiptTests(unittest.TestCase):
             {"op": "List", "path": "untouched/deep"},
             {"op": "List", "path": ""},
         ]
-        self.assertEqual(receipt["operation_ledger"], prefix + suffix)
+        self.assertEqual(receipt["operation_ledger"][:12], prefix + suffix)
         for key, required in expected.items():
             self.assertIs(type(receipt[key]), type(required))
             wrong = ((False, 1, "true", None) if required is True else
@@ -239,7 +256,8 @@ class ReceiptTests(unittest.TestCase):
             missing = {name: value for name, value in receipt.items() if name != key}
             with self.subTest(missing=key), self.assertRaises(proof.AcceptanceError):
                 proof.validate_execution(execution(proof.APP_TEST, missing), proof.APP_TEST)
-        old = {key: value for key, value in receipt.items() if key not in expected}
+        old = {key: value for key, value in receipt.items()
+               if key not in expected and key not in CONTINUOUS_PREVIEW_EXPECTED}
         old["receipt_version"] = 2
         old["operation_ledger"] = prefix
         self.assertEqual(len(old), 29)
@@ -260,9 +278,59 @@ class ReceiptTests(unittest.TestCase):
         for changed in changed_suffixes:
             with self.subTest(suffix=changed), self.assertRaises(proof.AcceptanceError):
                 proof.validate_execution(execution(proof.APP_TEST, {
-                    **receipt, "operation_ledger": prefix + changed,
+                    **receipt, "operation_ledger": prefix + changed + receipt["operation_ledger"][12:],
                 }), proof.APP_TEST)
         old_name = "browse_tests::browse_normal_agent_find_recent_reopen_and_exact_return"
+        with self.assertRaises(proof.AcceptanceError):
+            proof.validate_execution(execution(proof.APP_TEST).replace(proof.APP_TEST.encode(), old_name.encode()), proof.APP_TEST)
+
+    def test_continuous_preview_contract_preserves_v3_prefix_and_exact_two_read_suffix(self):
+        receipt = proof.expected_receipt()
+        self.assertEqual(len(receipt), 50)
+        self.assertEqual(receipt["receipt_version"], 4)
+        self.assertEqual({key: receipt[key] for key in CONTINUOUS_PREVIEW_EXPECTED},
+                         CONTINUOUS_PREVIEW_EXPECTED)
+        prefix = [
+            {"op": "Hello"}, {"op": "List", "path": ""},
+            {"op": "Read", "path": "origin.txt"},
+            {"op": "FindFiles", "query": "Needle.rs", "scope": "", "limit": 100},
+            {"op": "Read", "path": proof.TARGET},
+            {"op": "Read", "path": proof.TARGET},
+            {"op": "Search", "query": "needle", "limit": 500},
+            {"op": "Read", "path": proof.TARGET},
+            {"op": "List", "path": ""},
+            {"op": "List", "path": "untouched"},
+            {"op": "List", "path": "untouched/deep"},
+            {"op": "List", "path": ""},
+        ]
+        suffix = [{"op": "Read", "path": proof.TARGET}] * 2
+        self.assertEqual(receipt["operation_ledger"][:12], prefix)
+        self.assertEqual(receipt["operation_ledger"], prefix + suffix)
+        for key, required in CONTINUOUS_PREVIEW_EXPECTED.items():
+            self.assertIs(type(receipt[key]), type(required))
+            wrong = ((False, 1, "true", None) if required is True else
+                     (True, float(required), str(required), None, required + 1))
+            for value in wrong:
+                with self.subTest(key=key, value=value), self.assertRaises(proof.AcceptanceError):
+                    proof.validate_execution(execution(proof.APP_TEST, {**receipt, key: value}), proof.APP_TEST)
+            missing = {name: value for name, value in receipt.items() if name != key}
+            with self.subTest(missing=key), self.assertRaises(proof.AcceptanceError):
+                proof.validate_execution(execution(proof.APP_TEST, missing), proof.APP_TEST)
+        old = {key: value for key, value in receipt.items() if key not in CONTINUOUS_PREVIEW_EXPECTED}
+        old["receipt_version"] = 3
+        old["operation_ledger"] = prefix
+        self.assertEqual(len(old), 38)
+        with self.assertRaises(proof.AcceptanceError):
+            proof.validate_execution(execution(proof.APP_TEST, old), proof.APP_TEST)
+        for changed in ([], suffix[:1], suffix * 2,
+                        [{"op": "Read", "path": "origin.txt"}] + suffix[1:],
+                        suffix[:1] + [{"op": "Read", "path": "origin.txt"}],
+                        [{"op": "List", "path": proof.TARGET}] + suffix[1:]):
+            with self.subTest(suffix=changed), self.assertRaises(proof.AcceptanceError):
+                proof.validate_execution(execution(proof.APP_TEST, {
+                    **receipt, "operation_ledger": prefix + changed,
+                }), proof.APP_TEST)
+        old_name = "browse_tests::browse_normal_agent_find_recent_project_reveal_and_exact_return"
         with self.assertRaises(proof.AcceptanceError):
             proof.validate_execution(execution(proof.APP_TEST).replace(proof.APP_TEST.encode(), old_name.encode()), proof.APP_TEST)
 

@@ -72,6 +72,8 @@ mod location_history_process_tests;
 mod model;
 mod navigation;
 mod profile_ui;
+#[cfg(test)]
+mod project_text_preview_tests;
 mod recent_files;
 mod recovery;
 mod recovery_actor;

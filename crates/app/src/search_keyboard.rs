@@ -286,7 +286,7 @@ pub(super) fn validate(matches: &[SearchMatch]) -> Result<(), &'static str> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct View {
+pub(super) struct View {
     batch: Batch,
     count: usize,
     layout: u64,
@@ -296,7 +296,7 @@ struct View {
 }
 
 impl View {
-    fn of(app: &CedarApp) -> Option<Self> {
+    pub(super) fn of(app: &CedarApp) -> Option<Self> {
         (app.search_rows_active() && app.active().is_none_or(|doc| doc.edit_version != u64::MAX))
             .then(|| Self {
                 batch: app.search_state.accepted.as_ref().unwrap().batch(),
@@ -375,6 +375,7 @@ enum Action {
     Preview(usize),
     Toggle(usize),
     Reveal(usize),
+    DismissPreview(usize),
 }
 
 pub(super) fn destination(count: usize, current: usize, key: egui::Key) -> Option<usize> {
@@ -399,6 +400,7 @@ fn row_key(key: egui::Key) -> bool {
             | egui::Key::End
             | egui::Key::Enter
             | egui::Key::Space
+            | egui::Key::Escape
     )
 }
 
@@ -817,6 +819,7 @@ impl CedarApp {
         consumed: &mut [bool],
     ) {
         let allowed = self.search_input_allowed(ctx);
+        let review_escape = self.search_review_armed();
         let current = View::of(self);
         let focused = ctx.memory(|memory| memory.focused());
         let prior_row = self
@@ -1032,7 +1035,9 @@ impl CedarApp {
             else {
                 continue;
             };
-            if !row_key(*key) {
+            if !row_key(*key)
+                || (*key == egui::Key::Escape && !review_escape && !keyboard.claimed.contains(key))
+            {
                 continue;
             }
             let claimed = keyboard.claimed.contains(key);
@@ -1115,6 +1120,12 @@ impl CedarApp {
             return None;
         }
         let index = intent.source.index;
+        if intent.key == egui::Key::Escape && self.search_review_armed() {
+            return self
+                .search_state
+                .selected_index()
+                .map(Action::DismissPreview);
+        }
         if index >= MAX_ROWS {
             return matches!(intent.key, egui::Key::Enter | egui::Key::Space)
                 .then_some(Action::Toggle(index - MAX_ROWS));
@@ -1130,11 +1141,12 @@ impl CedarApp {
     }
 
     pub(super) fn select_search_row(&mut self, index: usize) {
+        self.validate_project_text_review();
         if !self.search_rows_active() || !self.search_state.visible(index) {
             return;
         }
         if self.search_state.selected != Some(index) {
-            self.retire_search_preview();
+            self.clear_search_selection_preview();
         }
         self.search_state.selected = Some(index);
     }
@@ -1252,7 +1264,7 @@ impl CedarApp {
             let _ = label;
         }
         ui.label(
-            RichText::new("Click selects · Space previews · Enter or double-click opens")
+            RichText::new("Click selects · Space starts context review · Esc stops · Enter or double-click opens")
                 .small()
                 .color(MUTED),
         );
@@ -1292,7 +1304,13 @@ impl CedarApp {
         let mut open = None;
         let mut preview = None;
         match action {
-            Some(Action::Focus(index)) => self.select_search_row(index),
+            Some(Action::Focus(index)) => self.search_selection_owned(index),
+            Some(Action::DismissPreview(index)) => {
+                self.retire_search_preview();
+                if let Some(source) = &self.search_state.accepted {
+                    ui.memory_mut(|memory| memory.request_focus(row_id(source, index)));
+                }
+            }
             Some(Action::Open(index)) => {
                 self.select_search_row(index);
                 open = Some(index);
@@ -1440,7 +1458,7 @@ impl CedarApp {
                                     && app.search_state.keyboard.prior_row.as_ref().is_some_and(|prior| {
                                         Some(prior) == app.search_row_click(index, response.id).as_ref()
                                     });
-                                app.select_search_row(index);
+                                app.search_selection_owned(index);
                                 response.request_focus();
                                 if same_row && response.double_clicked_by(egui::PointerButton::Primary) {
                                     open = Some(index);

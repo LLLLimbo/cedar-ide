@@ -633,7 +633,7 @@ fn browse_preview_coalesces_one_replacement_and_ignores_superseded_success_or_er
         reply(
             &mut app,
             replacement.id,
-            Ok(file("c.txt", "latest selected preview")),
+            Ok(file("c.txt", "first\nlatest selected preview")),
         );
         settle(&mut app);
         let output = frame(&mut app, vec![]);
@@ -4429,6 +4429,15 @@ struct NormalBrowse {
     project_reveal_state_preserved: bool,
     project_reveal_cancelled_lists: Option<usize>,
     project_reveal_cancelled_followup_operations: Option<usize>,
+    continuous_preview_unarmed_operations: Option<usize>,
+    continuous_preview_browse_armed_follow: bool,
+    continuous_preview_bottom_armed_follow: bool,
+    continuous_preview_dirty_additional_reads: Option<usize>,
+    continuous_preview_latest_candidate: bool,
+    continuous_preview_unopened_reads: Option<usize>,
+    continuous_preview_open_reads: Option<usize>,
+    continuous_preview_open_back_exact: bool,
+    continuous_preview_state_preserved: bool,
 }
 
 fn source_digest(path: &std::path::Path) -> String {
@@ -4452,7 +4461,7 @@ fn normal_operation(operation: &Operation) -> serde_json::Value {
             serde_json::json!({"op": "Search", "query": query, "limit": limit})
         }
         _ => panic!(
-            "normal Browse proof dispatched an operation outside its twelve-operation contract"
+            "normal Browse proof dispatched an operation outside its fourteen-operation contract"
         ),
     }
 }
@@ -4536,6 +4545,15 @@ impl NormalBrowse {
             project_reveal_state_preserved: false,
             project_reveal_cancelled_lists: None,
             project_reveal_cancelled_followup_operations: None,
+            continuous_preview_unarmed_operations: None,
+            continuous_preview_browse_armed_follow: false,
+            continuous_preview_bottom_armed_follow: false,
+            continuous_preview_dirty_additional_reads: None,
+            continuous_preview_latest_candidate: false,
+            continuous_preview_unopened_reads: None,
+            continuous_preview_open_reads: None,
+            continuous_preview_open_back_exact: false,
+            continuous_preview_state_preserved: false,
         };
         proof.admit_call();
         // Client's constructor performs one ordinary 30-second Hello. Register
@@ -4629,8 +4647,20 @@ impl NormalBrowse {
         assert_eq!(explorer_tree::MAX_PROJECT_REVEAL_LISTS, 32);
         assert_eq!(self.project_reveal_cancelled_lists, Some(1));
         assert_eq!(self.project_reveal_cancelled_followup_operations, Some(0));
+        assert_eq!(self.continuous_preview_unarmed_operations, Some(0));
+        assert!(self.continuous_preview_browse_armed_follow);
+        assert!(self.continuous_preview_bottom_armed_follow);
+        assert_eq!(self.continuous_preview_dirty_additional_reads, Some(0));
+        assert!(self.continuous_preview_latest_candidate);
+        assert_eq!(self.continuous_preview_unopened_reads, Some(1));
+        assert_eq!(self.continuous_preview_open_reads, Some(1));
+        assert!(self.continuous_preview_open_back_exact);
+        assert!(self.continuous_preview_state_preserved);
+        assert_eq!(browse::PROJECT_TEXT_REVIEW_DEBOUNCE_SECONDS, 0.150);
+        assert_eq!(browse::MAX_PROJECT_TEXT_CONTEXT_LINES, 41);
+        assert_eq!(browse::MAX_PROJECT_TEXT_CONTEXT_BYTES, 64 * 1024);
         assert_eq!(
-            self.ledger,
+            self.ledger[..12],
             vec![
                 serde_json::json!({"op": "Hello"}),
                 serde_json::json!({"op": "List", "path": ""}),
@@ -4644,6 +4674,13 @@ impl NormalBrowse {
                 serde_json::json!({"op": "List", "path": "untouched"}),
                 serde_json::json!({"op": "List", "path": "untouched/deep"}),
                 serde_json::json!({"op": "List", "path": ""}),
+            ]
+        );
+        assert_eq!(
+            self.ledger[12..],
+            [
+                serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
+                serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
             ]
         );
         for (path, hash) in &self.hashes {
@@ -4669,43 +4706,59 @@ impl NormalBrowse {
         assert!(self.started.elapsed() < NORMAL_TOTAL);
         std::fs::remove_dir_all(&self.root).expect("remove verified completed fixture");
         self.success = true;
-        println!(
-            "browse_normal_acceptance {}",
-            serde_json::json!({
-                "receipt_version": 3,
-                "operation_ledger": self.ledger, "source_sha256": self.hashes,
-                "connections": 1, "agents_reaped": 1, "trust": false,
-                "active_budget_seconds": 240, "cleanup_timeout_seconds": 30,
-                "watchdog_seconds": 300, "dirty_preview_and_open_additional_reads": 0,
-                "unopened_preview_reads": 1, "unopened_open_reads": 1,
-                "retained_text_snapshot": self.retained_text_snapshot,
-                "grouped_original_indices": self.grouped_original_indices,
-                "text_open_back_exact": self.text_open_back_exact,
-                "reopen_keeps_selection": self.reopen_keeps_selection,
-                "grouped_navigation_additional_operations": self.grouped_navigation_additional_operations.unwrap(),
-                "retained_dirty_preview_additional_reads": self.retained_dirty_preview_additional_reads.unwrap(),
-                "shell_project_focus_retains_find": self.shell_project_focus_retains_find,
-                "shell_find_reopen_active_hit": self.shell_find_reopen_active_hit,
-                "shell_hide_exact_editor_return": self.shell_hide_exact_editor_return,
-                "shell_state_preserved": self.shell_state_preserved,
-                "shell_transition_operations": self.shell_transition_operations.unwrap(),
-                "recent_popup_filter_select_operations": self.recent_popup_filter_select_operations.unwrap(),
-                "recent_closed_reopen_reads": self.recent_closed_reopen_reads.unwrap(),
-                "recent_closed_reopen_normal_position": self.recent_closed_reopen_normal_position,
-                "recent_live_dirty_reuse_reads": self.recent_live_dirty_reuse_reads.unwrap(),
-                "recent_live_dirty_reuse_exact": self.recent_live_dirty_reuse_exact,
-                "recent_find_state_preserved": self.recent_find_state_preserved,
-                "project_reveal_ancestor_lists": self.project_reveal_ancestor_lists.unwrap(),
-                "project_reveal_additional_reads": self.project_reveal_additional_reads.unwrap(),
-                "project_reveal_cached_operations": self.project_reveal_cached_operations.unwrap(),
-                "project_reveal_selected_and_focused": self.project_reveal_selected_and_focused,
-                "project_reveal_state_preserved": self.project_reveal_state_preserved,
-                "project_reveal_cancelled_lists": self.project_reveal_cancelled_lists.unwrap(),
-                "project_reveal_cancelled_followup_operations": self.project_reveal_cancelled_followup_operations.unwrap(),
-                "project_reveal_intent_timeout_seconds": explorer_tree::PROJECT_REVEAL_DEADLINE.as_secs(),
-                "project_reveal_max_ancestor_lists": explorer_tree::MAX_PROJECT_REVEAL_LISTS,
-            })
-        );
+        let mut receipt = serde_json::json!({
+            "receipt_version": 4,
+            "operation_ledger": self.ledger, "source_sha256": self.hashes,
+            "connections": 1, "agents_reaped": 1, "trust": false,
+            "active_budget_seconds": 240, "cleanup_timeout_seconds": 30,
+            "watchdog_seconds": 300, "dirty_preview_and_open_additional_reads": 0,
+            "unopened_preview_reads": 1, "unopened_open_reads": 1,
+            "retained_text_snapshot": self.retained_text_snapshot,
+            "grouped_original_indices": self.grouped_original_indices,
+            "text_open_back_exact": self.text_open_back_exact,
+            "reopen_keeps_selection": self.reopen_keeps_selection,
+            "grouped_navigation_additional_operations": self.grouped_navigation_additional_operations.unwrap(),
+            "retained_dirty_preview_additional_reads": self.retained_dirty_preview_additional_reads.unwrap(),
+            "shell_project_focus_retains_find": self.shell_project_focus_retains_find,
+            "shell_find_reopen_active_hit": self.shell_find_reopen_active_hit,
+            "shell_hide_exact_editor_return": self.shell_hide_exact_editor_return,
+            "shell_state_preserved": self.shell_state_preserved,
+            "shell_transition_operations": self.shell_transition_operations.unwrap(),
+            "recent_popup_filter_select_operations": self.recent_popup_filter_select_operations.unwrap(),
+            "recent_closed_reopen_reads": self.recent_closed_reopen_reads.unwrap(),
+            "recent_closed_reopen_normal_position": self.recent_closed_reopen_normal_position,
+            "recent_live_dirty_reuse_reads": self.recent_live_dirty_reuse_reads.unwrap(),
+            "recent_live_dirty_reuse_exact": self.recent_live_dirty_reuse_exact,
+            "recent_find_state_preserved": self.recent_find_state_preserved,
+            "project_reveal_ancestor_lists": self.project_reveal_ancestor_lists.unwrap(),
+            "project_reveal_additional_reads": self.project_reveal_additional_reads.unwrap(),
+            "project_reveal_cached_operations": self.project_reveal_cached_operations.unwrap(),
+            "project_reveal_selected_and_focused": self.project_reveal_selected_and_focused,
+            "project_reveal_state_preserved": self.project_reveal_state_preserved,
+            "project_reveal_cancelled_lists": self.project_reveal_cancelled_lists.unwrap(),
+            "project_reveal_cancelled_followup_operations": self.project_reveal_cancelled_followup_operations.unwrap(),
+            "project_reveal_intent_timeout_seconds": explorer_tree::PROJECT_REVEAL_DEADLINE.as_secs(),
+            "project_reveal_max_ancestor_lists": explorer_tree::MAX_PROJECT_REVEAL_LISTS,
+        });
+        let continuous = serde_json::json!({
+            "continuous_preview_unarmed_operations": self.continuous_preview_unarmed_operations.unwrap(),
+            "continuous_preview_browse_armed_follow": self.continuous_preview_browse_armed_follow,
+            "continuous_preview_bottom_armed_follow": self.continuous_preview_bottom_armed_follow,
+            "continuous_preview_dirty_additional_reads": self.continuous_preview_dirty_additional_reads.unwrap(),
+            "continuous_preview_latest_candidate": self.continuous_preview_latest_candidate,
+            "continuous_preview_unopened_reads": self.continuous_preview_unopened_reads.unwrap(),
+            "continuous_preview_open_reads": self.continuous_preview_open_reads.unwrap(),
+            "continuous_preview_open_back_exact": self.continuous_preview_open_back_exact,
+            "continuous_preview_state_preserved": self.continuous_preview_state_preserved,
+            "continuous_preview_debounce_ms": (browse::PROJECT_TEXT_REVIEW_DEBOUNCE_SECONDS * 1000.0) as u64,
+            "continuous_preview_max_context_lines": browse::MAX_PROJECT_TEXT_CONTEXT_LINES,
+            "continuous_preview_max_context_bytes": browse::MAX_PROJECT_TEXT_CONTEXT_BYTES,
+        });
+        receipt
+            .as_object_mut()
+            .unwrap()
+            .extend(continuous.as_object().unwrap().clone());
+        println!("browse_normal_acceptance {receipt}");
     }
 }
 
@@ -4778,6 +4831,17 @@ fn normal_origin_state(app: &CedarApp) -> serde_json::Value {
         .find(|document| document["path"] == "origin.txt")
         .expect("dirty origin must remain open")
         .clone()
+}
+
+// Review is allowed to change the selected result and preview visibility only.
+// Keep editor selection/affinity, Undo/Redo, navigation and retained Search
+// evidence in the same existing shell witness while comparing that journey.
+fn normal_continuous_review_state(app: &CedarApp) -> serde_json::Value {
+    let mut snapshot = normal_shell_snapshot(app);
+    let object = snapshot.as_object_mut().unwrap();
+    object.remove("selected");
+    object.remove("preview");
+    snapshot
 }
 
 #[test]
@@ -4883,7 +4947,7 @@ fn recent_closed_reopen_matches_independent_ordinary_open_after_native_settling(
 
 #[test]
 #[ignore = "requires CEDAR_BROWSE_AGENT_BIN selecting the normal shipping agent"]
-fn browse_normal_agent_find_recent_project_reveal_and_exact_return() {
+fn browse_normal_agent_find_recent_project_reveal_continuous_preview_and_exact_return() {
     let mut proof = NormalBrowse::new();
     let mut app = CedarApp::empty();
     app.open_form = false;
@@ -5486,5 +5550,251 @@ fn browse_normal_agent_find_recent_project_reveal_and_exact_return() {
     );
     proof.project_reveal_state_preserved = true;
     assert!(!app.execution_trusted());
+
+    // Preserve the complete v3 proof before extending it. Reuse its existing
+    // fixture and undo/close only the target's earlier reveal edit through
+    // ordinary controls; no setup Read or extra source file is necessary.
+    assert_eq!(proof.ledger.len(), 12);
+    click(&mut app, "editor");
+    frame(&mut app, modified_key(egui::Key::Z, command_modifiers()));
+    settle(&mut app);
+    assert_eq!(app.active().unwrap().path, NORMAL_TARGET);
+    assert_eq!(app.active().unwrap().text, NORMAL_TARGET_TEXT);
+    assert!(!app.active().unwrap().dirty());
+    frame(&mut app, modified_key(egui::Key::W, command_modifiers()));
+    settle(&mut app);
+    assert!(!app
+        .documents
+        .iter()
+        .any(|document| document.path == NORMAL_TARGET));
+    assert_eq!(app.active().unwrap().path, "origin.txt");
+    assert_eq!(normal_origin_state(&app), recent_origin);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert!(commands.try_recv().is_err());
+    // The earlier tab/Recent journey can leave this exact departure atop
+    // Back; ordinary history correctly coalesces such duplicates. Choose a
+    // distinct selection through editor keys before measuring the new journey.
+    let setup_state = normal_shell_snapshot(&app);
+    let setup_origin = normal_origin_state(&app);
+    let setup_undo = undo_texts(&app);
+    click(&mut app, "editor");
+    assert_eq!(focused(&app), Some(recorded_response(&app, "editor").id));
+    frame(&mut app, modified_key(egui::Key::Home, command_modifiers()));
+    frame(
+        &mut app,
+        modified_key(egui::Key::ArrowRight, egui::Modifiers::SHIFT),
+    );
+    settle(&mut app);
+    let continuous_origin = normal_origin_state(&app);
+    let continuous_state = normal_continuous_review_state(&app);
+    let continuous_back = continuous_state["back"].clone();
+    assert_ne!(
+        selection(&app).primary.index,
+        selection(&app).secondary.index
+    );
+    assert!(app.location_history.back.last().is_none_or(|last| {
+        last.generation != app.generation
+            || Some(last.document) != app.active_document
+            || last.edit_version != app.active().unwrap().edit_version
+            || !location_history::same_selection(last.selection, selection(&app))
+    }));
+    assert_eq!(continuous_state["back"], setup_state["back"]);
+    assert_eq!(continuous_state["forward"], setup_state["forward"]);
+    assert_eq!(undo_texts(&app), setup_undo);
+    for key in [
+        "id",
+        "text",
+        "saved_text",
+        "revision",
+        "dirty",
+        "edit_version",
+    ] {
+        assert_eq!(continuous_origin[key], setup_origin[key]);
+    }
+    assert!(commands.try_recv().is_err());
+    let to_target = if target > origin {
+        egui::Key::ArrowDown
+    } else {
+        egui::Key::ArrowUp
+    };
+    let to_origin = if target > origin {
+        egui::Key::ArrowUp
+    } else {
+        egui::Key::ArrowDown
+    };
+
+    let unarmed_start = proof.ledger.len();
+    enter(&mut app, true);
+    assert!(!app.project_text_review_armed());
+    click(&mut app, &format!("browse_row:{origin}"));
+    frame(&mut app, key(to_target));
+    settle(&mut app);
+    assert_eq!(app.browse.selected_index(), Some(target));
+    assert!(!app.project_text_review_armed());
+    assert!(!app.browse.preview_visible());
+    frame(&mut app, key(to_origin));
+    settle(&mut app);
+    assert_eq!(app.browse.selected_index(), Some(origin));
+    assert!(!app.project_text_review_armed());
+    assert!(!app.browse.preview_visible());
+    assert_eq!(normal_continuous_review_state(&app), continuous_state);
+    assert!(
+        commands.try_recv().is_err(),
+        "unarmed movement performs no work"
+    );
+    proof.continuous_preview_unarmed_operations = Some(proof.ledger.len() - unarmed_start);
+
+    let dirty_start = proof.ledger.len();
+    frame(&mut app, key(egui::Key::Space));
+    settle(&mut app);
+    assert!(app.project_text_review_armed());
+    assert_eq!(app.browse_preview_text(), Some(DRAFT));
+    assert!(commands.try_recv().is_err());
+    // Explicit Text preview retains the owned row's keyboard focus. The
+    // following adjacent real key frames admit target then origin 100 ms
+    // apart, so only the latest candidate may mature at the fixed 150 ms.
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, &format!("browse_row:{origin}")).id)
+    );
+    assert!(app.project_text_review_armed());
+    frame(&mut app, key(to_target));
+    let target_time = app.editor_ctx.input(|input| input.time);
+    assert_eq!(app.browse.selected_index(), Some(target));
+    assert!(app.project_text_review_pending());
+    assert!(commands.try_recv().is_err());
+    frame(&mut app, key(to_origin));
+    let origin_time = app.editor_ctx.input(|input| input.time);
+    assert!(origin_time > target_time && origin_time - target_time < 0.150);
+    assert_eq!(app.browse.selected_index(), Some(origin));
+    assert!(app.project_text_review_pending());
+    assert!(commands.try_recv().is_err());
+    frame(&mut app, vec![]);
+    assert!(app.project_text_review_pending());
+    assert!(commands.try_recv().is_err());
+    frame(&mut app, vec![]);
+    assert!(!app.project_text_review_pending());
+    assert!(app.project_text_review_armed());
+    assert_eq!(app.browse.selected_index(), Some(origin));
+    assert_eq!(app.browse_preview_text(), Some(DRAFT));
+    assert_eq!(normal_continuous_review_state(&app), continuous_state);
+    assert!(
+        commands.try_recv().is_err(),
+        "superseded unopened candidate must not Read"
+    );
+    proof.continuous_preview_latest_candidate = true;
+    proof.continuous_preview_dirty_additional_reads = Some(proof.ledger.len() - dirty_start);
+
+    let preview_start = proof.ledger.len();
+    frame(&mut app, key(to_target));
+    assert_eq!(app.browse.selected_index(), Some(target));
+    assert!(app.project_text_review_pending());
+    assert!(commands.try_recv().is_err());
+    frame(&mut app, vec![]);
+    assert!(app.project_text_review_pending());
+    assert!(commands.try_recv().is_err());
+    frame(&mut app, vec![]);
+    proof.exchange(
+        &mut app,
+        &commands,
+        serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
+    );
+    settle(&mut app);
+    assert!(app.project_text_review_armed());
+    assert!(!app.project_text_review_pending());
+    assert_eq!(app.browse_preview_text(), Some(NORMAL_TARGET_TEXT));
+    assert_eq!(app.browse.selected_index(), Some(target));
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, &format!("browse_row:{target}")).id)
+    );
+    assert_eq!(normal_continuous_review_state(&app), continuous_state);
+    assert_eq!(app.documents.len(), 1, "preview does not open an editor");
+    assert!(commands.try_recv().is_err());
+    proof.continuous_preview_browse_armed_follow = true;
+    proof.continuous_preview_unopened_reads = Some(proof.ledger.len() - preview_start);
+
+    let open_start = proof.ledger.len();
+    frame(&mut app, key(egui::Key::Enter));
+    proof.exchange(
+        &mut app,
+        &commands,
+        serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
+    );
+    settle(&mut app);
+    proof.continuous_preview_open_reads = Some(proof.ledger.len() - open_start);
+    assert_eq!(app.active().unwrap().path, NORMAL_TARGET);
+    assert_eq!(app.active().unwrap().text, NORMAL_TARGET_TEXT);
+    assert_eq!(app.active().unwrap().cursor, (2, 1));
+    assert!(!app.project_text_review_armed());
+    assert_eq!(
+        app.location_history.back.len(),
+        continuous_back.as_array().unwrap().len() + 1
+    );
+    frame(
+        &mut app,
+        modified_key(egui::Key::OpenBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_eq!(app.active().unwrap().path, "origin.txt");
+    assert_eq!(normal_origin_state(&app), continuous_origin);
+    assert_eq!(normal_shell_snapshot(&app)["back"], continuous_back);
+    assert_eq!(app.location_history.forward.len(), 1);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert!(commands.try_recv().is_err());
+    proof.continuous_preview_open_back_exact = true;
+
+    // The second Text surface follows the same explicit-arm lifetime, using
+    // the documents now open from the measured ordinary Open. Its complete
+    // dirty/current-draft review sequence adds no remote operation.
+    let bottom_start = proof.ledger.len();
+    click(&mut app, "find_results_entry");
+    settle(&mut app);
+    assert!(app.tools_open && app.tool == Tool::Search);
+    assert!(!app.project_text_review_armed());
+    let bottom_state = normal_continuous_review_state(&app);
+    click(&mut app, &format!("search_row:{origin}"));
+    frame(&mut app, key(egui::Key::Space));
+    settle(&mut app);
+    assert!(app.project_text_review_armed());
+    assert_eq!(app.search_preview_text(), Some(DRAFT));
+    click(&mut app, &format!("search_row:{target}"));
+    settle(&mut app);
+    assert!(app.project_text_review_armed());
+    assert_eq!(app.search_state.selected_index(), Some(target));
+    assert_eq!(app.search_preview_text(), Some(NORMAL_TARGET_TEXT));
+    click(&mut app, &format!("search_row:{origin}"));
+    settle(&mut app);
+    assert!(app.project_text_review_armed());
+    assert_eq!(app.search_state.selected_index(), Some(origin));
+    assert_eq!(app.search_preview_text(), Some(DRAFT));
+    assert_eq!(normal_continuous_review_state(&app), bottom_state);
+    assert_eq!(normal_origin_state(&app), continuous_origin);
+    assert!(
+        commands.try_recv().is_err(),
+        "bottom dirty review performs zero Reads"
+    );
+    proof.continuous_preview_bottom_armed_follow = true;
+    proof.continuous_preview_dirty_additional_reads = Some(
+        proof.continuous_preview_dirty_additional_reads.unwrap() + proof.ledger.len()
+            - bottom_start,
+    );
+    click(&mut app, "close_tools");
+    settle(&mut app);
+    assert!(!app.project_text_review_armed());
+    assert!(!app.has_search_preview());
+    assert_eq!(normal_continuous_review_state(&app), bottom_state);
+    enter(&mut app, true);
+    assert!(!app.project_text_review_armed());
+    assert!(!app.browse.preview_visible());
+    assert_eq!(app.browse.selected_index(), Some(origin));
+    assert_eq!(retained_snapshot(&app), snapshot);
+    frame(&mut app, key(egui::Key::Escape));
+    settle(&mut app);
+    assert_eq!(normal_continuous_review_state(&app), bottom_state);
+    assert_eq!(normal_origin_state(&app), continuous_origin);
+    assert!(!app.execution_trusted());
+    assert!(commands.try_recv().is_err());
+    proof.continuous_preview_state_preserved = true;
     proof.finish();
 }

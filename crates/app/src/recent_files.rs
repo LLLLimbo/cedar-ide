@@ -81,7 +81,29 @@ pub(super) struct RecentFiles {
     view: Option<View>,
     input: Input,
 }
+#[cfg(test)]
+#[derive(PartialEq, Eq)]
+pub(super) struct PreviewHistorySnapshot {
+    owner: Option<Owner>,
+    paths: Vec<Arc<str>>,
+    bytes: usize,
+    epoch: u64,
+    exhausted: bool,
+    observed: Option<Observed>,
+}
 impl RecentFiles {
+    #[cfg(test)]
+    pub(super) fn preview_history_snapshot(&self) -> PreviewHistorySnapshot {
+        PreviewHistorySnapshot {
+            owner: self.owner.clone(),
+            paths: self.paths.clone(),
+            bytes: self.bytes,
+            epoch: self.epoch,
+            exhausted: self.exhausted,
+            observed: self.observed,
+        }
+    }
+
     fn changed(&mut self) -> bool {
         let Some(epoch) = self.epoch.checked_add(1) else {
             self.exhausted = true;

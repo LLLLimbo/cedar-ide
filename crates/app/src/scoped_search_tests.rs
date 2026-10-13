@@ -974,8 +974,8 @@ fn scoped_find_shared_controls_have_visible_native_geometry_at_both_font_sizes()
                 ] {
                     visible(&app, probe, true, "preview controls");
                 }
-                // Browse Escape returns to its row. Bottom preview keeps row
-                // ownership, and moving to the next row retires that preview.
+                // Browse Escape disarms and returns to its row. Bottom keeps
+                // row ownership and follows the next row after settlement.
                 let (return_key, returned_index) = match surface {
                     Surface::Browse => (egui::Key::Escape, 0),
                     Surface::Bottom => (egui::Key::ArrowDown, 1),
@@ -997,6 +997,35 @@ fn scoped_find_shared_controls_have_visible_native_geometry_at_both_font_sizes()
                     Some(returned_index),
                     "{surface:?}: preview return or movement selection"
                 );
+                if matches!(surface, Surface::Bottom) {
+                    assert!(app.project_text_review_armed());
+                    assert!(!app.project_text_review_pending());
+                    assert_eq!(app.search_preview_text(), Some(DRAFT));
+                    assert!(app
+                        .project_text_preview_context()
+                        .unwrap()
+                        .text
+                        .contains("▶ 3 | last"));
+                    visible(&app, pane, true, "settled next-row preview");
+                    visible(&app, &surface.row(1), true, "settled next-row key target");
+                    assert!(commands.try_recv().is_err(), "draft context must not Read");
+                    frame_at(
+                        &mut app,
+                        size,
+                        key(egui::Key::Escape, egui::Modifiers::NONE),
+                    );
+                    for _ in 0..3 {
+                        frame_at(&mut app, size, vec![]);
+                    }
+                    assert_eq!(
+                        app.editor_ctx.memory(|m| m.focused()),
+                        Some(recorded_response(&app, &surface.row(1)).id),
+                        "{surface:?}, font={font}, size={size:?}: Escape retains exact row focus"
+                    );
+                    assert_eq!(app.search_state.selected_index(), Some(1));
+                }
+                assert!(!app.project_text_review_armed());
+                assert!(!app.project_text_review_pending());
                 assert!(match surface {
                     Surface::Browse => app.browse_preview_text(),
                     Surface::Bottom => app.search_preview_text(),

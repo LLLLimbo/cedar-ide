@@ -4,12 +4,21 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-The latest accepted bounded functional baseline is **0.64.0**, including Recent
-Files and the retained connected browsing shell. Its exact CI and package checks
-passed. The bounded Linux native run passed its essential functional and
-integrity checks, but quit initiation was **20.436 seconds late**, failing the
-strict timing gate. This is not an all-gates pass; see the
-[verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md#accepted-0640-bounded-functional-baseline).
+The current **0.66 continuous Project Text preview candidate is not yet
+accepted**. Final local focused/aggregate checks, strict Clippy, formatting and
+current-artifact normal-agent proofs passed. Fresh exact CI, packages and native
+validation have not run. The candidate contract is described
+[below](#continuous-project-text-preview-066-candidate); Files keeps its existing
+explicit-preview interaction.
+
+The latest accepted bounded baseline is **0.65.1**, with exact CI, three package
+audits and a fresh bounded Linux native journey passed. That journey covered a
+readable `src/层/Target.rs` path, Tree/Flat current-file selection, Down/Up,
+dirty-selection and Undo/Redo preservation, and retained Find state. Native
+cancellation, Windows/macOS GUI, real SSH, arbitrary viewports and broad CJK
+coverage remain unverified. The 0.65.0 glyph stop and 0.64.0 strict timing failure
+remain part of the
+[verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md#accepted-0651-bounded-baseline).
 
 ## Recent Files (0.64 bounded functional acceptance)
 
@@ -26,15 +35,16 @@ workspace change and restart clear the list; idle frames cannot repopulate it.
 Its checks and the preserved strict native timing failure are recorded separately
 in the [0.64 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE64_RECENT_FILES.md).
 
-## Select Current File in Project (0.65 candidate)
+<a id="select-current-file-in-project-065-candidate"></a>
 
-**This Project selection candidate is not yet accepted.** 0.65.0 passed its
-local checks, exact CI and three package audits. Its Linux native journey stopped
-at a Project Text CJK path display problem before core selection, dirty-selection,
-Down/Up or Undo checks. The narrow 0.65.1 font-trigger correction below passed
-local aggregate/focused tests, independent source review, strict Clippy,
-formatting and current-artifact Browse/scoped-search proofs. Exact CI, package
-and native checks have not run.
+## Select Current File in Project (0.65.1 bounded acceptance)
+
+**0.65.1 passed its bounded acceptance.** The exact CI, three package audits
+and fresh Linux native checks cover the current-file selection journey described
+above. Cancellation is checked by deterministic and normal-agent proofs, but
+was not exercised in that native journey. The preceding 0.65.0 native run stopped
+at a Project Text CJK path display problem; its skipped core checks and failure
+remain recorded rather than being reclassified as passed.
 The explicit, visible
 **Select Current File in Project** button below the Flat/Tree controls selects
 the active file in Project without opening or rereading it. The chosen **Flat**
@@ -80,7 +90,7 @@ history intact, and retains Find state. It sends no content Read, discovery or
 search request and adds no backend operation or protocol extension. **Alt+1**
 keeps its existing zero-request Project-focus behavior; it does not invoke this
 action. The [0.65 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE65_PROJECT_REVEAL.md)
-tracks candidate validation separately from accepted 0.64 evidence.
+separates the accepted 0.65.1 evidence from earlier failures and platform limits.
 
 ## Accepted 0.63.3 connected shell
 
@@ -144,9 +154,12 @@ under [Retained Project Text results](#retained-project-text-results).
 2. Press **Down** to focus the first result. Use **Up/Down** or **Home/End** to move
    through results, or single-click a row to select it.
 3. With a result focused, press **Space**, or select **Preview**, to inspect it.
-   Selection and hover alone do not request a preview.
-4. Press **Escape** to leave the preview and return to the selected row. Press
-   **Enter** on a result, double-click it, or select **Open** to open that file.
+   In the 0.66 candidate, this also arms continuous preview for that exact Project
+   Text view and result snapshot; subsequent owned selections settle for 150 ms.
+   Unarmed selection and hover never request a preview. Files remains explicit.
+4. Press **Escape** to leave the preview; for Text it also disarms continuous
+   preview and leaves focus on the selected row. Press **Enter** on a result,
+   double-click it, or select **Open** to open that file.
 5. Use the editor's **Back** button or **Ctrl+[** to return. **Forward** or
    **Ctrl+]** goes forward again. On macOS, the existing history shortcuts use Cmd.
 
@@ -245,12 +258,12 @@ policy. A discovered binary or large file can still be refused by Open or Previe
 
 ## Retained Project Text results
 
-**0.65.1 CJK trigger candidate, not yet accepted:** current, validated, accepted
-result paths and snippets can trigger the existing background local font loader.
+**0.65.1 bounded CJK acceptance:** current, validated, accepted result paths and
+snippets can trigger the existing background local font loader.
 It checks known font locations and reads one validated regular font file within
 32 MiB; it does not download or install fonts. Display still depends on the
-installed font's glyph coverage. This addresses a source-level trigger omission;
-a corrected native rendering result has not yet been established.
+installed font's glyph coverage. The fresh bounded Linux native journey confirmed
+`src/层/Target.rs` was readable; it does not establish general CJK or IME coverage.
 
 **Project Text** explicitly submits a case-sensitive literal search of disk text.
 It does not search unsaved draft bytes. Results display the submitted query and
@@ -318,7 +331,9 @@ appearance of each path in the accepted response, and each group's hits retain
 their original relative order. Equal-looking hits remain separate rows. Grouping
 does not rewrite paths or change which original hit an action addresses.
 
-- Single-click a hit to select it. Selection and hover do not read file contents.
+- Single-click a hit to select it. Unarmed selection and hover do not read file
+  contents. In the 0.66 candidate, an armed Text view can update its preview after
+  an owned selection settles, as described below.
 - With a hit focused, **Up/Down** and **Home/End** navigate visible hits.
   **Space** requests a read-only preview; **Enter** or a double-click uses
   ordinary Open. A double-click must follow an accepted click on the same exact
@@ -330,18 +345,20 @@ does not rewrite paths or change which original hit an action addresses.
   and puts focus on the group header. A hidden hit cannot be previewed or opened;
   expand its group to act on it again.
 
-In the bottom FIND RESULTS tool, preview leaves focus on the selected row.
-Use the existing tool close/hide control or **Ctrl/Cmd+J** to return to the editor;
+In the 0.66 candidate, preview leaves focus on the selected row in both Text
+views. In the bottom FIND RESULTS tool, use the existing tool close/hide control or **Ctrl/Cmd+J** to return to the editor;
 **Ctrl/Cmd+J** also reopens the selected tool. The accepted 0.63.3 shell uses the
-active-visible-hit or query focus route described above. The bottom tool does
-not add an Escape action. The shared Find and return window keeps its preview/dismiss
-Escape behavior described above.
+active-visible-hit or query focus route described above. For an armed Text
+preview, **Escape** dismisses the preview and disarms it while retaining
+result-row focus. The shared Find and return window keeps its later
+Escape-to-dismiss behavior when no preview is active.
 
 The submitted query and filters, selected hit and group expansion state survive
 hiding and reopening, switching between the two text-search views, and Open
 followed by Back, within the same session. Each view retains its scroll position within the
-current layout's scroll limits; resizing can clamp it. Preview intent is separate:
-request it again after reopening. A successful rerun replaces the accepted
+current layout's scroll limits; resizing can clamp it. Preview intent and
+continuous-preview arming are separate from retained results: request preview
+explicitly again after reopening. A successful rerun replaces the accepted
 snapshot; no history is stored across application restarts.
 
 Editing the query or either filter, starting a rerun, a failed rerun or
@@ -369,19 +386,62 @@ usability at every tiny viewport. Case/word options, regular expressions,
 debounced or live queries, CamelCase matching and disk-persistent search history
 are not part of the 0.62 scoped-search addition.
 
-## Explicit read-only preview
+## Continuous Project Text preview (0.66 candidate)
 
-Preview is separate from an editable tab and is limited to **1 MiB**. For a file
-already open, **Current open draft** shows that exact draft and sends **zero
-backend Reads**. For an unopened file, an explicit preview uses a bounded Read.
-Unreadable, binary, oversized or invalid responses show an explanation. There is
-one retained preview and at most one preview Read in flight across both Find
-views, with one replacement selection waiting. Text hits carry no file revision,
-so a disk preview cannot establish that the file is unchanged since the search.
+This candidate applies only to **Project Text in Find and return** and the
+bottom **FIND RESULTS** tool. It leaves Files preview and search submission
+unchanged. **Space** on an owned current hit or the labelled **Preview** action
+arms only the exact current Text surface and accepted result view. The first
+preview is immediate and keeps result-row focus. Selecting or hovering over a
+result before that explicit action sends **zero preview Reads**; typing a query
+also sends none.
+
+Once armed, a real, owned selection change through a click or result-navigation
+key selects the next candidate. It must remain selected for **150 ms** before
+preview admission. This is a fixed settlement interval for that selection;
+repainting, hover or passive focus alone cannot start or renew it. Moving to a
+new candidate replaces the previous candidate. There is at most **one preview
+Read in flight** and **one latest replacement candidate** across the two views,
+not a queue of intermediate rows. A late success or error cannot display an
+older candidate or steal focus. Retiring intent does not forcibly cancel an
+already-running filesystem call.
+
+Text previews show read-only line context around the historical hit: at most
+**41 lines** and **64 KiB of UTF-8 text**, with truncation identified and clipping
+only at valid UTF-8 boundaries. The indicated line is labelled as a **historical
+line hint**, not a verified current match. The source may have changed since
+search. A historical line beyond the current source's EOF shows **unavailable**;
+it is not silently clamped to the last line. An open source uses its exact current
+draft with **zero Read**, including an unsaved draft. Preview never moves that
+editor's selection or changes its text or Undo history.
+
+**Escape**, hiding or dismissing the view, query/filter edits, rerun, provider or
+surface changes, bound document-version changes, navigation and reconnect disarm
+continuous preview and retire its pending intent. Opening a result uses ordinary
+Open and retires preview intent. Reopening retained results does not rearm or
+automatically Read; use Space or Preview again. Late work cannot reopen a hidden
+preview or restore old focus. Switching to the other Text view requires a new
+explicit preview even though both views share the retained result snapshot.
+
+The candidate adds no protocol, backend operation, service, index, editable
+preview tab, cross-session persistence or Save action. Its validation status is
+recorded in the
+[0.66 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md).
+
+## Read-only preview and ordinary Open
+
+Preview is separate from an editable tab. Source files retain the existing
+**1 MiB** Read limit; the 0.66 Text context display has the smaller bounds above.
+**Files** keeps its existing explicit-preview behavior and 1 MiB preview limit.
+For a file already open, **Current open draft** shows that exact draft and sends
+**zero backend Reads**. An unopened file uses the existing bounded Read.
+Unreadable, binary, oversized or invalid responses show an explanation. One
+retained preview and the shared single-flight Read limit remain. Text hits carry
+no file revision, so a disk preview cannot establish unchanged bytes since search.
 
 After cancelling or hiding a preview, explicitly previewing the same hit again
-starts a fresh preview intent. A reply belonging to the cancelled preview cannot
-supply the new one. The same single-flight and size limits still apply.
+starts a fresh intent. A reply belonging to the cancelled preview cannot supply
+the new one. For Text, that fresh action also rearms only the current exact view.
 
 **Open** always uses ordinary file opening; preview bytes are not promoted into
 a new editable document. An existing dirty tab is reused without rereading or

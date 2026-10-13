@@ -151,6 +151,108 @@ impl PreviewTicket {
     }
 }
 
+// An arm belongs to one accepted text view, independently of its selection.
+// The per-selection ticket is reserved immediately; only fulfillment settles.
+#[derive(Clone, PartialEq, Eq)]
+struct ProjectTextReview {
+    surface: PreviewSurface,
+    context: Context,
+    epoch: u64,
+    source: search_keyboard::Source,
+    view: search_keyboard::View,
+}
+struct PreviewReveal {
+    ticket: PreviewTicket,
+    focus: egui::Id,
+}
+struct PreviewSettlement {
+    ticket: PreviewTicket,
+    deadline: f64,
+    last_seen: f64,
+}
+pub(super) const PROJECT_TEXT_REVIEW_DEBOUNCE_SECONDS: f64 = 0.150;
+pub(super) const MAX_PROJECT_TEXT_CONTEXT_LINES: usize = 41;
+pub(super) const MAX_PROJECT_TEXT_CONTEXT_BYTES: usize = 64 * 1024;
+
+// Keep the original clock sample: (deadline - interval) is not a stable inverse
+// in floating point and can falsely reject the selection's own frame.
+pub(super) fn preview_settlement_remaining(now: f64, last_seen: f64, deadline: f64) -> Option<f64> {
+    (now.is_finite() && now >= last_seen).then_some(deadline - now)
+}
+
+#[derive(Debug)]
+pub(super) struct ProjectTextContext {
+    pub(super) text: String,
+    pub(super) note: String,
+}
+
+// Borrow only the requested window. Every line gets a bounded share, so a
+// giant preceding line cannot hide the marked historical target.
+pub(super) fn project_text_context(text: &str, requested: usize) -> ProjectTextContext {
+    let first = requested
+        .saturating_sub(MAX_PROJECT_TEXT_CONTEXT_LINES / 2)
+        .max(1);
+    let last = requested.saturating_add(MAX_PROJECT_TEXT_CONTEXT_LINES / 2);
+    let mut lines = Vec::new();
+    let mut total_seen = 0;
+    let mut after = false;
+    for (index, line) in text.split('\n').enumerate() {
+        let number = index + 1;
+        total_seen = number;
+        if number > last {
+            after = true;
+            break;
+        }
+        if number >= first {
+            lines.push((number, line.strip_suffix('\r').unwrap_or(line)));
+        }
+    }
+    if requested == 0
+        || requested > total_seen
+        || !lines.iter().any(|(number, _)| *number == requested)
+    {
+        return ProjectTextContext { text: String::new(), note: format!("Context unavailable: historical line {requested} is beyond the current source ({} lines).", total_seen) };
+    }
+    let share = MAX_PROJECT_TEXT_CONTEXT_BYTES / lines.len();
+    let marker = " … [line truncated]";
+    let mut rendered = String::new();
+    let mut truncated = first > 1 || after;
+    for (number, line) in &lines {
+        let prefix = format!(
+            "{} {number} | ",
+            if *number == requested { "▶" } else { " " }
+        );
+        let available = share.saturating_sub(prefix.len() + 1);
+        rendered.push_str(&prefix);
+        if line.len() > available {
+            let mut end = available.saturating_sub(marker.len()).min(line.len());
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            rendered.push_str(&line[..end]);
+            rendered.push_str(marker);
+            truncated = true;
+        } else {
+            rendered.push_str(line);
+        }
+        rendered.push('\n');
+    }
+    rendered.pop();
+    ProjectTextContext {
+        text: rendered,
+        note: format!(
+            "Historical requested line {requested} · lines {}–{}{} · coordinates may have changed",
+            lines[0].0,
+            lines.last().unwrap().0,
+            if truncated {
+                " · context truncated (41 lines / 64 KiB maximum)"
+            } else {
+                ""
+            }
+        ),
+    }
+}
+
 enum Preview {
     Draft(PreviewTicket),
     Disk {
@@ -296,6 +398,9 @@ pub(super) struct Browse {
     text_request: Option<u64>,
     search_completed: Option<(u64, search_keyboard::Specification, Result<Payload, String>)>,
     desired: Option<PreviewTicket>,
+    review: Option<ProjectTextReview>,
+    settlement: Option<PreviewSettlement>,
+    context_reveal: Option<PreviewReveal>,
     // A fresh explicit intent never reuses an earlier in-flight Read ticket,
     // including A → B → A and collapse → expand → preview of the same row.
     preview_serial: u64,
@@ -370,6 +475,9 @@ impl Browse {
         self.rows.clear();
         self.selected = None;
         self.desired = None;
+        self.review = None;
+        self.settlement = None;
+        self.context_reveal = None;
         self.preview = None;
         self.replacement = None;
         self.message = None;
@@ -490,6 +598,8 @@ impl CedarApp {
         }
         self.search_state.toggle_group(first);
         self.browse.input.retire();
+        self.browse.review = None;
+        self.browse.settlement = None;
         self.browse.desired = None;
         self.browse.preview = None;
         self.browse.replacement = None;
@@ -722,6 +832,7 @@ impl CedarApp {
         self.browse.message = Some("Press Enter to submit this query.".into());
     }
     pub(super) fn browse_select(&mut self, index: usize) {
+        self.validate_project_text_review();
         if !self.browse_current()
             || !self.browse_text_visible(index)
             || !self
@@ -733,6 +844,7 @@ impl CedarApp {
             return;
         }
         if self.browse.selected != Some(index) {
+            self.browse.settlement = None;
             self.browse.desired = None;
             self.browse.preview = None;
             self.browse.replacement = None;
@@ -743,16 +855,10 @@ impl CedarApp {
         }
         self.browse.focus = Some(Target::Row(index));
     }
-    pub(super) fn browse_preview(&mut self) {
-        let Some(context) = self.browse.context.clone() else {
-            return;
-        };
-        let Some(index) = self.browse.selected else {
-            return;
-        };
-        let Some(row) = self.browse.rows.get(index).cloned() else {
-            return;
-        };
+    fn browse_preview_ticket(&self) -> Option<PreviewTicket> {
+        let context = self.browse.context.clone()?;
+        let index = self.browse.selected?;
+        let row = self.browse.rows.get(index)?.clone();
         let draft = self
             .documents
             .iter()
@@ -769,19 +875,13 @@ impl CedarApp {
             row,
             draft,
         };
-        if !self.browse_ticket_current(&ticket) {
-            return;
-        }
-        self.request_find_preview(ticket);
+        self.browse_ticket_current(&ticket).then_some(ticket)
     }
-    pub(super) fn search_preview(&mut self, index: usize) {
-        let Some(hit) = self
+    fn search_preview_ticket(&self, index: usize) -> Option<PreviewTicket> {
+        let hit = self
             .browse_search_hits()
             .into_iter()
-            .find(|hit| hit.index() == index)
-        else {
-            return;
-        };
+            .find(|hit| hit.index() == index)?;
         let draft = self
             .documents
             .iter()
@@ -798,11 +898,149 @@ impl CedarApp {
             row: Row::Text(hit),
             draft,
         };
-        if self.browse_ticket_current(&ticket) {
+        self.browse_ticket_current(&ticket).then_some(ticket)
+    }
+    pub(super) fn browse_preview(&mut self) {
+        if let Some(ticket) = self.browse_preview_ticket() {
+            self.request_find_preview(ticket);
+            self.browse.focus = Some(if self.browse.provider == Provider::ProjectText {
+                Target::Row(self.browse.selected.unwrap())
+            } else {
+                Target::PreviewPane
+            });
+        }
+    }
+    pub(super) fn search_preview(&mut self, index: usize) {
+        if let Some(ticket) = self.search_preview_ticket(index) {
             self.request_find_preview(ticket);
         }
     }
+    fn project_text_review(&self, surface: PreviewSurface) -> Option<ProjectTextReview> {
+        let visible = match surface {
+            PreviewSurface::Browse => {
+                self.browse_current()
+                    && self.browse.provider == Provider::ProjectText
+                    && self.browse.query == self.browse.submitted
+            }
+            PreviewSurface::Search => {
+                self.tools_open
+                    && self.tool == Tool::Search
+                    && !self.navigation.blocks_editor()
+                    && !self.open_form
+                    && !self.new_file
+            }
+        };
+        if !visible || self.foreign_modal_owns_input(&self.editor_ctx) {
+            return None;
+        }
+        Some(ProjectTextReview {
+            surface,
+            context: Context::capture(self),
+            epoch: if surface == PreviewSurface::Browse {
+                self.browse.epoch
+            } else {
+                self.search_request
+            },
+            source: self.search_state.accepted.clone()?,
+            view: search_keyboard::View::of(self)?,
+        })
+    }
+    fn review_current(&self) -> bool {
+        self.browse.review.as_ref().is_some_and(|review| {
+            self.project_text_review(review.surface).as_ref() == Some(review)
+                && self
+                    .browse
+                    .desired
+                    .as_ref()
+                    .is_none_or(|ticket| self.browse_ticket_current(ticket))
+        })
+    }
+    pub(super) fn validate_project_text_review(&mut self) {
+        if self.browse.review.is_some() && !self.review_current() {
+            self.retire_project_text_preview();
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn project_text_review_armed(&self) -> bool {
+        self.review_current()
+    }
+    #[cfg(test)]
+    pub(super) fn project_text_review_pending(&self) -> bool {
+        self.browse.settlement.is_some()
+    }
+    pub(super) fn search_review_armed(&self) -> bool {
+        self.review_current()
+            && self
+                .browse
+                .review
+                .as_ref()
+                .is_some_and(|review| review.surface == PreviewSurface::Search)
+    }
+    fn browse_select_owned(&mut self, index: usize) {
+        let previous = self.browse.selected;
+        self.browse_select(index);
+        if self.browse.selected != previous && self.browse.selected == Some(index) {
+            self.settle_project_text_selection(PreviewSurface::Browse, index);
+        }
+    }
+    pub(super) fn search_selection_owned(&mut self, index: usize) {
+        let previous = self.search_state.selected_index();
+        self.select_search_row(index);
+        if self.search_state.selected_index() != previous
+            && self.search_state.selected_index() == Some(index)
+        {
+            self.settle_project_text_selection(PreviewSurface::Search, index);
+        }
+    }
+    fn settle_project_text_selection(&mut self, surface: PreviewSurface, index: usize) {
+        if !self.review_current()
+            || !self
+                .browse
+                .review
+                .as_ref()
+                .is_some_and(|review| review.surface == surface)
+        {
+            return;
+        }
+        let ticket = match surface {
+            PreviewSurface::Browse => self.browse_preview_ticket(),
+            PreviewSurface::Search => self.search_preview_ticket(index),
+        };
+        if let Some(ticket) = ticket.and_then(|ticket| self.reserve_find_preview(ticket)) {
+            let now = self.editor_ctx.input(|input| input.time);
+            if !now.is_finite() {
+                self.retire_project_text_preview();
+                return;
+            }
+            self.browse.settlement = Some(PreviewSettlement {
+                ticket,
+                deadline: now + PROJECT_TEXT_REVIEW_DEBOUNCE_SECONDS,
+                last_seen: now,
+            });
+            self.editor_ctx
+                .request_repaint_after(std::time::Duration::from_secs_f64(
+                    PROJECT_TEXT_REVIEW_DEBOUNCE_SECONDS,
+                ));
+        }
+    }
+    pub(super) fn clear_search_selection_preview(&mut self) {
+        if self
+            .browse
+            .desired
+            .as_ref()
+            .is_some_and(|ticket| ticket.surface == PreviewSurface::Search)
+        {
+            self.browse.desired = None;
+            self.browse.preview = None;
+            self.browse.replacement = None;
+            self.browse.settlement = None;
+            self.browse.context_reveal = None;
+        }
+    }
     pub(super) fn retire_project_text_preview(&mut self) {
+        self.browse.context_reveal = None;
+        self.browse.review = None;
+        self.browse.settlement = None;
         if self
             .browse
             .desired
@@ -815,6 +1053,23 @@ impl CedarApp {
         }
     }
     pub(super) fn retire_search_preview(&mut self) {
+        if self
+            .browse
+            .context_reveal
+            .as_ref()
+            .is_some_and(|reveal| reveal.ticket.surface == PreviewSurface::Search)
+        {
+            self.browse.context_reveal = None;
+        }
+        if self
+            .browse
+            .review
+            .as_ref()
+            .is_some_and(|review| review.surface == PreviewSurface::Search)
+        {
+            self.browse.review = None;
+            self.browse.settlement = None;
+        }
         if self
             .browse
             .desired
@@ -866,6 +1121,77 @@ impl CedarApp {
             Preview::Message { .. } => None,
         }
     }
+    fn request_context_reveal(&mut self, ticket: &PreviewTicket) {
+        self.browse.context_reveal = if ticket.provider == Provider::ProjectText {
+            let focus = match ticket.surface {
+                PreviewSurface::Browse => self.browse.id(&Target::Row(ticket.index)),
+                PreviewSurface::Search => search_keyboard::row_id(
+                    self.search_state.accepted.as_ref().unwrap(),
+                    ticket.index,
+                ),
+            };
+            Some(PreviewReveal {
+                ticket: ticket.clone(),
+                focus,
+            })
+        } else {
+            None
+        };
+    }
+    fn capture_context_reveal_input(&mut self, ctx: &egui::Context, raw: &egui::RawInput) {
+        let Some(reveal) = &self.browse.context_reveal else {
+            return;
+        };
+        let pending_row_focus = reveal.ticket.surface == PreviewSurface::Browse
+            && self.browse.focus == Some(Target::Row(reveal.ticket.index));
+        if !raw.focused
+            || (!pending_row_focus && ctx.memory(|memory| memory.focused()) != Some(reveal.focus))
+            || raw.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key { pressed: true, .. }
+                        | egui::Event::PointerButton { .. }
+                        | egui::Event::MouseWheel { .. }
+                        | egui::Event::Zoom(_)
+                        | egui::Event::Text(_)
+                        | egui::Event::Paste(_)
+                        | egui::Event::Copy
+                        | egui::Event::Cut
+                        | egui::Event::Ime(egui::ImeEvent::Preedit(_) | egui::ImeEvent::Commit(_))
+                        | egui::Event::Touch { .. }
+                        | egui::Event::WindowFocused(false)
+                )
+            })
+        {
+            self.browse.context_reveal = None;
+        }
+    }
+    fn take_context_reveal(&mut self, ui: &egui::Ui, surface: PreviewSurface) -> bool {
+        if ui.is_sizing_pass() || self.current_preview_text(surface).is_none() {
+            return false;
+        }
+        let Some(reveal) = self.browse.context_reveal.take() else {
+            return false;
+        };
+        reveal.ticket.surface == surface
+            && self.browse.desired.as_ref() == Some(&reveal.ticket)
+            && self.browse_ticket_current(&reveal.ticket)
+            && ui.memory(|memory| memory.focused()) == Some(reveal.focus)
+    }
+    fn current_project_text_context(&self, surface: PreviewSurface) -> Option<ProjectTextContext> {
+        let ticket = self.browse.desired.as_ref()?;
+        if ticket.provider != Provider::ProjectText || ticket.surface != surface {
+            return None;
+        }
+        Some(project_text_context(
+            self.current_preview_text(surface)?,
+            ticket.row.line()?,
+        ))
+    }
+    #[cfg(test)]
+    pub(super) fn project_text_preview_context(&self) -> Option<ProjectTextContext> {
+        self.current_project_text_context(self.browse.desired.as_ref()?.surface)
+    }
     pub(super) fn search_preview_panel(&mut self, ui: &mut egui::Ui, height: f32) {
         let current = self.browse.desired.as_ref().is_some_and(|ticket| {
             ticket.surface == PreviewSurface::Search && self.browse_ticket_current(ticket)
@@ -884,50 +1210,89 @@ impl CedarApp {
             }
         };
         ui.label(RichText::new(title).small().color(MUTED));
-        egui::ScrollArea::both()
+        let context = self.current_project_text_context(PreviewSurface::Search);
+        let reveal = self.take_context_reveal(ui, PreviewSurface::Search);
+        if let Some(context) = &context {
+            ui.label(RichText::new(&context.note).small().color(MUTED));
+        }
+        let scroll = egui::ScrollArea::both()
             .id_salt("search_preview_scroll")
+            .animated(false)
             .min_scrolled_height(0.0)
             .max_height(search_keyboard::visible_height(ui).min(height))
             .show(ui, |ui| {
-                let response = ui.add(
-                    egui::Label::new(
-                        RichText::new(
-                            self.current_preview_text(PreviewSurface::Search)
-                                .unwrap_or("1 MiB maximum · preview does not change the editor"),
+                let response = if let Some(context) = &context {
+                    draw_project_text_context(ui, context, reveal)
+                } else {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                "41 lines / 64 KiB maximum · preview does not change the editor",
+                            )
+                            .monospace(),
                         )
-                        .monospace(),
+                        .selectable(false),
                     )
-                    .selectable(false),
-                );
+                };
                 #[cfg(test)]
                 crate::workspace_access_tests::record(ui, "search_preview_content", &response);
                 #[cfg(not(test))]
                 let _ = response;
             });
+        #[cfg(test)]
+        record_context_scroll(
+            ui.ctx(),
+            scroll.id,
+            scroll.inner_rect,
+            PreviewSurface::Search,
+        );
+        #[cfg(not(test))]
+        let _ = scroll;
     }
-    fn request_find_preview(&mut self, mut ticket: PreviewTicket) {
+
+    fn reserve_find_preview(&mut self, mut ticket: PreviewTicket) -> Option<PreviewTicket> {
         if self.browse.desired.as_ref().is_some_and(|desired| {
             desired.same_intent(&ticket) && self.browse_ticket_current(desired)
         }) {
-            if ticket.surface == PreviewSurface::Browse {
-                self.browse.focus = Some(Target::PreviewPane);
-            }
-            return;
+            return None;
         }
         let Some(serial) = self.browse.preview_serial.checked_add(1) else {
             self.browse.desired = None;
             self.browse.preview = None;
             self.browse.replacement = None;
+            self.browse.review = None;
+            self.browse.settlement = None;
             self.error = Some("Preview cannot continue: the preview identity counter is exhausted. Reopen Cedar to start a new session.".into());
-            return;
+            return None;
         };
         self.browse.preview_serial = serial;
         ticket.serial = serial;
         self.browse.desired = Some(ticket.clone());
+        self.request_context_reveal(&ticket);
         self.browse.preview = None;
-        if ticket.surface == PreviewSurface::Browse {
-            self.browse.focus = Some(Target::PreviewPane);
+        self.browse.replacement = None;
+        self.browse.settlement = None;
+        Some(ticket)
+    }
+    fn request_find_preview(&mut self, ticket: PreviewTicket) {
+        let surface = ticket.surface;
+        let project_text = ticket.provider == Provider::ProjectText;
+        if let Some(ticket) = self.reserve_find_preview(ticket) {
+            self.fulfill_find_preview(ticket);
+        } else if let Some(settlement) = self.browse.settlement.take() {
+            // A fresh explicit Space need not wait for the automatic deadline.
+            self.fulfill_find_preview(settlement.ticket);
         }
+        if project_text && self.browse.desired.is_some() {
+            self.browse.review = self.project_text_review(surface);
+            // Only a fresh explicit preview may renew reveal after intervening
+            // input. Fulfillment/repaint never changes this authority.
+            if let Some(ticket) = self.browse.desired.clone() {
+                self.request_context_reveal(&ticket);
+            }
+        }
+    }
+    fn fulfill_find_preview(&mut self, ticket: PreviewTicket) {
         if !valid_preview_path(ticket.row.path()) {
             self.browse.preview = Some(Preview::Message { ticket, message: "Preview is unavailable because this result is not a valid workspace-relative file path.".into() });
             self.browse.replacement = None;
@@ -937,7 +1302,9 @@ impl CedarApp {
                     .documents
                     .iter()
                     .find(|doc| doc.path == ticket.row.path())
-                    .is_some_and(|doc| doc.text.len() > MAX_FILE_BYTES)
+                    .is_some_and(|doc| {
+                        ticket.provider == Provider::Files && doc.text.len() > MAX_FILE_BYTES
+                    })
                 {
                     Preview::Message { ticket, message: "This open draft exceeds the 1 MiB preview limit. Open it in the editor.".into() }
                 } else {
@@ -1025,6 +1392,28 @@ impl CedarApp {
         self.browse.search_completed = Some((request, specification, result));
     }
     pub(super) fn browse_finish_frame(&mut self, ctx: &egui::Context) {
+        if self.browse.review.is_some() && !self.review_current() {
+            self.retire_project_text_preview();
+        }
+        if let Some(mut settlement) = self.browse.settlement.take() {
+            if self.review_current()
+                && self.browse.desired.as_ref() == Some(&settlement.ticket)
+                && self.browse_ticket_current(&settlement.ticket)
+            {
+                let now = ctx.input(|input| input.time);
+                match preview_settlement_remaining(now, settlement.last_seen, settlement.deadline) {
+                    None => self.retire_project_text_preview(),
+                    Some(remaining) if remaining <= 0.0 => {
+                        self.fulfill_find_preview(settlement.ticket)
+                    }
+                    Some(remaining) => {
+                        ctx.request_repaint_after(std::time::Duration::from_secs_f64(remaining));
+                        settlement.last_seen = now;
+                        self.browse.settlement = Some(settlement);
+                    }
+                }
+            }
+        }
         self.finish_browse_discovery(ctx);
         let owns_view = self.browse_current() && !self.foreign_modal_owns_input(ctx);
         if let Some((request, specification, result)) = self.browse.search_completed.take() {
@@ -1162,6 +1551,7 @@ impl CedarApp {
         raw: &egui::RawInput,
         consumed: &mut [bool],
     ) {
+        self.capture_context_reveal_input(ctx, raw);
         let allowed = self.browse_current() && !self.foreign_modal_owns_input(ctx);
         let focused = ctx.memory(|memory| memory.focused());
         let prior_row = self.browse.input.completed_row.clone().filter(|prior| {
@@ -1767,23 +2157,12 @@ impl CedarApp {
     fn browse_preview_panel(&mut self, ui: &mut egui::Ui, max_height: f32) {
         if self.browse.desired.is_some() {
             ui.separator();
-            let text = self
-                .browse
-                .preview
+            let context = self.current_project_text_context(PreviewSurface::Browse);
+            let reveal = self.take_context_reveal(ui, PreviewSurface::Browse);
+            let text = context
                 .as_ref()
-                .filter(|preview| self.browse.desired.as_ref() == Some(preview.ticket()))
-                .and_then(|preview| match preview {
-                    Preview::Draft(ticket) => self
-                        .documents
-                        .iter()
-                        .find(|doc| {
-                            Some((doc.id, doc.edit_version)) == ticket.draft
-                                && doc.path == ticket.row.path()
-                        })
-                        .map(|doc| doc.text.as_str()),
-                    Preview::Disk { text, .. } => Some(text.as_str()),
-                    _ => None,
-                });
+                .map(|context| context.text.as_str())
+                .or_else(|| self.current_preview_text(PreviewSurface::Browse));
             let title = match &self.browse.preview {
                 Some(Preview::Draft(_)) => "Current open draft · read-only preview".to_owned(),
                 Some(Preview::Disk { revision, .. }) => format!(
@@ -1794,21 +2173,36 @@ impl CedarApp {
                 None => "Preview requested…".to_owned(),
             };
             ui.label(RichText::new(title).small().color(MUTED));
+            if let Some(context) = &context {
+                ui.label(RichText::new(&context.note).small().color(MUTED));
+            }
             let id = self.browse.id(&Target::PreviewPane);
-            let response = egui::ScrollArea::both()
+            let scroll = egui::ScrollArea::both()
                 .id_salt("browse_preview_scroll")
+                .animated(self.browse.provider == Provider::Files)
                 .max_height(max_height)
                 .show(ui, |ui| {
-                    let content = ui.add(
-                        egui::Label::new(
-                            RichText::new(text.unwrap_or("No preview bytes available")).monospace(),
+                    let content = if let Some(context) = &context {
+                        draw_project_text_context(ui, context, reveal)
+                    } else {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(text.unwrap_or("No preview bytes available"))
+                                    .monospace(),
+                            )
+                            .selectable(false),
                         )
-                        .selectable(false),
-                    );
+                    };
                     ui.interact(content.rect, id, egui::Sense::click())
-                })
-                .inner;
-            self.browse_response(ui, Target::PreviewPane, &response);
+                });
+            #[cfg(test)]
+            record_context_scroll(
+                ui.ctx(),
+                scroll.id,
+                scroll.inner_rect,
+                PreviewSurface::Browse,
+            );
+            self.browse_response(ui, Target::PreviewPane, &scroll.inner);
             ui.label(
                 RichText::new("Escape returns to the selected result")
                     .small()
@@ -1817,6 +2211,7 @@ impl CedarApp {
         }
     }
     pub(super) fn browse_window(&mut self, ctx: &egui::Context) {
+        self.validate_project_text_review();
         if !self.browse_current() {
             self.dismiss_navigation();
             return;
@@ -1860,7 +2255,10 @@ impl CedarApp {
         if let Some(intent) = &key {
             match (&intent.source.token.target, intent.key) {
                 (_, egui::Key::Escape) => {
-                    if self.browse.desired.take().is_some() {
+                    if self.browse.desired.take().is_some() || self.browse.review.is_some() {
+                        self.browse.review = None;
+                        self.browse.settlement = None;
+                        self.browse.context_reveal = None;
                         self.browse.preview = None;
                         self.browse.replacement = None;
                         self.browse.focus = self.browse.selected.map(Target::Row);
@@ -1904,7 +2302,7 @@ impl CedarApp {
             }
         }
         if let Some(index) = select.take() {
-            self.browse_select(index);
+            self.browse_select_owned(index);
         }
         self.browse.input.presented.clear();
         let modal_id = egui::Id::new("navigation_modal");
@@ -2001,7 +2399,7 @@ impl CedarApp {
             ui.horizontal(|ui| {
                 preview |= self.browse_button(ui, Target::Preview, "Preview · Space", selected);
                 open |= self.browse_button(ui, Target::Open, "Open · Enter", selected);
-                ui.label(RichText::new("Explicit read-only preview · 1 MiB maximum").small().color(MUTED));
+                ui.label(RichText::new(if self.browse.provider == Provider::ProjectText { "Read-only context · Space starts following selection · Esc stops" } else { "Explicit read-only preview · 1 MiB maximum" }).small().color(MUTED));
             });
             if !wide { self.browse_preview_panel(ui, (ctx.screen_rect().height() - 400.0).clamp(45.0, 180.0)); }
         });
@@ -2030,7 +2428,7 @@ impl CedarApp {
             self.browse_toggle_text_group(first);
         } else {
             if let Some(index) = select {
-                self.browse_select(index);
+                self.browse_select_owned(index);
                 if ctx.memory(|memory| memory.focused())
                     == Some(self.browse.id(&Target::Row(index)))
                 {
@@ -2331,4 +2729,50 @@ fn discovery_reason(reason: &FileDiscoveryIncompleteReason) -> &'static str {
         Reason::UnrepresentablePath => "unrepresentable path",
         Reason::UnsafePath => "unsafe path skipped",
     }
+}
+
+fn draw_project_text_context(
+    ui: &mut egui::Ui,
+    context: &ProjectTextContext,
+    reveal: bool,
+) -> egui::Response {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for line in context.text.lines() {
+            let response = ui.add(
+                egui::Label::new(RichText::new(line).monospace())
+                    .selectable(false)
+                    .wrap_mode(egui::TextWrapMode::Extend),
+            );
+            if line.starts_with('▶') {
+                #[cfg(test)]
+                crate::workspace_access_tests::record(ui, "project_text_context_target", &response);
+                if reveal {
+                    let marker = egui::Rect::from_min_max(
+                        response.rect.min,
+                        egui::pos2(response.rect.min.x + 1.0, response.rect.max.y),
+                    );
+                    ui.scroll_to_rect(marker, Some(egui::Align::Center));
+                }
+            }
+        }
+    })
+    .response
+}
+#[cfg(test)]
+fn record_context_scroll(
+    ctx: &egui::Context,
+    id: egui::Id,
+    rect: egui::Rect,
+    surface: PreviewSurface,
+) {
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new((
+                "project_text_context_scroll",
+                surface == PreviewSurface::Search,
+            )),
+            (id, rect),
+        )
+    });
 }

@@ -1,62 +1,94 @@
-# Verification checkpoint — 0.65.1 search CJK candidate
+# Verification checkpoint — 0.66 continuous Project Text preview candidate
 
-## Current 0.65.1 candidate and preserved 0.65.0 results
+## Current 0.66 candidate
 
-**0.65.1 passed final local checks but remains an unaccepted candidate.
-Exact CI, package and native checks have not run. The latest accepted bounded
-functional baseline is 0.64.0, with its strict native timing failure preserved
-below.** The narrow change
-connects CJK in accepted, current, validated Project Text result paths and
-snippets to the existing bounded local font loader. It adds no font download,
-installation, dependency, protocol or backend operation; glyph coverage still
-depends on the installed font.
+**0.66 passed final local checks but is not yet accepted.** The final Linux Rust
+aggregate passed **2,122/0/70 across 50 suites** (passed/failed/ignored), and final
+strict Clippy and formatting passed. Focused checks passed **11 new
+actual-frame/context tests**, **59 retained Browse tests** (one process test
+ignored there), and **43 Search tests**. Python recorded **793 total / zero
+failures / 10 skipped across 28 suites**; independent source review cleared the
+changes.
 
-The 0.65.1 Linux Rust aggregate passed **2,111/0/70 across 50 suites**; Python
-recorded **792 total / zero failures / 10 skipped across 28 suites**. Focused
-checks passed **117 / one ignored**, including two new tests with **12
-positive/control cases and 14 rejection cases**; independent source review
-passed, along with strict Clippy and formatting. Current Cargo-JSON-selected
-app/normal-agent Browse (**v3, 38 fields / 12 operations**) and scoped-search
-(**ten operations**) proofs passed the unchanged strict validators. The first
-focused epoch-baseline fixture failure and its test-only correction are preserved
-in the [phase report](TEST_REPORT_PHASE65_PROJECT_REVEAL.md#0651-local-validation-checkpoint).
+The final Cargo-JSON-selected current app and matching default-features normal
+agent passed strict Browse **v4, 50 fields / 14 operations**, retaining all 38
+old field assertions, the complete 12-operation prefix, and existing source-hash
+and cleanup checks. The retained scoped-search proof passed its strict
+ten-operation validator. The canonical release compile/acceptance drivers were
+**not run locally**; fresh exact CI, package audits and native validation have
+**not run**.
 
-The preceding 0.65.0 public commit
-[`ec8428a020acc58e47eb5c722de331fcb2b55a03`](https://github.com/LLLLimbo/cedar-ide/commit/ec8428a020acc58e47eb5c722de331fcb2b55a03)
+The first aggregate failed an old scoped-geometry assertion that ArrowDown
+clears the bottom preview (app **1,405/1/53**). Its narrow update checks the
+approved armed-follow behavior, settled historical context, visible pane/row,
+zero Read and real Escape disarming, retaining the original 13/18-font
+ordinary/narrow geometry cases. This is an intentional contract change, not a
+production correction. Two history/focus fixture failures and a later test
+assertion-style/formatting correction are also preserved. The final full and
+strict reruns passed after these changes. See the
+[phase report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md) for the separate failure
+and proof records. Accepted 0.65.1 results below do not validate this candidate.
+
+The candidate adds explicitly armed continuous preview only to Project Text in
+Find and return and bottom FIND RESULTS. Space / Preview arms the current exact
+surface and result view, immediately previews the first hit and keeps row focus.
+Later real owned selections settle for a fixed **150 ms**, without repaint
+renewal, through one preview Read in flight and one latest candidate. Unarmed
+selection, hover and query typing send zero preview Reads; open drafts supply
+their current bytes without a Read.
+
+Text context is bounded to **41 lines / 64 KiB**, clipped on UTF-8 boundaries
+with explicit truncation and a historical-line hint. Past-EOF hints show
+unavailable instead of clamping. Escape, hide/dismiss, query/filter edits, rerun,
+provider/surface or bound document-version changes, navigation and reconnect
+disarm the feature. Reopening cannot automatically rearm, Read or restore late
+focus. Files, ordinary Open/Back and genuine same-row double-click retain their
+contracts. No protocol, service, index, editable preview tab, persistence or Save
+is added. See the [candidate report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md)
+and [packaged guide](FIND_AND_RETURN.md#continuous-project-text-preview-066-candidate).
+
+## Accepted 0.65.1 bounded baseline
+
+Public commit
+[`bc65427bb1fc2c0da3b7391c65a8340ed0619db4`](https://github.com/LLLLimbo/cedar-ide/commit/bc65427bb1fc2c0da3b7391c65a8340ed0619db4)
 passed all **four jobs** in
-[CI 38365574615](https://github.com/LLLLimbo/cedar-ide/actions/runs/38365574615)
-and all **three exact-source package audits**. Linux recorded **2,109/0/70** and
-Windows **2,047/0/114** (passed/failed/ignored), each across **50 suites**, with
-**27 new Project selection tests**. The strict Browse version-3 proof retained
-**38 fields / 12 operations**, its original field assertions and eight-operation
-ledger prefix. Scoped-search and Search retained **ten** and **twelve
-operations**. Linux Java restart used forced `grace_expired` cleanup with
-**SIGKILL (signal 9)** and satisfied the existing cleanup predicate; both Java
-stops must not be described as graceful.
+[CI 38371007337](https://github.com/LLLLimbo/cedar-ide/actions/runs/38371007337)
+and all **three exact-source package audits**. Linux recorded **2,111/0/70** and
+Windows **2,049/0/114** (passed/failed/ignored), each across **50 suites**. Both new
+CJK tests and all **27 Project selection tests** passed; strict Browse retained
+**v3, 38 fields / 12 operations**, scoped search **ten operations** and Search
+**twelve operations**. Required JDT checks also passed.
 
-The 0.65.0 Linux native journey stopped early after Project Text rendered a box
-in `src/层/Target.rs`; fixture UTF-8 remained intact and a supported-location
-**19,484,784-byte** Noto CJK collection was already installed. Core current-file
-selection, dirty-selection preservation, Down/Up and Undo were **not run**.
-Safe exit returned **0**. Source inspection found the search acceptance path
-omitted the CJK-seen trigger used by filename discovery and Explorer. That
-finding motivates 0.65.1; it does not prove native rendering is fixed.
+The fresh bounded Linux native journey passed a readable `src/层/Target.rs`
+path, Tree/Flat current-file selection, Down/Up, dirty-selection and Undo/Redo
+preservation, and retained Find state. Startup was **30.994 seconds** against
+90 seconds. Quit began **303.840 seconds after visible Connected**, before the
+550-second wind-down and 600-second case limits; exit code **0** arrived after
+**12.579 seconds**, and the window was absent after **12.703 seconds**, within
+the 120-second shutdown bound. The bounded functional and timing scope passed.
+Native cancellation, Windows/macOS GUI, real SSH, arbitrary viewports and general
+CJK/IME coverage remain unverified.
 
-The retained **Select Current File in Project** contract preserves Flat/Tree,
-uses the shared single Explorer List slot, and permits at most one known-parent
-List in Flat or 32 ancestor Lists in Tree within one fixed **30-second total
-intent deadline**. Final selection requires current visible-row identity.
-Cancellation or stale identity prevents continuation and focus; an already
-admitted List can still settle under its existing guards. There is no content
-Read, recursive or project-wide scan, automatic follow or new backend operation.
-Alt+1 remains a zero-request focus action; dirty selection, Undo, location history
-and Find state must survive.
+The narrow CJK correction uses the existing bounded local font loader only after
+accepting current, validated result paths/snippets. It adds no download,
+installation, dependency, protocol or backend operation. The retained explicit
+Project action uses one shared List slot, at most one known-parent List in Flat
+or 32 ancestor Lists in Tree, and one fixed 30-second intent deadline. It requires
+current visible-row identity, preserves dirty selection/Undo/Find, and adds no
+Read, recursive scan or automatic follow. Alt+1 remains zero-request focus.
 
-The preserved 0.65.0 local results, immediate-Cancel proof correction, preventive
-IME lifecycle refinement, full contract and new candidate boundary are in the
-[phase report](TEST_REPORT_PHASE65_PROJECT_REVEAL.md) and
-[packaged guide](FIND_AND_RETURN.md#select-current-file-in-project-065-candidate).
-No local canonical compile/release-driver run or 0.65.1 native success is claimed.
+The preceding 0.65.0 commit
+[`ec8428a020acc58e47eb5c722de331fcb2b55a03`](https://github.com/LLLLimbo/cedar-ide/commit/ec8428a020acc58e47eb5c722de331fcb2b55a03)
+passed [CI 38365574615](https://github.com/LLLLimbo/cedar-ide/actions/runs/38365574615)
+and three packages, but its native journey stopped at a box in the same CJK path.
+UTF-8 remained intact; core Project selection, dirty-selection, Down/Up and Undo
+were **not run**; safe exit was **0**. The installed font alone had not triggered
+search-result fallback. That failed journey, the local epoch-baseline fixture
+failure, immediate-Cancel proof correction, preventive IME lifecycle refinement
+and distinct local/process evidence remain in the
+[phase report](TEST_REPORT_PHASE65_PROJECT_REVEAL.md). Its 0.65.0 Linux Java restart
+used `grace_expired` / **SIGKILL (signal 9)**; satisfying the cleanup predicate
+does not mean both Java stops were graceful.
 
 ## Accepted 0.64.0 bounded functional baseline
 
@@ -78,7 +110,7 @@ and IDEA parity remain outside the established result. The
 failures and separates local, process, CI, package and native evidence.
 
 The following 0.64 preparation record predates that checkpoint. Its then-pending
-statements describe that earlier stage and do not validate the 0.65.1 candidate.
+statements describe that earlier stage and do not validate later candidates.
 
 ## Preserved 0.64 Recent Files preparation
 

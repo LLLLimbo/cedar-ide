@@ -1,6 +1,6 @@
 # Recent Files — 0.64 bounded functional acceptance
 
-**0.64.0 is the latest accepted bounded functional baseline.** Exact CI and
+**0.64.0 introduced Recent Files with bounded functional acceptance.** Exact CI and
 package checks passed. The bounded Linux native run passed essential functional
 and integrity checks, but quit initiation was **20.436 seconds late**, failing
 the strict timing gate. This is not an all-gates pass.

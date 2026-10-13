@@ -1,11 +1,35 @@
-# 0.65 Project selection and 0.65.1 search CJK candidate
+# 0.65 Project selection and accepted 0.65.1 search CJK correction
 
-**0.65.1 passed final local checks but remains an unaccepted candidate.
-Exact CI, package and native checks have not run.** It narrowly connects accepted, current, validated Project
-Text result paths and snippets to the existing bounded local CJK font loader.
-The latest accepted bounded functional baseline remains **0.64.0**, including
-its preserved strict native timing failure; see the
-[accepted baseline](TEST_REPORT.md#accepted-0640-bounded-functional-baseline).
+## Accepted 0.65.1 bounded baseline
+
+**0.65.1 passed its bounded functional and timing acceptance.** Public commit
+[`bc65427bb1fc2c0da3b7391c65a8340ed0619db4`](https://github.com/LLLLimbo/cedar-ide/commit/bc65427bb1fc2c0da3b7391c65a8340ed0619db4)
+passed all **four jobs** in
+[CI 38371007337](https://github.com/LLLLimbo/cedar-ide/actions/runs/38371007337)
+and all **three exact-source package audits**. Each platform ran **50 suites**:
+Linux **2,111 passed / zero failed / 70 ignored** and Windows **2,049 passed /
+zero failed / 114 ignored**. Both new CJK tests and all **27 Project selection
+tests** passed. The strict Browse proof retained **version 3, 38 fields / 12
+operations**; scoped search retained **ten operations**, Search retained
+**twelve operations**, and the required JDT checks passed.
+
+The fresh bounded Linux native journey displayed `src/层/Target.rs` readably
+and passed Tree/Flat current-file selection, Down/Up, dirty-selection and
+Undo/Redo preservation, and retained Find checks. Startup was **30.994 seconds**
+against the 90-second bound. Quit began **303.840 seconds after visible
+Connected**, before the 550-second wind-down and 600-second case limits.
+Exit code **0** arrived **12.579 seconds** after quit initiation and the window
+was absent at **12.703 seconds**, both within the 120-second shutdown bound.
+These are observations of that bounded run, not general performance guarantees.
+
+Native cancellation, Windows/macOS GUI, real SSH, arbitrary viewports and
+broader CJK/IME coverage remain unverified. No font download or installation was
+added. The stopped **0.65.0** glyph journey below remains a failed earlier run.
+The **0.64.0** quit-initiation delay of **20.436 seconds**, and its strict timing
+failure, remain preserved in the
+[prior baseline](TEST_REPORT.md#accepted-0640-bounded-functional-baseline).
+The following local preparation evidence predates this final checkpoint and
+does not validate the separate 0.66 candidate.
 
 ## Preserved 0.65.0 CI, packages and stopped native journey
 
@@ -35,11 +59,11 @@ preservation, Down/Up or Undo checks. The application exited safely with code
 **0**. Neither the stopped run nor the green CI/packages establishes native
 acceptance of 0.65.
 
-## Narrow 0.65.1 font-trigger contract
+## Accepted 0.65.1 font-trigger contract
 
 Source inspection found that Project Text result acceptance did not mark CJK
 text as seen, unlike the existing filename-discovery and Explorer acceptance
-paths. The candidate marks CJK found in accepted result **paths or snippets**
+paths. The correction marks CJK found in accepted result **paths or snippets**
 only after the existing current-request and response validation gates pass.
 Both ordinary and scoped Project Text results use the retained result snapshot.
 Rejected, stale or invalid responses must not acquire this trigger.
@@ -49,10 +73,10 @@ locations, one validated regular file of at most **32 MiB**, and the existing
 fallback families. It adds no font download, installation, dependency, protocol,
 backend operation or broader filesystem scan. Search bounds, result identity
 and navigation behavior remain unchanged. Finding a font does not guarantee
-that it contains every CJK glyph. Source diagnosis and this candidate contract
-are not a claim that the native display problem has been fixed.
+that it contains every CJK glyph. The bounded native rendering observation above
+confirms the tested path, not every CJK string or font environment.
 
-## 0.65.1 local validation checkpoint
+## Preserved 0.65.1 local validation checkpoint
 
 The final Linux Rust aggregate passed **2,111 tests / zero failures / 70 ignored
 across 50 suites**. The Python aggregate recorded **792 total tests / zero
@@ -74,8 +98,9 @@ App and agent identity were verified. These direct current-artifact runtime
 proofs are not comparative performance measurements; the canonical
 compile/release acceptance drivers were **not run locally**.
 
-Exact 0.65.1 CI, all three package audits and a fresh native journey have not
-run. Local evidence does not establish those gates or corrected native rendering.
+At this preparation checkpoint, exact CI, three package audits and fresh native
+validation were still pending. Their later accepted results are recorded above;
+local evidence alone did not establish those gates or corrected rendering.
 
 ## Retained Project selection contract
 
@@ -136,7 +161,7 @@ the test-only normal-agent proof correction described below and the preventive
 IME lifecycle refinement.
 The later exact-commit CI/package results and stopped native journey are
 recorded above. These 0.65.0 local results do not validate the 0.65.1 font-trigger
-change; its own checkpoint above separates passed and pending checks.
+change; its own local and final checkpoints above record that evidence separately.
 
 ## Preserved 0.65.0 normal-agent process proof and failure
 
