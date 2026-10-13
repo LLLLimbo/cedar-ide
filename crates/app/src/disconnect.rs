@@ -50,6 +50,7 @@ impl CedarApp {
                 | Job::BuildProblemOpen { .. }
                 | Job::JavaImplementationOpen { .. }
                 | Job::JavaTypeOpen { .. }
+                | Job::FileStructureOpen { .. }
                 | Job::Search { .. }
                 | Job::ProfilesLoad { .. }
                 | Job::TestReportRead(_)

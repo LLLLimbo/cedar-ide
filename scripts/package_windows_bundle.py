@@ -34,6 +34,7 @@ SOURCE_FILES = {
     "docs/WINDOWS_QUICKSTART.zh-CN.md": "WINDOWS_QUICKSTART.zh-CN.md",
     "docs/FIND_AND_RETURN.md": "FIND_AND_RETURN.md",
     "docs/RECENT_FILES.md": "RECENT_FILES.md",
+    "docs/FILE_STRUCTURE.md": "FILE_STRUCTURE.md",
     "docs/SCOPED_PROJECT_TEXT.md": "SCOPED_PROJECT_TEXT.md",
     "docs/WINDOWS_JAVA_SETUP.md": "WINDOWS_JAVA_SETUP.md",
     "docs/GIT_VIEWS.md": "GIT_VIEWS.md",

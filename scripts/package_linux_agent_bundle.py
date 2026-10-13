@@ -43,6 +43,7 @@ SOURCE_FILES = {
     "docs/" + GUIDE: GUIDE,
     "docs/FIND_AND_RETURN.md": "FIND_AND_RETURN.md",
     "docs/RECENT_FILES.md": "RECENT_FILES.md",
+    "docs/FILE_STRUCTURE.md": "FILE_STRUCTURE.md",
     "docs/SCOPED_PROJECT_TEXT.md": "SCOPED_PROJECT_TEXT.md",
     "docs/MAVEN_PROJECTS.md": "MAVEN_PROJECTS.md",
     "docs/MAVEN_DEPENDENCIES.md": "MAVEN_DEPENDENCIES.md",

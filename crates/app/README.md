@@ -4,28 +4,39 @@
 
 Cedar is a native Rust application using `eframe`/`egui` 0.31.1 and the Glow renderer. It does not embed a browser or a JVM. The remote workspace agent and optional language server run separately from the UI.
 
-## Current baseline and Recent Files candidate
+## Current baseline and File Structure candidate
 
-The latest accepted bounded baseline is **0.63.3**, with exact-commit CI, three
-package audits and a separate bounded Linux native journey recorded in the
-[verification report](../../docs/TEST_REPORT.md#accepted-0633-bounded-browsing-shell-baseline).
-The **0.64 Recent Files candidate remains unaccepted**. It keeps up to 64 paths
-from settled active files with known revisions in the current connection, within
-256 KiB total path bytes and 4,096 bytes per path. Clear, disconnect, reconnect,
-workspace change and restart clear it; idle frames do not repopulate it.
+The latest accepted bounded baseline is **0.66.2**, with exact dual-platform CI,
+three package audits and a bounded Linux native continuous-preview journey in
+the [verification report](../../docs/TEST_REPORT.md#accepted-0662-bounded-baseline).
+Both Text views passed follow, Open/Back, dirty selection/Undo and
+Escape/hide/reopen checks, including the earlier failed bottom B160 step.
+Earlier failed and omitted checks retain their historical status.
 
-Ctrl+E on Windows/Linux and Cmd+E on macOS open its local filter and Open/Closed
-rows. macOS Ctrl+E keeps its editor behavior. A live dirty file is reused with
-zero Read; a closed path uses ordinary Open/Read with its default caret position.
-Only the path survives tab closure; Recent Files stores and restores no closed
-text, caret or selection. See the
-[guide](../../docs/RECENT_FILES.md) and [candidate report](../../docs/TEST_REPORT_PHASE64_RECENT_FILES.md).
+The **0.67 File Structure candidate is not yet accepted**. It adds a current-file
+popup over the existing exact language-outline snapshot, local literal name
+filtering and explicit declaration/Back navigation. It uses only an already
+running matching provider, reuses current cached symbols, and separates popup
+request ownership from the Language tool. It does not start a service or change
+trust. The corrected frontend passed 17 local actual-frame checks, source review
+and the Linux normal-agent/mock proof with a strict 45-field / 11-operation
+receipt. Final aggregate/strict and retained Browse/Scoped proofs passed. Exact
+CI and package audits remain pending; this is a CI-first partial result, with
+both earlier runtime failures preserved in the phase report. No new positive native JDT or GUI
+Trust-enabled validation is claimed. See the
+[guide](../../docs/FILE_STRUCTURE.md) and
+[phase report](../../docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
+
+Recent Files retains its **0.64 bounded functional acceptance**, including the
+preserved strict native timing failure. Its per-connection path list, local
+filter, dirty-buffer reuse and ordinary closed-file Open contract are described
+in the [guide](../../docs/RECENT_FILES.md).
 
 ## Preserved Find and return: 0.61.0 / 0.62 preparation
 
 The following historical delivery states precede the accepted 0.62.2 scoped
 search and 0.63.3 shell checkpoints. Their old pending statements do not revoke
-those later results or validate 0.64.
+those later results or validate the current candidate.
 
 Use **Find…**, **Ctrl+Shift+N** for Files, or **Ctrl+Shift+F** for Project Text.
 Select **Search** in the sidebar for the retained **FIND RESULTS** tool. Both
@@ -63,7 +74,7 @@ independent scan/read/result limits, exclusions and incomplete reasons. Its
 tests, normal-agent, exact-package and native-window evidence remain separate
 pending gates. No 0.62 acceptance is established here.
 
-The latest accepted bounded baseline is **0.61.0**, public commit
+At that historical checkpoint, the latest accepted bounded baseline was **0.61.0**, public commit
 [`7ec8e2f13ce82c57185c705929c0c17c61fcbdfa`](https://github.com/LLLLimbo/cedar-ide/commit/7ec8e2f13ce82c57185c705929c0c17c61fcbdfa),
 with all four jobs and three exact-source packages verified in
 [CI 38213817089](https://github.com/LLLLimbo/cedar-ide/actions/runs/38213817089).
@@ -132,7 +143,7 @@ Shortcuts:
 | Shortcut | Action |
 | --- | --- |
 | Ctrl/Cmd+P | Choose an open buffer or current-directory file; explicitly open a relative path |
-| Ctrl+E on Windows/Linux; Cmd+E on macOS | Open candidate Recent Files for this connection; macOS Ctrl+E is unchanged |
+| Ctrl+E on Windows/Linux; Cmd+E on macOS | Open Recent Files for this connection; macOS Ctrl+E is unchanged |
 | Ctrl+Shift+N | Open Find and return with Files selected |
 | Ctrl+Shift+F | Open Find and return with Project Text selected |
 | Ctrl/Cmd+[ or Ctrl+Alt+Left | Back to an unchanged open-buffer location |
@@ -220,7 +231,14 @@ changes only a mixed-input test's focus/key-ownership expectation and bounded
 diagnostics, with no added frames, forced focus or shipping change. Deterministic
 already-arrived-pointer cases do not guarantee arbitrary merged native input.
 
-## Retained Find interaction and pending 0.62 filters
+<a id="retained-find-interaction-and-pending-062-filters"></a>
+
+## Preserved Find interaction: 0.61 / 0.62 preparation
+
+The following interaction description preserves the 0.61/0.62 preparation state,
+including its then-pending filters and earlier preview/Escape behavior. It does
+not replace the accepted 0.62.2 scoped-search and 0.66.2 continuous-preview
+contracts in [Find and return](../../docs/FIND_AND_RETURN.md).
 
 Enter a case-sensitive literal query and explicitly select **Search** in FIND
 RESULTS, or **Find** in the shared Project Text window. Enter in the query field
@@ -393,7 +411,7 @@ its reason; unavailable platform controls may be hidden entirely.
 
 Cedar's small bundled fonts do not cover Chinese. When CJK text first appears in an editor, file name, or workspace path, Cedar looks for an already installed system font in the background. It prefers a Simplified Chinese face identified from the collection's metadata, including Noto Sans Mono CJK SC on Linux, Microsoft YaHei on Windows, and suitable PingFang/Heiti faces on macOS. Latin code keeps the existing monospace font.
 
-The unaccepted 0.65.1 candidate also marks CJK in current, validated, accepted Project Text result paths and snippets for this existing loader; its local aggregate/focused tests, independent source review, strict Clippy, formatting and current-artifact Browse/scoped-search proofs passed. Exact CI, package and native checks have not run. The stopped 0.65.0 native search-path display observation is preserved in the [phase report](../../docs/TEST_REPORT_PHASE65_PROJECT_REVEAL.md).
+The accepted 0.65.1 addition also marks CJK in current, validated, accepted Project Text result paths and snippets for this existing loader. Its local aggregate/focused tests, independent source review, strict Clippy, formatting and current-artifact Browse/scoped-search proofs passed, followed by exact dual-platform CI, three package audits and bounded Linux native checks including a readable `src/层/Target.rs` path. This does not establish general CJK coverage. The stopped 0.65.0 native search-path display observation remains preserved in the [phase report](../../docs/TEST_REPORT_PHASE65_PROJECT_REVEAL.md).
 
 Only known system/user-font locations are checked. One regular font file, up to 32 MiB, is read and validated before being given to egui. There is no font download, installer, directory-wide scan, or redistribution of proprietary system fonts. Missing or oversized fonts produce a visible warning; text stays intact. Rare glyph coverage still depends on the selected font. The first fallback load increases memory use and may cause a short font-atlas rebuild.
 

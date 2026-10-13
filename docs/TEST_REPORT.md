@@ -1,20 +1,82 @@
-# Verification checkpoint — 0.66.2 test-caller portability candidate
+# Verification checkpoint — 0.67 File Structure candidate
 
-## Current 0.66.2 correction candidate
+## Current 0.67 File Structure candidate
 
-**0.66.2 is not yet accepted.** It changes the test-only application-repaint
-caller helper to recognize the exact `browse.rs` basename with slash or backslash
-separators on any host. The original exact count assertions and old-production
-negative control remain required. The 0.66.1 production repaint implementation
-is byte-for-byte unchanged. Independent review, **17/17 focused checks**, the
-full Rust aggregate (**2,128/0/70 across 50 suites**) and Python aggregate
-(**793 total / zero failures / 10 skipped across 28 suites**), strict Clippy and
-formatting passed. Both negative controls retained their intended failures.
-The current Cargo-JSON-selected app and matching default-features normal agent
-passed strict Browse **v4, 50 fields / 14 operations** with all 38 prior
-assertions and the 12-operation prefix, plus retained scoped search **ten
-operations**. The canonical release drivers were not run locally. Fresh exact
-CI, all three package audits and bounded native validation remain pending.
+**0.67 is not yet accepted.** It adds a current-file structure popup over the
+existing exact language-outline snapshot. Only an already running, matching
+provider can supply symbols. Cached current results are reused; explicit
+invocation or Refresh uses the existing synchronization/documentSymbols route.
+Filtering stays local, while Enter/click declaration navigation uses the existing
+draft, Back and Undo protections. The popup owns its destination separately from
+the Language tool. No startup, Trust change, new provider, parser, protocol or
+persistence is introduced.
+
+Final local checks passed: **17 actual-frame tests**, the Rust aggregate
+(**2,145/0/71 across 50 suites**), Python (**803 total tests / zero failures /
+ten skipped across 29 suites**), independent source review, strict Clippy and
+formatting. The current selected-artifact Linux normal-agent/mock proof passed
+**45 fields / 11 Client operations**, including three document-symbol requests,
+source preservation and verified Stop/agent cleanup. Retained Browse passed
+**50 fields / 14 operations** and Scoped Search **57 fields / 12 cases / ten
+operations**. The canonical compile driver was only Python-mocked locally;
+these selected-artifact runs do not replace exact CI or package audits, which
+remain pending.
+
+Two earlier runtime failures are preserved in the
+[phase report](TEST_REPORT_PHASE67_FILE_STRUCTURE.md): a rapid-reopen production
+focus defect, followed by a test-completion witness that omitted an accepted
+pending activation. The corrections keep the no-settle reopen sequence, exact
+selection and existing three-frame allowance. Earlier aggregate passes and local
+harness admission failures also retain their historical status.
+
+This is a CI-first partial result. No new positive native JDT, GUI Trust-enabled
+or Windows typed-provider journey was measured. It is not full native acceptance
+or IDEA parity. See the [usage contract](FILE_STRUCTURE.md).
+
+## Accepted 0.66.2 bounded baseline
+
+Public commit
+[`a0ecbdbe27577ef83a60eee1b8af88edb0c68f35`](https://github.com/LLLLimbo/cedar-ide/commit/a0ecbdbe27577ef83a60eee1b8af88edb0c68f35)
+passed all **four jobs** in
+[CI 38392603729](https://github.com/LLLLimbo/cedar-ide/actions/runs/38392603729)
+and all **three exact-source package audits**. Linux recorded **2,128/0/70** and
+Windows **2,066/0/114** (passed/failed/ignored), each across **50 suites**, including
+all **17 preview tests** on both systems. Strict Browse passed **v4, 50 fields /
+14 operations**, retaining all 38 prior field assertions and the original
+12-operation prefix. Scoped Search **ten operations**, Search **twelve
+operations** and both platform JDT proofs were verified.
+
+The fresh bounded Linux native journey passed continuous follow in both Text
+surfaces, the previously failed bottom B160 preview, ordinary Open/Back, dirty
+selection and Undo/Redo, and Escape/hide/reopen. Startup was **14.020 seconds**;
+quit began **491.046 seconds after visible Connected** and exit code **0** arrived
+**17.309 seconds** later. The bounded functional and timing gates passed.
+Native pixels do not prove the **150 ms** settlement interval, request ledgers or
+raw caret affinities; those remain separate deterministic/process evidence.
+Windows/macOS GUI, real SSH, arbitrary viewports and broad CJK/IME remain outside
+this acceptance.
+
+0.66.2 changes the test-only caller helper to recognize the exact `browse.rs`
+basename with either path separator. The 0.66.1 production repaint implementation
+is byte-for-byte unchanged. The fresh Windows results establish the portability
+correction’s pass without rewriting the earlier failure’s unlogged runtime cause.
+The 0.66.0 native bottom-preview failure, 0.66.1 Windows caller-count failure and
+never-launched native check, 0.65.0 glyph stop and 0.64.0 strict timing failure
+remain preserved below and in their phase reports.
+
+## Preserved 0.66.2 local correction checks
+
+Independent review, **17/17 focused checks**, the full Rust aggregate
+(**2,128/0/70 across 50 suites**) and Python aggregate (**793 total / zero
+failures / 10 skipped across 28 suites**), strict Clippy and formatting passed.
+Both negative controls retained their intended failures. The
+Cargo-JSON-selected app and matching default-features normal agent passed
+strict Browse **v4, 50 fields / 14 operations** with all 38 prior assertions and
+the 12-operation prefix, plus retained scoped search **ten operations**. The
+canonical release drivers were not run locally. These local checks are separate
+from the accepted exact CI, package and native evidence above.
+
+## Preserved 0.66.1 CI failure
 
 Public 0.66.1 commit
 [`f972998b212889a6cb8d2e900e2c077a9c3af165`](https://github.com/LLLLimbo/cedar-ide/commit/f972998b212889a6cb8d2e900e2c077a9c3af165)
@@ -23,7 +85,7 @@ failed three new Windows repaint tests in
 the caller count was zero instead of one despite a zero-delay due-frame repaint
 and valid internal B160 preview state. The raw cause filename was not logged;
 a separator mismatch in the `/browse.rs` suffix filter is a source-level
-hypothesis. No Windows-fix claim is made before new CI. Linux passed
+hypothesis. That run did not establish a Windows fix. Linux passed
 **2,127/0/70 across 50 suites**, its runtime proofs and both package audits.
 Windows stopped with an observed **1,421/3/57 prefix across eight suites**;
 its release/runtime proofs and package were absent. The dependent Java signature
@@ -51,7 +113,7 @@ expectation in process fixtures stopped the first scoped-search attempt; narrow
 version maintenance and the final full/strict/runtime reruns passed before
 sealing.
 
-The latest accepted bounded baseline remains **0.65.1**. The source/frame
+At that preparation checkpoint, the accepted bounded baseline was **0.65.1**. The source/frame
 diagnostic is separate from the 0.66.0 native observation and does not establish
 that run's exact internal cause. See the
 [phase report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md) and
@@ -82,7 +144,7 @@ the existing allowed recovery refresh then matched. Java restart cleanup used
 `grace_expired` / **SIGKILL (signal 9)**, so both stops were not graceful. The
 earlier local history/focus fixture failures, first aggregate failure and strict-check
 corrections remain in the [phase report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md).
-None of these 0.66.0 results validates either correction candidate.
+None of these 0.66.0 results substitutes for the separate correction-candidate evidence.
 
 ## Accepted 0.65.1 bounded baseline
 

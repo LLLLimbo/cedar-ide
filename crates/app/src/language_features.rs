@@ -1,9 +1,12 @@
 //! Explicit, snapshot-checked edit previews and navigation. Server text stays inert.
 use super::*;
+#[path = "file_structure.rs"]
+mod file_structure;
 use crate::{
     language_navigation_results::{self, OutlineItem, OutlineLocation},
     text_edits::{self, TextEdit},
 };
+pub(crate) use file_structure::Ticket as FileStructureTicket;
 
 #[derive(Clone, Debug)]
 struct DocumentStamp {
@@ -40,6 +43,12 @@ pub(super) enum FeatureKind {
     References { include_declaration: bool },
     Outline,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FeatureDestination {
+    Tool,
+    FileStructure(u64),
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct FeatureRequest {
     generation: u64,
@@ -51,6 +60,12 @@ pub(crate) struct FeatureRequest {
     cursor: Position,
     cursor_chars: usize,
     pub(super) kind: FeatureKind,
+    destination: FeatureDestination,
+}
+impl FeatureRequest {
+    pub(crate) fn is_file_structure(&self) -> bool {
+        matches!(self.destination, FeatureDestination::FileStructure(_))
+    }
 }
 struct EditPreview {
     request: FeatureRequest,
@@ -59,6 +74,7 @@ struct EditPreview {
     edit_count: usize,
 }
 struct OutlineSnapshot {
+    generation: u64,
     request: FeatureRequest,
     items: Vec<OutlineItem>,
 }
@@ -71,6 +87,8 @@ pub(super) struct FeatureState {
     references_requested: bool,
     references_include_declaration: bool,
     outline: Option<OutlineSnapshot>,
+    outline_generation: u64,
+    file_structure: file_structure::State,
     tab_size: u32,
     insert_spaces: bool,
     include_declaration: bool,
@@ -86,6 +104,8 @@ impl Default for FeatureState {
             references_requested: false,
             references_include_declaration: false,
             outline: None,
+            outline_generation: 0,
+            file_structure: file_structure::State::default(),
             tab_size: 4,
             insert_spaces: true,
             include_declaration: true,
@@ -110,6 +130,7 @@ impl FeatureState {
         self.references.clear();
         self.references_requested = false;
         self.outline = None;
+        self.file_structure.retire();
     }
 }
 enum FeatureStep {
@@ -184,6 +205,7 @@ impl CedarApp {
     }
     pub(super) fn feature_request_current(&self, request: &FeatureRequest) -> bool {
         self.feature_document_current(request)
+            && self.file_structure_request_current(request)
             && self.language.features.sequence == request.sequence
             && (!matches!(request.kind, FeatureKind::JavaImplementations)
                 || (request.navigation == self.navigation_epoch
@@ -227,6 +249,9 @@ impl CedarApp {
             })
     }
     pub(super) fn request_language_navigation_feature(&mut self, kind: FeatureKind) {
+        self.request_language_feature_at(kind, FeatureDestination::Tool);
+    }
+    fn request_language_feature_at(&mut self, kind: FeatureKind, destination: FeatureDestination) {
         if !self.ready() || !self.language.running {
             self.error = Some("Start a language server first".into());
             return;
@@ -326,6 +351,7 @@ impl CedarApp {
             cursor,
             cursor_chars,
             kind,
+            destination,
         });
         if let Some(request) = &self.language.features.intent {
             self.language.sync.retry(request.source.id);
@@ -334,15 +360,17 @@ impl CedarApp {
             }
         }
         self.language.paused_reason = None;
-        self.tools_open = true;
-        self.tool = crate::Tool::Language;
-        self.language.view = match kind {
-            FeatureKind::Format { .. } => View::Format,
-            FeatureKind::OrganizeJavaImports => View::Imports,
-            FeatureKind::JavaImplementations => View::JavaImplementations,
-            FeatureKind::References { .. } => View::References,
-            FeatureKind::Outline => View::Outline,
-        };
+        if destination == FeatureDestination::Tool {
+            self.tools_open = true;
+            self.tool = crate::Tool::Language;
+            self.language.view = match kind {
+                FeatureKind::Format { .. } => View::Format,
+                FeatureKind::OrganizeJavaImports => View::Imports,
+                FeatureKind::JavaImplementations => View::JavaImplementations,
+                FeatureKind::References { .. } => View::References,
+                FeatureKind::Outline => View::Outline,
+            };
+        }
         if matches!(kind, FeatureKind::JavaImplementations) {
             self.language.implementations.begin(
                 self.language
@@ -547,10 +575,42 @@ impl CedarApp {
             FeatureKind::Outline => {
                 match language_navigation_results::parse_outline(&value, &request.source.text) {
                     Ok(items) => {
-                        self.language.features.outline = Some(OutlineSnapshot { request, items });
-                        self.language.view = View::Outline;
+                        let Some(generation) =
+                            self.language.features.outline_generation.checked_add(1)
+                        else {
+                            self.language.features.outline = None;
+                            self.file_structure_error(
+                                "Outline identity limit reached; restart Cedar",
+                            );
+                            self.error =
+                                Some("Outline identity limit reached; restart Cedar".into());
+                            return;
+                        };
+                        self.language.features.outline_generation = generation;
+                        self.language.cjk_seen |= items.iter().any(|row| {
+                            crate::system_fonts::contains_cjk(&row.name)
+                                || crate::system_fonts::contains_cjk(&row.detail)
+                        });
+                        let generation = self.language.features.outline_generation;
+                        let destination = request.destination;
+                        self.language.features.outline = Some(OutlineSnapshot {
+                            generation,
+                            request,
+                            items,
+                        });
+                        if destination == FeatureDestination::Tool {
+                            self.language.view = View::Outline;
+                        } else {
+                            self.file_structure_received();
+                        }
                     }
-                    Err(error) => self.error = Some(error),
+                    Err(error) => {
+                        if matches!(request.destination, FeatureDestination::FileStructure(_)) {
+                            self.file_structure_error(&error);
+                        } else {
+                            self.error = Some(error);
+                        }
+                    }
                 }
             }
         }

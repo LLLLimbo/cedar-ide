@@ -18,6 +18,10 @@ pub(crate) use java_maven_dependencies::verify_native_maven_dependencies;
 #[path = "java_startup.rs"]
 mod java_startup;
 pub(crate) use features::FeatureRequest as JavaImplementationContext;
+pub(crate) use features::FileStructureTicket;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "file_structure_process_tests.rs"]
+mod file_structure_process_tests;
 #[path = "java_types.rs"]
 mod java_types;
 pub(crate) use java_types::TypeContext as JavaTypeContext;
@@ -114,6 +118,12 @@ pub(super) enum ActionKind {
         navigation: u64,
         location: Location,
     },
+    FileStructureResolve {
+        ticket: FileStructureTicket,
+        sequence: u64,
+        navigation: u64,
+        location: Location,
+    },
     ResolveUri {
         sequence: u64,
         navigation: u64,
@@ -128,7 +138,8 @@ pub(super) enum ActionKind {
 impl Action {
     pub(super) fn history_navigation(&self) -> Option<u64> {
         match self.kind {
-            ActionKind::ResolveUri { navigation, .. }
+            ActionKind::FileStructureResolve { navigation, .. }
+            | ActionKind::ResolveUri { navigation, .. }
             | ActionKind::JavaTypeResolve { navigation, .. }
             | ActionKind::JavaImplementationResolve { navigation, .. }
             | ActionKind::Query {
@@ -138,6 +149,10 @@ impl Action {
             } => Some(navigation),
             _ => None,
         }
+    }
+    pub(crate) fn is_file_structure(&self) -> bool {
+        matches!(self.kind, ActionKind::FileStructureResolve { .. })
+            || matches!(&self.kind, ActionKind::Feature { request } if request.is_file_structure())
     }
     pub(crate) fn is_java_implementation(&self) -> bool {
         matches!(&self.kind, ActionKind::JavaImplementationResolve { .. })
@@ -624,6 +639,11 @@ impl CedarApp {
             return;
         }
         match action.kind {
+            _ if action.is_file_structure() => {
+                if self.file_structure_action_current(action) {
+                    self.file_structure_error(error);
+                }
+            }
             ActionKind::WorkspaceSymbols { ref context } => self.java_type_error(context, error),
             ActionKind::Feature { ref request }
                 if matches!(request.kind, features::FeatureKind::JavaImplementations) =>
@@ -835,6 +855,7 @@ impl CedarApp {
 
     pub(super) fn apply_language_action(&mut self, action: Action, value: Value) {
         if action.session != self.language.session
+            || !self.file_structure_action_current(&action)
             || !self.java_type_action_current(&action)
             || !self.java_implementation_action_current(&action)
         {
@@ -980,6 +1001,12 @@ impl CedarApp {
                 unreachable!("Maven model replies are handled before activity output")
             }
             ActionKind::Feature { request } => self.apply_language_feature(request, value),
+            ActionKind::FileStructureResolve {
+                ticket,
+                sequence,
+                navigation,
+                location,
+            } => self.apply_file_structure_resolve(ticket, sequence, navigation, location, value),
             ActionKind::WorkspaceSymbols { context } => self.apply_java_types(context, value),
             ActionKind::JavaParameterInfo { .. } => {
                 unreachable!("parameter info replies are applied after final-frame guards")

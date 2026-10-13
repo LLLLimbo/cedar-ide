@@ -327,6 +327,11 @@ enum Job {
         navigation: u64,
         context: language_ui::JavaImplementationContext,
     },
+    FileStructureOpen {
+        path: String,
+        navigation: u64,
+        ticket: language_ui::FileStructureTicket,
+    },
     JavaTypeOpen {
         path: String,
         navigation: u64,
@@ -851,6 +856,7 @@ impl CedarApp {
             Job::Open { path: pending, .. }
             | Job::LanguageOpen { path: pending, .. }
             | Job::BuildProblemOpen { path: pending, .. }
+            | Job::FileStructureOpen { path: pending, .. }
             | Job::JavaTypeOpen { path: pending, .. }
             | Job::JavaImplementationOpen { path: pending, .. }
                 if pending == &path =>
@@ -1170,6 +1176,16 @@ impl CedarApp {
             }
             return;
         }
+        if defer_implementation
+            && event.connected
+            && self.pending.get(&event.id).is_some_and(|job| {
+                matches!(job, Job::FileStructureOpen { .. })
+                    || matches!(job, Job::Language(action) if action.is_file_structure())
+            })
+        {
+            self.defer_file_structure_reply(event);
+            return;
+        }
         // Parameter replies wait until every current-frame draft/navigation
         // finisher has run. Current transport loss is still handled immediately.
         if defer_implementation
@@ -1269,6 +1285,41 @@ impl CedarApp {
                 return;
             }
             other => other,
+        };
+        if let Job::Language(action) = &job {
+            if action.is_file_structure() && !self.file_structure_action_current(action) {
+                if !event.connected {
+                    self.disconnected(
+                        "The connection closed during File Structure. Your drafts are retained"
+                            .into(),
+                    );
+                }
+                return;
+            }
+        }
+        let job = if let Job::FileStructureOpen {
+            path,
+            navigation,
+            ticket,
+        } = job
+        {
+            if !event.connected {
+                self.disconnected(
+                    "The connection closed while opening a symbol. Your drafts are retained".into(),
+                );
+                return;
+            }
+            if navigation != self.navigation_epoch || !self.file_structure_ticket_current(&ticket) {
+                return;
+            }
+            self.finish_file_structure_navigation();
+            Job::Open {
+                path,
+                line: None,
+                navigation,
+            }
+        } else {
+            job
         };
         let job = if let Job::LanguageOpen {
             path,
@@ -2003,6 +2054,9 @@ impl CedarApp {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if self.file_structure_shortcuts(ctx) {
+            return;
+        }
         if self.navigation_shortcuts(ctx) {
             return;
         }
@@ -2958,6 +3012,7 @@ impl CedarApp {
 
     fn editor_indent_eligible(&self, ctx: &egui::Context) -> bool {
         !self.navigation.blocks_editor()
+            && !self.file_structure_open()
             && !self.navigation.restore_focus
             && !self.foreign_modal_owns_input(ctx)
             && !self.open_form
@@ -3407,6 +3462,7 @@ impl CedarApp {
 impl eframe::App for CedarApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.capture_project_reveal_input(raw_input);
+        self.capture_file_structure_input(raw_input);
         workspace_access::capture_input(self, ctx, raw_input);
         self.editor_tab_input = editor_tab::FrameInput::capture(self, ctx, raw_input);
         self.duplicate_input = self.capture_duplicate_input(ctx, raw_input);
@@ -3482,6 +3538,7 @@ impl eframe::App for CedarApp {
             self.shortcuts(ctx);
         }
         self.navigation_window(ctx);
+        self.file_structure_window(ctx);
         self.header(ctx);
         self.footer(ctx);
         self.notifications(ctx);
@@ -3529,6 +3586,7 @@ impl eframe::App for CedarApp {
         self.browse_finish_frame(ctx);
         self.finish_recent_frame(ctx);
         self.finish_project_reveal_frame(ctx);
+        self.finish_file_structure_frame(ctx);
     }
 }
 

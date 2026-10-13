@@ -4,26 +4,27 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-The current **0.66.2 continuous-preview candidate is not yet accepted**. The
-preceding 0.66.0 passed exact CI and all three packages, but its bounded Linux
-native bottom preview remained at “Preview requested...” for an already-open
-result and failed. The 0.66.1 repaint correction passed local checks but failed
-three Windows test-caller count assertions; its native run was never launched.
-0.66.2 changes only test-caller path handling, retaining the 0.66.1 production
-repaint implementation. Independent review, local focused/full/strict checks
-and current-artifact normal-agent proofs passed. Fresh exact CI, packages and
-native validation remain pending. The unchanged candidate contract is described
-[below](#continuous-project-text-preview-066-candidate); Files keeps its existing
-explicit-preview interaction.
+**0.66.2 passed bounded continuous-preview acceptance.** Exact dual-platform
+CI, all three package audits and a fresh bounded Linux native journey passed.
+The native journey covered following selection in both Text views, the previously
+failed bottom B160 step, ordinary Open/Back, dirty selection and Undo/Redo, and
+Escape/hide/reopen. The contract is described
+[below](#continuous-project-text-preview-0662-bounded-acceptance); Files keeps
+its existing explicit-preview interaction.
 
-The latest accepted bounded baseline is **0.65.1**, with exact CI, three package
-audits and a fresh bounded Linux native journey passed. That journey covered a
-readable `src/层/Target.rs` path, Tree/Flat current-file selection, Down/Up,
-dirty-selection and Undo/Redo preservation, and retained Find state. Native
-cancellation, Windows/macOS GUI, real SSH, arbitrary viewports and broad CJK
-coverage remain unverified. The 0.65.0 glyph stop and 0.64.0 strict timing failure
-remain part of the
-[verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md#accepted-0651-bounded-baseline).
+The 0.66.0 native bottom-preview failure and 0.66.1 Windows test-caller count
+failure, with no 0.66.1 native run, remain recorded. The 0.65.0 glyph stop and
+0.64.0 strict timing failure also remain part of the
+[verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md#accepted-0662-bounded-baseline).
+Windows/macOS GUI, real SSH, arbitrary viewports and broad CJK/IME coverage
+remain unverified. Native pixels do not establish the 150 ms interval, request
+counts or raw caret affinities; deterministic and process checks provide their
+own evidence.
+
+The separate [File Structure candidate](FILE_STRUCTURE.md) uses the existing
+current-file language outline for a local member chooser. Its final local checks
+and mock-provider proof passed; exact CI and packages remain pending. It does
+not inherit this preview feature’s native acceptance.
 
 ## Recent Files (0.64 bounded functional acceptance)
 
@@ -159,7 +160,7 @@ under [Retained Project Text results](#retained-project-text-results).
 2. Press **Down** to focus the first result. Use **Up/Down** or **Home/End** to move
    through results, or single-click a row to select it.
 3. With a result focused, press **Space**, or select **Preview**, to inspect it.
-   In the 0.66 candidate, this also arms continuous preview for that exact Project
+   In the accepted 0.66.2 contract, this also arms continuous preview for that exact Project
    Text view and result snapshot; subsequent owned selections settle for 150 ms.
    Unarmed selection and hover never request a preview. Files remains explicit.
 4. Press **Escape** to leave the preview; for Text it also disarms continuous
@@ -337,7 +338,7 @@ their original relative order. Equal-looking hits remain separate rows. Grouping
 does not rewrite paths or change which original hit an action addresses.
 
 - Single-click a hit to select it. Unarmed selection and hover do not read file
-  contents. In the 0.66 candidate, an armed Text view can update its preview after
+  contents. In the accepted 0.66.2 contract, an armed Text view can update its preview after
   an owned selection settles, as described below.
 - With a hit focused, **Up/Down** and **Home/End** navigate visible hits.
   **Space** requests a read-only preview; **Enter** or a double-click uses
@@ -350,7 +351,7 @@ does not rewrite paths or change which original hit an action addresses.
   and puts focus on the group header. A hidden hit cannot be previewed or opened;
   expand its group to act on it again.
 
-In the 0.66 candidate, preview leaves focus on the selected row in both Text
+In the accepted 0.66.2 contract, preview leaves focus on the selected row in both Text
 views. In the bottom FIND RESULTS tool, use the existing tool close/hide control or **Ctrl/Cmd+J** to return to the editor;
 **Ctrl/Cmd+J** also reopens the selected tool. The accepted 0.63.3 shell uses the
 active-visible-hit or query focus route described above. For an armed Text
@@ -391,9 +392,11 @@ usability at every tiny viewport. Case/word options, regular expressions,
 debounced or live queries, CamelCase matching and disk-persistent search history
 are not part of the 0.62 scoped-search addition.
 
-## Continuous Project Text preview (0.66 candidate)
+<a id="continuous-project-text-preview-066-candidate"></a>
 
-The current 0.66.2 correction candidate preserves this 0.66 contract. It applies
+## Continuous Project Text preview (0.66.2 bounded acceptance)
+
+The accepted 0.66.2 implementation preserves this 0.66 contract. It applies
 only to **Project Text in Find and return** and the bottom **FIND RESULTS** tool.
 It leaves Files preview and search submission unchanged. **Space** on an owned current hit or the labelled **Preview** action
 arms only the exact current Text surface and accepted result view. The first
@@ -428,7 +431,7 @@ automatically Read; use Space or Preview again. Late work cannot reopen a hidden
 preview or restore old focus. Switching to the other Text view requires a new
 explicit preview even though both views share the retained result snapshot.
 
-The candidate adds no protocol, backend operation, service, index, editable
+This feature adds no protocol, backend operation, service, index, editable
 preview tab, cross-session persistence or Save action. Its validation status is
 recorded in the
 [0.66 correction history](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md).
@@ -465,8 +468,8 @@ Reconnect or workspace changes clear it.
 Filename discovery, text search and preview use Cedar's existing workspace agent
 and path checks. They do not enable execution trust, start Git, commands or a
 language server, or add a new remote transport. Existing local and configured SSH
-connections keep their current setup and authentication boundary. This candidate
-does not establish new real-SSH acceptance or a sandbox against hostile concurrent
+connections keep their current setup and authentication boundary. This browsing
+flow does not establish new real-SSH acceptance or a sandbox against hostile concurrent
 filesystem changes.
 
 Build, Run and other existing tools remain available under their existing support

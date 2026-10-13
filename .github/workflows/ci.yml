@@ -31,6 +31,7 @@ jobs:
       - run: python scripts/test_public_export.py
       - run: python scripts/test_capability_smoke.py
       - run: python scripts/test_column_navigation_acceptance.py
+      - run: python -B scripts/test_file_structure_acceptance.py
       - run: python scripts/test_selection_replace_acceptance.py
       - run: python scripts/test_duplicate_lines_acceptance.py
       - run: python -B scripts/test_report_triage_acceptance.py
@@ -436,6 +437,12 @@ jobs:
           python3 scripts/task_bridge_smoke.py target/release/cedar-agent
           cargo build --manifest-path examples/task-profiles-demo/Cargo.toml --offline --locked
           python3 scripts/task_profiles_smoke.py target/release/cedar-agent examples/task-profiles-demo/target/debug/cedar-task-profile-demo
+      - name: File Structure normal Client popup proof (Linux fixture)
+        # Existing generic mock only. 120s compile + 15s selection + 420s
+        # runtime + three 5s direct-child reaps; native clock remains 394s.
+        timeout-minutes: 10
+        if: runner.os == 'Linux'
+        run: python -B scripts/file_structure_acceptance.py
       - name: Real Git changes and selected-file diff (Unix)
         timeout-minutes: 3
         if: runner.os != 'Windows'

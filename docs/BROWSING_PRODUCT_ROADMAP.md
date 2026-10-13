@@ -1,6 +1,6 @@
 # Cedar: project browsing and navigation roadmap
 
-Design decision, 2026-10-12, with delivery status updated for the 0.66.2 continuous-preview test-caller portability candidate. This roadmap does not itself establish a new release or acceptance.
+Design decision, 2026-10-12, with delivery status updated for the accepted 0.66.2 baseline and the 0.67 File Structure candidate. This roadmap does not itself establish a new release or acceptance.
 
 ## Product decision and baseline
 
@@ -9,26 +9,28 @@ Cedar will prioritize understanding and navigating projects: finding files and t
 The interaction reference is **IntelliJ IDEA 2026.2, Windows New UI, Dark theme, Compact density and default Windows shortcuts**. This is a design reference, not a claim of pixel-perfect, platform, language or feature parity. Cedar keeps its own product identity. Linux validation does not establish Windows GUI behavior.
 
 The original design baseline was accepted Cedar **0.59.3**. The current accepted
-bounded baseline is **0.65.1**, public commit
-[`bc65427bb1fc2c0da3b7391c65a8340ed0619db4`](https://github.com/LLLLimbo/cedar-ide/commit/bc65427bb1fc2c0da3b7391c65a8340ed0619db4),
-with [CI 38371007337](https://github.com/LLLLimbo/cedar-ide/actions/runs/38371007337)
-and all three exact-source package audits passed. Its fresh bounded Linux native
-journey passed readable CJK path, Tree/Flat current-file selection, Down/Up,
-dirty-selection, Undo/Redo and retained Find checks within its timing bounds.
-Native cancellation, Windows/macOS GUI, real SSH, arbitrary viewports and general
-CJK coverage remain unverified. The 0.65.0 native glyph stop and 0.64.0 quit
-initiation **20.436 seconds late**, which failed its strict timing gate, remain
-preserved in the
-[verification report](TEST_REPORT.md#accepted-0651-bounded-baseline).
-**0.66.2 remains an unaccepted correction candidate**. The preceding 0.66.0
-passed exact CI and all three packages but failed the bounded native bottom B160
-continuous-preview step. The 0.66.1 repaint correction passed local checks but
-failed three Windows test-caller count assertions; no native run was launched.
-0.66.2 changes only test-caller path handling and retains the byte-identical
-0.66.1 production repaint implementation. Independent review and local
-focused/full/strict checks plus current-artifact proofs passed. Fresh CI,
-packages and native validation remain pending. Original compatibility and phase
-decisions retain their stated historical reference versions.
+bounded baseline is **0.66.2**, public commit
+[`a0ecbdbe27577ef83a60eee1b8af88edb0c68f35`](https://github.com/LLLLimbo/cedar-ide/commit/a0ecbdbe27577ef83a60eee1b8af88edb0c68f35),
+with [CI 38392603729](https://github.com/LLLLimbo/cedar-ide/actions/runs/38392603729)
+and all three package audits passed. Both systems ran 50 suites and all 17
+preview tests: Linux **2,128/0/70**, Windows **2,066/0/114**. Strict Browse retained
+50 fields / 14 operations, Scoped Search ten operations, Search twelve operations,
+and both JDT proofs were verified. The bounded Linux native journey passed both
+Text follow flows, bottom B160, Open/Back, dirty selection, Undo/Redo and
+Escape/hide/reopen within its timing bounds.
+
+**0.67 File Structure is the next CI-first candidate and is not yet accepted.**
+Its scope is a current-file chooser over the existing exact outline snapshot,
+with local name filtering and declaration/Back navigation. The rapid-reopen
+correction passed 17 local frame checks, the Linux normal-agent/mock proof and
+final local aggregate/strict checks. Exact CI and packages remain pending; no
+new positive native JDT or GUI Trust-enabled result is claimed. The
+0.66.0 bottom-preview failure, 0.66.1 Windows caller-count failure and unlaunched
+native check, 0.65.0 glyph stop, and 0.64.0 strict timing failure remain in the
+[verification report](TEST_REPORT.md#accepted-0662-bounded-baseline).
+Windows/macOS GUI, real SSH, arbitrary viewports and general CJK/IME coverage
+remain unverified. Original compatibility and phase decisions retain their
+historical reference versions.
 
 ### Delivery decision
 
@@ -58,7 +60,7 @@ Use a compact header, left Project tool window, central editor tabs and bottom F
 
 A common navigation entry presents **Files**, **Project Text**, and available **Java Types** providers. Unsupported categories are explained rather than simulated. The first internal Files provider is labelled **Open and loaded files**. Once B1 is available, distinguish **Project files** from the fallback. Empty entry initially shows existing open/recent context; it must not silently trigger a full traversal.
 
-Use IDEA entry points where the corresponding behavior exists: Double Shift for the common entry, Ctrl+Shift+N for Files, Ctrl+Shift+F for Project Text, Alt+1 for Project, and Ctrl+Alt+Left/Right for location history. Ctrl+N or symbol shortcuts must not claim unavailable language providers. Native Tab, Enter, Escape and existing editing shortcuts must remain predictable. Search fields, results, preview and editor need explicit focus transitions; traversing dozens of unrelated controls is not an acceptable primary journey. In the initial explicit-submit contract, Enter in the query submits; Up/Down or a single result click selects; Space or the labelled Preview button requests preview; Enter on a result or a double-click permanently opens it. Hover alone does nothing. Escape from preview returns focus to the selected result; Escape from the entry dismisses it and restores the captured editor focus only while that identity remains current. Late Reads cannot reopen a dismissed view. Explicit preview was the bounded first-slice contract. The 0.66.2 candidate below retains explicitly armed continuous preview only for the two Text views; it does not claim identical IDEA behavior.
+Use IDEA entry points where the corresponding behavior exists: Double Shift for the common entry, Ctrl+Shift+N for Files, Ctrl+Shift+F for Project Text, Alt+1 for Project, and Ctrl+Alt+Left/Right for location history. Ctrl+N or symbol shortcuts must not claim unavailable language providers. Native Tab, Enter, Escape and existing editing shortcuts must remain predictable. Search fields, results, preview and editor need explicit focus transitions; traversing dozens of unrelated controls is not an acceptable primary journey. In the initial explicit-submit contract, Enter in the query submits; Up/Down or a single result click selects; Space or the labelled Preview button requests preview; Enter on a result or a double-click permanently opens it. Hover alone does nothing. Escape from preview returns focus to the selected result; Escape from the entry dismisses it and restores the captured editor focus only while that identity remains current. Late Reads cannot reopen a dismissed view. Explicit preview was the bounded first-slice contract. The accepted 0.66.2 contract below retains explicitly armed continuous preview only for the two Text views; it does not claim identical IDEA behavior.
 
 ### Separate presentation from provider authority
 
@@ -125,9 +127,10 @@ activation under the [scoped-search contract](SCOPED_PROJECT_TEXT.md). Explicit
 submission remains; this does not complete all B2 options. **0.63.3** added the
 connected browsing shell and its narrow Alt+1 companion correction. **0.64.0**
 added Recent Files with bounded functional acceptance and a preserved native
-strict timing failure. **0.65.1** is the latest accepted bounded baseline,
-covering explicit current-file Project selection and the narrow accepted-search
-CJK font trigger. **0.66.2** is the continuous Text preview correction candidate below.
+strict timing failure. **0.65.1** accepted explicit current-file Project selection
+and the narrow accepted-search CJK font trigger. **0.66.2** is the latest accepted
+bounded baseline, including continuous Text preview. **0.67** proposes the
+CI-first File Structure slice below, without completing Phase C.
 
 ### Recent Files (0.64 bounded functional acceptance)
 
@@ -194,7 +197,7 @@ failed earlier journey. See the
 [packaged guide](FIND_AND_RETURN.md#select-current-file-in-project-0651-bounded-acceptance)
 and [accepted phase report](TEST_REPORT_PHASE65_PROJECT_REVEAL.md).
 
-### Current 0.66.2 continuous-preview test-caller portability candidate
+### Accepted 0.66.2 continuous Text preview
 
 Only **Project Text in Find and return** and bottom **FIND RESULTS** gain
 continuous preview. A current owned **Space / Preview** action arms the exact
@@ -230,17 +233,60 @@ across both path separators in test-only code; original count assertions and the
 old-production negative control remain required. Production repaint logic is
 unchanged. Independent review, 17 focused checks, the full 2,128/0/70 Rust
 aggregate, Python aggregate, strict Clippy, formatting and current-artifact
-Browse v4/scoped-search proofs passed. Fresh exact CI, packages and native
-validation remain pending. Prior results do not validate this candidate or establish a
-Windows fix. See the
-[usage contract](FIND_AND_RETURN.md#continuous-project-text-preview-066-candidate)
-and [candidate report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md).
+Browse v4/scoped-search proofs passed. Fresh exact dual-platform CI, three package audits and bounded Linux native
+validation then passed. Native checks covered both Text follow flows, bottom
+B160, Open/Back, dirty selection, Undo/Redo and Escape/hide/reopen; they do not
+establish timing intervals, request counts or raw caret affinities from pixels.
+See the
+[usage contract](FIND_AND_RETURN.md#continuous-project-text-preview-0662-bounded-acceptance)
+and [accepted report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md).
+
+### Current 0.67 File Structure candidate
+
+The next slice uses the existing current-file language outline in a dedicated
+popup, with a platform keymap entry, bounded local literal name filtering,
+source order, symbol kinds and existing hierarchy. Enter or click navigates to
+the exact declaration, preserving the existing Back, dirty-draft and Undo
+contract. Its interaction reference is the
+[IDEA 2026.2 File Structure popup](https://www.jetbrains.com/help/idea/viewing-structure-of-a-source-file.html):
+Ctrl+F12, typing a name and Enter/click navigation. Cedar does not adopt that
+page’s CamelHumps, inherited members, extra sorting or framework structure.
+
+Use only an already running provider that matches the current document and
+advertises document symbols. An unavailable provider is explained; opening the
+popup cannot start one or change execution trust. Reuse a current exact cached
+outline; explicit invocation or Refresh may use the existing document sync and
+documentSymbols request. Filtering itself sends no requests. Keep the popup’s
+request destination independent of the Language tool.
+
+Bind rows and pending activation to document, edit version, language session,
+connection, snapshot and popup identity. Edits, tab or session changes, Stop,
+Refresh and dismissal retire obsolete intent. Late replies cannot reopen the
+popup, revive a row or steal focus. Hierarchical DocumentSymbol retains its
+selectionRange and nesting; flat SymbolInformation remains explicitly
+unversioned, flat and dependent on the existing checked agent URI resolution.
+Do not infer local structure or improve freshness claims from a popup layout.
+
+The round prioritizes positive frame tests and a normal-agent mock proof.
+The corrected frontend passed 17 local actual-frame tests, source review and
+the Linux normal-agent/mock proof with a strict 45-field / 11-operation receipt.
+The first runtime’s rapid-reopen production failure and the second runtime’s
+test-completion failure remain recorded. Final Rust **2,145/0/71 across 50
+suites**, Python **803 total / zero failures / ten skipped across 29 suites**,
+strict Clippy, formatting and retained Browse/Scoped proofs passed. Exact CI
+and package audits remain pending; this is a CI-first partial result. No new
+positive native JDT or GUI Trust-enabled validation is included. A later Trust-off native check, if run,
+could verify only its unavailable-provider path. It would not establish positive
+semantic navigation or full native acceptance. No parser, provider, protocol,
+persistent index, inherited-member query or general IDEA parity is added. See
+[File Structure](FILE_STRUCTURE.md) and the
+[phase report](TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
 
 Connected-header **40/48** logical pixels and tools **28/34** title-row minima
 remain local frame checks at **13/18** font sizes, not arbitrary native viewport
 or IDEA pixel guarantees. Tool margins, separator and body add height; wrapping
 or scrolling must preserve reachability. The 0.63.3 accepted bounded journey
-does not validate 0.66.2 or erase earlier omitted narrow-window observations.
+does not validate 0.67 or erase earlier omitted narrow-window observations.
 
 Non-goals for A/B1: new Build/Run/DAP/test-execution features; deleting existing modules; package management; arbitrary Gradle/Maven execution; multi-file refactoring; SSH deployment/credential automation; persistent indexes; complete IDEA plugin compatibility; Windows privacy integration; unrestricted large files; generic Unicode search equivalence; automatic trust; or an unmeasured “faster/lighter than IDEA” claim.
 
