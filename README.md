@@ -2,7 +2,9 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。最新已限定验收基线为 **0.66.2**：连续文本预览已完成精确双平台 CI、三种包及限定 Linux 原生功能和计时验收，见[预览契约](docs/FIND_AND_RETURN.md#continuous-project-text-preview-0662-bounded-acceptance)和[阶段报告](docs/TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md)。当前推进 **0.67.1 File Structure 菜单候选**：新增 **Tools → File Structure…** 可见入口，沿用原弹窗、运行中 provider、Trust、草稿、Back 和 Undo 边界；Ctrl+F12/Cmd+F12 不变，不声称修复原生快捷键。原 0.67.0 精确 CI 四项作业和三种包通过，但首次限定 Linux 原生 Ctrl+F12 操作未出现弹窗；独立完整探针仅证明本次 raw-input hook 未收到 F12 按下，未证明上游原因。0.67.1 本地 32 项 File Structure 帧检查（17 项保留、15 项菜单）、Rust 2,160/0/71（50 套件）、Python 803 项/0 失败/10 跳过（29 套件）、严格检查和当前产物进程证明通过；独立源码/输入审查通过；精确 CI、包及原生菜单入口仍待完成；真实符号/JDT 弹窗原生正向路径仍未测量，详见[File Structure 指南](docs/FILE_STRUCTURE.md)。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。最新已限定验收基线为 **0.67.1**：[精确双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38431261412) 四项作业及三种包通过；File Structure 的正向符号路径由两端帧检查与 Linux 普通 agent/mock 证明覆盖。限定 Linux 原生检查仅覆盖 Trust OFF 时 **Tools → File Structure…** 的不可用说明、筛选、Escape、重开和脏稿 Undo/Redo。原生 Ctrl+F12、真实符号和真实 JDT 弹窗正向路径仍未测量，不声称修复快捷键。0.67.0 原生入口失败和独立探针的 raw-input hook 未收到 F12 按下记录继续保留；它们未证明操作系统或其他上游原因，见[阶段报告](docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md)。
+
+当前推进 **0.68 当前文件 Find 候选，尚未验收**：Ctrl/Cmd+F 可从有效单行选区完整填入查询；F3、Shift+F3、Next/Previous 和查询框 Enter 按当前光标/选区定位字面量、区分大小写、互不重叠的命中。一次连续查找只记录一个 Back 出发位置，查询输入不移动编辑器光标，脏稿、Undo 与既有 Replace 保持原有边界。最多保留 10,000 个命中，达到上限明确显示保留范围。无后端请求、自动保存、正则或新语言 provider。完整离线用法见[当前文件 Find](docs/FIND_AND_RETURN.md#current-file-find-loop-068-candidate)，验证状态见[阶段报告](docs/TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md)。0.68.0 本地全量 Rust **2,176/0/71（50 套件）**、Python **804 项/0 失败/10 跳过（29 套件）**、严格 Clippy/格式检查和独立输入审查通过；当前默认产物的 Browse v5 **57 字段/14 操作/零新增 Find 操作**及 Structure/Scoped/Search 保留证明通过。最终封存、精确 CI、包与原生门槛仍待完成，不继承 0.67.1 的验收。
 
 此前已限定验收的 **0.65.1**：公开提交 [`bc65427bb1fc2c0da3b7391c65a8340ed0619db4`](https://github.com/LLLLimbo/cedar-ide/commit/bc65427bb1fc2c0da3b7391c65a8340ed0619db4) 的 [CI 38371007337](https://github.com/LLLLimbo/cedar-ide/actions/runs/38371007337) 四项作业和三种包均通过；两端各 50 套件，Linux 2,111/0/70，Windows 2,049/0/114（通过/失败/忽略）。限定 Linux 原生检查中 `src/层/Target.rs` 可读，Tree/Flat 当前文件选择、Down/Up、脏稿选区、Undo/Redo 与 Find 状态保留通过。既有有界本地 CJK 字体加载器不下载或安装字体，也不保证完整字形覆盖。0.65.0 因中文路径方框提前停止的记录，以及 0.64.0 发起退出晚 **20.436 秒**、严格计时门槛失败的记录继续保留。原生取消、Windows/macOS GUI、真实 SSH、任意视口与广泛 CJK 覆盖仍未验收，见[当前报告](docs/TEST_REPORT.md#accepted-0651-bounded-baseline)。
 
@@ -20,7 +22,7 @@ Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完�
 - 平面目录浏览与显式展开的[有界目录树](docs/EXPLORER_TREE.md)、多标签编辑、新建文件、行号、简单 Java/Kotlin/Rust 高亮
 - 选中一段文字后可用 **Preview selection** 预览仅该选区内的字面量替换，再显式 Apply；选区外字节不变，一次 Undo 恢复原文和完整选区，保存另行操作（[0.53.4 已验收](docs/TEST_REPORT_PHASE53_SELECTION_REPLACE.md#final-accepted-0534-evidence)）
 - Ctrl/Cmd+D 复制当前行或选中范围涉及的完整行，保留 LF/CRLF 字节与选区方向，一次 Undo 恢复原文和选区；仅修改草稿，保存另行操作（[0.54.0 已验收](docs/TEST_REPORT_PHASE54_DUPLICATE_LINES.md#final-accepted-0540-evidence)）
-- Ctrl/Cmd+P 键盘选择已打开标签/当前目录文件或输入路径、Ctrl/Cmd+G 跳到行或行:列、Ctrl/Cmd+F 文件内查找与单文档字面量替换预览、Ctrl/Cmd+S 保存、Ctrl/Cmd+W 关闭标签
+- Ctrl/Cmd+P 键盘选择已打开标签/当前目录文件或输入路径、Ctrl/Cmd+G 跳到行或行:列、Ctrl/Cmd+F 文件内查找与单文档字面量替换预览；0.68 候选的 F3 / Shift+F3 按当前选区查找下一处/上一处。Ctrl/Cmd+S 保存、Ctrl/Cmd+W 关闭标签
 - 选中代码块后用 Tab / Shift+Tab 缩进或减少缩进，保留选区与一次撤销；有界处理，保存仍需明确操作（0.47.4 已通过双平台 CI；原生 GUI 范围见[验收报告](docs/TEST_REPORT_PHASE47_INDENT.md#final-verified-acceptance--0474)）
 - [显式 Save All](docs/SAVE_ALL.md)：逐个保存本次捕获的脏标签，首个冲突或未知结果停止后续提交，保留更新的输入和撤销；不自动构建或运行
 - [保存回执与未知结果核对](docs/INTERRUPTED_SAVES.md)：核对原提交内容与身份；异常回执保留草稿和恢复副本，只能显式读回核对，不自动重写

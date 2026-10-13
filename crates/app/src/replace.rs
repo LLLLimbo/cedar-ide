@@ -643,6 +643,7 @@ impl CedarApp {
     }
 
     pub(super) fn close_find(&mut self, ctx: &egui::Context) {
+        self.file_find.cancel_loop();
         self.find_open = false;
         self.find_focus = false;
         self.replace.clear();
@@ -885,7 +886,7 @@ impl CedarApp {
                     editor_state::move_selection(ctx, doc, preview.selection);
                 }
                 editor_state::commit(ctx, doc, preview.plan.text, preview.plan.cursor_chars);
-                self.find_index = None;
+                self.file_find.cancel_loop();
                 self.notice = format!(
                     "Replaced {} match(es) in draft · Save separately",
                     preview.plan.ranges.len()

@@ -616,6 +616,10 @@ fn selection_app_after_field_entry() -> (CedarApp, Receiver<Command>, egui::text
     assert!(app
         .editor_ctx
         .memory(|memory| memory.has_focus(egui::Id::new(FIND_INPUT))));
+    // Ctrl+F now seeds the selected literal; native select-all keeps this
+    // fixture exercising actual Find-field typing before Replace authority.
+    assert_eq!(app.find_query, "cat");
+    frame(&mut app, 0.15, key(egui::Key::A, egui::Modifiers::COMMAND));
     for (index, (key_name, text)) in [
         (egui::Key::C, "c"),
         (egui::Key::A, "a"),
@@ -1783,9 +1787,8 @@ fn actual_frames_find_open_type_enter_escape_and_navigation_do_not_leak_source_i
     frame(&mut app, 0.0, vec![]);
     app.editor_ctx
         .memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", 1u64))));
-    let mut events = key(egui::Key::F, egui::Modifiers::COMMAND);
-    events.push(egui::Event::Text("cat".into()));
-    frame(&mut app, 1.0, events);
+    frame(&mut app, 0.5, key(egui::Key::F, egui::Modifiers::COMMAND));
+    frame(&mut app, 1.0, vec![egui::Event::Text("cat".into())]);
     assert_eq!(app.find_query, "cat");
     assert_eq!(app.documents[0].text, "cat cat");
     let mut events = key(egui::Key::Enter, egui::Modifiers::NONE);

@@ -45,6 +45,7 @@ mod explorer_tree;
 mod explorer_tree_process_tests;
 #[cfg(test)]
 mod explorer_tree_tests;
+mod file_find;
 mod git_ui;
 #[cfg(test)]
 mod idle_disconnect_process_tests;
@@ -144,7 +145,7 @@ mod workspace_access_tests;
 use cedar_client::ConnectionSpec;
 use cedar_protocol::{AgentInfo, Entry, Operation, Payload, SearchMatch};
 use eframe::egui::{self, Color32, FontId, RichText, Stroke};
-use model::{cursor_location, find_ranges, language, line_start, parent_path, Document};
+use model::{cursor_location, language, line_start, parent_path, Document};
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -456,7 +457,7 @@ pub struct CedarApp {
     copy_draft: copy_draft::CopyDraft,
     find_open: bool,
     find_query: String,
-    find_index: Option<usize>,
+    file_find: file_find::State,
     find_focus: bool,
     replace: replace::Replace,
     disk_review: disk_review::DiskReview,
@@ -575,7 +576,7 @@ impl CedarApp {
             copy_draft: copy_draft::CopyDraft::default(),
             find_open: false,
             find_query: String::new(),
-            find_index: None,
+            file_find: file_find::State::default(),
             find_focus: false,
             replace: replace::Replace::default(),
             disk_review: disk_review::DiskReview::default(),
@@ -774,6 +775,7 @@ impl CedarApp {
 
     fn navigation_changed(&mut self) {
         self.cancel_project_reveal();
+        self.file_find.cancel_loop();
         self.location_history.cancel_pending();
         self.navigation.cancel_coordinate_jump();
         self.replace.invalidate();
@@ -2092,10 +2094,7 @@ impl CedarApp {
         if save_current {
             self.save();
         }
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
-            self.find_open = true;
-            self.find_focus = true;
-        }
+        self.file_find_shortcuts(ctx);
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
             if let Some(id) = self.active_document {
                 self.close_tab_requested = Some(id);
@@ -2918,8 +2917,6 @@ impl CedarApp {
         if !self.find_open {
             return;
         }
-        let mut next = false;
-        let mut previous = false;
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("FIND").small().color(MUTED));
             let input_id = egui::Id::new(replace::FIND_INPUT);
@@ -2933,73 +2930,37 @@ impl CedarApp {
                     .hint_text("Case-sensitive text")
                     .desired_width(230.0),
             );
+            #[cfg(test)]
+            workspace_access_tests::record(ui, "find_query", &response);
             if response.changed() {
-                self.find_index = None;
+                self.file_find.cancel_loop();
+                self.file_find.message = None;
                 self.replace.invalidate();
             }
-            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                next = true;
-            }
-            previous = ui.small_button("Previous").clicked();
-            next |= ui.small_button("Next").clicked();
-            let hits = self
-                .active()
-                .map(|doc| find_ranges(&doc.text, &self.find_query).len())
-                .unwrap_or(0);
-            ui.label(
-                RichText::new(if hits >= model::MAX_FIND_MATCHES {
-                    format!("First {hits} matches")
-                } else {
-                    format!("{hits} matches")
-                })
-                .small()
-                .color(MUTED),
-            );
-            if ui.small_button("x").clicked() {
+            let previous = ui
+                .small_button("Previous")
+                .on_hover_text("Previous match · Shift+F3");
+            #[cfg(test)]
+            workspace_access_tests::record(ui, "find_previous", &previous);
+            self.file_find_button(ui, &previous, file_find::Direction::Previous);
+            let next = ui.small_button("Next").on_hover_text("Next match · F3");
+            #[cfg(test)]
+            workspace_access_tests::record(ui, "find_next", &next);
+            self.file_find_button(ui, &next, file_find::Direction::Next);
+            let count = self.file_find_count(ui.ctx());
+            let count_response = ui.label(RichText::new(count).small().color(MUTED));
+            #[cfg(test)]
+            workspace_access_tests::record(ui, "find_count", &count_response);
+            let _ = count_response;
+            let close = ui.small_button("x");
+            #[cfg(test)]
+            workspace_access_tests::record(ui, "find_close", &close);
+            if close.clicked() {
                 self.close_find(ui.ctx());
             }
         });
-        if next || previous {
-            self.replace.invalidate();
-            replace::discard_keyboard(ui.ctx());
-            if let Some(doc) = self
-                .documents
-                .iter_mut()
-                .find(|doc| Some(doc.id) == self.active_document)
-            {
-                let hits = find_ranges(&doc.text, &self.find_query);
-                if !hits.is_empty() {
-                    let index = match self.find_index {
-                        None => {
-                            if previous {
-                                hits.len() - 1
-                            } else {
-                                0
-                            }
-                        }
-                        Some(current) => {
-                            if previous {
-                                (current + hits.len() - 1) % hits.len()
-                            } else {
-                                (current + 1) % hits.len()
-                            }
-                        }
-                    };
-                    self.find_index = Some(index);
-                    let range = &hits[index];
-                    doc.scroll_to = Some(range.start);
-                    let id = egui::Id::new(("editor", doc.id));
-                    let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-                    state
-                        .cursor
-                        .set_char_range(Some(egui::text::CCursorRange::two(
-                            egui::text::CCursor::new(range.start),
-                            egui::text::CCursor::new(range.end),
-                        )));
-                    state.store(ui.ctx(), id);
-                    ui.ctx().memory_mut(|memory| memory.request_focus(id));
-                }
-            }
+        if let Some(message) = self.file_find.message {
+            ui.label(RichText::new(message).small().color(MUTED));
         }
         if self.find_open {
             self.replace_bar(ui);
@@ -3480,6 +3441,7 @@ impl eframe::App for CedarApp {
         // Classify every surface from the same ordered native batch. Filtering
         // sooner could create a new clean action or hide a held key's release.
         let mut consumed = vec![false; raw_input.events.len()];
+        self.capture_file_find_input(ctx, raw_input);
         self.capture_recent_input(ctx, raw_input, &mut consumed);
         self.capture_browse_input(ctx, raw_input, &mut consumed);
         self.capture_test_report_input(ctx, raw_input, &mut consumed);
@@ -3503,6 +3465,7 @@ impl eframe::App for CedarApp {
         #[cfg(test)]
         workspace_access_tests::begin(ctx);
         self.poll_ready_navigation(Some(ctx));
+        self.consume_file_find_keys(ctx);
         self.begin_navigation_frame(ctx);
         self.recovery_tick(ctx);
         let cjk = self.system_fonts.needs_probe()
@@ -3589,6 +3552,7 @@ impl eframe::App for CedarApp {
         self.finish_recent_frame(ctx);
         self.finish_project_reveal_frame(ctx);
         self.finish_file_structure_frame(ctx);
+        self.finish_file_find_frame(ctx);
     }
 }
 

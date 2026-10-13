@@ -139,7 +139,6 @@ fn clean_reload_is_staged_clamps_unicode_cursor_and_undo_redo_use_new_baseline()
         )));
     state.store(&app.editor_ctx, egui::Id::new(("editor", 1u64)));
     app.documents[0].jump_to = Some(50);
-    app.find_index = Some(3);
     stage(&mut app, &rx, "é🐻", 'b');
     assert_eq!(
         app.documents[0].text, "before",
@@ -154,7 +153,6 @@ fn clean_reload_is_staged_clamps_unicode_cursor_and_undo_redo_use_new_baseline()
     assert_eq!(doc.edit_version, 1);
     assert_eq!(doc.cursor, (1, 3));
     assert_eq!(doc.jump_to, None);
-    assert_eq!(app.find_index, None);
     assert!(!doc.dirty());
     history(&mut app, false);
     assert_eq!(app.documents[0].text, "before");

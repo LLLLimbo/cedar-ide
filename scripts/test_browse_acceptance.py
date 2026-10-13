@@ -2,6 +2,7 @@
 """Pure artifact, receipt and bounded-driver mocks; never build or run Rust."""
 from contextlib import redirect_stderr, redirect_stdout
 import copy
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -25,6 +26,17 @@ CONTINUOUS_PREVIEW_EXPECTED = {
     "continuous_preview_debounce_ms": 150,
     "continuous_preview_max_context_lines": 41,
     "continuous_preview_max_context_bytes": 65536,
+}
+
+
+CURRENT_FILE_FIND_EXPECTED = {
+    "current_file_find_selection_seeded": True,
+    "current_file_find_next_previous_wrap": True,
+    "current_file_find_literal_no_match": True,
+    "current_file_find_escape_back_exact": True,
+    "current_file_find_undo_redo_preserved": True,
+    "current_file_find_state_preserved": True,
+    "current_file_find_additional_operations": 0,
 }
 
 
@@ -113,7 +125,7 @@ class ReceiptTests(unittest.TestCase):
             proof.validate_execution(execution(name), name)
         receipt = proof.expected_receipt()
         self.assertEqual(len(receipt["operation_ledger"]), 14)
-        self.assertEqual(receipt["receipt_version"], 4)
+        self.assertEqual(receipt["receipt_version"], 5)
         self.assertEqual({key: receipt[key] for key in (
             "retained_text_snapshot", "grouped_original_indices",
             "text_open_back_exact", "reopen_keeps_selection",
@@ -180,7 +192,7 @@ class ReceiptTests(unittest.TestCase):
 
     def test_recent_contract_and_previous_seven_operation_receipt_are_strict(self):
         expected = {
-            "receipt_version": 4,
+            "receipt_version": 5,
             "recent_popup_filter_select_operations": 0,
             "recent_closed_reopen_reads": 1,
             "recent_closed_reopen_normal_position": True,
@@ -189,13 +201,14 @@ class ReceiptTests(unittest.TestCase):
             "recent_find_state_preserved": True,
         }
         receipt = proof.expected_receipt()
-        self.assertEqual(len(receipt), 50)
+        self.assertEqual(len(receipt), 57)
         self.assertEqual({key: receipt[key] for key in expected}, expected)
         self.assertEqual(receipt["operation_ledger"][7], {"op": "Read", "path": proof.TARGET})
         # Historical receipts remain historical evidence and cannot satisfy the
         # new exact test/receipt contract by merely retaining a successful exit.
         old = {key: value for key, value in receipt.items()
-               if key not in expected and key not in CONTINUOUS_PREVIEW_EXPECTED}
+               if key not in expected and key not in CONTINUOUS_PREVIEW_EXPECTED
+               and key not in CURRENT_FILE_FIND_EXPECTED}
         old["operation_ledger"] = old["operation_ledger"][:7]
         with self.assertRaises(proof.AcceptanceError):
             proof.validate_execution(execution(proof.APP_TEST, old), proof.APP_TEST)
@@ -228,8 +241,8 @@ class ReceiptTests(unittest.TestCase):
         }
         receipt = proof.expected_receipt()
         self.assertEqual({key: receipt[key] for key in expected}, expected)
-        self.assertEqual(receipt["receipt_version"], 4)
-        self.assertEqual(len(receipt), 50)
+        self.assertEqual(receipt["receipt_version"], 5)
+        self.assertEqual(len(receipt), 57)
         prefix = [
             {"op": "Hello"}, {"op": "List", "path": ""},
             {"op": "Read", "path": "origin.txt"},
@@ -257,7 +270,8 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(missing=key), self.assertRaises(proof.AcceptanceError):
                 proof.validate_execution(execution(proof.APP_TEST, missing), proof.APP_TEST)
         old = {key: value for key, value in receipt.items()
-               if key not in expected and key not in CONTINUOUS_PREVIEW_EXPECTED}
+               if key not in expected and key not in CONTINUOUS_PREVIEW_EXPECTED
+               and key not in CURRENT_FILE_FIND_EXPECTED}
         old["receipt_version"] = 2
         old["operation_ledger"] = prefix
         self.assertEqual(len(old), 29)
@@ -286,8 +300,8 @@ class ReceiptTests(unittest.TestCase):
 
     def test_continuous_preview_contract_preserves_v3_prefix_and_exact_two_read_suffix(self):
         receipt = proof.expected_receipt()
-        self.assertEqual(len(receipt), 50)
-        self.assertEqual(receipt["receipt_version"], 4)
+        self.assertEqual(len(receipt), 57)
+        self.assertEqual(receipt["receipt_version"], 5)
         self.assertEqual({key: receipt[key] for key in CONTINUOUS_PREVIEW_EXPECTED},
                          CONTINUOUS_PREVIEW_EXPECTED)
         prefix = [
@@ -316,7 +330,7 @@ class ReceiptTests(unittest.TestCase):
             missing = {name: value for name, value in receipt.items() if name != key}
             with self.subTest(missing=key), self.assertRaises(proof.AcceptanceError):
                 proof.validate_execution(execution(proof.APP_TEST, missing), proof.APP_TEST)
-        old = {key: value for key, value in receipt.items() if key not in CONTINUOUS_PREVIEW_EXPECTED}
+        old = {key: value for key, value in receipt.items() if key not in CONTINUOUS_PREVIEW_EXPECTED and key not in CURRENT_FILE_FIND_EXPECTED}
         old["receipt_version"] = 3
         old["operation_ledger"] = prefix
         self.assertEqual(len(old), 38)
@@ -333,6 +347,41 @@ class ReceiptTests(unittest.TestCase):
         old_name = "browse_tests::browse_normal_agent_find_recent_project_reveal_and_exact_return"
         with self.assertRaises(proof.AcceptanceError):
             proof.validate_execution(execution(proof.APP_TEST).replace(proof.APP_TEST.encode(), old_name.encode()), proof.APP_TEST)
+
+    def test_current_file_find_contract_preserves_all_v4_values_and_zero_operation_ledger(self):
+        receipt = proof.expected_receipt()
+        self.assertEqual(len(receipt), 57)
+        self.assertEqual(receipt["receipt_version"], 5)
+        self.assertEqual({key: receipt[key] for key in CURRENT_FILE_FIND_EXPECTED},
+                         CURRENT_FILE_FIND_EXPECTED)
+        # Freeze the complete independent v4 contract: all 50 fields, nested
+        # typed values, exact 14 operations, source hashes and deadline values.
+        old = {key: value for key, value in receipt.items()
+               if key not in CURRENT_FILE_FIND_EXPECTED}
+        old["receipt_version"] = 4
+        self.assertEqual(len(old), 50)
+        self.assertEqual(len(old["operation_ledger"]), 14)
+        canonical = json.dumps(old, sort_keys=True, separators=(",", ":")).encode()
+        self.assertEqual(hashlib.sha256(canonical).hexdigest(),
+                         "0253542c2063664a85cf8526f2665ee85f899acf323c6b9306c08295990080f6")
+        for invalid in (old, {**receipt, "receipt_version": 4},
+                        {**receipt, "current_file_find_extra": True}):
+            with self.subTest(receipt=invalid), self.assertRaises(proof.AcceptanceError):
+                proof.validate_execution(execution(proof.APP_TEST, invalid), proof.APP_TEST)
+        for key, required in CURRENT_FILE_FIND_EXPECTED.items():
+            self.assertIs(type(receipt[key]), type(required))
+            wrong = ((False, 1, "true", None) if required is True else
+                     (1, -1, False, 0.0, "0", None))
+            for value in wrong:
+                with self.subTest(key=key, value=value), self.assertRaises(proof.AcceptanceError):
+                    proof.validate_execution(execution(proof.APP_TEST, {**receipt, key: value}), proof.APP_TEST)
+            missing = {name: value for name, value in receipt.items() if name != key}
+            with self.subTest(missing=key), self.assertRaises(proof.AcceptanceError):
+                proof.validate_execution(execution(proof.APP_TEST, missing), proof.APP_TEST)
+        for operation in ("Read", "Search", "Write", "LanguageSymbols"):
+            changed = {**receipt, "operation_ledger": receipt["operation_ledger"] + [{"op": operation}]}
+            with self.subTest(operation=operation), self.assertRaises(proof.AcceptanceError):
+                proof.validate_execution(execution(proof.APP_TEST, changed), proof.APP_TEST)
 
     def test_exact_test_and_single_strict_json_receipt_required(self):
         good = execution(proof.APP_TEST)

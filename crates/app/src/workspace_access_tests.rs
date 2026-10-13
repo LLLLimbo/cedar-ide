@@ -469,7 +469,7 @@ fn no_document_empty_project_and_resize_use_explicit_heading() {
 }
 
 #[test]
-fn find_remains_open_and_newer_find_focus_wins_mixed_shortcuts() {
+fn find_remains_open_and_only_a_clean_find_shortcut_transfers_focus() {
     let (mut app, commands) = app(Tool::Search);
     app.find_open = true;
     app.find_query = "saved".into();
@@ -481,7 +481,10 @@ fn find_remains_open_and_newer_find_focus_wins_mixed_shortcuts() {
     let mut events = key(egui::Key::J, egui::Modifiers::COMMAND);
     events.extend(key(egui::Key::F, egui::Modifiers::COMMAND));
     frame(&mut app, SIZE, events);
-    assert!(!app.tools_open);
+    assert!(!app.tools_open && app.find_open);
+    assert_eq!(focused(&app), Some(egui::Id::new(("editor", 1u64))));
+    assert_eq!(app.find_query, "saved");
+    frame(&mut app, SIZE, key(egui::Key::F, egui::Modifiers::COMMAND));
     assert_eq!(focused(&app), Some(egui::Id::new(replace::FIND_INPUT)));
     frame(&mut app, SIZE, vec![egui::Event::Text("new".into())]);
     assert_eq!(app.documents[0].text, "saved 雪");

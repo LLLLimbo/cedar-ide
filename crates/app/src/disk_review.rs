@@ -674,7 +674,7 @@ impl CedarApp {
                 .min(snapshot.text.chars().count());
             editor_state::commit(ctx, doc, snapshot.text.clone(), cursor);
             doc.jump_to = None;
-            self.find_index = None;
+            self.file_find.cancel_loop();
         }
         if text_changed || baseline_changed {
             doc.adopt_reviewed_disk_baseline(snapshot.revision.clone());
@@ -720,7 +720,7 @@ impl CedarApp {
         doc.saved_text = snapshot.text.clone();
         doc.revision = Some(snapshot.revision.clone());
         doc.jump_to = None;
-        self.find_index = None;
+        self.file_find.cancel_loop();
         self.replace.invalidate();
         if doc.path == crate::profile_ui::PATH {
             self.profile_disk_merged();

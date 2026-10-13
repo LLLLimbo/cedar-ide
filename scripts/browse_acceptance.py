@@ -77,7 +77,7 @@ def select_artifacts(data, root, platform):
 
 def expected_receipt():
     return {
-        "receipt_version": 4,
+        "receipt_version": 5,
         "operation_ledger": [
             {"op": "Hello"}, {"op": "List", "path": ""},
             {"op": "Read", "path": "origin.txt"},
@@ -138,6 +138,13 @@ def expected_receipt():
         "continuous_preview_debounce_ms": 150,
         "continuous_preview_max_context_lines": 41,
         "continuous_preview_max_context_bytes": 64 * 1024,
+        "current_file_find_selection_seeded": True,
+        "current_file_find_next_previous_wrap": True,
+        "current_file_find_literal_no_match": True,
+        "current_file_find_escape_back_exact": True,
+        "current_file_find_undo_redo_preserved": True,
+        "current_file_find_state_preserved": True,
+        "current_file_find_additional_operations": 0,
     }
 
 

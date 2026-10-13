@@ -1,4 +1,36 @@
-# 0.67 File Structure — original results and 0.67.1 menu candidate
+# 0.67 File Structure — 0.67.1 bounded acceptance and preserved history
+
+## Accepted 0.67.1 baseline
+
+The [public source revision](https://github.com/LLLLimbo/cedar-ide/commit/e5f94aa197c5ae676572a0e68cc25c22c9d3bea6)
+passed all **four jobs** in
+[CI 38431261412](https://github.com/LLLLimbo/cedar-ide/actions/runs/38431261412)
+and all **three package audits**. Linux passed **2,160/0/71** and Windows
+**2,098/0/114** across **50 suites each**, including all **32 File Structure
+actual-frame tests per platform**. The Linux normal-agent/mock Structure proof
+passed **45 fields / 11 Client operations**; retained Browse, Scoped Search,
+Search and established platform/JDT proofs passed in their own scopes.
+
+Bounded Linux native coverage, with Trust off, passed visible menu entry,
+unavailable-provider explanation, focused filter typing, Escape restoration,
+menu reopen, dirty selection and Undo/Redo. Startup **25.38 s**, connected cases
+to quit initiation **220.92 s**, and quit **12.62 s** passed the fixed bounds.
+Artifact and unchanged-fixture checks passed. The owned frontend exited with
+status zero; native descendant-process reaping is not claimed.
+
+Filter typing was the next input, without an intervening focus click, but the
+two gaps were **11.662 s** and **13.587 s**. This is not an adjacent-native-frame
+result; actual-frame tests separately establish immediate typing. Positive
+symbol navigation remains headless frame and Linux mock-provider evidence.
+**Positive native symbols, real-JDT File Structure GUI and native Ctrl+F12
+remain unmeasured.** Acceptance does not repair or erase the original 0.67.0
+native shortcut failure, nor infer an upstream cause from the independent probe.
+
+## Preserved 0.67.1 preparation record
+
+The following candidate status and pending gates describe the preparation
+checkpoint before the acceptance above. They retain the original evidence and
+do not revoke the later bounded result.
 
 ## Current 0.67.1 visible-menu candidate
 

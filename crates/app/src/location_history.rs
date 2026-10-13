@@ -456,7 +456,7 @@ impl CedarApp {
         self.navigation_changed();
         self.history_begin(departure, false);
         self.active_document = Some(document);
-        self.find_index = None;
+        self.file_find.cancel_loop();
         if self.active().is_some_and(|doc| doc.jump_to.is_some()) {
             self.history_wait_for_selection(document);
         } else {
@@ -548,7 +548,7 @@ impl CedarApp {
         doc.jump_to = None;
         doc.scroll_to = Some(target.selection.primary.index);
         self.active_document = Some(target.document);
-        self.find_index = None;
+        self.file_find.cancel_loop();
         self.location_history.stack_mut(direction).pop();
         self.location_history.stack_changed();
         if let Some(current) = current {
@@ -602,6 +602,9 @@ impl CedarApp {
             // A boundary/all-stale click is consumed too: history_step advances
             // ownership once even when it does not restore a location.
             self.history_step(press.direction, ctx);
+            return;
+        }
+        if ctx.is_some_and(|ctx| self.file_find_supersede_ready_navigation(ctx)) {
             return;
         }
         let access = ctx.and_then(|ctx| self.prepare_workspace_access_retirement(ctx, ready));

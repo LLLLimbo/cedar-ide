@@ -1,22 +1,27 @@
-# File Structure — 0.67.1 menu candidate
+# File Structure — 0.67.1 bounded acceptance
 
-**0.67.1 is not yet accepted.** It adds **Tools → File Structure…** as a visible
-entry to the existing current-file popup, local name filter and declaration
-navigation. The menu uses the same provider, draft, Back and Undo boundaries.
-The existing **Ctrl+F12** on Windows/Linux and **Cmd+F12** on macOS are unchanged;
-this addition does not establish a native shortcut repair.
+**0.67.1 passed bounded acceptance led by exact dual-platform CI.** All four
+jobs in [CI 38431261412](https://github.com/LLLLimbo/cedar-ide/actions/runs/38431261412)
+and all three package audits passed. **Tools → File Structure…** opens the
+existing current-file popup with its local name filter, declaration navigation,
+provider, draft, Back and Undo boundaries. The unchanged **Ctrl+F12** on
+Windows/Linux and **Cmd+F12** on macOS remain keymap entries; native shortcut
+delivery or repair is not established.
 
-The original **0.67.0** passed exact dual-platform CI and all three package
-audits, but its first bounded Linux native Ctrl+F12 attempt showed no popup.
-A separate instrumented local probe recorded no F12 press and one release at
-Cedar’s raw-input hook; that observation does not establish an operating-system
-interception or the cause of the earlier shipping result. The 0.67.1 local
-aggregate/strict checks, **32 File Structure frame tests** and current-artifact
-process proofs passed. Independent source/input review passed without blocking
-findings. Exact CI, package audits and the native menu path remain pending. Positive native symbols and a real-JDT popup
-journey remain unmeasured. The latest
-accepted bounded baseline is **0.66.2**. See the
-[phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
+Positive symbol behavior is covered by 32 supplied-input frame tests on each
+platform and the Linux normal-agent/mock proof. The bounded Linux native
+journey covers only the Trust-off visible menu, unavailable-provider explanation,
+filter, Escape/reopen and dirty-draft Undo/Redo. Filter typing reached the field
+without another focus click; its measured next-input gaps do not demonstrate
+adjacent native frames. Positive native symbols and a real-JDT popup remain
+unmeasured.
+
+The original **0.67.0** passed exact CI and packages, but its first native
+Ctrl+F12 attempt showed no popup. A separate complete instrumented probe found
+no F12 press and one release at Cedar’s raw-input hook. That observation does
+not identify an operating-system or other upstream cause and does not explain
+the earlier shipping result. Earlier development and native failures remain in
+the [phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
 
 ## Provider and request boundary
 

@@ -4438,6 +4438,13 @@ struct NormalBrowse {
     continuous_preview_open_reads: Option<usize>,
     continuous_preview_open_back_exact: bool,
     continuous_preview_state_preserved: bool,
+    current_file_find_selection_seeded: bool,
+    current_file_find_next_previous_wrap: bool,
+    current_file_find_literal_no_match: bool,
+    current_file_find_escape_back_exact: bool,
+    current_file_find_undo_redo_preserved: bool,
+    current_file_find_state_preserved: bool,
+    current_file_find_additional_operations: Option<usize>,
 }
 
 fn source_digest(path: &std::path::Path) -> String {
@@ -4554,6 +4561,13 @@ impl NormalBrowse {
             continuous_preview_open_reads: None,
             continuous_preview_open_back_exact: false,
             continuous_preview_state_preserved: false,
+            current_file_find_selection_seeded: false,
+            current_file_find_next_previous_wrap: false,
+            current_file_find_literal_no_match: false,
+            current_file_find_escape_back_exact: false,
+            current_file_find_undo_redo_preserved: false,
+            current_file_find_state_preserved: false,
+            current_file_find_additional_operations: None,
         };
         proof.admit_call();
         // Client's constructor performs one ordinary 30-second Hello. Register
@@ -4656,6 +4670,13 @@ impl NormalBrowse {
         assert_eq!(self.continuous_preview_open_reads, Some(1));
         assert!(self.continuous_preview_open_back_exact);
         assert!(self.continuous_preview_state_preserved);
+        assert!(self.current_file_find_selection_seeded);
+        assert!(self.current_file_find_next_previous_wrap);
+        assert!(self.current_file_find_literal_no_match);
+        assert!(self.current_file_find_escape_back_exact);
+        assert!(self.current_file_find_undo_redo_preserved);
+        assert!(self.current_file_find_state_preserved);
+        assert_eq!(self.current_file_find_additional_operations, Some(0));
         assert_eq!(browse::PROJECT_TEXT_REVIEW_DEBOUNCE_SECONDS, 0.150);
         assert_eq!(browse::MAX_PROJECT_TEXT_CONTEXT_LINES, 41);
         assert_eq!(browse::MAX_PROJECT_TEXT_CONTEXT_BYTES, 64 * 1024);
@@ -4707,7 +4728,7 @@ impl NormalBrowse {
         std::fs::remove_dir_all(&self.root).expect("remove verified completed fixture");
         self.success = true;
         let mut receipt = serde_json::json!({
-            "receipt_version": 4,
+            "receipt_version": 5,
             "operation_ledger": self.ledger, "source_sha256": self.hashes,
             "connections": 1, "agents_reaped": 1, "trust": false,
             "active_budget_seconds": 240, "cleanup_timeout_seconds": 30,
@@ -4758,6 +4779,19 @@ impl NormalBrowse {
             .as_object_mut()
             .unwrap()
             .extend(continuous.as_object().unwrap().clone());
+        let current_file = serde_json::json!({
+            "current_file_find_selection_seeded": self.current_file_find_selection_seeded,
+            "current_file_find_next_previous_wrap": self.current_file_find_next_previous_wrap,
+            "current_file_find_literal_no_match": self.current_file_find_literal_no_match,
+            "current_file_find_escape_back_exact": self.current_file_find_escape_back_exact,
+            "current_file_find_undo_redo_preserved": self.current_file_find_undo_redo_preserved,
+            "current_file_find_state_preserved": self.current_file_find_state_preserved,
+            "current_file_find_additional_operations": self.current_file_find_additional_operations.unwrap(),
+        });
+        receipt
+            .as_object_mut()
+            .unwrap()
+            .extend(current_file.as_object().unwrap().clone());
         println!("browse_normal_acceptance {receipt}");
     }
 }
@@ -4842,6 +4876,51 @@ fn normal_continuous_review_state(app: &CedarApp) -> serde_json::Value {
     object.remove("selected");
     object.remove("preview");
     snapshot
+}
+
+// Find may move only the active origin's cursor/selection and location stacks.
+// Retain every other document field, full Undo/Redo entries and Search state.
+fn normal_current_file_find_state(app: &CedarApp) -> serde_json::Value {
+    let mut snapshot = normal_shell_snapshot(app);
+    let object = snapshot.as_object_mut().unwrap();
+    object.remove("back");
+    object.remove("forward");
+    for document in object["documents"].as_array_mut().unwrap() {
+        if document["path"] == "origin.txt" {
+            let document = document.as_object_mut().unwrap();
+            document.remove("cursor");
+            document.remove("selection");
+        }
+    }
+    snapshot
+}
+
+fn normal_current_file_find_hit(
+    app: &mut CedarApp,
+    commands: &Receiver<Command>,
+    start: usize,
+    end: usize,
+    ordinal: usize,
+) {
+    settle(app);
+    assert_eq!(
+        selection_signature(selection(app)),
+        (end, start, false, false)
+    );
+    assert_eq!(app.active().unwrap().path, "origin.txt");
+    assert_eq!(
+        app.active().unwrap().cursor,
+        model::cursor_location(DRAFT, end)
+    );
+    assert_eq!(focused(app), Some(recorded_response(app, "editor").id));
+    assert!(has_text(
+        &frame(app, vec![]),
+        &format!("{ordinal} of 3 matches")
+    ));
+    assert!(
+        commands.try_recv().is_err(),
+        "current-file navigation must dispatch no operation"
+    );
 }
 
 #[test]
@@ -5796,5 +5875,172 @@ fn browse_normal_agent_find_recent_project_reveal_continuous_preview_and_exact_r
     assert!(!app.execution_trusted());
     assert!(commands.try_recv().is_err());
     proof.continuous_preview_state_preserved = true;
+
+    // Append to the already completed v4 journey without another fixture,
+    // Read, provider, client or deadline. The normally loaded dirty origin's
+    // first character is still selected by the earlier real editor keys.
+    assert_eq!(proof.ledger.len(), 14);
+    assert_eq!(app.active().unwrap().path, "origin.txt");
+    assert_eq!(app.active().unwrap().text, DRAFT);
+    assert_eq!(focused(&app), Some(recorded_response(&app, "editor").id));
+    let file_find_ledger = proof.ledger.clone();
+    let file_find_origin = normal_origin_state(&app);
+    let file_find_shell = normal_shell_snapshot(&app);
+    let file_find_state = normal_current_file_find_state(&app);
+    let file_find_undo = undo_texts(&app);
+    let file_find_departure = selection_signature(selection(&app));
+    let file_find_back = app.location_history.back.len();
+    assert_eq!((file_find_departure.0, file_find_departure.1), (1, 0));
+    assert!(commands.try_recv().is_err());
+    frame(&mut app, modified_key(egui::Key::F, command_modifiers()));
+    settle(&mut app);
+    assert!(app.find_open);
+    assert_eq!(app.find_query, "d");
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, "find_query").id)
+    );
+    assert!(has_text(&frame(&mut app, vec![]), "1 of 3 matches"));
+    assert_eq!(normal_shell_snapshot(&app), file_find_shell);
+    assert!(commands.try_recv().is_err());
+    proof.current_file_find_selection_seeded = true;
+
+    // These are fixed scalar indices in the original Unicode/CRLF fixture,
+    // independent of the production matcher. Repeated actual-key navigation
+    // must advance and wrap; a disabled feature cannot satisfy this witness.
+    for (modifiers, start, end, ordinal) in [
+        (egui::Modifiers::NONE, 13, 14, 2),
+        (egui::Modifiers::NONE, 22, 23, 3),
+        (egui::Modifiers::NONE, 0, 1, 1),
+        (egui::Modifiers::SHIFT, 22, 23, 3),
+    ] {
+        frame(&mut app, modified_key(egui::Key::F3, modifiers));
+        normal_current_file_find_hit(&mut app, &commands, start, end, ordinal);
+        assert_eq!(app.location_history.back.len(), file_find_back + 1);
+        assert!(app.location_history.forward.is_empty());
+        assert_eq!(normal_current_file_find_state(&app), file_find_state);
+    }
+    click(&mut app, "find_previous");
+    normal_current_file_find_hit(&mut app, &commands, 13, 14, 2);
+    click(&mut app, "find_next");
+    normal_current_file_find_hit(&mut app, &commands, 22, 23, 3);
+    click(&mut app, "find_query");
+    frame(&mut app, key(egui::Key::Enter));
+    normal_current_file_find_hit(&mut app, &commands, 0, 1, 1);
+    frame(&mut app, key(egui::Key::F3));
+    normal_current_file_find_hit(&mut app, &commands, 13, 14, 2);
+    assert_eq!(app.location_history.back.len(), file_find_back + 1);
+    assert!(app.location_history.forward.is_empty());
+    assert_eq!(normal_current_file_find_state(&app), file_find_state);
+    proof.current_file_find_next_previous_wrap = true;
+
+    // Finish the single-departure loop, including Forward, before changing
+    // query identity. Escape itself preserves the current exact match.
+    let file_find_arrival = normal_origin_state(&app);
+    frame(&mut app, key(egui::Key::Escape));
+    settle(&mut app);
+    assert!(!app.find_open);
+    assert_eq!(focused(&app), Some(recorded_response(&app, "editor").id));
+    assert_eq!(normal_origin_state(&app), file_find_arrival);
+    frame(
+        &mut app,
+        modified_key(egui::Key::OpenBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_eq!(normal_origin_state(&app), file_find_origin);
+    assert_eq!(selection_signature(selection(&app)), file_find_departure);
+    assert_eq!(normal_shell_snapshot(&app)["back"], file_find_shell["back"]);
+    assert_eq!(app.location_history.forward.len(), 1);
+    frame(
+        &mut app,
+        modified_key(egui::Key::CloseBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_eq!(normal_origin_state(&app), file_find_arrival);
+    assert_eq!(app.location_history.back.len(), file_find_back + 1);
+    assert!(app.location_history.forward.is_empty());
+    frame(
+        &mut app,
+        modified_key(egui::Key::OpenBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_eq!(normal_origin_state(&app), file_find_origin);
+    assert_eq!(normal_shell_snapshot(&app)["back"], file_find_shell["back"]);
+    assert_eq!(app.location_history.forward.len(), 1);
+    assert!(commands.try_recv().is_err());
+    proof.current_file_find_escape_back_exact = true;
+
+    // The source matcher is literal and case-sensitive. Type into the actual
+    // field and positively observe zero matches; no-hit activation cannot
+    // alter selection, history, the dirty draft or retained project results.
+    frame(&mut app, modified_key(egui::Key::F, command_modifiers()));
+    settle(&mut app);
+    assert!(app.find_open);
+    assert_eq!(app.find_query, "d");
+    let no_match_state = normal_shell_snapshot(&app);
+    for literal in [".*", "DIRTY"] {
+        click(&mut app, "find_query");
+        frame(&mut app, modified_key(egui::Key::A, command_modifiers()));
+        frame(&mut app, vec![egui::Event::Text(literal.into())]);
+        settle(&mut app);
+        assert_eq!(app.find_query, literal);
+        assert!(has_text(&frame(&mut app, vec![]), "0 matches"));
+        for events in [
+            key(egui::Key::F3),
+            modified_key(egui::Key::F3, egui::Modifiers::SHIFT),
+            key(egui::Key::Enter),
+        ] {
+            frame(&mut app, events);
+            settle(&mut app);
+            assert_eq!(normal_shell_snapshot(&app), no_match_state);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+    frame(&mut app, key(egui::Key::Escape));
+    settle(&mut app);
+    assert!(!app.find_open);
+    assert_eq!(focused(&app), Some(recorded_response(&app, "editor").id));
+    assert_eq!(normal_shell_snapshot(&app), no_match_state);
+    proof.current_file_find_literal_no_match = true;
+    assert_eq!(normal_current_file_find_state(&app), file_find_state);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert_eq!(undo_texts(&app), file_find_undo);
+    assert!(!app.execution_trusted());
+    proof.current_file_find_state_preserved = true;
+
+    frame(&mut app, modified_key(egui::Key::Z, command_modifiers()));
+    settle(&mut app);
+    assert_eq!(app.active().unwrap().text, SAVED);
+    assert!(!app.active().unwrap().dirty());
+    assert_eq!(
+        app.active().unwrap().revision.as_deref(),
+        Some(revision.as_str())
+    );
+    frame(
+        &mut app,
+        modified_key(
+            egui::Key::Z,
+            egui::Modifiers {
+                shift: true,
+                ..command_modifiers()
+            },
+        ),
+    );
+    settle(&mut app);
+    assert_eq!(app.active().unwrap().text, DRAFT);
+    assert_eq!(app.active().unwrap().saved_text, SAVED);
+    assert!(app.active().unwrap().dirty());
+    assert_eq!(
+        app.active().unwrap().revision.as_deref(),
+        Some(revision.as_str())
+    );
+    assert_eq!(undo_texts(&app), file_find_undo);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert!(!app.execution_trusted());
+    assert!(commands.try_recv().is_err());
+    proof.current_file_find_undo_redo_preserved = true;
+    assert_eq!(proof.ledger, file_find_ledger);
+    proof.current_file_find_additional_operations =
+        Some(proof.ledger.len() - file_find_ledger.len());
     proof.finish();
 }

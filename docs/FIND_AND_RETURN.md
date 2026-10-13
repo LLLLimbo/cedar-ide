@@ -21,15 +21,101 @@ remain unverified. Native pixels do not establish the 150 ms interval, request
 counts or raw caret affinities; deterministic and process checks provide their
 own evidence.
 
-The separate [0.67.1 File Structure menu candidate](FILE_STRUCTURE.md) adds
-**Tools → File Structure…** to the existing current-file language-outline
-chooser. Original 0.67.0 exact CI and packages passed, but its first native
-Ctrl+F12 attempt showed no popup. The visible entry keeps the shortcut and
-provider/Trust boundaries unchanged. Its 32 File Structure frame tests, local
-aggregate/strict checks, current-artifact process proofs and independent
-source/input review passed; exact CI, packages and native menu validation remain
-pending. It does
-not inherit this preview feature’s native acceptance.
+The separate [0.67.1 File Structure menu](FILE_STRUCTURE.md) passed bounded
+acceptance led by exact dual-platform CI and all three package audits. Its
+positive symbol paths are covered by frame tests and the Linux normal-agent/mock
+proof. Native coverage is limited to the Trust-off visible menu, unavailable
+explanation, filter, Escape/reopen and dirty-draft Undo/Redo. Positive native
+symbols, real-JDT popup behavior and native Ctrl+F12 remain unmeasured. The
+0.67.0 native shortcut-entry failure and independent raw-hook observation are
+preserved in the
+[phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
+
+## Current-file Find loop (0.68 candidate)
+
+**This is a candidate contract; 0.68 is not yet accepted.** Current-file Find
+searches the active editor draft, including unsaved text. It is separate from
+Project Text, whose results describe historical disk content. This local flow
+needs no language provider or execution Trust and sends no backend operation.
+
+### Start from the editor
+
+1. With the editor focused, select text and press **Ctrl+F** on Windows/Linux or
+   **Cmd+F** on macOS. Find accepts the whole nonempty selection only when it is
+   at most **4,096 UTF-8 bytes** and contains no CR, LF or NUL. It does not trim,
+   normalize or truncate the selected text. Forward and reversed selections use
+   the same complete text.
+2. With no nonempty selection, Find keeps its existing query. An invalid,
+   multiline or oversized selection also keeps that query and shows a reason.
+   Invoking Find from another control does not copy its selection into the
+   editor query. The 4,096-byte rule limits automatic seeding only; it does not
+   introduce a new restriction on manually entered queries.
+3. Type in the Find query field to change the query. This updates the local
+   match cache without moving the editor caret or selection. Opening Find alone
+   also does not select a result or add location history.
+4. Press **Enter** in the query field, **F3**, or **Next** to select the next
+   occurrence. **Shift+F3** or **Previous** selects the previous occurrence.
+   F3/Shift+F3 work from the editor or the Find query field; each accepted action
+   moves once and returns focus to the selected editor text. Use the query field
+   again to change the query. Held-key repeats do not repeatedly navigate.
+5. Press **Escape** to close Find and return to the editor. **Back** or
+   **Ctrl/Cmd+[** returns to the departure selection of the contiguous Find loop
+   while the document remains open and unchanged. Existing Forward behavior
+   remains available.
+
+### Which occurrence is selected
+
+Matching is **literal, case-sensitive and non-overlapping**. For example, `.*`
+looks for those two characters; `aaa` contains one retained `aa` match. No
+regular expressions, whole-word or case options, Unicode normalization or
+project-wide matching are added.
+
+All entry points use the same selection-relative rules:
+
+- An exact selected hit advances to its next or previous retained hit, including
+  when the selection direction is reversed.
+- Otherwise, Next chooses the first hit whose start is at or after the higher
+  selection endpoint. Previous chooses the last hit whose end is at or before
+  the lower endpoint.
+- A collapsed caret exactly at a match start includes that match for Next; a
+  caret exactly at its end includes it for Previous. A caret inside a hit skips
+  that hit in the chosen direction before wrapping, so a sole retained hit can
+  still be selected by wrap.
+- Passing the last or first retained hit wraps to the first or last retained
+  hit. No match leaves the caret and history unchanged. Wrapping back to the
+  same already-selected sole hit also adds no history entry.
+
+The cache is bound to the exact document, edit version, query and connection.
+It retains the first **10,000 matches** in document order. At that cap, the label
+says **First 10000 matches retained**, or identifies the current hit within
+that retained range; it does not claim that the file has exactly 10,000 matches.
+Navigation and wrap use only the retained hits. A document, query or connection
+change makes the old cache ineligible for navigation.
+
+### Return, editing and cancellation
+
+The first successful move records one departure in existing location history;
+subsequent moves in the same contiguous loop do not add one entry per hit.
+**Editing, switching tabs, changing the query or connection, another navigation
+command, manually changing the editor selection, and Escape end that loop.**
+The next successful move starts a new departure. Ending a loop does not remove
+an existing Back entry. Back still obeys the normal open-document/edit-version
+checks and cannot restore an older text revision.
+
+Find navigation changes only the caret, selection and editor scroll. It does not
+edit or save the draft, reset Undo/Redo, read a file, submit Project Text search
+or change its retained result state. Existing Replace remains explicit preview
+and Apply under its current draft and selection checks; changing Find text
+invalidates an obsolete Replace preview. Find does not apply a replacement.
+Owned input is required: competing modal focus, active IME composition, mixed
+input and stale press/release context cannot authorize a Find move. Clean native
+IME availability notifications do not themselves compose text.
+
+The [0.68 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md)
+records validation as it becomes available. The
+[normal-agent proof contract](#current-file-occurrence-process-contract-068-candidate)
+is a separate headless gate; neither a contract nor supplied-input frame tests
+establish native Windows/macOS shortcuts, real SSH or wider language support.
 
 ## Recent Files (0.64 bounded functional acceptance)
 
@@ -482,3 +568,59 @@ and trust requirements. Java type search remains in the Language tools and needs
 an already running supported, trusted Java session. This browsing flow does not
 start it automatically or provide every-language symbol search. It makes no IDEA
 parity or unmeasured performance claim.
+
+
+## Current-file occurrence process contract (0.68 candidate)
+
+The versioned **0.68.0** current-artifact normal-agent Browse proof passed its
+strict **57-field / 14-operation** version-5 receipt, including **zero added
+current-file Find operations**. The current default-feature app and matching
+normal agent were verified; source/fixture integrity and owned-agent cleanup
+passed. The retained Structure **45 fields / 11 operations**, Scoped Search
+**57 / ten** and Search **57 / twelve** proofs also passed. These are selected
+current-artifact executions; the canonical compile drivers were not run locally.
+Exact CI, package audits and native current-file Find validation remain pending.
+
+The first local normal-agent Browse integration passed on the development
+snapshot still labelled **0.67.1**, before the 0.68 version bump: one exact test
+passed in **0.72 seconds**. Its strict version-5 receipt contained **57 typed
+fields and the same 14 backend operations**, with **zero added current-file
+operations**, all six new positive observations true, unchanged source-fixture
+hashes, Trust off and one owned agent reaped. Cargo JSON selected the current
+default-feature app and matching normal agent; source and binary hashes were
+verified. This early pass remains distinct from the later versioned local
+aggregate and process results above; it does not establish exact CI, package
+or native acceptance.
+
+The version-5 contract requires **exactly 57 typed fields and 14 operations**.
+All 50 version-4 fields and values remain, except the schema version advancing
+to 5. The original 12-operation prefix, final two ordinary Reads, source hashes,
+Trust-off condition, one owned agent, verified close/reap and 240/30/300-second
+active/cleanup/watchdog bounds remain unchanged. The existing Python driver
+retains its 120/180/330-second compile/backend/app bounds and its exact selected
+test; no new driver, workflow job or provider is introduced.
+
+After the retained Browse journey, the proof reuses its ordinarily loaded dirty
+`origin.txt` and existing Undo history. Actual raw-input-hook/update frames must
+seed Find from the selected `d`, visit the literal scalar ranges `0..1`,
+`13..14` and `22..23` across the existing Unicode/CRLF draft, and wrap both ways.
+The complete loop must create one Back departure. Escape returns editor focus;
+Back and Forward restore the exact observed selections before any query-change
+cases run. Queries `.*` and `DIRTY` must have no matches or navigation, retaining
+literal and case-sensitive semantics. Find navigation must preserve draft,
+revision, Undo/Redo and the retained project-search snapshot. Actual Undo/Redo
+must still restore the saved source and dirty draft.
+
+The seven new strict fields record selection seeding, next/previous wrapping,
+literal no-match behavior, Escape/Back exact return, Undo/Redo preservation,
+state preservation, and **zero additional backend operations**. The process
+checks the empty dispatch channel throughout the local flow and compares its
+exact ledger before and after; a feature that never navigates cannot pass the
+positive range assertions. The Python tests reject absent, extra or incorrectly
+typed fields, false observations, nonzero operation counts, appended operations
+and historical version-4 receipts. A fixed digest independently retains all 50
+previous fields and nested values, alongside their original prefix assertions.
+
+This contract is headless normal-agent evidence only when executed and strictly
+validated against current artifacts. It does not establish native GUI input,
+Windows/macOS GUI, real SSH, JDT/provider behavior or broader language support.

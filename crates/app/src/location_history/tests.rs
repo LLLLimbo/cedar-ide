@@ -1172,7 +1172,7 @@ fn local_history_traverses_disconnected_without_emitting_operations() {
 }
 
 #[test]
-fn typing_cursor_find_undo_and_save_acknowledgement_never_admit_navigation() {
+fn typing_query_cursor_undo_and_save_ack_only_explicit_find_movement_admits_navigation() {
     let mut app = app();
     frame(&mut app, vec![]);
     app.editor_ctx
@@ -1182,10 +1182,18 @@ fn typing_cursor_find_undo_and_save_acknowledgement_never_admit_navigation() {
     frame(&mut app, key(egui::Key::Z, egui::Modifiers::COMMAND));
     frame(&mut app, key(egui::Key::F, egui::Modifiers::COMMAND));
     frame(&mut app, vec![egui::Event::Text("second".into())]);
+    assert!(app.location_history.back.is_empty());
+    let departure = selection(&app, 1);
     frame(&mut app, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert_eq!(app.location_history.back.len(), 1);
+    assert!(same_selection(
+        app.location_history.back[0].selection,
+        departure
+    ));
+    let history = signature(&app.location_history.back);
     let text = app.documents[0].text.clone();
     app.documents[0].acknowledge_save(text, "saved".into());
-    assert!(app.location_history.back.is_empty());
+    assert_eq!(signature(&app.location_history.back), history);
     assert!(app.location_history.forward.is_empty());
     assert!(app.location_history.pending.is_none());
 }

@@ -4,40 +4,39 @@
 
 Cedar is a native Rust application using `eframe`/`egui` 0.31.1 and the Glow renderer. It does not embed a browser or a JVM. The remote workspace agent and optional language server run separately from the UI.
 
-## Current baseline and File Structure candidate
+## Current baseline and current-file Find candidate
 
-The latest accepted bounded baseline is **0.66.2**, with exact dual-platform CI,
-three package audits and a bounded Linux native continuous-preview journey in
-the [verification report](../../docs/TEST_REPORT.md#accepted-0662-bounded-baseline).
-Both Text views passed follow, Open/Back, dirty selection/Undo and
-Escape/hide/reopen checks, including the earlier failed bottom B160 step.
-Earlier failed and omitted checks retain their historical status.
-
-The **0.67.1 File Structure menu candidate is not yet accepted**. It adds
-**Tools → File Structure…** to the existing current-file popup, local literal
-name filter and declaration/Back navigation. The same running matching provider,
-cache, request ownership, draft and Undo rules apply. Opening the menu entry
-cannot start a service or change Trust. Ctrl+F12/Cmd+F12 are unchanged and no
-native shortcut repair is claimed.
-
-The original 0.67.0 passed all four exact CI jobs and three package audits,
-including 17 actual-frame checks per platform and the Linux normal-agent/mock
-proof with a strict 45-field / 11-operation receipt. Its first bounded Linux
-native Ctrl+F12 attempt showed no popup. A separate complete instrumented probe
-recorded no F12 press and one release at Cedar’s raw-input hook, without proving
-an upstream cause or reconstructing the earlier shipping input. The versioned
-0.67.1 local aggregate passed **2,160/0/71 across 50 Rust suites**, including
-**32 File Structure frame tests (17 retained plus 15 menu tests)**; Python
-**803 total / zero failures / ten skipped across 29 suites**, strict Clippy and
-formatting passed. The 40-test workspace-access focused set and current-default
-Structure **45 fields / 11 operations**, Browse **50 / 14**, Scoped **57 / ten**
-and Search **57 / twelve** process proofs passed. Independent source/input
-review passed without blocking findings. Exact CI, packages and native menu
-validation remain pending. Positive
-native symbols and a real-JDT popup remain unmeasured; a later Trust-off menu
-check would cover only the unavailable-provider path. See the
-[guide](../../docs/FILE_STRUCTURE.md) and
+The latest accepted baseline is **0.67.1**, with bounded acceptance led by
+[exact dual-platform CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38431261412)
+and all three package audits. Both platforms passed 32 File Structure frame
+checks; the Linux normal-agent/mock proof covers positive snapshot, filter and
+activation behavior. The bounded Linux native journey covers only the Trust-off
+**Tools → File Structure…** unavailable-provider path, filter entry, Escape,
+reopen and dirty-draft Undo/Redo. It does not establish positive native symbols,
+a real-JDT popup or native Ctrl+F12 delivery. The earlier shortcut-entry failure
+and independent raw-hook observation remain in the
 [phase report](../../docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
+
+**0.68 current-file Find is a candidate, not an accepted release.** Ctrl/Cmd+F
+can copy an eligible complete editor selection into Find. F3, Shift+F3,
+Next/Previous and query-field Enter use one caret-relative, literal,
+case-sensitive occurrence command. A contiguous loop creates one Back departure,
+while query typing leaves the editor selection in place. Matches come from the
+current draft, including unsaved text, with at most 10,000 retained hits and an
+explicit retained-range label at the cap. No backend operation, Save, provider
+startup or Trust change is needed. The existing Replace preview/Apply and Undo
+boundaries remain in place.
+
+The [offline usage contract](../../docs/FIND_AND_RETURN.md#current-file-find-loop-068-candidate)
+defines selection seeding, boundary and wrap behavior, query retention, history
+and cancellation. The [phase report](../../docs/TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md)
+keeps local verification, process proofs and remaining release gates separate.
+Versioned **0.68.0** local checks passed **2,176/0/71 across 50 Rust suites**,
+**804 Python tests / zero failures / ten skipped across 29 suites**, formatting
+and strict Clippy. Independent input review and current default-artifact
+Structure, Browse v5, Scoped Search and Search proofs passed; Browse retains
+**57 fields / 14 operations / zero added Find operations**. Final sealing, exact
+CI, package audits and native validation remain pending.
 
 Recent Files retains its **0.64 bounded functional acceptance**, including the
 preserved strict native timing failure. Its per-connection path list, local
@@ -161,7 +160,8 @@ Shortcuts:
 | Ctrl/Cmd+[ or Ctrl+Alt+Left | Back to an unchanged open-buffer location |
 | Ctrl/Cmd+] or Ctrl+Alt+Right | Forward to an unchanged open-buffer location |
 | Ctrl/Cmd+G | Go to a 1-based line in the current buffer |
-| Ctrl/Cmd+F | Find and preview literal replacements in the current buffer |
+| Ctrl/Cmd+F | Open current-file Find; seed from an eligible complete editor selection in the 0.68 candidate; existing literal Replace preview remains available |
+| F3 / Shift+F3 | In the 0.68 candidate, next / previous current-file occurrence from the editor or Find query field |
 | Ctrl/Cmd+S | Save |
 | Ctrl/Cmd+W | Close the current tab |
 | Ctrl/Cmd+J | Hide tools and return to the editor, or reopen the selected tool |
@@ -440,7 +440,7 @@ This remains an independent prototype, not a complete replacement for a mature I
 - The backend opens/saves files up to 1 MiB; the frontend allows 32 tabs
 - Pasted text is retained, never silently truncated. An oversized draft must be shortened or copied before saving or using language features
 - Undo retains at most 16 full-text snapshots per tab, initialized once. Completion creates one transaction; tab close/workspace replacement releases its stored history. Large tabs can still use significant memory; this is not a fixed-memory guarantee or a delta-based undo engine
-- In-file find retains 10,000 matches; project search requests and retains at most 500, with 512 KiB of combined path/snippet bytes
+- In-file Find retains at most 10,000 matches. The 0.68 candidate labels a full cache as the first 10,000 retained matches, without claiming the complete document total; navigation wraps within that cache. Project search requests and retains at most 500, with 512 KiB of combined path/snippet bytes
 - Syntax coloring falls back to plain text above 256 KiB
 - Completion retains up to 256 candidates/4 MiB, applies at most 128 edits, and enforces a 1 MiB resulting document
 - Diagnostic display is bounded to 2,000 entries, 128 files, and 512 KiB of text

@@ -1,32 +1,55 @@
-# Verification checkpoint — 0.67.1 File Structure menu candidate
+# Verification checkpoint — 0.68 current-file Find candidate
 
-## Current 0.67.1 File Structure menu candidate
+## Current 0.68 current-file Find candidate
 
-**0.67.1 is not yet accepted.** It adds **Tools → File Structure…** as a visible
-entry to the existing current-file structure popup. The same running matching
-provider, cached outline, local filter, explicit synchronization/documentSymbols
-route, declaration navigation, draft, Back and Undo boundaries apply. Popup
-ownership stays separate from the Language tool. No startup, Trust change,
-new provider, parser, protocol or persistence is introduced.
+**0.68 is not yet accepted.** This local editor slice adds whole-selection
+seeding, caret-relative F3/Shift+F3 and Next/Previous navigation, query-field
+Enter, an exact bounded match cache and one Back departure per contiguous loop.
+It retains literal, case-sensitive, non-overlapping matching, current draft
+bytes, Undo/Redo, explicit Replace and zero backend operations.
+The [usage contract](FIND_AND_RETURN.md#current-file-find-loop-068-candidate) and
+[phase report](TEST_REPORT_PHASE68_CURRENT_FILE_FIND.md) separate intended
+behavior, verified receipts and outstanding gates. Versioned **0.68.0** local
+workspace/all-target/all-feature checks passed **2,176/0/71 across 50 Rust
+suites**, Python **804 total / zero failures / ten skipped across 29 suites**,
+strict Clippy and formatting. Independent input review passed. Current
+default-feature app/agent proofs passed: Structure **45 fields / 11 operations**,
+Browse v5 **57 / 14 with zero added Find operations**, Scoped Search **57 / ten**,
+and Search **57 / twelve**. The canonical compile drivers were not run locally;
+these are verified selected-artifact executions. The first aggregate failure
+and intended strict-input contract correction remain in the phase report.
+Final sealing, exact candidate CI/package checks and any native claim remain
+pending.
 
-Ctrl+F12/Cmd+F12 remain unchanged. The menu is an additional way to reach the
-same popup and unavailable-provider explanation; it is not a demonstrated
-shortcut repair.
+## Accepted 0.67.1 bounded baseline
 
-The versioned local aggregate passed **2,160 Rust tests / zero failures / 71
-ignored across 50 suites**, including **32 File Structure actual-frame tests
-(17 retained plus 15 menu tests)**. The workspace-access focused set passed
-**40 tests**. Python passed **803 total / zero failures / ten skipped across 29
-suites**; strict workspace/all-target/all-feature Clippy with warnings denied
-and formatting passed. Current default-features artifacts passed File Structure
-**45 fields / 11 operations**, Browse **50 / 14**, Scoped Search **57 / ten** and
-Search **57 / twelve** process proofs. The canonical compile drivers were not
-run locally; these selected-artifact proofs retain their separate scope.
+The [public source revision](https://github.com/LLLLimbo/cedar-ide/commit/e5f94aa197c5ae676572a0e68cc25c22c9d3bea6)
+passed all **four jobs** in
+[CI 38431261412](https://github.com/LLLLimbo/cedar-ide/actions/runs/38431261412)
+and all **three package audits**. Linux recorded **2,160/0/71** and Windows
+**2,098/0/114** (passed/failed/ignored), each across **50 suites** and all
+**32 File Structure frame checks**. The Linux normal-agent/mock Structure proof
+passed its strict **45-field / 11-operation** receipt; retained Browse,
+Scoped Search, Search and existing platform/JDT checks passed within their
+separate scopes. Local Python **803 total / zero failures / ten skipped across
+29 suites**, strict Clippy, formatting and independent source/input review
+also passed.
 
-Independent source/input review passed without blocking findings. Exact
-dual-platform CI, three package audits and the native menu path remain pending. A later Trust-off check can establish only the
-negative unavailable-provider entry gate. Positive native symbols, a real-JDT
-popup and Windows typed-provider journeys remain unmeasured.
+The shipping Linux native journey kept Trust off and covered the visible
+**Tools → File Structure…** menu, unavailable-provider explanation, local
+filter, Escape, reopen and dirty-selection Undo/Redo. Startup **25.38 s**,
+connected cases to quit initiation **220.92 s**, and quit **12.62 s** passed
+their fixed timing bounds; artifact and fixture integrity checks passed.
+Typing reached the focused filter without an extra focus click, but the
+**11.662 s / 13.587 s** next-input gaps do not establish adjacent native frames.
+Immediate typing is covered separately by supplied-input frame tests.
+
+This is bounded acceptance led by CI. Positive structure is established by
+headless frames and the Linux mock-provider process proof; native coverage is
+only the Trust-off unavailable-provider journey. **Positive native symbols,
+real-JDT File Structure GUI and native Ctrl+F12 delivery remain unmeasured.**
+No Windows/macOS GUI, real SSH, broad IME/CJK or descendant-reaping native claim
+follows. See the [phase report](TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
 
 ## Preserved 0.67.0 results and native entry failure
 
@@ -52,8 +75,8 @@ positive-provider acceptance remain unestablished.
 
 The earlier rapid-reopen production defect and test-completion failure, their
 bounded corrections, original local checks and diagnostic limits remain in the
-[phase report](TEST_REPORT_PHASE67_FILE_STRUCTURE.md). These results do not
-validate 0.67.1 or change the latest accepted baseline from **0.66.2**. See the
+[phase report](TEST_REPORT_PHASE67_FILE_STRUCTURE.md). Those earlier results did not validate 0.67.1; its later bounded acceptance
+is recorded separately above. See the
 [current usage contract](FILE_STRUCTURE.md).
 
 ## Accepted 0.66.2 bounded baseline

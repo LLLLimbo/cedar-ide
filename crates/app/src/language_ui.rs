@@ -1899,6 +1899,10 @@ impl CedarApp {
             self.accept_completion(index);
         }
     }
+    pub(super) fn completion_popup_open(&self) -> bool {
+        self.language.completion_popup
+    }
+
     pub(super) fn language_shortcuts(&mut self, ctx: &egui::Context) {
         // Consume modal Escape before the app-wide Escape handler.
         if self.format_preview_shortcut(ctx) {
