@@ -1,6 +1,6 @@
 # Cedar: project browsing and navigation roadmap
 
-Design decision, 2026-10-12, with delivery status updated for the 0.63.2 shell candidate. This roadmap does not itself establish a new release or acceptance.
+Design decision, 2026-10-12, with delivery status updated for the 0.63.3 shell candidate. This roadmap does not itself establish a new release or acceptance.
 
 ## Product decision and baseline
 
@@ -14,8 +14,9 @@ bounded engineering baseline is **0.62.2**, public commit
 with [CI 38282992861](https://github.com/LLLLimbo/cedar-ide/actions/runs/38282992861),
 three exact-source packages and a separate bounded Linux native journey.
 [The verification report](TEST_REPORT.md#accepted-0622-bounded-scoped-search-baseline)
-keeps those evidence types and their limitations distinct. **0.63.2 is an
-unverified frontend shell candidate**, not a replacement accepted baseline.
+keeps those evidence types and their limitations distinct. **0.63.3 is an
+unaccepted frontend shell candidate**. Its 0.63.2 predecessor passed CI and
+package checks but did not complete native acceptance; neither replaces 0.62.2.
 The original compatibility and phase decisions below retain their stated
 historical reference versions.
 
@@ -115,7 +116,7 @@ and the corrected same-row double-click guard. Explicit submission remains.
 This does not mark all of B2 complete or add case/word options, regex, live
 queries or a parity claim.
 
-### Current 0.63.2 shell candidate
+### Current 0.63.3 shell candidate
 
 The next slice improves the connected Project/editor/Find journey using the
 existing providers and state. Workspace setup moves behind a **Workspace** menu
@@ -126,6 +127,15 @@ the editor tab band without changing the underlying location history.
 **Ctrl/Cmd+J** should reopen Find at an active visible selected hit, otherwise its
 query, and hiding it should restore the captured editor context.
 
+The current correction is narrowly limited to the clean Alt+Num1 shortcut with
+one matching `Text("1")` companion. It must preserve the draft while focusing
+Project and allow a same-held-key repeat fence only after guarded focus succeeds.
+The prior shipping native check retained Find but lacked a functional focus
+witness; a separate local diagnostic exposed text reaching the editor. Those
+observations remain distinct. The new correction has passed its local focused,
+aggregate and retained normal-agent checks; exact-commit CI, packages and native
+acceptance remain pending.
+
 Connected-header heights of **40/48** logical pixels and tools **title-row
 minimum heights of 28/34** are design targets for the **13/18** font-size checks.
 The tools' enclosing margins, separator and body add height; 28/34 is not the
@@ -133,7 +143,7 @@ whole header or panel height. These are not measured IDEA pixels or accepted
 fixed bounds. At **780 × 540**, wrapping or scrolling must keep
 controls reachable; larger text or state messages may need more height. These
 geometry and focus claims remain pending in the
-[0.63.2 candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+[0.63.3 candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
 
 This slice adds no backend or protocol behavior, new search flags, Build/Run
 features, semantic provider, execution trust, theme-parity or performance claim.

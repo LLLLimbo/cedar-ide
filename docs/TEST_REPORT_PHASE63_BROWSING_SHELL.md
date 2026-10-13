@@ -1,10 +1,55 @@
-# 0.63.2 browsing shell pointer lifecycle correction candidate
+# 0.63.3 browsing shell Alt+1 companion correction candidate
 
 **Acceptance pending. The latest accepted bounded baseline remains 0.62.2.**
 Its exact public source, CI, package and limited native evidence are recorded in
 [the accepted baseline](TEST_REPORT.md#accepted-0622-bounded-scoped-search-baseline).
-The preceding 0.63.0 and 0.63.1 checks and incomplete native attempts remain
+The preceding 0.63.0, 0.63.1 and 0.63.2 checks and incomplete native attempts remain
 separate in the [current verification report](TEST_REPORT.md).
+
+## Alt+1 companion correction
+
+The 0.63.3 candidate is limited to the exact clean shortcut sequence
+Alt+Num1 followed by one `Text("1")` event. The matching companion must be consumed
+when the Project shortcut passes its admission checks, before ordinary editor
+handling. Only final guarded success in focusing a current enabled Project
+control may arm a fence for repeats of that same held key. A later focus failure
+must not arm it; release and repress cannot reuse it.
+
+This is not a general Alt-text filter. Unrelated text, multiple Text events,
+Paste, IME, AltGr, mixed actions and stale ownership retain their rejection rules
+and preserve unowned content events. The key-only route, Space and Ctrl/Cmd+J are unchanged. No
+diagnostic observer is part of the shipping correction.
+
+## Final 0.63.3 local validation
+
+The final Linux workspace/all-target/all-feature/locked aggregate passed
+**50 suites: 2,063 passed / zero failed / 70 ignored**; app **1,347/0/53**.
+The focused Access selection passed **40 tests**, comprising six new Alt+1
+test functions and 34 retained Access/Space tests. Formatting, strict
+workspace/all-target/all-feature Clippy with warnings denied, and **779 Python
+tests across 28 suites** passed.
+
+The new positive actual-frame cases cover Tree and Flat modes with Find hidden
+and visible. They retain the dirty full selection, Undo and location history;
+Tree Down/Up provides a functional Project-focus witness without added operations.
+Negative cases exercise exact event ordering and Text matching, rejection with
+unowned content events retained, held repeats, release, blocked admission and final
+focus invalidation. The supported root Search fixture establishes retained query
+and result state, not execution of scoped search.
+
+All six new functions initially failed while preparing a scoped-search fixture
+that did not advertise the required capability, before reaching correction
+assertions. The fixture was changed to supported root Search. The initial setup
+failure remains recorded; it is not a production-assertion failure or evidence
+that the new tests exercise scoped-search execution.
+
+Current app and agent executables passed the retained direct normal-agent Browse
+and scoped-search proofs through their unchanged strict validators, with exact
+**seven/ten operations** and **zero added shell-transition or movement operations**.
+The app executable was selected from the current Cargo JSON build output. These
+are direct local process checks; the canonical release/full-CI driver was not
+run locally. New exact-commit CI, all three exact-source package audits and
+bounded native acceptance remain pending.
 
 ## Connected browsing scope
 
@@ -26,7 +71,7 @@ The retained 0.63.1 Escape correction closes only a proven current Workspace or
 Tools menu at the existing generic dismissal branch. Earlier modal/language
 owners keep priority. Missing or stale menu identity cannot close another root.
 
-## Pointer lifecycle correction
+## Retained 0.63.2 pointer lifecycle correction
 
 The 0.63.2 change uses a separate pointer eligibility view that excludes only
 IME Enabled/Disabled lifecycle notifications. It applies to actual pointer
@@ -42,7 +87,7 @@ original-batch, response ownership, pass and final focus guards are unchanged.
 This follows the existing Search and replacement pointer policy; it does not
 claim broad IME correctness or identify the prior native event sequence.
 
-## Evidence and limits
+## Preserved 0.63.2 deterministic evidence
 
 A clean actual-frame reproduction of dirty selection, scoped two-hit search,
 modal Escape and an isolated Find Results pointer click passed on unchanged
@@ -72,13 +117,34 @@ the canonical CI compile/selection/release-driver route was not run locally.
 They establish their own process results, not release packages or dual-platform CI.
 An earlier direct invocation accidentally paired an older app-test executable with
 the new agent. The scoped version guard rejected it; that failure and the earlier
-Browse result are excluded from current-candidate evidence. Both proofs then
-passed with the exact current package artifact selected from Cargo JSON. No source
+Browse result are excluded from 0.63.2 evidence. Both proofs then
+passed with the exact 0.63.2 package artifact selected from Cargo JSON. No source
 predicate was changed to bypass the version check.
 
-Fresh exact-commit dual-platform CI, all three exact-source packages and the
-bounded Linux native journey remain required. Earlier package or native evidence
-is not a pass for this new shipping change.
+The subsequent public
+[0.63.2 source](https://github.com/LLLLimbo/cedar-ide/commit/7850e557b6aaff647d1e71e31b1e239d271655d4)
+passed all four jobs in
+[CI 38338899789](https://github.com/LLLLimbo/cedar-ide/actions/runs/38338899789)
+and all three exact-source package audits. Each platform ran **50 suites**:
+Linux **2,057/0/70**, Windows **1,995/0/114**. Native acceptance remained incomplete.
+Those results are evidence for 0.63.2 only, not a pass for the 0.63.3 change.
+
+## Fresh local diagnostic and its limits
+
+A separate instrumented Linux diagnostic recorded delivered Alt+Num1 plus a
+Text-kind event, no admitted shortcut and an editor version change from 5 to 6.
+The selected generated draft visibly became `1`; the raw Text payload was
+intentionally not logged. The pinned input adapter permits printable Text with
+Alt on this Linux path, establishing a relevant mechanism in this fresh
+observation. This does not prove that earlier native runs delivered the same
+event batches.
+
+The diagnostic had Tools closed, omitting the planned Find baseline. Down/Up and
+Ctrl+J were not run. Its complete loss-free trace recorded zero post-baseline
+dispatches. The last functional action preceded the 300-second deadline by
+23.654 seconds; quit was requested 66 milliseconds after that deadline and owned
+exit followed 18.122056 seconds later. The **55 diagnostic tests** and successful
+build do not establish shipping acceptance or excuse that timing overrun.
 
 ## Geometry and native acceptance boundary
 
@@ -95,9 +161,21 @@ a later isolated click, so the remaining focus/navigation cases were not run.
 Earlier window-targeted connection attempts and their observation limits remain
 separate. A subsequent successful route does not explain those failures.
 
+The 0.63.2 exact-package journey observed connection with trust off, both menu
+Escape cases, Find Results header opening, filename discovery/Open, a dirty draft
+and scoped two-hit search. Alt+1 preserved Find state, but Flat mode provided no
+functional Project-focus witness. It stopped as ambiguous, not as a proven
+product failure. Ctrl+J, Preview, double-click Open, Back and Undo were not run.
+Normal exit returned 0 and checked fixture, package and source bytes were intact.
+Some original 0.63.1 prelaunch files had already been overwritten; surviving
+duplicate image bytes do not reconstruct them. The separate later records remain
+intact. See the [verification report](TEST_REPORT.md) for the preserved boundaries.
+
 The next native gate must observe the exact new package with execution trust off,
-menu Escape, Project/Find/editor focus and retention, explicit Preview, genuine
-same-row Open, Back and dirty Undo/Redo, followed by safe discard/quit and file
-integrity checks. Native event delivery, raw affinity and backend operation counts
-cannot be inferred from pixels. Windows GUI, real SSH, full IDEA parity and
+menu Escape, Project/Find/editor focus and retention, an intact selected dirty
+draft after Alt+1, explicit Preview, genuine same-row Open, Back and dirty
+Undo/Redo, followed by safe discard/quit and file integrity checks. Project focus
+needs a visible functional witness, not an inference from an unchanged Flat-mode
+image. Native event delivery, raw affinity and backend operation counts cannot
+be inferred from pixels. Windows GUI, real SSH, full IDEA parity and
 comparative performance remain unverified.

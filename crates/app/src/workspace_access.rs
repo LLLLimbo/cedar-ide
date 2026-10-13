@@ -20,6 +20,7 @@ struct Intent {
     navigation: u64,
     focused: Option<egui::Id>,
     pointer_surrender: bool,
+    alt_project_companion: bool,
     tool: Tool,
     tools_open: bool,
     target: Target,
@@ -81,6 +82,8 @@ struct Input {
     shortcut: Option<Action>,
     activation: Option<Activation>,
     owned_activation: Option<egui::Key>,
+    alt_project_companion: bool,
+    owned_alt_project: bool,
     held_primary_pointer: bool,
     clean_primary_press: bool,
 }
@@ -176,6 +179,7 @@ struct Lifetime {
     primary_origin: Option<Origin>,
     primary_retirement: Option<PrimaryRetirement>,
     owned_activation: Option<egui::Key>,
+    owned_alt_project: bool,
 }
 
 /// Keep only eligibility metadata from the immutable native batch. In
@@ -186,6 +190,11 @@ pub(super) fn capture_input(app: &CedarApp, ctx: &egui::Context, raw: &egui::Raw
         .data(|data| data.get_temp::<Lifetime>(egui::Id::new(LIFETIME)))
         .unwrap_or_default();
     let owned_activation = lifetime.owned_activation;
+    let owned_alt_project = lifetime.owned_alt_project
+        && lifetime.keys.len() == 1
+        && lifetime.keys.contains(&egui::Key::Num1)
+        && !lifetime.pointers.iter().any(|pressed| *pressed)
+        && !lifetime.composing;
     let focused = raw.focused
         && !raw
             .events
@@ -228,8 +237,14 @@ pub(super) fn capture_input(app: &CedarApp, ctx: &egui::Context, raw: &egui::Raw
         && !lifetime.pointers[1..].iter().any(|pressed| *pressed)
         && !lifetime.composing
         && raw.modifiers.is_none();
+    let alt_project_companion =
+        focused && keyboard_clear && alt_project_text(&raw.events, raw.modifiers, true).is_some();
     let shortcut = (focused && keyboard_clear)
-        .then(|| fresh_key.and_then(shortcut))
+        .then(|| {
+            fresh_key
+                .and_then(shortcut)
+                .or(alt_project_companion.then_some(Action::Explorer))
+        })
         .flatten();
     let fresh_pointer = pointer_clear && !lifetime.pointers.iter().any(|pressed| *pressed);
     let release_pointer = pointer_clear
@@ -323,6 +338,9 @@ pub(super) fn capture_input(app: &CedarApp, ctx: &egui::Context, raw: &egui::Raw
                     ..
                 } => {
                     lifetime.keys.remove(key);
+                    if *key == egui::Key::Num1 {
+                        lifetime.owned_alt_project = false;
+                    }
                     if lifetime.owned_activation == Some(*key) {
                         lifetime.owned_activation = None;
                     }
@@ -366,6 +384,8 @@ pub(super) fn capture_input(app: &CedarApp, ctx: &egui::Context, raw: &egui::Raw
         shortcut,
         activation,
         owned_activation,
+        alt_project_companion,
+        owned_alt_project: focused && owned_alt_project,
         held_primary_pointer,
         clean_primary_press,
     };
@@ -381,6 +401,27 @@ pub(super) fn finish_input_capture(
     raw: &egui::RawInput,
     consumed: &mut [bool],
 ) {
+    // Every surface has already classified the original batch. A completed
+    // Project gesture owns only a still-held, exact Alt+1/Text("1") repeat pair.
+    // A real release before a repress prevents the pair matcher from claiming
+    // any of that new input; modifiers, composition and unrelated text survive.
+    if original_input(ctx).is_some_and(|input| input.owned_alt_project) {
+        if let Some(text) = alt_project_text(&raw.events, raw.modifiers, false) {
+            consumed[text] = true;
+            for (index, event) in raw.events[..text].iter().enumerate() {
+                if matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Num1,
+                        pressed: true,
+                        ..
+                    }
+                ) {
+                    consumed[index] = true;
+                }
+            }
+        }
+    }
     let Some(owned) = original_input(ctx).and_then(|input| input.owned_activation) else {
         return;
     };
@@ -466,6 +507,56 @@ fn clean_activation(
         })) => Some(false),
         _ => None,
     }
+}
+
+/// winit emits the printable Alt+1 companion after its key press. Unlike
+/// `actionable`, this matcher observes releases: text after release, a repress,
+/// or a reversed/mixed batch is ordinary input, never a shortcut companion.
+/// Return only an index; no text payload is retained across the native hook.
+fn alt_project_text(
+    events: &[egui::Event],
+    modifiers: egui::Modifiers,
+    fresh: bool,
+) -> Option<usize> {
+    if modifiers != egui::Modifiers::ALT {
+        return None;
+    }
+    let mut ordered = events.iter().enumerate().filter(|(_, event)| {
+        !matches!(
+            event,
+            egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_)
+        )
+    });
+    match ordered.next()?.1 {
+        egui::Event::Key {
+            key: egui::Key::Num1,
+            pressed: true,
+            repeat,
+            modifiers,
+            ..
+        } if *modifiers == egui::Modifiers::ALT && (!fresh || !repeat) => {}
+        _ => return None,
+    }
+    let (index, egui::Event::Text(text)) = ordered.next()? else {
+        return None;
+    };
+    if text != "1" {
+        return None;
+    }
+    if let Some((_, event)) = ordered.next() {
+        if !matches!(
+            event,
+            egui::Event::Key {
+                key: egui::Key::Num1,
+                pressed: false,
+                ..
+            }
+        ) || ordered.next().is_some()
+        {
+            return None;
+        }
+    }
+    Some(index)
 }
 
 fn shortcut(event: &egui::Event) -> Option<Action> {
@@ -600,6 +691,14 @@ impl CedarApp {
             .filter(|original| input_origin_current(self, ctx, *original, false))
             .and_then(|original| {
                 ctx.input(|input| {
+                    if original.alt_project_companion {
+                        // Recheck both post-hook raw input and the current widget
+                        // event stream. Earlier consumers cannot manufacture a
+                        // clean original pair or make a stale index own new text.
+                        alt_project_text(&input.raw.events, input.raw.modifiers, true)?;
+                        let text = alt_project_text(&input.events, input.modifiers, true)?;
+                        return Some((Action::Explorer, Some(text)));
+                    }
                     let mut events = input.raw.events.iter().filter(|event| actionable(event));
                     let event = events.next()?;
                     if events.next().is_some()
@@ -614,15 +713,28 @@ impl CedarApp {
                     {
                         return None;
                     }
-                    shortcut(event).filter(|action| Some(*action) == original.shortcut)
+                    shortcut(event)
+                        .filter(|action| Some(*action) == original.shortcut)
+                        .map(|action| (action, None))
                 })
             });
+        let blocked = self.workspace_access_blocked(ctx);
+        let companion = action.filter(|_| !blocked).and_then(|(_, text)| text);
         // Consume repeats too, without toggling or extending a focus request.
-        ctx.input_mut(|input| input.events.retain(|event| shortcut(event).is_none()));
-        if self.workspace_access_blocked(ctx) {
+        // The admitted initial companion must leave the editor's stream now,
+        // even if a later context change prevents final focus. No input replay.
+        ctx.input_mut(|input| {
+            let mut index = 0;
+            input.events.retain(|event| {
+                let keep = Some(index) != companion && shortcut(event).is_none();
+                index += 1;
+                keep
+            });
+        });
+        if blocked {
             return;
         }
-        if let Some(action) = action {
+        if let Some((action, _)) = action {
             match action {
                 Action::Toggle if !self.tools_open => {
                     self.tools_open = true;
@@ -638,6 +750,9 @@ impl CedarApp {
                 Action::Toggle => self.hide_tools_and_return(ctx),
                 Action::Explorer => {
                     self.request_workspace_access(ctx, Target::Explorer);
+                    if let Some(intent) = &mut self.workspace_access.intent {
+                        intent.alt_project_companion = companion.is_some();
+                    }
                 }
             }
         }
@@ -653,6 +768,7 @@ impl CedarApp {
                 navigation: self.navigation_epoch,
                 focused: ctx.memory(|memory| memory.focused()),
                 pointer_surrender: false,
+                alt_project_companion: false,
                 tool: self.tool,
                 tools_open: self.tools_open,
                 target,
@@ -820,6 +936,15 @@ impl CedarApp {
             // the editor emitted this response. Focus after its input processing;
             // the repaint renders the expanded editor without a deferred intent.
             response.request_focus();
+            if intent.alt_project_companion && response.has_focus() {
+                ctx.data_mut(|data| {
+                    let lifetime =
+                        data.get_temp_mut_or_default::<Lifetime>(egui::Id::new(LIFETIME));
+                    // The ordered initial batch admitted at most one press and
+                    // optional trailing release. A released gesture owns nothing.
+                    lifetime.owned_alt_project = lifetime.keys.contains(&egui::Key::Num1);
+                });
+            }
             ctx.request_repaint();
         }
     }
@@ -1038,3 +1163,7 @@ mod pointer_lifecycle_tests {
         assert!(release.activation.is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_access_alt_project_tests.rs"]
+mod alt_project_tests;

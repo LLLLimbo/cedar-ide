@@ -1,6 +1,66 @@
-# Verification checkpoint — 0.63.2 pointer lifecycle correction candidate
+# Verification checkpoint — 0.63.3 Alt+1 companion correction candidate
 
-## Current pointer lifecycle correction candidate
+## Current Alt+1 companion correction candidate
+
+**0.63.3 is a correction candidate; the latest accepted bounded baseline remains
+0.62.2.** It addresses only the Project shortcut's exact clean input sequence:
+Alt+Num1 followed by a single `Text("1")` companion. The companion is consumed at
+validated shortcut admission, before an editor can receive it. A same-held-key
+repeat fence may be armed only after the final guarded Project focus succeeds.
+An admitted request that later fails its focus guard does not arm that fence.
+Release and repress require a new admission; they cannot reuse old authority.
+
+Unrelated or multiple Text events, Paste, IME, AltGr and competing mixed input
+remain subject to the existing rejection rules, with their original input
+preserved. The key-only Alt+1 route, Space and Ctrl/Cmd+J retain their existing
+contracts. The correction adds no observer, backend operation, protocol,
+dependency, search option or execution permission.
+
+A fresh local-only instrumented Linux diagnostic recorded Alt+Num1 and an
+accompanying Text-kind event, no admitted shortcut, and an editor version change
+from 5 to 6; the selected generated draft visibly became `1`. Raw Text payloads
+were deliberately not logged. Inspection of the pinned input adapter confirms
+that Alt can accompany printable Text on this Linux path. Together these
+establish a mechanism in this fresh diagnostic, not the exact event batches in
+earlier native attempts.
+
+Tools were closed; the planned Find baseline and Down/Up and Ctrl+J checks were
+not run. The complete loss-free trace recorded zero dispatches after its baseline.
+The final functional action occurred 23.654 seconds before the 300-second
+deadline, but quit was requested 66 milliseconds after it and the owned process
+exit followed 18.122056 seconds later. That timing limitation is retained.
+
+The diagnostic's **55 tests** and successful build were preparation evidence
+only. They are not shipping acceptance.
+
+### Final 0.63.3 local validation
+
+The final local Linux workspace/all-target/all-feature/locked aggregate passed
+**2,063 passed / zero failed / 70 ignored across 50 suites**, including app
+**1,347/0/53**. The focused Access selection passed **40 tests**: six new Alt+1
+test functions and 34 retained Access/Space tests. Strict Clippy, formatting and
+**779 Python tests across 28 suites** passed.
+
+Actual-frame positive cases cover Tree and Flat Project views, hidden and visible
+Find, retained dirty full selection, Undo and location history, and Tree Down/Up
+without added operations. Negative cases cover the exact ordered Text boundary,
+rejected input remaining in the live event vectors, repeats and release,
+blocked admission and final focus invalidation. The supported root Search
+fixture proves retained query/result state; it does not prove scoped-search
+execution. The initial run of all six new functions failed during unsupported
+scoped-search setup because the fixture did not advertise that capability. The
+failure preceded the correction assertions; the original failure record remains
+separate from the passing run with supported setup.
+
+The current app executable selected from Cargo JSON and matching current normal
+agent passed the unchanged strict Browse and scoped-search validators with
+exactly **seven/ten operations** and **zero added shell-transition or movement
+operations**. These direct process proofs are separate from release packaging;
+the canonical release/full-CI driver was not run locally. Exact-commit CI, all
+three exact-source packages and a fresh bounded native journey remain pending.
+See the [candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+
+## Preserved 0.63.2 pointer lifecycle checkpoint
 
 **0.63.2 remains a correction candidate**; the latest accepted bounded baseline
 remains **0.62.2**. A controlled actual-frame journey established that Find Results
@@ -20,8 +80,25 @@ response ownership and frame guards remain authoritative.
 
 Local correction checks passed **47 focused tests**, then **2,057/0/70 across
 50 workspace suites** (app **1,341/0/53**), strict Clippy and **779 Python tests
-across 28 suites**. Exact-commit CI, package audits and new native acceptance
-remain pending. See the [candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+across 28 suites**. The exact public
+[0.63.2 source](https://github.com/LLLLimbo/cedar-ide/commit/7850e557b6aaff647d1e71e31b1e239d271655d4)
+then passed all four jobs in
+[CI 38338899789](https://github.com/LLLLimbo/cedar-ide/actions/runs/38338899789)
+and all three exact-source package audits. Linux recorded **2,057/0/70** and
+Windows **1,995/0/114**, each across **50 suites**. These results do not complete
+native acceptance or transfer to 0.63.3.
+
+### Preserved 0.63.2 native boundary
+
+The exact shipping package connected with execution trust off. Workspace and
+Tools menu Escape, opening Find Results from the header, filename discovery/Open,
+a dirty draft and scoped two-hit search were observed. Alt+1 retained Find state,
+but the Flat-mode journey had no functional witness of Project focus. Testing
+stopped with an **ambiguous observation, not a demonstrated product failure**.
+Ctrl+J, Preview, same-row double-click Open, Back and Undo were not run. Normal
+exit returned code 0, the owned process was reaped and checked fixture, package
+and source bytes were unchanged. The later diagnostic used a different prepared
+state and cannot retroactively identify this shipping run's input batch.
 
 ### Preserved 0.63.1 native boundary
 
@@ -46,6 +123,12 @@ Undo sequence were not completed. Normal Discard and quit returned frontend and
 wrapper exit code 0, and original fixture, package and source bytes remained intact.
 The input-route difference and unknown native event cause remain explicit; a new
 candidate must pass its own exact-package native checks.
+
+Some original prelaunch evidence from the 0.63.1 attempt was overwritten by a
+later attempt. A matching image survived in later duplicate captures, but that
+does not reconstruct the missing original files. The available original evidence
+and the separate complete later records remain distinct; no restoration of the
+missing originals or stronger native conclusion is claimed.
 
 ## Preserved 0.63.1 correction and blocked predecessor
 

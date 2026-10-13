@@ -120,7 +120,7 @@ Shortcuts:
 | Ctrl/Cmd+S | Save |
 | Ctrl/Cmd+W | Close the current tab |
 | Ctrl/Cmd+J | Hide tools and return to the editor, or reopen the selected tool |
-| Ctrl/Cmd+Shift+E or Alt+1 | Hide tools and focus enabled Explorer Refresh without refreshing |
+| Ctrl/Cmd+Shift+E or Alt+1 | Candidate Project focus route, preserving Find and its current row and issuing no request; acceptance pending |
 | Ctrl+Space | Request completion |
 | F12 | Go to definition |
 | Ctrl/Cmd+K | Show hover information |
@@ -133,6 +133,12 @@ language services. The tools **x** button also returns to the editor. Without an
 open document, hiding tools uses an available sidebar anchor. Access shortcuts
 yield to modal input and ignore mixed input batches rather than diverting text,
 paste or another action. Holding the shortcut does not repeatedly toggle tools.
+The 0.63.3 candidate narrowly admits a clean Alt+Num1 followed by one matching
+`Text("1")` companion, consuming that companion before editor handling. Only
+successful guarded Project focus arms its same-held-key repeat fence. Other
+text and mixed input retain their rejection rules. Space, Ctrl/Cmd+J and the
+key-only route are unchanged. See the [candidate report](../../docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md)
+for validation limits; the latest accepted bounded baseline remains 0.62.2.
 These shortcuts provide an alternative at small window heights; expanded forms
 and crowded center controls still have separate responsive-layout limitations.
 
