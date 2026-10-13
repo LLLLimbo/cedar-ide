@@ -2,14 +2,14 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。**0.62 正在开发**：在已限定验收的 0.61.0 保留分组结果基线上，为 Project Text 增加共享的 Directory 和 File masks 控件，由后端从指定目录遍历并在读取内容前匹配文件名。仍须显式提交；新路径的测试、普通 agent、精确包及原生验收需要单独证据，本文不宣称通过。操作与限制见[Find and return](docs/FIND_AND_RETURN.md)及[范围搜索契约](docs/SCOPED_PROJECT_TEXT.md)，产品方向见[浏览路线](docs/BROWSING_PRODUCT_ROADMAP.md)。本次只覆盖 B2 的目录/文件名掩码子集，既有 Build/Run 功能保留，不声明视觉等价或性能优势。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。**0.63 浏览外壳候选尚未验收**：在已限定验收的 0.62.2 基线上，让连接后的 Project、编辑器和 Find 成为主要界面，将连接设置收进 Workspace 菜单、工具入口收进 Tools 菜单，并整理 Back/Forward 与键盘焦点。当前范围、几何目标及待验证项目见[0.63 候选报告](docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md)。这次不增加后端、协议、搜索选项或 Build/Run 行为，也不声明视觉等价或性能优势。
 
-最新已限定验收基线为 **0.61.0**：公开提交 [`7ec8e2f13ce82c57185c705929c0c17c61fcbdfa`](https://github.com/LLLLimbo/cedar-ide/commit/7ec8e2f13ce82c57185c705929c0c17c61fcbdfa) 的 [CI 38213817089](https://github.com/LLLLimbo/cedar-ide/actions/runs/38213817089) 四项作业、三种精确源码包、44 项 Browse 帧测试、17 字段/7 操作 Browse 证明、保留的 12 操作 Search 证明及两项真实 JDT 证明均通过。限定 Linux 原生验收在信任关闭时覆盖分组选择、Space 预览、折叠/展开、脏稿历史位置 Open、未打开文件的重复命中、Ctrl+[ Back / Ctrl+] Forward、隐藏/重开保留、Undo/Redo 及显式丢弃退出，并核对夹具和包完整性。**Ctrl+Alt+Left/Right 在有历史时尝试后未观察到导航，原因未定，保留为明确限制。** 不代表 Windows GUI、真实 SSH、性能或原生精确选区亲和性/操作计数证明。其余历史失败和限制见[当前报告](docs/TEST_REPORT.md)；基线证据不替代 0.62 验收。Cedar **不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
+最新已限定验收基线为 **0.62.2**：公开提交 [`91aa84cb79547207ed4deb296a61834df26089ef`](https://github.com/LLLLimbo/cedar-ide/commit/91aa84cb79547207ed4deb296a61834df26089ef) 的 [CI 38282992861](https://github.com/LLLLimbo/cedar-ide/actions/runs/38282992861) 四项作业和三种精确源码包均通过。Linux 为 2,031/0/70，Windows 为 1,969/0/114（通过/失败/忽略）；58 项 Browse、43 项 Search、13 项范围搜索帧检查，以及精确 7/12/10 操作的 Browse/Search/范围搜索普通 agent 证明通过。新的精确包 Linux 原生旅程分别观察两个 Find 视图的单击选择、显式 Preview、真实系统双击 Open、`src` / `*.rs` 范围、分组折叠/展开、脏稿出发位置 Back、Undo/Redo 及正常退出码 0。该轮未覆盖可选的无效范围、空掩码、较宽 OR 掩码、编辑后历史行停用、模态重开或窄窗口；已有确定性证明与新原生观察分开记录。Windows GUI 与真实 SSH 仍未验收，历史原生 Ctrl+Alt+Left/Right 无导航及原因未知的 0.62.1 意外 Open 记录保留。完整范围和历史失败见[当前报告](docs/TEST_REPORT.md)。基线证据不替代 0.63 验收。Cedar **不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识。
 
 ## 已能实际使用
 
 - **0.61.0 保留分组结果已限定验收**：[Find and return](docs/FIND_AND_RETURN.md) 的 Project Text 与底部 FIND RESULTS 共用一份有界结果，按精确路径分组；单击选择、Space 只读预览、Enter/双击普通 Open。隐藏/重开和 Open–Back 保留查询、选择与分组；查询修改、重跑或重连后旧行停用，须显式成功重跑。过短的显式工具高度可能隐藏结果；完全不可见的行不能激活，可用 Automatic height 恢复空间。没有防抖或跨重启持久化。
-- **0.62 范围搜索开发中**：Project Text 的 Directory 留空表示根目录；File masks 接受以分号分隔、区分大小写的完整文件名 `*` / `?` 掩码。任一筛选要求协商 `scoped_search` v1；旧版或未知版本 agent 收到零次范围搜索请求，且不自动扩大为全工作区搜索。两个筛选均为空时继续使用原有 Search。修改或改回任一字段都使旧行停用；完整匹配、排除项及不完整扫描边界见[契约](docs/SCOPED_PROJECT_TEXT.md)。
+- **0.62.2 范围搜索已限定验收**：Project Text 的 Directory 留空表示根目录；File masks 接受以分号分隔、区分大小写的完整文件名 `*` / `?` 掩码。任一筛选要求协商 `scoped_search` v1；旧版或未知版本 agent 收到零次范围搜索请求，且不自动扩大为全工作区搜索。两个筛选均为空时继续使用原有 Search。修改或改回任一字段都使旧行停用；完整匹配、排除项及不完整扫描边界见[契约](docs/SCOPED_PROJECT_TEXT.md)。
 - **0.60.0 浏览基线已限定验收**：Find…、Ctrl+Shift+N / Ctrl+Shift+F 进入文件与项目文本查询。协商支持的 Project files 可查找未展开目录；否则明确回退到打开及已加载文件。文件名按 Unicode 小写后的字面量匹配，不支持正则、CamelCase 或输入即搜索。
 - 原生 egui/Glow 桌面界面，无 WebView、Electron 或前端 JVM
 - [Linux agent 独立开发包](docs/LINUX_AGENT_QUICKSTART.zh-CN.md)：面向 Ubuntu 24.04 amd64 的无界面后端，附源码/CI/逐文件哈希与实际 ELF 要求；不自动部署、不代表真实 SSH 验收
@@ -196,4 +196,4 @@ python3 scripts/package_checkpoint.py --output /absolute/path/cedar-checkpoint.z
 
 Public source history and omitted machine-specific evidence are described in [PUBLICATION.md](PUBLICATION.md).
 
-Linux GUI 的 Local folder 在 0.41 使用与前端同目录、同版本的独立 agent；缺失或不匹配会报错，没有内嵌回退。面向库调用者的 Client Local 仍保留内嵌模式。新的 Ubuntu 24.04 amd64 桌面包范围与运行依赖见 [Linux 桌面指南](docs/LINUX_DESKTOP_QUICKSTART.zh-CN.md)。0.59.2 的完整双平台 CI、真实 JDT 参数证明、三种包与限定 Linux 原生功能及独立清理补验已通过；0.59.3 仅新增渲染器 Unicode 测试，精确 CI 与三种包已验收，不新增原生运行；0.60.0 已完成精确双平台 CI、三种包及限定 Linux 原生浏览验收；0.61.0 保留分组结果已完成上述限定验收；0.62 范围搜索仍须自己的验证。
+Linux GUI 的 Local folder 在 0.41 使用与前端同目录、同版本的独立 agent；缺失或不匹配会报错，没有内嵌回退。面向库调用者的 Client Local 仍保留内嵌模式。新的 Ubuntu 24.04 amd64 桌面包范围与运行依赖见 [Linux 桌面指南](docs/LINUX_DESKTOP_QUICKSTART.zh-CN.md)。0.59.2 的完整双平台 CI、真实 JDT 参数证明、三种包与限定 Linux 原生功能及独立清理补验已通过；0.59.3 仅新增渲染器 Unicode 测试，精确 CI 与三种包已验收，不新增原生运行；0.60.0 已完成精确双平台 CI、三种包及限定 Linux 原生浏览验收；0.61.0 保留分组结果及 0.62.2 范围搜索/双击保护均已完成各自限定验收；0.63 浏览外壳仍须自己的验证。

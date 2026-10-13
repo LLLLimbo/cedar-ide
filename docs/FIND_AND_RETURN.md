@@ -4,12 +4,40 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-The latest accepted bounded baseline is **0.61.0**, including the retained,
-grouped Project Text result flow. **0.62 is in progress** and adds the shared
-Directory and File masks controls described below. Its
-[scoped-search contract](SCOPED_PROJECT_TEXT.md) requires separate test,
-normal-agent, exact-package and native-window evidence. This guide does not
-establish acceptance of the new filtered-search behavior.
+The latest accepted bounded baseline is **0.62.2**, including retained grouped
+Project Text results, shared Directory and File masks controls, and same-row
+click continuity before double-click Open. Its dual-platform, normal-agent and
+package results are separate from the bounded Linux native observations in the
+[verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md#accepted-0622-bounded-scoped-search-baseline).
+The **0.63 browsing shell is an unverified candidate** with the changes below;
+no 0.63 acceptance is established by this guide.
+
+## 0.63 connected shell candidate
+
+The candidate puts **Project**, the editor and **Find** in the main connected
+workspace. **Workspace** groups connection and setup actions, while connection,
+error, recovery and unsaved-draft states remain visible and reachable. **Tools**
+keeps access to Git, Commands, Language and Tests. Existing execution and trust
+requirements still apply. **Back** and **Forward** move into the editor tab band;
+their location-history meaning is unchanged.
+
+The candidate header's **Files** and **Project Text** buttons open their existing
+search providers; **Find Results** returns to the retained bottom panel.
+
+The intended **Alt+1** route focuses a useful enabled Project control without
+hiding the retained Find tool. **Ctrl/Cmd+J** hides the tools and restores the
+captured editor context; reopening Find targets an active visible selected hit,
+or its query field when no such hit can be used. Neither shortcut submits a
+search, opens a file or refreshes the tree by itself. Pending, inactive, hidden
+and disconnected contexts need their own focus tests. These are candidate
+behaviors, pending the [0.63 checks](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+
+Compact header sizes are design targets, not a fixed-height guarantee. At
+**780 × 540**, with both **13** and **18** font sizes, controls must remain
+reachable through wrapping or scrolling. Geometry and native keyboard behavior
+have not yet been accepted. The following usage contract is based on 0.62.2;
+where its presentation differs, the candidate changes above are explicitly
+versioned.
 
 ## Start with a connected workspace
 
@@ -31,7 +59,8 @@ under [Retained Project Text results](#retained-project-text-results).
 
 **Ctrl+Alt+Left/Right** are additional Back/Forward shortcuts. **Alt+1**, like the
 retained **Ctrl/Cmd+Shift+E**, hides tools and focuses the enabled Explorer
-**Refresh** control. It does not refresh, scan or read a file by itself. These
+**Refresh** control in the accepted 0.62.2 shell. The 0.63 Alt+1 candidate route
+above changes that presentation and preserves Find. It does not refresh, scan or read a file by itself. These
 shortcuts retain the existing modal, mixed-input and held-key guards.
 In the accepted 0.61 Linux native run, Ctrl+[ and Ctrl+] navigated successfully,
 but Ctrl+Alt+Left/Right did not produce observed navigation when history was
@@ -141,7 +170,7 @@ submissions. While a search request is outstanding, another text submission is
 disabled, including after an edit makes its original intent inactive. Typing,
 hiding, reopening and switching views do not start a search.
 
-### Directory and file masks (0.62 in progress)
+### Directory and file masks (0.62.2 bounded acceptance)
 
 Both text-search views edit the same **Directory** and **File masks** fields.
 Leave Directory empty for the workspace root, or enter an exact relative
@@ -192,7 +221,10 @@ does not rewrite paths or change which original hit an action addresses.
 - Single-click a hit to select it. Selection and hover do not read file contents.
 - With a hit focused, **Up/Down** and **Home/End** navigate visible hits.
   **Space** requests a read-only preview; **Enter** or a double-click uses
-  ordinary Open.
+  ordinary Open. A double-click must follow an accepted click on the same exact
+  hit in the same view and preview pane. A rapid group click followed by the
+  first click on another hit selects it; it does not qualify that hit for Open.
+  Switching views, focus or result identity breaks the click sequence.
 - Click a path header to expand or collapse its group, or reach it with **Tab**
   and press **Enter** or **Space**. Collapsing a group preserves its selected hit
   and puts focus on the group header. A hidden hit cannot be previewed or opened;
@@ -200,8 +232,9 @@ does not rewrite paths or change which original hit an action addresses.
 
 In the bottom FIND RESULTS tool, preview leaves focus on the selected row.
 Use the existing tool close/hide control or **Ctrl/Cmd+J** to return to the editor;
-**Ctrl/Cmd+J** also reopens the selected tool. The bottom tool does not add an
-Escape action. The shared Find and return window keeps its preview/dismiss
+**Ctrl/Cmd+J** also reopens the selected tool. The 0.63 candidate adds the
+active-visible-hit or query focus route described above. The bottom tool does
+not add an Escape action. The shared Find and return window keeps its preview/dismiss
 Escape behavior described above.
 
 The submitted query and filters, selected hit and group expansion state survive

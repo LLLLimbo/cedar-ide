@@ -140,6 +140,27 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(receipt=value), self.assertRaises(proof.AcceptanceError):
                 proof.validate_execution(execution(proof.APP_TEST, value), proof.APP_TEST)
 
+    def test_shell_contract_requires_true_observations_and_exact_zero_operations(self):
+        # These literal requirements are independent of the receipt producer.
+        expected = {
+            "shell_project_focus_retains_find": True,
+            "shell_find_reopen_active_hit": True,
+            "shell_hide_exact_editor_return": True,
+            "shell_state_preserved": True,
+            "shell_transition_operations": 0,
+        }
+        receipt = proof.expected_receipt()
+        self.assertEqual({key: receipt[key] for key in expected}, expected)
+        for key, required in expected.items():
+            self.assertIs(type(receipt[key]), type(required))
+            wrong = (False, 1, "true", None) if required is True else (1, False, 0.0, "0", None)
+            for value in wrong:
+                with self.subTest(key=key, value=value), self.assertRaises(proof.AcceptanceError):
+                    proof.validate_execution(execution(proof.APP_TEST, {**receipt, key: value}), proof.APP_TEST)
+            missing = {name: value for name, value in receipt.items() if name != key}
+            with self.subTest(missing=key), self.assertRaises(proof.AcceptanceError):
+                proof.validate_execution(execution(proof.APP_TEST, missing), proof.APP_TEST)
+
     def test_exact_test_and_single_strict_json_receipt_required(self):
         good = execution(proof.APP_TEST)
         extra = (proof.PREFIX + json.dumps(proof.expected_receipt()) + "\n").encode()

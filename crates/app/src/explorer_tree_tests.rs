@@ -1236,18 +1236,24 @@ fn focus_rendered(app: &mut CedarApp, id: egui::Id) {
     settle(app);
 }
 
-fn footer_ids(app: &CedarApp) -> Vec<egui::Id> {
-    ["Search", "Git", "Run", "LSP", "Tests"]
-        .iter()
-        .map(|label| workspace_access_tests::recorded_response(app, &format!("sidebar_{label}")).id)
-        .collect()
+fn shell_ids(app: &CedarApp) -> Vec<egui::Id> {
+    [
+        "project_shortcuts",
+        "browse_entry",
+        "project_text_entry",
+        "find_results_entry",
+        "tools_menu",
+    ]
+    .iter()
+    .map(|label| workspace_access_tests::recorded_response(app, label).id)
+    .collect()
 }
 
 #[test]
 fn global_retry_controls_keep_path_identity_and_reveal_in_compact_outer_scroll() {
     for tree in [false, true] {
         let (mut app, commands) = global_retry_fixture(tree);
-        let footer = footer_ids(&app);
+        let footer = shell_ids(&app);
         let expected_path = if tree { "d63" } else { "missing-a" };
         let id = workspace_access_tests::recorded_response(&app, "explorer_status_retry").id;
         assert_eq!(
@@ -1255,17 +1261,17 @@ fn global_retry_controls_keep_path_identity_and_reveal_in_compact_outer_scroll()
             explorer_tree::retry_id(if tree { "tree_limit" } else { "flat" }, expected_path)
         );
         // Adding/removing an unrelated status widget cannot rename Retry or
-        // any of the five existing footer selectors.
+        // the Project footer or the moved browsing and Tools entries.
         app.explorer.message = Some("An additional status label".into());
         settle(&mut app);
         assert_eq!(
             workspace_access_tests::recorded_response(&app, "explorer_status_retry").id,
             id
         );
-        assert_eq!(footer_ids(&app), footer);
+        assert_eq!(shell_ids(&app), footer);
         app.explorer.message = None;
         settle(&mut app);
-        assert_eq!(footer_ids(&app), footer);
+        assert_eq!(shell_ids(&app), footer);
         let sidebar =
             egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("explorer"))
                 .unwrap()
@@ -1373,7 +1379,7 @@ fn captured_global_retry_press_cannot_dispatch_a_replacement_target() {
 }
 
 #[test]
-fn branch_retry_and_footer_ids_survive_inserted_preceding_sibling_rows() {
+fn branch_retry_and_shell_ids_survive_inserted_preceding_sibling_rows() {
     let (mut app, commands) = fixture();
     root(
         &mut app,
@@ -1384,11 +1390,11 @@ fn branch_retry_and_footer_ids_survive_inserted_preceding_sibling_rows() {
     error(&mut app, commands.try_recv().unwrap(), "failed z", true);
     settle(&mut app);
     let id = workspace_access_tests::recorded_response(&app, "tree_retry:z").id;
-    let footer = footer_ids(&app);
+    let footer = shell_ids(&app);
     assert_eq!(id, explorer_tree::retry_id("branch", "z"));
     app.explorer_expand("a");
     settle(&mut app); // Loading status adds a widget in its fixed scope.
-    assert_eq!(footer_ids(&app), footer);
+    assert_eq!(shell_ids(&app), footer);
     reply(
         &mut app,
         commands.try_recv().unwrap(),
@@ -1399,7 +1405,7 @@ fn branch_retry_and_footer_ids_survive_inserted_preceding_sibling_rows() {
         workspace_access_tests::recorded_response(&app, "tree_retry:z").id,
         id
     );
-    assert_eq!(footer_ids(&app), footer);
+    assert_eq!(shell_ids(&app), footer);
 }
 
 #[test]

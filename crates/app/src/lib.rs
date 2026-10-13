@@ -7,6 +7,8 @@ mod browse;
 #[cfg(test)]
 mod browse_tests;
 #[cfg(test)]
+mod browsing_shell_tests;
+#[cfg(test)]
 mod build_problem_process_tests;
 #[cfg(test)]
 mod build_problem_ui_tests;
@@ -969,7 +971,14 @@ impl CedarApp {
                         && reply.generation == self.generation
                         && navigation == Some(self.navigation_epoch)
                     {
-                        self.history_supersede_ready_navigation(ctx);
+                        self.history_supersede_ready_navigation(
+                            ctx,
+                            workspace_access::ReadyNavigation {
+                                request: reply.id,
+                                generation: reply.generation,
+                                navigation: self.navigation_epoch,
+                            },
+                        );
                     }
                 }
             }
@@ -2026,116 +2035,129 @@ impl CedarApp {
     }
 
     fn header(&mut self, ctx: &egui::Context) {
+        let font = egui::TextStyle::Button.resolve(&ctx.style()).size;
+        let height = if font > 15.0 { 48.0 } else { 40.0 };
         egui::TopBottomPanel::top("header")
-            .exact_height(54.0)
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0))
+            // A minimum allows measured wrapping instead of clipping at unusual
+            // font sizes or widths. The ordinary connected row is 40 / 48 points.
+            .min_height(height)
+            .frame(egui::Frame::new().fill(PANEL).inner_margin(8.0))
             .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    logo(ui, 27.0);
-                    ui.label(RichText::new("CEDAR").strong().size(17.0).color(TEXT));
-                    ui.label(RichText::new("IDE").size(12.0).color(MUTED));
-                    ui.add_space(15.0);
-                    ui.separator();
-                    let name = if self.root.is_empty() {
-                        "No workspace".to_owned()
-                    } else {
-                        self.root
-                            .rsplit(['/', '\\'])
-                            .find(|part| !part.is_empty())
-                            .unwrap_or(&self.root)
-                            .to_owned()
-                    };
-                    ui.label(RichText::new(name).color(MUTED))
-                        .on_hover_text(&self.root);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let find = ui.add_enabled(self.workspace_key.is_some(), egui::Button::new("Find…"));
-                        #[cfg(test)]
-                        crate::workspace_access_tests::record(ui, "browse_entry", &find);
-                        if find.clicked() { self.show_browse(browse::Provider::Files); }
-                        let can_save = self.backend_supports("write")
-                            && !self.save_all_busy()
-                            && !self.interrupted_save_check.busy()
-                            && self.active().is_some_and(|doc| {
-                                doc.dirty() && !doc.saving && !doc.save_outcome_unknown()
-                            });
-                        if ui
-                            .add_enabled(
-                                can_save,
-                                egui::Button::new(RichText::new("Save").color(GREEN)),
-                            )
-                            .on_hover_text("Save file · Ctrl/Cmd+S")
-                            .clicked()
-                        {
-                            self.save();
-                        }
-                        ui.menu_button("...", |ui| {
-                            if ui.add_enabled(
-                                self.active().is_some() && !self.copy_draft.is_open(),
-                                egui::Button::new("Copy to new draft…"),
-                            ).clicked() {
-                                self.begin_copy_draft();
-                                ui.close_menu();
-                            }
-                            if ui
-                                .add_enabled(
-                                    !self.save_all_busy() && self.backend_supports("write"),
-                                    egui::Button::new("Save all editor buffers · Ctrl/Cmd+Shift+S"),
-                                )
-                                .clicked()
-                            {
-                                self.queue_save_all();
-                                ui.close_menu();
-                            }
-                            if ui
-                                .add_enabled(
-                                    self.save_all_busy(),
-                                    egui::Button::new("Cancel remaining saves"),
-                                )
-                                .clicked()
-                            {
-                                self.cancel_save_all();
-                                ui.close_menu();
-                            }
-                            if let Some(message) = self.save_all_message() {
-                                ui.label(message);
-                            }
-                            ui.label("Saves editor buffers sequentially. Earlier saves remain on disk if a later save stops. Profile form changes are saved separately.");
-                        })
-                        .response
-                        .on_hover_text("Save actions");
-                        if ui.button("Recovery").clicked() {
-                            self.recovery.visible = true;
-                        }
-                        if ui.button("Open workspace").clicked() {
-                            self.open_form = true;
-                        }
-                        if self.active_form.is_some()
-                            && !matches!(
-                                self.state,
-                                ConnectionState::Connecting | ConnectionState::Disconnecting
-                            )
-                            && ui
-                                .add_enabled(
-                                    !self.mutation_pending(),
-                                    egui::Button::new("Reconnect"),
-                                )
-                                .clicked()
-                        {
-                            if let Some(form) = self.active_form.clone() {
-                                self.connect(ctx, form);
-                            }
-                        }
-                        if self.ready()
-                            && ui
-                                .button("Open file")
-                                .on_hover_text("Choose an open buffer or file · Ctrl/Cmd+P")
-                                .clicked()
-                        {
-                            self.show_file_chooser();
-                        }
-                    });
+                ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.set_row_height(height - 16.0);
+                    let reserved = ["Workspace", "Files", "Project Text", "Find Results", "Tools"]
+                        .into_iter().map(|text| shell_button_width(ui, text, false)).sum::<f32>()
+                        + 22.0 + 6.0 * ui.spacing().item_spacing.x;
+                    let identity_width = (ui.available_width() - reserved).clamp(0.0, 180.0);
+                    logo(ui, 22.0);
+                    let workspace = ui.menu_button("Workspace", |ui| self.workspace_menu(ui, ctx)).response;
+                    #[cfg(test)]
+                    workspace_access_tests::record(ui, "workspace_menu", &workspace);
+                    workspace.on_hover_text(if self.root.is_empty() { "Workspace connection, recovery and save actions" } else { &self.root });
+                    if identity_width >= 48.0 {
+                        let name = self.root.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or("Cedar");
+                        ui.add_sized([identity_width, height - 16.0], egui::Label::new(RichText::new(name).strong().color(TEXT)).truncate()).on_hover_text(&self.root);
+                    }
+                    let files = ui.add_enabled(self.workspace_key.is_some(), egui::Button::new("Files")).on_hover_text("Find project files · Ctrl/Cmd+Shift+N");
+                    #[cfg(test)]
+                    workspace_access_tests::record(ui, "browse_entry", &files);
+                    if files.clicked() { self.show_browse(browse::Provider::Files); }
+                    let text = ui.add_enabled(self.workspace_key.is_some(), egui::Button::new("Project Text")).on_hover_text("Search project text · Ctrl/Cmd+Shift+F");
+                    #[cfg(test)]
+                    workspace_access_tests::record(ui, "project_text_entry", &text);
+                    if text.clicked() { self.show_browse(browse::Provider::ProjectText); }
+                    let results = ui.selectable_label(self.tools_open && self.tool == Tool::Search, "Find Results").on_hover_text("Return to retained results or the search query · Ctrl/Cmd+J toggles tools");
+                    #[cfg(test)]
+                    workspace_access_tests::record(ui, "find_results_entry", &results);
+                    if results.clicked() { self.show_find_results(ctx, &results); }
+                    let tools = ui.menu_button("Tools", |ui| self.tools_menu(ui)).response;
+                    #[cfg(test)]
+                    workspace_access_tests::record(ui, "tools_menu", &tools);
+                    tools.on_hover_text("Git, commands, language and test results");
                 });
             });
+    }
+
+    fn workspace_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.set_max_width(360.0);
+        egui::ScrollArea::vertical()
+          .id_salt("workspace_actions")
+          .max_height((ctx.screen_rect().height() - 96.0).max(80.0))
+          .drag_to_scroll(false)
+          .show(ui, |ui| {
+        if !self.root.is_empty() {
+            ui.add(egui::Label::new(RichText::new(&self.root).small().color(MUTED)).truncate()).on_hover_text(&self.root);
+        }
+        let open = ui.button("Open workspace…");
+        #[cfg(test)]
+        workspace_access_tests::record(ui, "workspace_open", &open);
+        if open.gained_focus() { open.scroll_to_me(None); }
+        if open.clicked() { self.open_form = true; ui.close_menu(); }
+        let reconnect = ui.add_enabled(self.active_form.is_some() && !matches!(self.state, ConnectionState::Connecting | ConnectionState::Disconnecting) && !self.mutation_pending(), egui::Button::new("Reconnect"));
+        #[cfg(test)]
+        workspace_access_tests::record(ui, "workspace_reconnect", &reconnect);
+        if reconnect.gained_focus() { reconnect.scroll_to_me(None); }
+        if reconnect.clicked() {
+            if let Some(form) = self.active_form.clone() { self.connect(ctx, form); }
+            ui.close_menu();
+        }
+        let recovery = ui.button("Recovery…");
+        #[cfg(test)]
+        workspace_access_tests::record(ui, "workspace_recovery", &recovery);
+        if recovery.gained_focus() { recovery.scroll_to_me(None); }
+        if recovery.clicked() { self.recovery.visible = true; ui.close_menu(); }
+        ui.separator();
+        let can_save = self.backend_supports("write") && !self.save_all_busy() && !self.interrupted_save_check.busy()
+            && self.active().is_some_and(|doc| doc.dirty() && !doc.saving && !doc.save_outcome_unknown());
+        let save = ui.add_enabled(can_save, egui::Button::new("Save file · Ctrl/Cmd+S"));
+        #[cfg(test)]
+        workspace_access_tests::record(ui, "workspace_save", &save);
+        if save.gained_focus() { save.scroll_to_me(None); }
+        if save.clicked() { self.save(); ui.close_menu(); }
+        let save_all = ui.add_enabled(!self.save_all_busy() && self.backend_supports("write"), egui::Button::new("Save all editor buffers · Ctrl/Cmd+Shift+S"));
+        #[cfg(test)]
+        workspace_access_tests::record(ui, "workspace_save_all", &save_all);
+        if save_all.gained_focus() { save_all.scroll_to_me(None); }
+        if save_all.clicked() { self.queue_save_all(); ui.close_menu(); }
+        let cancel = ui.add_enabled(self.save_all_busy(), egui::Button::new("Cancel remaining saves"));
+        #[cfg(test)]
+        workspace_access_tests::record(ui, "workspace_cancel_saves", &cancel);
+        if cancel.gained_focus() { cancel.scroll_to_me(None); }
+        if cancel.clicked() { self.cancel_save_all(); ui.close_menu(); }
+        let copy = ui.add_enabled(self.active().is_some() && !self.copy_draft.is_open(), egui::Button::new("Copy to new draft…"));
+        #[cfg(test)]
+        workspace_access_tests::record(ui, "workspace_copy_draft", &copy);
+        if copy.gained_focus() { copy.scroll_to_me(None); }
+        if copy.clicked() { self.begin_copy_draft(); ui.close_menu(); }
+        if let Some(message) = self.save_all_message() { ui.label(message); }
+        ui.label(RichText::new("Saves editor buffers sequentially. Earlier saves remain on disk if a later save stops. Profile form changes are saved separately.").small().color(MUTED));
+        ui.separator();
+        let loaded = ui.add_enabled(self.ready(), egui::Button::new("Open and loaded files · Ctrl/Cmd+P"));
+        #[cfg(test)]
+        workspace_access_tests::record(ui, "workspace_loaded_files", &loaded);
+        if loaded.gained_focus() { loaded.scroll_to_me(None); }
+        if loaded.clicked() { self.show_file_chooser(); ui.close_menu(); }
+        });
+    }
+
+    fn tools_menu(&mut self, ui: &mut egui::Ui) {
+        for (tool, label) in [
+            (Tool::Git, "Git Changes"),
+            (Tool::Run, "Commands"),
+            (Tool::Language, "Language"),
+            (Tool::Tests, "Test Results"),
+        ] {
+            let response = ui.selectable_label(self.tools_open && self.tool == tool, label);
+            #[cfg(test)]
+            workspace_access_tests::record(ui, &format!("tool_menu_{label}"), &response);
+            if response.clicked() {
+                self.tool = tool;
+                self.tools_open = true;
+                ui.close_menu();
+            }
+        }
     }
 
     fn footer(&mut self, ctx: &egui::Context) {
@@ -2156,13 +2178,20 @@ impl CedarApp {
                         ConnectionState::Disconnecting => (AMBER, "Disconnecting"),
                         ConnectionState::CleanupUnverified => (AMBER, "Cleanup unverified"),
                     };
-                    ui.colored_label(color, label);
+                    let connection = ui.colored_label(color, label);
+                    #[cfg(test)]
+                    workspace_access_tests::record(ui, "connection_status", &connection);
+                    #[cfg(not(test))]
+                    let _ = connection;
                     if self.unverified_local_close {
                         ui.colored_label(AMBER, "Prior cleanup unverified").on_hover_text(disconnect::UNVERIFIED);
                     }
                     let workspace = self.recovery_workspace();
                     let (recovery_status, protected) = self.recovery.status(workspace.as_ref(), self.active());
-                    if ui.small_button(RichText::new(recovery_status).color(if protected { GREEN } else { AMBER })).on_hover_text("Private recovery on this computer. Click to review copies and settings").clicked() { self.recovery.visible = true; }
+                    let recovery = ui.small_button(RichText::new(recovery_status).color(if protected { GREEN } else { AMBER })).on_hover_text("Private recovery on this computer. Click to review copies and settings");
+                    #[cfg(test)]
+                    workspace_access_tests::record(ui, "recovery_status", &recovery);
+                    if recovery.clicked() { self.recovery.visible = true; }
                     if self.ready() {
                         let status = self.agent_status();
                         ui.add_sized([240.0, 18.0], egui::Label::new(RichText::new(&status).small().color(MUTED)).truncate())
@@ -2235,7 +2264,11 @@ impl CedarApp {
                 )
                 .show(ctx, |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(RED, error);
+                        let message = ui.colored_label(RED, error);
+                        #[cfg(test)]
+                        workspace_access_tests::record(ui, "error_status", &message);
+                        #[cfg(not(test))]
+                        let _ = message;
                         if ui.small_button("Dismiss").clicked() {
                             self.error = None;
                         }
@@ -2246,7 +2279,7 @@ impl CedarApp {
 
     fn sidebar(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("explorer").default_width(246.0).width_range(180.0..=460.0).resizable(true)
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0)).show(ctx, |ui| {
+            .frame(egui::Frame::new().fill(PANEL).inner_margin(8.0)).show(ctx, |ui| {
                 let size_id = ui.make_persistent_id("sidebar_viewport_size");
                 let size = ui.available_size();
                 let resized = ctx.data_mut(|data| {
@@ -2254,29 +2287,6 @@ impl CedarApp {
                     data.insert_temp(size_id, size);
                     previous.is_some_and(|previous| previous != size)
                 });
-                let activation_id = ui.make_persistent_id("sidebar_activation_reveal");
-                if self.workspace_access.cancel_sidebar_reveal() {
-                    ctx.data_mut(|data| data.remove::<(egui::Id, bool, Tool)>(activation_id));
-                }
-                let mut activation = ctx.data(|data| data.get_temp::<(egui::Id, bool, Tool)>(activation_id));
-                if let Some((id, _, tool)) = activation {
-                    // A new intent cancels even while the sidebar has no space.
-                    // Read raw events because earlier widgets may consume keys.
-                    let new_intent = ctx.input(|input| input.raw.events.iter().any(|event| matches!(event,
-                        egui::Event::Key { pressed: true, .. }
-                        | egui::Event::PointerButton { pressed: true, .. }
-                        | egui::Event::MouseWheel { .. }
-                        | egui::Event::Zoom(_)
-                        | egui::Event::Ime(egui::ImeEvent::Commit(_))
-                        | egui::Event::Text(_)
-                        | egui::Event::Paste(_)
-                        | egui::Event::Touch { phase: egui::TouchPhase::Start, .. }
-                    )));
-                    if !self.tools_open || self.tool != tool || new_intent || ctx.memory(|memory| memory.focused().is_some_and(|focused| focused != id)) {
-                        activation = None;
-                        ctx.data_mut(|data| data.remove::<(egui::Id, bool, Tool)>(activation_id));
-                    }
-                }
                 // Keep both gutters allocated even without overflow. Animated gutter
                 // widths would otherwise change wrapping and the height budget itself.
                 ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
@@ -2285,16 +2295,10 @@ impl CedarApp {
                 // A held egui scrollbar drag cannot remap a zero-length track.
                 // Keep its stored state intact until positive space returns.
                 if size.y <= 0.0 { return; }
-                ctx.data_mut(|data| data.remove::<(egui::Id, bool, Tool)>(activation_id));
                 let reveal = |response: &egui::Response| {
-                    let activated = activation.filter(|(id, _, _)| *id == response.id);
-                    if activated.is_some_and(|(_, had_focus, _)| had_focus)
-                        && ctx.memory(|memory| memory.focused().is_none()) {
-                        response.request_focus();
-                    }
                     #[cfg(test)]
-                    sidebar_layout_tests::record_reveal(response, activated.is_some(), resized);
-                    let requested = activated.is_some() || response.gained_focus() || (resized && response.has_focus());
+                    sidebar_layout_tests::record_reveal(response, false, resized);
+                    let requested = response.gained_focus() || (resized && response.has_focus());
                     if requested {
                         response.scroll_to_me(None);
                     }
@@ -2313,11 +2317,13 @@ impl CedarApp {
                         let initial_content_origin = ui.max_rect().min;
                         let actual_viewport = viewport.translate(initial_content_origin.to_vec2());
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("EXPLORER").size(11.0).strong().color(MUTED));
+                            let heading = ui.add(egui::Label::new(RichText::new("PROJECT").size(11.0).strong().color(MUTED)).sense(egui::Sense::focusable_noninteractive()));
+                            self.record_project_access_fallback(ui, &heading);
+                            reveal(&heading);
+                            #[cfg(test)]
+                            workspace_access_tests::record(ui, "project_heading", &heading);
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 let refresh = ui.add_enabled(self.ready() && !self.explorer_busy(), egui::Button::new("R").small()).on_hover_text("Refresh directory · Ctrl/Cmd+Shift+E or Alt+1 focuses Project without refreshing");
-                                self.workspace_access.record(workspace_access::Target::Explorer, &refresh);
-                                self.workspace_access.record(workspace_access::Target::Refresh, &refresh);
                                 #[cfg(test)]
                                 workspace_access_tests::record(ui, "explorer_refresh", &refresh);
                                 reveal(&refresh);
@@ -2359,31 +2365,13 @@ impl CedarApp {
                             sidebar_layout_tests::record(ui, "Tree", &tree);
                             if tree.clicked() { self.explorer_set_mode(explorer_tree::Mode::Tree); }
                         });
-                        // One fixed child isolates variable status/control counts
-                        // from the existing footer selectors' positional IDs.
+                        // Isolate status/control counts from file-row identities.
                         ui.push_id("explorer_status", |ui| self.explorer_status(ui, resized));
                         ui.separator();
                         let shortcut_help = egui::WidgetText::from(RichText::new("Ctrl/Cmd+P  Choose a file\nCtrl/Cmd+G  Go to line\nCtrl/Cmd+F  Find in file\nCtrl/Cmd+S  Save changes").size(11.0).color(MUTED))
                             .into_galley(ui, Some(egui::TextWrapMode::Wrap), ui.available_width(), egui::TextStyle::Body);
-                        let tool_labels = [(Tool::Search, "Search"), (Tool::Git, "Git"), (Tool::Run, "Run"), (Tool::Language, "LSP"), (Tool::Tests, "Tests")];
-                        let tool_row_height = (ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y);
-                        let tool_widths = tool_labels.map(|(_, label)| {
-                            egui::WidgetText::from(label).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button).size().x + 2.0 * ui.spacing().button_padding.x
-                        });
-                        let first_row_width: f32 = tool_widths[..3].iter().sum();
-                        let second_row_width: f32 = tool_widths[3..].iter().sum();
-                        let stacked_tools = first_row_width.max(second_row_width) > ui.available_width();
-                        let tool_gap = ui.spacing().item_spacing.x.min(9.0).min(((ui.available_width() - first_row_width) / 2.0).min(ui.available_width() - second_row_width).floor()).max(0.0);
-                        let tool_rows_height = if stacked_tools {
-                            tool_labels.iter().map(|(_, label)| {
-                                let galley = egui::WidgetText::from(*label).into_galley(ui, Some(egui::TextWrapMode::Wrap), (ui.available_width() - 2.0 * ui.spacing().button_padding.x).max(0.0), egui::TextStyle::Button);
-                                (galley.size().y + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y)
-                            }).sum::<f32>() + 4.0 * ui.spacing().item_spacing.y
-                        } else {
-                            2.0 * tool_row_height + ui.spacing().item_spacing.y
-                        };
                         let separator_height = 6.0;
-                        let footer_height = (tool_rows_height + shortcut_help.size().y + separator_height + 3.0 * ui.spacing().item_spacing.y).ceil();
+                        let footer_height = (shortcut_help.size().y + separator_height + 2.0 * ui.spacing().item_spacing.y).ceil();
                         let file_text_width = (ui.available_width() - ui.spacing().scroll.allocated_width() - 2.0 * ui.spacing().button_padding.x).max(0.0);
                         let tree_rows = if self.explorer.mode == explorer_tree::Mode::Tree { self.explorer_visible_rows() } else { Vec::new() };
                         let display_entries = if self.explorer.mode == explorer_tree::Mode::Tree { tree_rows.iter().map(|row| row.entry.clone()).collect() } else { self.entries.clone() };
@@ -2427,7 +2415,8 @@ impl CedarApp {
                                     };
                                     let explicit_tree_reveal = self.explorer.mode == explorer_tree::Mode::Tree
                                         && self.explorer.key_reveal.as_deref() == Some(entry.path.as_str()) && response.has_focus();
-                                    let newly_revealed = response.gained_focus() || (resized && response.has_focus()) || explicit_tree_reveal;
+                                    let access_reveal = self.record_project_access(ui, &entry.path, &response);
+                                    let newly_revealed = response.gained_focus() || (resized && response.has_focus()) || explicit_tree_reveal || access_reveal;
                                     if newly_revealed || (pending_focus == Some(response.id) && response.has_focus()) {
                                         response.scroll_to_me(None);
                                         focused_entry = Some((response.id, newly_revealed, response.rect, viewport.min.y));
@@ -2482,49 +2471,22 @@ impl CedarApp {
                             if self.explorer.mode == explorer_tree::Mode::Tree { self.explorer_activate(&entry.path); }
                             else if entry.is_dir { self.list(entry.path); } else { self.open(entry.path, None); }
                         }
-                        // One persistent child emits the same five auto IDs at every
-                        // width; row breaks change geometry without changing focus.
+                        // Shortcut help is a legitimate noninteractive Tab stop.
+                        // Keep the exact outer reveal correction for this footer.
                         let footer_content_min_y = ui.min_rect().top();
                         let outer_viewport_offset_y = viewport.min.y;
                         let outer_item_spacing_y = ui.spacing().item_spacing.y;
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = tool_gap;
-                            ui.set_row_height(tool_row_height);
-                            for (index, (tool, label)) in tool_labels.into_iter().enumerate() {
-                                let response = ui.selectable_label(self.tools_open && self.tool == tool, label);
-                                if index == 0 {
-                                    // An offline workspace has no enabled Refresh.
-                                    self.workspace_access.record(workspace_access::Target::Explorer, &response);
-                                }
-                                let requested = reveal(&response);
-                                let target = if requested {
-                                    sidebar_reveal::footer_target(response.rect, actual_viewport, footer_content_min_y, outer_viewport_offset_y, outer_item_spacing_y)
-                                } else { None };
-                                #[cfg(test)]
-                                sidebar_layout_tests::record_footer_target(&response, requested, target);
-                                if let Some(target) = target {
-                                    // Replace only this footer's request immediately;
-                                    // later widgets keep normal scroll-target priority.
-                                    ui.scroll_to_rect(target, Some(egui::Align::TOP));
-                                }
-                                #[cfg(test)]
-                                sidebar_layout_tests::record(ui, label, &response);
-                                #[cfg(test)]
-                                workspace_access_tests::record(ui, &format!("sidebar_{label}"), &response);
-                                if response.clicked() {
-                                    self.tool = tool; self.tools_open = true;
-                                    // Opening a tool can temporarily consume all space
-                                    // before its content height settles on the next frame.
-                                    let had_focus = response.has_focus();
-                                    ctx.data_mut(|data| data.insert_temp(activation_id, (response.id, had_focus, tool)));
-                                }
-                                if index < 4 && (stacked_tools || index == 2) { ui.end_row(); }
-                            }
-                        });
                         ui.add(egui::Separator::default().spacing(separator_height));
-                        let help = ui.label(shortcut_help).on_hover_text("Ctrl/Cmd+J  Hide tools and return to editor, or show the selected tool\nCtrl/Cmd+Shift+E or Alt+1  Hide tools and focus Project without refreshing");
+                        let help = ui.add(egui::Label::new(shortcut_help).sense(egui::Sense::focusable_noninteractive())).on_hover_text("Ctrl/Cmd+J  Hide tools and return to editor, or show the selected tool\nCtrl/Cmd+Shift+E or Alt+1  Focus Project without refreshing");
+                        let requested = reveal(&help);
+                        let target = if requested { sidebar_reveal::footer_target(help.rect, actual_viewport, footer_content_min_y, outer_viewport_offset_y, outer_item_spacing_y) } else { None };
+                        #[cfg(test)]
+                        sidebar_layout_tests::record_footer_target(&help, requested, target);
+                        if let Some(target) = target { ui.scroll_to_rect(target, Some(egui::Align::TOP)); }
                         #[cfg(test)]
                         sidebar_layout_tests::record(ui, "help", &help);
+                        #[cfg(test)]
+                        workspace_access_tests::record(ui, "project_shortcuts", &help);
                         #[cfg(test)]
                         sidebar_layout_tests::record_footer_geometry(ui, initial_content_origin.y, footer_content_min_y, actual_viewport, outer_viewport_offset_y, outer_item_spacing_y);
                         #[cfg(not(test))]
@@ -2544,7 +2506,7 @@ impl CedarApp {
         let mut close_tools = None;
         let mut automatic_height = false;
         let resize = tools_resize::prepare(ctx, self.tools_height, &self.tools_height_reset);
-        let frame = egui::Frame::new().fill(PANEL).inner_margin(12.0);
+        let frame = egui::Frame::new().fill(PANEL).inner_margin(8.0);
         egui::TopBottomPanel::bottom("tools")
             .default_height(245.0)
             .height_range(150.0..=500.0)
@@ -2554,74 +2516,64 @@ impl CedarApp {
                 if let Some(height) = resize.reserve_and_capture(ui, &frame) {
                     self.tools_height = Some(height);
                 }
-                ui.horizontal_wrapped(|ui| {
-                    for (tool, label) in [
-                        (Tool::Search, "FIND RESULTS"),
-                        (Tool::Git, "GIT CHANGES"),
-                        (Tool::Run, "COMMANDS"),
-                        (Tool::Language, "LANGUAGE"),
-                        (Tool::Tests, "TEST RESULTS"),
-                    ] {
-                        let response = ui.selectable_label(self.tool == tool, label).on_hover_text(
-                            "Ctrl/Cmd+J hides tools or returns to the selected tool",
-                        );
+                ui.scope(|ui| {
+                    ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        let font = egui::TextStyle::Button.resolve(ui.style()).size;
+                        ui.set_row_height(if font > 15.0 { 34.0 } else { 28.0 });
+                        let label = match self.tool {
+                            Tool::Search => "FIND RESULTS",
+                            Tool::Git => "GIT CHANGES",
+                            Tool::Run => "COMMANDS",
+                            Tool::Language => "LANGUAGE",
+                            Tool::Tests => "TEST RESULTS",
+                        };
+                        let response = ui
+                            .add(
+                                egui::Label::new(RichText::new(label).strong())
+                                    .sense(egui::Sense::focusable_noninteractive()),
+                            )
+                            .on_hover_text(
+                                "Ctrl/Cmd+J hides tools or returns to the selected tool",
+                            );
                         self.workspace_access
-                            .record(workspace_access::Target::Tool(tool), &response);
+                            .record(workspace_access::Target::Tool(self.tool), &response);
                         #[cfg(test)]
                         workspace_access_tests::record(ui, label, &response);
-                        if response.clicked() {
-                            self.tool = tool;
+                        // A nested non-wrapping row does not wrap with its parent.
+                        // Match small Button sizing: Body text, horizontal frame
+                        // padding, and an inside stroke that adds no layout width.
+                        let controls_width = ["x", "Automatic height"]
+                            .into_iter()
+                            .map(|label| shell_button_width(ui, label, true))
+                            .sum::<f32>()
+                            + ui.spacing().item_spacing.x;
+                        if controls_width > ui.available_size_before_wrap().x {
+                            ui.end_row();
                         }
-                    }
-                    // A nested non-wrapping row does not wrap with its parent.
-                    // Match small Button sizing: Body text, horizontal frame
-                    // padding, and an inside stroke that adds no layout width.
-                    let button_padding = if ui.visuals().button_frame {
-                        2.0 * ui.spacing().button_padding.x
-                    } else {
-                        0.0
-                    };
-                    let controls_width = ["x", "Automatic height"]
-                        .into_iter()
-                        .map(|label| {
-                            egui::WidgetText::from(label)
-                                .text_style(egui::TextStyle::Body)
-                                .into_galley(
-                                    ui,
-                                    Some(egui::TextWrapMode::Extend),
-                                    f32::INFINITY,
-                                    egui::TextStyle::Button,
-                                )
-                                .size()
-                                .x
-                                + button_padding
-                        })
-                        .sum::<f32>()
-                        + ui.spacing().item_spacing.x;
-                    if controls_width > ui.available_size_before_wrap().x {
-                        ui.end_row();
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let close = ui
-                            .small_button("x")
-                            .on_hover_text("Hide tools and return to editor · Ctrl/Cmd+J");
-                        #[cfg(test)]
-                        workspace_access_tests::record(ui, "close_tools", &close);
-                        if close.clicked() {
-                            close_tools = Some(close);
-                        }
-                        let reset = ui
-                            .push_id("tools_automatic_height", |ui| {
-                                ui.add_enabled(
-                                    self.tools_height.is_some(),
-                                    egui::Button::new("Automatic height").small(),
-                                )
-                            })
-                            .inner
-                            .on_hover_text("Let tool content determine the panel height");
-                        #[cfg(test)]
-                        workspace_access_tests::record(ui, "tools_automatic_height", &reset);
-                        automatic_height |= reset.clicked();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let close = ui
+                                .small_button("x")
+                                .on_hover_text("Hide tools and return to editor · Ctrl/Cmd+J");
+                            #[cfg(test)]
+                            workspace_access_tests::record(ui, "close_tools", &close);
+                            if close.clicked() {
+                                close_tools = Some(close);
+                            }
+                            let reset = ui
+                                .push_id("tools_automatic_height", |ui| {
+                                    ui.add_enabled(
+                                        self.tools_height.is_some(),
+                                        egui::Button::new("Automatic height").small(),
+                                    )
+                                })
+                                .inner
+                                .on_hover_text("Let tool content determine the panel height");
+                            #[cfg(test)]
+                            workspace_access_tests::record(ui, "tools_automatic_height", &reset);
+                            automatic_height |= reset.clicked();
+                        });
                     });
                 });
                 ui.separator();
@@ -2764,9 +2716,16 @@ impl CedarApp {
                         ui.colored_label(GREEN, "Your workspace is connected");
                         ui.label(&self.root);
                         ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Open a file  ·  Ctrl/Cmd+P").clicked() {
-                                self.show_file_chooser();
+                        ui.horizontal_wrapped(|ui| {
+                            let label = if self.backend_file_discovery_supported() { "Find project files · Ctrl/Cmd+Shift+N" } else { "Open and loaded files · Ctrl/Cmd+Shift+N" };
+                            let files = ui.button(label);
+                            #[cfg(test)]
+                            workspace_access_tests::record(ui, "welcome_files", &files);
+                            if files.clicked() {
+                                self.show_browse(browse::Provider::Files);
+                            }
+                            if ui.button("Search project text").clicked() {
+                                self.show_browse(browse::Provider::ProjectText);
                             }
                             if ui.button("New file").clicked() {
                                 self.explorer_new_file();
@@ -2775,7 +2734,7 @@ impl CedarApp {
                         ui.add_space(16.0);
                         ui.label(
                             RichText::new(
-                                "Browse folders on the left, or search the whole project below.",
+                                "Browse Project on the left. Files and Project Text open the shared search; Find Results returns to your retained results.",
                             )
                             .color(MUTED),
                         );
@@ -2926,61 +2885,69 @@ impl CedarApp {
         enter_input: Option<enter_indent::FrameInput>,
         duplicate_input: Option<duplicate_lines::FrameInput>,
     ) {
-        self.history_controls(ui);
         let mut activate = None;
         let mut close = None;
-        egui::ScrollArea::horizontal()
-            .id_salt("tabs")
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for doc in &self.documents {
-                        let active = Some(doc.id) == self.active_document;
-                        egui::Frame::new()
-                            .fill(if active {
-                                Color32::from_rgb(35, 45, 57)
-                            } else {
-                                BG
-                            })
-                            .inner_margin(egui::Margin::symmetric(9, 5))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    let name = doc.path.rsplit('/').next().unwrap_or(&doc.path);
-                                    let suffix = if doc.saving {
-                                        "  ~"
-                                    } else if doc.dirty() {
-                                        "  *"
-                                    } else {
-                                        ""
-                                    };
-                                    if ui
-                                        .add(
-                                            egui::Button::new(
-                                                RichText::new(format!("{name}{suffix}"))
-                                                    .color(if active { GREEN } else { MUTED }),
-                                            )
-                                            .frame(false),
-                                        )
-                                        .on_hover_text(&doc.path)
-                                        .clicked()
-                                    {
-                                        activate = Some(doc.id);
-                                    }
-                                    if ui
-                                        .add(
-                                            egui::Button::new(RichText::new("x").color(MUTED))
-                                                .small()
+        ui.horizontal(|ui| {
+            self.history_controls(ui);
+            egui::ScrollArea::horizontal()
+                .id_salt("tabs")
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for doc in &self.documents {
+                            let active = Some(doc.id) == self.active_document;
+                            egui::Frame::new()
+                                .fill(if active {
+                                    Color32::from_rgb(35, 45, 57)
+                                } else {
+                                    BG
+                                })
+                                .inner_margin(egui::Margin::symmetric(9, 5))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let name = doc.path.rsplit('/').next().unwrap_or(&doc.path);
+                                        let suffix = if doc.saving {
+                                            "  ~"
+                                        } else if doc.dirty() {
+                                            "  *"
+                                        } else {
+                                            ""
+                                        };
+                                        let tab = ui
+                                            .add(
+                                                egui::Button::new(
+                                                    RichText::new(format!("{name}{suffix}"))
+                                                        .color(if active { GREEN } else { MUTED }),
+                                                )
                                                 .frame(false),
-                                        )
-                                        .on_hover_text("Close tab · Ctrl/Cmd+W")
-                                        .clicked()
-                                    {
-                                        close = Some(doc.id);
-                                    }
+                                            )
+                                            .on_hover_text(&doc.path);
+                                        #[cfg(test)]
+                                        workspace_access_tests::record(
+                                            ui,
+                                            &format!("editor_tab:{}", doc.id),
+                                            &tab,
+                                        );
+                                        if tab.clicked() {
+                                            activate = Some(doc.id);
+                                        }
+                                        if ui
+                                            .add(
+                                                egui::Button::new(RichText::new("x").color(MUTED))
+                                                    .small()
+                                                    .frame(false),
+                                            )
+                                            .on_hover_text("Close tab · Ctrl/Cmd+W")
+                                            .clicked()
+                                        {
+                                            close = Some(doc.id);
+                                        }
+                                    });
                                 });
-                            });
-                    }
+                        }
+                    });
                 });
-            });
+        });
+        self.history_message(ui);
         let activate = activate.filter(|_| {
             ui.is_enabled()
                 && !self.navigation.blocks_editor()
@@ -3350,6 +3317,7 @@ impl CedarApp {
 
 impl eframe::App for CedarApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        workspace_access::capture_input(self, ctx, raw_input);
         self.editor_tab_input = editor_tab::FrameInput::capture(self, ctx, raw_input);
         self.duplicate_input = self.capture_duplicate_input(ctx, raw_input);
         self.tools_height_reset.begin_input_frame(raw_input);
@@ -3368,6 +3336,7 @@ impl eframe::App for CedarApp {
         self.capture_test_report_input(ctx, raw_input, &mut consumed);
         self.capture_search_input(ctx, raw_input, &mut consumed);
         self.explorer_tree_input(ctx, raw_input, explorer_input, &mut consumed);
+        workspace_access::finish_input_capture(ctx, raw_input, &mut consumed);
         self.finish_browse_input_capture(ctx, &raw_input.events, &consumed);
         let mut index = 0;
         raw_input.events.retain(|_| {
@@ -3430,7 +3399,7 @@ impl eframe::App for CedarApp {
             self.sidebar(ctx);
         }
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BG).inner_margin(12.0))
+            .frame(egui::Frame::new().fill(BG).inner_margin(8.0))
             .show(ctx, |ui| {
                 if self.documents.is_empty() {
                     self.welcome(ui, ctx);
@@ -3467,6 +3436,27 @@ impl eframe::App for CedarApp {
         self.finish_java_parameter_info_frame();
         self.finish_search_frame(ctx);
         self.browse_finish_frame(ctx);
+    }
+}
+
+fn shell_button_width(ui: &egui::Ui, text: &str, small: bool) -> f32 {
+    let text = egui::WidgetText::from(text);
+    let text = if small {
+        text.text_style(egui::TextStyle::Body)
+    } else {
+        text
+    };
+    text.into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    )
+    .size()
+    .x + if ui.visuals().button_frame {
+        2.0 * ui.spacing().button_padding.x
+    } else {
+        0.0
     }
 }
 

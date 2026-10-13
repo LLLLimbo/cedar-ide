@@ -24,7 +24,7 @@ TEST_NAME = "scoped_search_process_tests::normal_agent_scoped_search_is_explicit
 PREFIX = "scoped_search_acceptance "
 COMPILE_TIMEOUT = 120
 RUNTIME_TIMEOUT = 420
-SOURCE_VERSION = "0.62.2"
+SOURCE_VERSION = "0.63.0"
 QUERY = "needle café 😀"
 CASES = [
     "trust_off_normal_agent", "legacy_search_compatibility", "explicit_directory_and_mask",
@@ -72,6 +72,9 @@ def expected_receipt(platform="linux"):
         "complete_native_history_preserved": True, "native_undo_redo_preserved": True,
         "source_disk_unchanged": True, "exact_operation_ledger_verified": True,
         "optional_font_probe_untriggered": True,
+        "shell_project_focus_retains_find": True, "shell_find_reopen_query_fallback": True,
+        "shell_hide_exact_editor_return": True, "shell_state_preserved": True,
+        "shell_transition_operations": 0,
         "shared_active_seconds": 340, "request_admission_seconds": 30,
         "cleanup_timeout_seconds": 30, "proof_watchdog_seconds": 390,
         "owned_children_reaped": True, "watchdog_joined": True, "fixture_removed": True,

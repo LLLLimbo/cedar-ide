@@ -71,6 +71,28 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(data=data), self.assertRaises(proof.AcceptanceError):
                 proof.validate_execution(data)
 
+    def test_shell_contract_requires_true_observations_and_exact_zero_operations(self):
+        # Assert the new contract separately from producer-generated fixtures.
+        expected = {
+            "shell_project_focus_retains_find": True,
+            "shell_find_reopen_query_fallback": True,
+            "shell_hide_exact_editor_return": True,
+            "shell_state_preserved": True,
+            "shell_transition_operations": 0,
+        }
+        for platform in ("linux", "windows"):
+            receipt = proof.expected_receipt(platform)
+            self.assertEqual({key: receipt[key] for key in expected}, expected)
+            for key, required in expected.items():
+                self.assertIs(type(receipt[key]), type(required))
+                wrong = (False, 1, "true", None) if required is True else (1, False, 0.0, "0", None)
+                for value in wrong:
+                    with self.subTest(platform=platform, key=key, value=value), self.assertRaises(proof.AcceptanceError):
+                        proof.validate_execution(execution({**receipt, key: value}, platform), platform)
+                missing = {name: value for name, value in receipt.items() if name != key}
+                with self.subTest(platform=platform, missing=key), self.assertRaises(proof.AcceptanceError):
+                    proof.validate_execution(execution(missing, platform), platform)
+
 
 class DriverTests(unittest.TestCase):
     def fixture(self, platform="linux", failure=None, invalid=None, mutate_agent=False):

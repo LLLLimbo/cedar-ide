@@ -120,8 +120,12 @@ fn frame(
         },
         |ctx| {
             if sidebar {
-                app.sidebar(ctx);
+                app.header(ctx);
+                app.footer(ctx);
+                app.notifications(ctx);
                 app.tools(ctx);
+                app.sidebar(ctx);
+                egui::CentralPanel::default().show(ctx, |_| {});
             } else {
                 egui::CentralPanel::default().show(ctx, |ui| app.git_panel(ui));
             }
@@ -678,14 +682,16 @@ fn opening_panel_and_idle_frames_never_issue_git_reads_and_legacy_fallback_remai
 }
 
 #[test]
-fn clicking_git_tab_does_not_scan_and_only_refresh_button_issues_status() {
+fn choosing_git_menu_does_not_scan_and_only_refresh_button_issues_status() {
     let (mut app, rx) = connected();
     let ctx = egui::Context::default();
-    // First layout pass settles the bottom-aligned sidebar controls.
     frame(&mut app, &ctx, vec![], true);
     let output = frame(&mut app, &ctx, vec![], true);
-    let tab = text_rect(&output, "Git").unwrap().center();
-    click(&mut app, &ctx, tab, true);
+    let menu = text_rect(&output, "Tools").unwrap().center();
+    click(&mut app, &ctx, menu, true);
+    let output = frame(&mut app, &ctx, vec![], true);
+    let git = text_rect(&output, "Git Changes").unwrap().center();
+    click(&mut app, &ctx, git, true);
     assert!(app.tool == Tool::Git && app.tools_open);
     assert!(rx.try_recv().is_err());
     let output = frame(&mut app, &ctx, vec![], true);

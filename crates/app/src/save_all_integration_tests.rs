@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 const ROOT: &str = "/project";
 const BASE: &str = "saved text\n";
-const MENU_TRIGGER: &str = "...";
+const MENU_TRIGGER: &str = "Workspace";
 const MENU_SAVE_ALL: &str = "Save all editor buffers · Ctrl/Cmd+Shift+S";
 const MENU_CANCEL: &str = "Cancel remaining saves";
 
@@ -725,30 +725,33 @@ fn save_controls_and_menu_are_visible_and_clickable_at_supported_minimum_width()
     frame(&mut app, 0.0, vec![]);
     let output = frame(&mut app, 0.1, vec![]);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(780.0, 540.0));
+    let trigger = label_rect(&output, MENU_TRIGGER);
+    assert!(screen.contains_rect(trigger));
+    let menu = open_save_menu(&mut app, 1.0);
     for label in [
-        "Save",
-        MENU_TRIGGER,
-        "Recovery",
-        "Open workspace",
+        "Save file · Ctrl/Cmd+S",
+        "Recovery…",
+        "Open workspace…",
         "Reconnect",
-        "Open file",
+        "Open and loaded files · Ctrl/Cmd+P",
+        MENU_SAVE_ALL,
+        MENU_CANCEL,
+        "Copy to new draft…",
     ] {
-        let (text, clip) = labels(&output)
+        let (text, clip) = labels(&menu)
             .into_iter()
             .find(|(text, _)| text.galley.job.text == label)
-            .unwrap_or_else(|| panic!("missing header control {label}"));
+            .unwrap_or_else(|| panic!("missing workspace action {label}"));
         let rect = text.visual_bounding_rect();
         assert!(
-            screen.expand(1.0).contains_rect(rect),
+            screen.contains_rect(rect),
             "{label} outside minimum window: {rect:?}"
         );
         assert!(
-            clip.expand(1.0).contains_rect(rect),
+            clip.contains_rect(rect),
             "{label} clipped at minimum width: {rect:?}"
         );
-        assert!(rect.bottom() <= 54.0, "{label} escaped header");
     }
-    let menu = open_save_menu(&mut app, 1.0);
     let at = label_rect(&menu, MENU_SAVE_ALL).center();
     assert!(screen.contains(at));
     click(&mut app, 1.1, at);
@@ -757,18 +760,18 @@ fn save_controls_and_menu_are_visible_and_clickable_at_supported_minimum_width()
 }
 
 #[test]
-fn save_menu_trigger_shows_save_actions_only_on_pointer_hover() {
+fn workspace_trigger_shows_identity_only_on_pointer_hover() {
     let (mut app, commands) = app();
     frame(&mut app, 0.0, vec![]);
     let output = frame(&mut app, 0.01, vec![]);
     let at = label_rect(&output, MENU_TRIGGER).center();
-    assert!(!has_label(&output, "Save actions"));
+    assert!(!has_label(&output, ROOT));
     let delay = f64::from(app.editor_ctx.style().interaction.tooltip_delay);
     frame(&mut app, 0.1, vec![egui::Event::PointerMoved(at)]);
     // Allow egui's real hover delay and tooltip sizing pass to settle.
     frame(&mut app, 1.1 + delay, vec![]);
     let hovered = frame(&mut app, 1.2 + delay, vec![]);
-    assert!(has_label(&hovered, "Save actions"));
+    assert!(has_label(&hovered, ROOT));
     assert!(!has_label(&hovered, MENU_SAVE_ALL));
     assert!(!has_label(&hovered, MENU_CANCEL));
     assert!(!app.save_all_busy());

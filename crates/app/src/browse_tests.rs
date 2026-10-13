@@ -1766,7 +1766,7 @@ fn browse_row_continuity_bottom_click_cannot_qualify_reopened_browse_row() {
     continuity_tick(&mut app, 1.0, vec![]);
     continuity_click(&mut app, "browse_row:0", false);
     continuity_tick(&mut app, 0.01, key(egui::Key::Escape));
-    click(&mut app, "sidebar_Search");
+    click(&mut app, "find_results_entry");
     for _ in 0..3 {
         continuity_tick(&mut app, 0.01, vec![]);
     }
@@ -2477,7 +2477,7 @@ fn browse_windows_history_and_project_aliases_keep_original_mixed_and_repeat_own
     frame(&mut app, project.clone());
     assert_eq!(
         focused(&app),
-        Some(recorded_response(&app, "explorer_refresh").id)
+        Some(recorded_response(&app, "origin.txt").id)
     );
     click(&mut app, "editor");
     let editor_selection = selection_signature(selection(&app));
@@ -4313,6 +4313,81 @@ const NORMAL_CALL: std::time::Duration = std::time::Duration::from_secs(30);
 const NORMAL_CLEANUP: std::time::Duration = std::time::Duration::from_secs(30);
 const NORMAL_TOTAL: std::time::Duration = std::time::Duration::from_secs(300);
 
+// Read-only shell witness shared by the two normal-agent journeys. Observe
+// complete native Undo/Redo entries, including cursor affinity, rather than
+// equating an unchanged text buffer with an unchanged editor/history state.
+pub(super) fn normal_shell_snapshot(app: &CedarApp) -> serde_json::Value {
+    let documents: Vec<_> = app
+        .documents
+        .iter()
+        .map(|document| {
+            let state =
+                egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", document.id)))
+                    .expect("normal shell proof document has native editor state");
+            let selection = state.cursor.char_range().unwrap();
+            let history: Vec<_> = [false, true]
+                .into_iter()
+                .map(|redo| {
+                    let mut undoer = state.undoer();
+                    let mut current = (selection, document.text.clone());
+                    let mut entries = Vec::new();
+                    for _ in 0..=editor_state::MAX_UNDO_STATES + 1 {
+                        let next = if redo {
+                            undoer.redo(&current)
+                        } else {
+                            undoer.undo(&current)
+                        }
+                        .cloned();
+                        let Some(next) = next else { break };
+                        entries.push((selection_signature(next.0), next.1.clone()));
+                        current = next;
+                    }
+                    assert!(entries.len() <= editor_state::MAX_UNDO_STATES + 1);
+                    entries
+                })
+                .collect();
+            serde_json::json!({
+                "id": document.id, "path": document.path,
+                "text": document.text, "saved_text": document.saved_text,
+                "revision": document.revision, "dirty": document.dirty(),
+                "cursor": document.cursor, "edit_version": document.edit_version,
+                "selection": selection_signature(selection), "history": history,
+            })
+        })
+        .collect();
+    let locations = |stack: &[location_history::Location]| {
+        stack
+            .iter()
+            .map(|location| {
+                (
+                    location.generation,
+                    location.document,
+                    location.edit_version,
+                    selection_signature(location.selection),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let groups = app.search_state.group_rows();
+    let expanded: Vec<_> = groups
+        .iter()
+        .map(|group| (group[0], app.search_state.group_expanded(group[0])))
+        .collect();
+    serde_json::json!({
+        "active_document": app.active_document, "documents": documents,
+        "back": locations(&app.location_history.back),
+        "forward": locations(&app.location_history.forward),
+        "navigation_pending": app.location_history.pending.is_some(),
+        "navigation_message": app.location_history.message,
+        "query": app.search_query, "scope": app.search_scope, "masks": app.search_masks,
+        "results": app.search_results, "truncated": app.search_truncated,
+        "request": app.search_request, "selected": app.search_state.selected_index(),
+        "snapshot": app.search_state.accepted_snapshot_id().map(|id| id.value()),
+        "rows_active": app.search_rows_active(), "groups": groups, "expanded": expanded,
+        "visible": app.search_state.visible_indices(), "preview": app.has_search_preview(),
+    })
+}
+
 // One normal Client owner, sharing the actual-frame helpers above. The generated
 // root is retained from creation and deleted only after explicit verified close;
 // neither a panic nor the cancellation watchdog can silently delete evidence.
@@ -4332,6 +4407,11 @@ struct NormalBrowse {
     reopen_keeps_selection: bool,
     grouped_navigation_additional_operations: Option<usize>,
     retained_dirty_preview_additional_reads: Option<usize>,
+    shell_project_focus_retains_find: bool,
+    shell_find_reopen_active_hit: bool,
+    shell_hide_exact_editor_return: bool,
+    shell_state_preserved: bool,
+    shell_transition_operations: Option<usize>,
 }
 
 fn source_digest(path: &std::path::Path) -> String {
@@ -4421,6 +4501,11 @@ impl NormalBrowse {
             reopen_keeps_selection: false,
             grouped_navigation_additional_operations: None,
             retained_dirty_preview_additional_reads: None,
+            shell_project_focus_retains_find: false,
+            shell_find_reopen_active_hit: false,
+            shell_hide_exact_editor_return: false,
+            shell_state_preserved: false,
+            shell_transition_operations: None,
         };
         proof.admit_call();
         // Client's constructor performs one ordinary 30-second Hello. Register
@@ -4491,6 +4576,11 @@ impl NormalBrowse {
         assert!(self.reopen_keeps_selection);
         assert_eq!(self.grouped_navigation_additional_operations, Some(0));
         assert_eq!(self.retained_dirty_preview_additional_reads, Some(0));
+        assert!(self.shell_project_focus_retains_find);
+        assert!(self.shell_find_reopen_active_hit);
+        assert!(self.shell_hide_exact_editor_return);
+        assert!(self.shell_state_preserved);
+        assert_eq!(self.shell_transition_operations, Some(0));
         assert_eq!(
             self.ledger,
             vec![
@@ -4540,6 +4630,11 @@ impl NormalBrowse {
                 "reopen_keeps_selection": self.reopen_keeps_selection,
                 "grouped_navigation_additional_operations": self.grouped_navigation_additional_operations.unwrap(),
                 "retained_dirty_preview_additional_reads": self.retained_dirty_preview_additional_reads.unwrap(),
+                "shell_project_focus_retains_find": self.shell_project_focus_retains_find,
+                "shell_find_reopen_active_hit": self.shell_find_reopen_active_hit,
+                "shell_hide_exact_editor_return": self.shell_hide_exact_editor_return,
+                "shell_state_preserved": self.shell_state_preserved,
+                "shell_transition_operations": self.shell_transition_operations.unwrap(),
             })
         );
     }
@@ -4768,6 +4863,11 @@ fn browse_normal_agent_find_preview_open_and_exact_return() {
     assert_eq!(app.search_state.selected_index(), Some(origin));
     assert!(!app.search_state.group_expanded(target));
     assert!(!app.has_search_preview());
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, &format!("search_row:{origin}")).id),
+        "Ctrl+J reopen must focus the retained active hit"
+    );
     click(&mut app, &format!("search_group:{target}"));
     settle(&mut app);
     click(&mut app, &format!("search_row:{target}"));
@@ -4796,6 +4896,48 @@ fn browse_normal_agent_find_preview_open_and_exact_return() {
     assert!(app.location_history.back.is_empty());
     assert_eq!(app.location_history.forward.len(), 1);
     proof.text_open_back_exact = true;
+
+    let shell_ledger_start = proof.ledger.len();
+    let shell_state = normal_shell_snapshot(&app);
+    let editor = recorded_response(&app, "editor").id;
+    assert_eq!(focused(&app), Some(editor));
+    frame(
+        &mut app,
+        modified_key(egui::Key::Num1, egui::Modifiers::ALT),
+    );
+    settle(&mut app);
+    let project = recorded_response(&app, "origin.txt");
+    assert!(project.enabled() && project.sense.is_focusable());
+    assert!(recorded_clip(&app, "origin.txt").contains_rect(project.rect));
+    assert_eq!(focused(&app), Some(project.id));
+    assert!(app.tools_open && app.tool == Tool::Search);
+    assert_eq!(normal_shell_snapshot(&app), shell_state);
+    assert!(commands.try_recv().is_err());
+    proof.shell_project_focus_retains_find = true;
+
+    frame(&mut app, modified_key(egui::Key::J, command_modifiers()));
+    settle(&mut app);
+    assert!(!app.tools_open);
+    assert_eq!(focused(&app), Some(editor));
+    assert_eq!(recorded_response(&app, "editor").id, editor);
+    assert_eq!(normal_shell_snapshot(&app), shell_state);
+    assert!(commands.try_recv().is_err());
+    proof.shell_hide_exact_editor_return = true;
+
+    click(&mut app, "find_results_entry");
+    settle(&mut app);
+    assert!(app.tools_open && app.tool == Tool::Search);
+    let hit_probe = format!("search_row:{target}");
+    let hit = recorded_response(&app, &hit_probe);
+    assert!(hit.enabled() && recorded_clip(&app, &hit_probe).contains_rect(hit.rect));
+    assert_eq!(focused(&app), Some(hit.id));
+    assert_eq!(normal_shell_snapshot(&app), shell_state);
+    assert_draft_revision(&app, departure, &undo, &revision);
+    assert!(commands.try_recv().is_err());
+    proof.shell_find_reopen_active_hit = true;
+    proof.shell_state_preserved = true;
+    proof.shell_transition_operations = Some(proof.ledger.len() - shell_ledger_start);
+
     click(&mut app, "close_tools");
     settle(&mut app);
     assert!(!app.tools_open);

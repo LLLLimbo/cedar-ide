@@ -135,6 +135,16 @@ pub(crate) struct LoadedFile<'a> {
     pub admission: FileAdmission,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct FocusIdentity {
+    mode: Mode,
+    mode_epoch: u64,
+    epoch: u64,
+    selected: String,
+    directory: String,
+    flat_admission: Option<(u64, String)>,
+}
+
 pub(crate) fn row_id(path: &str) -> egui::Id {
     egui::Id::new(("explorer_tree_row", path))
 }
@@ -463,6 +473,37 @@ impl Explorer {
 }
 
 impl CedarApp {
+    pub(super) fn project_focus_identity(&self) -> FocusIdentity {
+        FocusIdentity {
+            mode: self.explorer.mode,
+            mode_epoch: self.explorer.mode_epoch,
+            epoch: self.explorer.epoch,
+            selected: self.explorer.selected.clone(),
+            directory: self.directory.clone(),
+            flat_admission: self.explorer.flat_admission.clone(),
+        }
+    }
+
+    pub(super) fn project_focus_row_current(&self, path: &str) -> bool {
+        self.ready()
+            && if self.explorer.mode == Mode::Flat {
+                self.explorer
+                    .flat_admission
+                    .as_ref()
+                    .is_some_and(|(_, directory)| directory == &self.directory)
+            } else {
+                // The caller supplies a row from this pass's visible_rows output.
+                // Its parent snapshot and the final mode/epoch check prove its
+                // currentness without rebuilding the whole tree for every row.
+                path.is_empty()
+                    || self
+                        .explorer
+                        .branches
+                        .get(&parent_path(path))
+                        .is_some_and(|branch| branch.entries.is_some())
+            }
+    }
+
     fn explorer_input_blocked(&self, ctx: &egui::Context) -> bool {
         !self.ready()
             || self.explorer.mode != Mode::Tree

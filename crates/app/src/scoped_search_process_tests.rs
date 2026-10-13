@@ -1,6 +1,7 @@
 //! One finite ten-call proof against the normal, untrusted shipping agent.
 //! Agent-operation evidence is not evidence of operating-system file-open counts.
 use super::*;
+use crate::browse_tests::normal_shell_snapshot;
 use crate::scoped_search_tests::{command_modifiers, key, pointer};
 use crate::workspace_access_tests::{recorded_clip, recorded_rect, recorded_response};
 use cedar_client::{Client, ConnectionCancellation};
@@ -358,7 +359,7 @@ impl Harness {
             "scoped normal-agent handshake not applied",
         )?;
         require(
-            env!("CARGO_PKG_VERSION") == "0.62.2"
+            env!("CARGO_PKG_VERSION") == "0.63.0"
                 && self.app.agent_info.as_ref().is_some_and(|info| {
                     info.version == env!("CARGO_PKG_VERSION")
                         && info.os == if cfg!(windows) { "windows" } else { "linux" }
@@ -912,6 +913,66 @@ fn normal_agent_scoped_search_is_explicit_local_and_source_bound() -> Check<()> 
         "filter edits dispatched requests or revived stale authority",
     )?;
     h.case(CASES[10])?;
+
+    // Keep the complete no-match and retired-filter cases intact. Shell
+    // transitions now prove that their absent result authority falls back to
+    // the real query response without dispatching a replacement search.
+    let before_shell = h.ledger.len();
+    let shell_state = normal_shell_snapshot(&h.app);
+    let editor = recorded_response(&h.app, "editor").id;
+    let project_probe = h
+        .app
+        .entries
+        .first()
+        .ok_or("normal root Project row absent")?
+        .name
+        .clone();
+    h.frame(key(egui::Key::Num1, egui::Modifiers::ALT))?;
+    h.settle()?;
+    let project = recorded_response(&h.app, &project_probe);
+    require(
+        project.enabled()
+            && project.sense.is_focusable()
+            && recorded_clip(&h.app, &project_probe).contains_rect(project.rect)
+            && h.app.editor_ctx.memory(|m| m.focused()) == Some(project.id)
+            && h.app.tools_open
+            && h.app.tool == Tool::Search,
+        "Alt+1 did not focus useful Project content while retaining Find",
+    )?;
+    require(
+        normal_shell_snapshot(&h.app) == shell_state,
+        "Project focus changed retained Find or full editor state",
+    )?;
+
+    h.frame(key(egui::Key::J, command_modifiers()))?;
+    h.settle()?;
+    require(
+        !h.app.tools_open
+            && h.app.editor_ctx.memory(|m| m.focused()) == Some(editor)
+            && recorded_response(&h.app, "editor").id == editor,
+        "Ctrl+J hide did not restore the exact editor response",
+    )?;
+    require(
+        normal_shell_snapshot(&h.app) == shell_state,
+        "Ctrl+J hide changed retained Find or full editor state",
+    )?;
+
+    h.click("find_results_entry", false)?;
+    h.settle()?;
+    require(
+        h.app.tools_open
+            && h.app.tool == Tool::Search
+            && h.app.editor_ctx.memory(|m| m.focused())
+                == Some(recorded_response(&h.app, "search_query").id)
+            && !h.app.search_rows_active(),
+        "Find reopen did not fall back to the real query for inactive results",
+    )?;
+    require(
+        normal_shell_snapshot(&h.app) == shell_state && h.ledger.len() == before_shell,
+        "shell transitions changed full retained state or dispatched operations",
+    )?;
+    let shell_transition_operations = h.ledger.len() - before_shell;
+
     require(
         h.ledger == expected_ledger(),
         "exact ten-call operation ledger differed",
@@ -945,6 +1006,8 @@ fn normal_agent_scoped_search_is_explicit_local_and_source_bound() -> Check<()> 
         "shared_filter_controls":true,"exact_scoped_echo_validated":true,"complete_no_match":true,
         "dirty_text_and_baseline_preserved":true,"full_selection_affinity_preserved":true,"complete_native_history_preserved":true,"native_undo_redo_preserved":true,
         "source_disk_unchanged":true,"exact_operation_ledger_verified":true,"optional_font_probe_untriggered":true,
+        "shell_project_focus_retains_find":true,"shell_find_reopen_query_fallback":true,
+        "shell_hide_exact_editor_return":true,"shell_state_preserved":true,"shell_transition_operations":shell_transition_operations,
         "shared_active_seconds":340,"request_admission_seconds":30,"cleanup_timeout_seconds":30,"proof_watchdog_seconds":390,
         "owned_children_reaped":true,"watchdog_joined":true,"fixture_removed":true
     });

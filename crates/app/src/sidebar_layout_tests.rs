@@ -2,13 +2,6 @@
 //! widgets outside the paint clip. Test-only probes do not affect widget IDs.
 use super::*;
 
-const TOOLS: [(Tool, &str); 5] = [
-    (Tool::Search, "Search"),
-    (Tool::Git, "Git"),
-    (Tool::Run, "Run"),
-    (Tool::Language, "LSP"),
-    (Tool::Tests, "Tests"),
-];
 const PROBE: &str = "sidebar_layout_test_probe";
 const REVEAL_DIAGNOSTIC: &str = "sidebar_reveal_diagnostic";
 // The selected matrix case has eight existing frames and egui allows two
@@ -170,14 +163,11 @@ fn record_diagnostic_pass(
             .as_ref()
             .and_then(|snapshot| snapshot.outer.as_ref());
         let search = snapshot.as_ref().and_then(|snapshot| {
-            snapshot
-                .widgets
-                .get("Search")
-                .map(|widget| WidgetDiagnostic {
-                    rect: rect_coordinates(widget.rect),
-                    paint_clip: rect_coordinates(widget.clip),
-                    reveal: snapshot.reveals.get(&widget.id).cloned(),
-                })
+            snapshot.widgets.get("help").map(|widget| WidgetDiagnostic {
+                rect: rect_coordinates(widget.rect),
+                paint_clip: rect_coordinates(widget.clip),
+                reveal: snapshot.reveals.get(&widget.id).cloned(),
+            })
         });
         trace.passes.push(PassDiagnostic {
             stage: trace.stage,
@@ -530,26 +520,7 @@ fn key(app: &mut CedarApp, size: [f32; 2], key: egui::Key, modifiers: egui::Modi
     }
     settle(app, size);
 }
-fn click(app: &mut CedarApp, size: [f32; 2], label: &str) {
-    assert_visible(app, label);
-    let at = widget(app, label).rect.center();
-    for pressed in [true, false] {
-        frame(
-            app,
-            size,
-            vec![
-                egui::Event::PointerMoved(at),
-                egui::Event::PointerButton {
-                    pos: at,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
-    }
-    settle(app, size);
-}
+
 fn wheel(app: &mut CedarApp, size: [f32; 2], at: egui::Pos2, delta: f32) {
     frame(
         app,
@@ -588,7 +559,7 @@ fn assert_geometry(app: &CedarApp, width: f32) {
         "sidebar expanded: {sidebar:?} / {width}"
     );
     assert!(
-        (sidebar.shrink(12.0).right() - outer.rect.right() - 10.0).abs() < 0.1,
+        (sidebar.shrink(8.0).right() - outer.rect.right() - 10.0).abs() < 0.1,
         "outer gutter changed"
     );
     assert!(
@@ -597,23 +568,11 @@ fn assert_geometry(app: &CedarApp, width: f32) {
     );
     assert!(outer.rect.is_finite() && explorer.rect.is_finite());
     assert!(outer.offset.is_finite() && explorer.offset.is_finite());
-    let controls: Vec<_> = TOOLS
-        .iter()
-        .map(|(_, label)| snapshot.widgets[*label].rect)
-        .collect();
-    for (index, control) in controls.iter().enumerate() {
-        assert!(control.left() >= outer.rect.left() && control.right() <= outer.rect.right());
-        assert!(control.bottom() < snapshot.widgets["help"].rect.top());
-        for other in &controls[index + 1..] {
-            assert!(
-                !control.intersects(*other),
-                "controls overlap: {control:?} / {other:?}"
-            );
-        }
-    }
+    let help = snapshot.widgets["help"].rect;
+    assert!(help.left() >= outer.rect.left() && help.right() <= outer.rect.right());
     assert!(
-        explorer.rect.bottom() < controls[0].top(),
-        "explorer overlaps selectors"
+        explorer.rect.bottom() < help.top(),
+        "Project rows overlap help"
     );
     assert!(snapshot.widgets["Up"].rect.bottom() < explorer.rect.top());
 }
@@ -627,20 +586,6 @@ fn sidebar_footer_bounds_cover_narrow_default_wide_and_long_explorer() {
                 app.tools_open = false;
                 settle(&mut app, size);
                 assert_geometry(&app, width);
-                let controls: Vec<_> = TOOLS
-                    .iter()
-                    .map(|(_, label)| widget(&app, label).rect)
-                    .collect();
-                if controls[0].top() != controls[1].top() {
-                    for pair in controls.windows(2) {
-                        assert!(pair[0].bottom() < pair[1].top());
-                    }
-                } else {
-                    assert_eq!(controls[0].top(), controls[1].top());
-                    assert_eq!(controls[1].top(), controls[2].top());
-                    assert_eq!(controls[3].top(), controls[4].top());
-                    assert!(controls[2].bottom() < controls[3].top());
-                }
                 assert_visible(&app, "help");
                 assert!(
                     (widget(&app, "help").rect.bottom()
@@ -664,36 +609,18 @@ fn sidebar_compact_actual_panel_order_keeps_controls_and_help_reachable() {
                     let (mut app, commands) = app(width, long_directory, font_size);
                     load_long_report(&mut app);
                     settle(&mut app, size);
-                    // 245 is the production request. Wrapped tools content may
-                    // enlarge it; exercise that actual, tighter sidebar budget.
-                    let tools = panel(&app, "tools");
-                    assert!(
-                        tools.height() >= 244.0 && tools.top() >= panel(&app, "header").bottom()
-                    );
+                    assert!(panel(&app, "tools").top() >= panel(&app, "header").bottom());
                     assert!(panel(&app, "explorer").bottom() <= panel(&app, "tools").top());
                     assert_geometry(&app, width);
                     let outer_id = snapshot(&app).outer.unwrap().id;
                     let inner_id = snapshot(&app).explorer.unwrap().id;
-                    let selector_ids: Vec<_> = TOOLS
-                        .iter()
-                        .map(|(_, label)| widget(&app, label).id)
-                        .collect();
-                    for (_, label) in TOOLS {
-                        focus(&mut app, size, label);
-                        assert_geometry(&app, width);
-                    }
+                    let help_id = widget(&app, "help").id;
+                    focus(&mut app, size, "help");
                     scroll_outer_bottom(&mut app, size);
                     assert_geometry(&app, width);
                     assert_eq!(snapshot(&app).outer.unwrap().id, outer_id);
                     assert_eq!(snapshot(&app).explorer.unwrap().id, inner_id);
-                    assert_eq!(
-                        TOOLS
-                            .iter()
-                            .map(|(_, label)| widget(&app, label).id)
-                            .collect::<Vec<_>>(),
-                        selector_ids
-                    );
-                    // A focused selector must not keep snapping back during wheel scrolling.
+                    assert_eq!(widget(&app, "help").id, help_id);
                     let offset = snapshot(&app).outer.unwrap().offset;
                     settle(&mut app, size);
                     assert_eq!(snapshot(&app).outer.unwrap().offset, offset);
@@ -725,7 +652,7 @@ fn sidebar_footer_scaling_and_larger_font_do_not_oscillate_gutters() {
                     assert_geometry(&app, width);
                     let now = (
                         snapshot(&app).outer.unwrap().rect,
-                        widget(&app, "Search").rect,
+                        widget(&app, "help").rect,
                         widget(&app, "help").rect,
                     );
                     if let Some(previous) = previous {
@@ -740,109 +667,16 @@ fn sidebar_footer_scaling_and_larger_font_do_not_oscillate_gutters() {
 }
 
 #[test]
-fn sidebar_tool_pointer_targets_open_and_keep_every_tool_selected() {
-    for size in [[780.0, 540.0], [1178.0, 814.0]] {
-        for width in [180.0, 246.0, 460.0] {
-            for font_size in [13.0, 18.0] {
-                let (mut app, commands) = app(width, true, font_size);
-                settle(&mut app, size);
-                for (tool, label) in TOOLS {
-                    app.tools_open = false;
-                    settle(&mut app, size);
-                    focus(&mut app, size, label);
-                    click(&mut app, size, label);
-                    assert!(app.tools_open && app.tool == tool, "failed to open {label}");
-                    if snapshot(&app).outer.is_none() {
-                        // The large-font Language body can use the whole compact
-                        // window. Closing/reopening recovers geometry; changing
-                        // that tools-panel policy is outside this sidebar change.
-                        assert!(size[1] == 540.0 && tool == Tool::Language);
-                        assert!(panel(&app, "explorer").height() <= 24.0);
-                        assert!(snapshot(&app).widgets.is_empty());
-                        app.tools_open = false;
-                        settle(&mut app, size);
-                        focus(&mut app, size, label);
-                    }
-                    click(&mut app, size, label);
-                    assert!(
-                        app.tools_open && app.tool == tool,
-                        "repeat click changed {label}"
-                    );
-                }
-                assert!(commands.try_recv().is_err());
-            }
-        }
-    }
-}
-
-#[test]
-fn sidebar_tool_tab_shift_tab_and_enter_follow_visual_order() {
-    // All tool bodies fit at this height. Compact loaded-Tests reachability is
-    // checked separately; Language can consume all remaining compact height.
-    let size = [1178.0, 814.0];
-    for width in [180.0, 246.0, 460.0] {
-        for font_size in [13.0, 18.0] {
-            let (mut app, commands) = app(width, false, font_size);
-            settle(&mut app, size);
-            focus(&mut app, size, "+");
-            // Flat and Tree are intentional mode controls before the native
-            // inner scrollbar and the tool selectors. Assert their actual order.
-            for label in ["Flat", "Tree"] {
-                key(&mut app, size, egui::Key::Tab, egui::Modifiers::NONE);
-                assert_eq!(
-                    app.editor_ctx.memory(|memory| memory.focused()),
-                    Some(widget(&app, label).id)
-                );
-                assert_visible(&app, label);
-            }
-            // Native egui scrollbars are also focusable Tab stops.
-            for _ in 0..3 {
-                key(&mut app, size, egui::Key::Tab, egui::Modifiers::NONE);
-                if app.editor_ctx.memory(|memory| memory.focused())
-                    == Some(widget(&app, "Search").id)
-                {
-                    break;
-                }
-            }
-            for (index, (tool, label)) in TOOLS.into_iter().enumerate() {
-                if index > 0 {
-                    key(&mut app, size, egui::Key::Tab, egui::Modifiers::NONE);
-                }
-                assert_eq!(
-                    app.editor_ctx.memory(|memory| memory.focused()),
-                    Some(widget(&app, label).id),
-                    "Tab missed {label}; widget ids {:?}",
-                    snapshot(&app)
-                        .widgets
-                        .iter()
-                        .map(|(label, w)| (label, w.id))
-                        .collect::<Vec<_>>()
-                );
-                assert_visible(&app, label);
-                key(&mut app, size, egui::Key::Enter, egui::Modifiers::NONE);
-                assert!(app.tools_open && app.tool == tool, "Enter missed {label}");
-            }
-            for (_, label) in TOOLS[..4].iter().rev() {
-                key(&mut app, size, egui::Key::Tab, egui::Modifiers::SHIFT);
-                assert_eq!(
-                    app.editor_ctx.memory(|memory| memory.focused()),
-                    Some(widget(&app, label).id),
-                    "Shift+Tab missed {label}"
-                );
-                assert_visible(&app, label);
-            }
-            assert!(commands.try_recv().is_err());
-        }
-    }
-}
-
-#[test]
 fn sidebar_last_unicode_entry_reveals_both_scroll_levels_and_opens_existing_draft() {
     let size = [780.0, 540.0];
     let name = "最后一份 Unicode draft 文件.txt";
     for width in [180.0, 246.0, 460.0] {
         for font_size in [13.0, 18.0] {
             let (mut app, commands) = app(width, true, font_size);
+            // Loaded results leave a genuinely constrained Project viewport.
+            // The compact shell gives an empty tool enough space to avoid the
+            // outer overflow this two-level reveal regression must exercise.
+            load_long_report(&mut app);
             app.entries[63] = Entry {
                 path: name.into(),
                 name: name.into(),
@@ -855,12 +689,19 @@ fn sidebar_last_unicode_entry_reveals_both_scroll_levels_and_opens_existing_draf
             begin_reveal_diagnostics(&app, width, font_size, size);
             settle(&mut app, size);
             search_focus_diagnostic_stage(&app);
-            focus(&mut app, size, "Search");
+            focus(&mut app, size, "help");
             app.editor_ctx.data_mut(|data| {
                 data.remove::<RevealDiagnostics>(egui::Id::new(REVEAL_DIAGNOSTIC))
             });
             scroll_outer_bottom(&mut app, size);
-            assert!(snapshot(&app).outer.unwrap().offset.y > 0.0);
+            let outer = snapshot(&app).outer.unwrap();
+            assert!(
+                outer.offset.y > 0.0,
+                "width={width} font={font_size} outer={:?} content={:?} offset={:?}",
+                outer.rect,
+                outer.content,
+                outer.offset
+            );
             // Shift+Tab passes the native explorer scrollbar before the final file.
             for _ in 0..3 {
                 key(&mut app, size, egui::Key::Tab, egui::Modifiers::SHIFT);
@@ -907,8 +748,8 @@ fn sidebar_resize_and_tools_reopen_preserve_focus_draft_selection_and_undo() {
     let mut state = egui::TextEdit::load_state(&app.editor_ctx, id).unwrap();
     state.cursor.set_char_range(Some(selection));
     state.store(&app.editor_ctx, id);
-    focus(&mut app, large, "Tests");
-    let focus_id = widget(&app, "Tests").id;
+    focus(&mut app, large, "help");
+    let focus_id = widget(&app, "help").id;
     let outer_id = snapshot(&app).outer.unwrap().id;
     let inner_id = snapshot(&app).explorer.unwrap().id;
     for (width, size, tools_open) in [
@@ -921,12 +762,12 @@ fn sidebar_resize_and_tools_reopen_preserve_focus_draft_selection_and_undo() {
         set_width(&app, width);
         app.tools_open = tools_open;
         settle(&mut app, size);
-        assert_eq!(widget(&app, "Tests").id, focus_id);
+        assert_eq!(widget(&app, "help").id, focus_id);
         assert_eq!(
             app.editor_ctx.memory(|memory| memory.focused()),
             Some(focus_id)
         );
-        assert_visible(&app, "Tests");
+        assert_visible(&app, "help");
         assert_geometry(&app, width);
         assert_eq!(snapshot(&app).outer.unwrap().id, outer_id);
         assert_eq!(snapshot(&app).explorer.unwrap().id, inner_id);
@@ -967,48 +808,12 @@ fn sidebar_zero_height_is_finite_and_recovers_without_claiming_access() {
         }
     } else {
         assert!(snapshot.widgets.is_empty() && snapshot.explorer.is_none());
-        assert!(panel(&app, "explorer").height() <= 24.0);
+        assert!(panel(&app, "explorer").height() <= 16.0);
     }
     settle(&mut app, [780.0, 540.0]);
-    focus(&mut app, [780.0, 540.0], "Tests");
+    focus(&mut app, [780.0, 540.0], "help");
     scroll_outer_bottom(&mut app, [780.0, 540.0]);
     assert!(commands.try_recv().is_err());
-}
-
-#[test]
-fn sidebar_compact_tab_order_survives_a_visible_notification() {
-    let size = [780.0, 540.0];
-    for width in [180.0, 246.0, 460.0] {
-        for font_size in [13.0, 18.0] {
-            let (mut app, commands) = app(width, false, font_size);
-            load_long_report(&mut app);
-            app.error =
-                Some("A previous read failed. The current draft is still available.".into());
-            settle(&mut app, size);
-            focus(&mut app, size, "Search");
-            for (_, label) in &TOOLS[1..] {
-                key(&mut app, size, egui::Key::Tab, egui::Modifiers::NONE);
-                assert_eq!(
-                    app.editor_ctx.memory(|memory| memory.focused()),
-                    Some(widget(&app, label).id)
-                );
-                assert_visible(&app, label);
-            }
-            key(&mut app, size, egui::Key::Enter, egui::Modifiers::NONE);
-            assert!(app.tool == Tool::Tests && app.tools_open);
-            for (_, label) in TOOLS[..4].iter().rev() {
-                key(&mut app, size, egui::Key::Tab, egui::Modifiers::SHIFT);
-                assert_eq!(
-                    app.editor_ctx.memory(|memory| memory.focused()),
-                    Some(widget(&app, label).id)
-                );
-                assert_visible(&app, label);
-            }
-            scroll_outer_bottom(&mut app, size);
-            assert_geometry(&app, width);
-            assert!(commands.try_recv().is_err());
-        }
-    }
 }
 
 #[test]
@@ -1079,10 +884,18 @@ fn sidebar_short_file_reveals_when_only_part_of_inner_viewport_fits() {
     let size = [780.0, 540.0];
     let (mut app, commands) = app(180.0, true, 13.0);
     app.tool = Tool::Language;
+    // A user-sized tools panel constrains the actual Project viewport here;
+    // the assertion below verifies that one row fits but the inner area does not.
+    app.tools_height = Some(400.0);
     settle(&mut app, size);
     let outer = snapshot(&app).outer.unwrap();
     let file_height = widget(&app, "file-063.txt").rect.height();
-    assert!(outer.rect.height() >= file_height && outer.rect.height() < 64.0);
+    assert!(
+        outer.rect.height() >= file_height && outer.rect.height() < 64.0,
+        "outer={:?} height={} file_height={file_height}",
+        outer.rect,
+        outer.rect.height()
+    );
     focus(&mut app, size, "file-063.txt");
     assert!(snapshot(&app).explorer.unwrap().offset.y > 0.0);
     let outer = snapshot(&app).outer.unwrap();
@@ -1135,7 +948,7 @@ fn sidebar_held_outer_thumb_recovers_after_zero_height() {
     frame(&mut app, tiny, vec![]);
     let skipped = snapshot(&app);
     assert!(skipped.outer.is_none() && skipped.explorer.is_none() && skipped.widgets.is_empty());
-    assert!(panel(&app, "explorer").height() <= 24.0);
+    assert!(panel(&app, "explorer").height() <= 16.0);
     assert_eq!(
         egui::scroll_area::State::load(&app.editor_ctx, outer.id)
             .unwrap()
@@ -1155,173 +968,9 @@ fn sidebar_held_outer_thumb_recovers_after_zero_height() {
     settle(&mut app, size);
     assert_eq!(snapshot(&app).outer.unwrap().id, outer.id);
     assert_geometry(&app, 180.0);
-    focus(&mut app, size, "Tests");
+    focus(&mut app, size, "help");
     scroll_outer_bottom(&mut app, size);
     assert!(commands.try_recv().is_err());
-}
-
-fn click_tests_after_tall_language(app: &mut CedarApp, focused: bool) -> egui::Id {
-    let size = [780.0, 540.0];
-    app.tool = Tool::Language;
-    settle(app, size);
-    assert!(snapshot(app).outer.is_none());
-    app.tools_open = false;
-    settle(app, size);
-    if focused {
-        focus(app, size, "Tests");
-    }
-    let target = widget(app, "Tests");
-    assert_visible(app, "Tests");
-    let at = target.rect.center();
-    for pressed in [true, false] {
-        frame(
-            app,
-            size,
-            vec![
-                egui::Event::PointerMoved(at),
-                egui::Event::PointerButton {
-                    pos: at,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
-    }
-    assert!(app.tools_open && app.tool == Tool::Tests);
-    target.id
-}
-
-#[test]
-fn sidebar_clicked_selector_survives_temporary_zero_space_without_inventing_focus() {
-    let size = [780.0, 540.0];
-    for had_focus in [false, true] {
-        let (mut app, commands) = app(180.0, true, 18.0);
-        let target = click_tests_after_tall_language(&mut app, had_focus);
-        assert_eq!(
-            app.editor_ctx.memory(|memory| memory.focused()),
-            had_focus.then_some(target)
-        );
-        frame(&mut app, size, vec![]);
-        assert!(snapshot(&app).outer.is_none());
-        settle(&mut app, size);
-        assert_visible(&app, "Tests");
-        assert_eq!(
-            app.editor_ctx.memory(|memory| memory.focused()),
-            had_focus.then_some(target)
-        );
-        // The one pending activation is consumed, so later wheel input stays put.
-        scroll_outer_bottom(&mut app, size);
-        let offset = snapshot(&app).outer.unwrap().offset;
-        settle(&mut app, size);
-        assert_eq!(snapshot(&app).outer.unwrap().offset, offset);
-        assert!(commands.try_recv().is_err());
-    }
-}
-
-#[test]
-fn sidebar_new_intent_during_zero_space_cancels_pending_activation() {
-    let size = [780.0, 540.0];
-    for intent in [
-        "escape",
-        "tab",
-        "pointer",
-        "wheel",
-        "zoom",
-        "text",
-        "ime",
-        "new_owner",
-        "closed",
-        "changed_tool",
-    ] {
-        let (mut app, commands) = app(180.0, true, 18.0);
-        let target = click_tests_after_tall_language(&mut app, true);
-        let events = match intent {
-            "escape" | "tab" => vec![egui::Event::Key {
-                key: if intent == "escape" {
-                    egui::Key::Escape
-                } else {
-                    egui::Key::Tab
-                },
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
-            "pointer" => vec![
-                egui::Event::PointerMoved(egui::pos2(740.0, 20.0)),
-                egui::Event::PointerButton {
-                    pos: egui::pos2(740.0, 20.0),
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-            "wheel" => vec![egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(0.0, -10.0),
-                modifiers: egui::Modifiers::NONE,
-            }],
-            "zoom" => vec![egui::Event::Zoom(1.1)],
-            "text" => vec![egui::Event::Text("new intent".into())],
-            "ime" => vec![egui::Event::Ime(egui::ImeEvent::Commit("新".into()))],
-            "new_owner" => {
-                app.editor_ctx.data_mut(|data| {
-                    data.insert_temp(
-                        egui::Id::new("sidebar_test_request_focus"),
-                        egui::Id::new("test_report_path"),
-                    )
-                });
-                vec![]
-            }
-            "closed" => {
-                app.tools_open = false;
-                vec![]
-            }
-            "changed_tool" => {
-                app.tool = Tool::Run;
-                vec![]
-            }
-            _ => unreachable!(),
-        };
-        frame(&mut app, size, events);
-        if !matches!(intent, "closed" | "changed_tool" | "zoom") {
-            assert!(
-                snapshot(&app).outer.is_none(),
-                "expected zero-space interruption for {intent}"
-            );
-        }
-        if intent == "pointer" {
-            frame(
-                &mut app,
-                size,
-                vec![egui::Event::PointerButton {
-                    pos: egui::pos2(740.0, 20.0),
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    modifiers: egui::Modifiers::NONE,
-                }],
-            );
-        }
-        settle(&mut app, size);
-        if !matches!(intent, "closed" | "changed_tool") {
-            assert_ne!(
-                app.editor_ctx.memory(|memory| memory.focused()),
-                Some(target),
-                "old focus restored after {intent}"
-            );
-        }
-        if intent == "new_owner" {
-            assert_eq!(
-                app.editor_ctx.memory(|memory| memory.focused()),
-                Some(egui::Id::new("test_report_path"))
-            );
-        }
-        assert!(
-            commands.try_recv().is_err(),
-            "unexpected command after {intent}"
-        );
-    }
 }
 
 fn check_footer_geometry(app: &CedarApp) {
@@ -1382,8 +1031,6 @@ fn footer_scaled_tab(app: &mut CedarApp, size: [f32; 2], scale: f32, modifiers: 
 fn sidebar_footer_exact_viewport_and_content_min_survive_native_tabs_at_three_scales() {
     let size = [780.0, 540.0];
     let mut corrected = 0;
-    // Nine explicit cases cover every width/scale pair and both fonts at every
-    // scale, including the measured width=460/font=18/scale=1 regression.
     for (width, font_size, scale) in [
         (180.0, 13.0, 1.0),
         (246.0, 18.0, 1.0),
@@ -1396,56 +1043,48 @@ fn sidebar_footer_exact_viewport_and_content_min_survive_native_tabs_at_three_sc
         (460.0, 13.0, 2.0),
     ] {
         let (mut app, commands) = app(width, true, font_size);
+        load_long_report(&mut app);
         enable_footer_checks(&app);
         footer_scaled_settle(&mut app, size, scale);
         assert_geometry(&app, width);
-        if width == 180.0 && font_size == 18.0 {
-            assert!(widget(&app, "Search").rect.bottom() < widget(&app, "Git").rect.top());
-        }
-        // Use the same initial focus fixture as focus(); subsequent ownership
-        // changes are native Tab and Shift+Tab events at the selected scale.
-        let search_id = widget(&app, "Search").id;
+        let help_id = widget(&app, "help").id;
         app.editor_ctx.data_mut(|data| {
-            data.insert_temp(egui::Id::new("sidebar_test_request_focus"), search_id)
+            data.insert_temp(egui::Id::new("sidebar_test_request_focus"), help_id)
         });
         footer_scaled_settle(&mut app, size, scale);
         assert_eq!(
             app.editor_ctx.memory(|memory| memory.focused()),
-            Some(search_id)
+            Some(help_id)
         );
-        assert_visible(&app, "Search");
-        let ids: Vec<_> = TOOLS
-            .iter()
-            .map(|(_, label)| widget(&app, label).id)
-            .collect();
-        for (_, label) in &TOOLS[1..] {
-            footer_scaled_tab(&mut app, size, scale, egui::Modifiers::NONE);
-            assert_eq!(
-                app.editor_ctx.memory(|memory| memory.focused()),
-                Some(widget(&app, label).id)
-            );
-            assert_visible(&app, label);
-        }
-        for (_, label) in TOOLS[..4].iter().rev() {
+        assert_visible(&app, "help");
+        // The last actual file remains reachable with native Shift+Tab and Tab.
+        let last_id = widget(&app, "file-063.txt").id;
+        for _ in 0..3 {
             footer_scaled_tab(&mut app, size, scale, egui::Modifiers::SHIFT);
-            assert_eq!(
-                app.editor_ctx.memory(|memory| memory.focused()),
-                Some(widget(&app, label).id)
-            );
-            assert_visible(&app, label);
+            if app.editor_ctx.memory(|memory| memory.focused()) == Some(last_id) {
+                break;
+            }
         }
         assert_eq!(
-            TOOLS
-                .iter()
-                .map(|(_, label)| widget(&app, label).id)
-                .collect::<Vec<_>>(),
-            ids
+            app.editor_ctx.memory(|memory| memory.focused()),
+            Some(last_id)
         );
+        assert_visible(&app, "file-063.txt");
+        for _ in 0..3 {
+            footer_scaled_tab(&mut app, size, scale, egui::Modifiers::NONE);
+            if app.editor_ctx.memory(|memory| memory.focused()) == Some(help_id) {
+                break;
+            }
+        }
+        assert_eq!(
+            app.editor_ctx.memory(|memory| memory.focused()),
+            Some(help_id)
+        );
+        assert_visible(&app, "help");
+        assert_eq!(widget(&app, "help").id, help_id);
         let checks = footer_checks(&app);
         assert!(checks.passes > 0);
-        for id in ids {
-            assert!(checks.requests.iter().any(|request| request.id == id));
-        }
+        assert!(checks.requests.iter().any(|request| request.id == help_id));
         for request in &checks.requests {
             if let Some(target) = request.target {
                 assert_eq!(target.x_range(), request.row.x_range());
@@ -1482,7 +1121,7 @@ fn sidebar_wrapped_selected_file_and_footer_keep_native_reveal_order_after_wheel
     app.active_document = Some(1);
     enable_footer_checks(&app);
     settle(&mut app, size);
-    focus(&mut app, size, "Search");
+    focus(&mut app, size, "help");
     scroll_outer_bottom(&mut app, size);
     assert!(snapshot(&app).outer.unwrap().offset.y > 0.0);
     let file_id = widget(&app, name).id;
@@ -1504,9 +1143,9 @@ fn sidebar_wrapped_selected_file_and_footer_keep_native_reveal_order_after_wheel
         .unwrap()
         .rect
         .contains_rect(widget(&app, name).rect));
-    assert!(widget(&app, name).rect.height() > widget(&app, "Search").rect.height());
+    assert!(widget(&app, name).rect.height() > 27.0);
     let nested_offset = snapshot(&app).explorer.unwrap().offset;
-    let search_id = widget(&app, "Search").id;
+    let search_id = widget(&app, "help").id;
     let requests_before_tab = footer_checks(&app).requests.len();
     for _ in 0..3 {
         key(&mut app, size, egui::Key::Tab, egui::Modifiers::NONE);
@@ -1519,7 +1158,7 @@ fn sidebar_wrapped_selected_file_and_footer_keep_native_reveal_order_after_wheel
         app.editor_ctx.memory(|memory| memory.focused()),
         Some(search_id)
     );
-    assert_visible(&app, "Search");
+    assert_visible(&app, "help");
     assert_eq!(snapshot(&app).explorer.unwrap().offset, nested_offset);
     assert!(footer_checks(&app).requests[requests_before_tab..]
         .iter()

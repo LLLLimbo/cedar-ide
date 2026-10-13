@@ -456,23 +456,13 @@ fn tools_resize_hide_tool_switch_disconnect_and_reconnect_keep_runtime_preferenc
     let hidden = settle(&mut app, SIZE);
     assert!(hidden.panel.is_none());
     for (tool, label) in [
-        (Tool::Search, "Search"),
-        (Tool::Git, "Git"),
-        (Tool::Run, "Run"),
-        (Tool::Language, "LSP"),
-        (Tool::Tests, "Tests"),
+        (Tool::Search, "Find Results"),
+        (Tool::Git, "Git Changes"),
+        (Tool::Run, "Commands"),
+        (Tool::Language, "Language"),
+        (Tool::Tests, "Test Results"),
     ] {
-        let at = workspace_access_tests::recorded_rect(&app, &format!("sidebar_{label}")).center();
-        for pressed in [true, false] {
-            frame(
-                &mut app,
-                SIZE,
-                vec![
-                    egui::Event::PointerMoved(at),
-                    button(at, egui::PointerButton::Primary, pressed),
-                ],
-            );
-        }
+        select_tool(&mut app, SIZE, label);
         assert!(app.tools_open && app.tool == tool);
         let geometry = settle(&mut app, SIZE);
         assert_eq!(geometry.preferred, Some(430.0));
@@ -600,7 +590,10 @@ fn visible_rect(app: &CedarApp, size: [f32; 2], name: &str) -> egui::Rect {
 
 fn click_widget(app: &mut CedarApp, size: [f32; 2], name: &str) -> Geometry {
     let at = visible_rect(app, size, name).center();
-    assert!(workspace_access_tests::recorded_response(app, name).enabled());
+    assert!(
+        workspace_access_tests::recorded_response(app, name).enabled(),
+        "{name} is disabled"
+    );
     frame(
         app,
         size,
@@ -619,6 +612,18 @@ fn click_widget(app: &mut CedarApp, size: [f32; 2], name: &str) -> Geometry {
     assert!(workspace_access_tests::recorded_response(app, name)
         .clicked_by(egui::PointerButton::Primary));
     released
+}
+
+fn select_tool(app: &mut CedarApp, size: [f32; 2], label: &str) {
+    if label == "Find Results" {
+        click_widget(app, size, "find_results_entry");
+    } else {
+        click_widget(app, size, "tools_menu");
+        // A newly opened egui popup settles before its real item response can
+        // receive another gesture. Never click a first-pass disabled item.
+        settle(app, size);
+        click_widget(app, size, &format!("tool_menu_{label}"));
+    }
 }
 
 fn tab_to(app: &mut CedarApp, size: [f32; 2], name: &str) {
@@ -947,7 +952,7 @@ fn tools_automatic_height_real_release_while_hidden_allows_the_next_native_drag(
     }
     let ready = frame(&mut app, SIZE, vec![]);
     assert!(ready.panel.is_none() && ready.capture_allowed);
-    click_widget(&mut app, SIZE, "sidebar_Search");
+    click_widget(&mut app, SIZE, "find_results_entry");
     let reopened = settle(&mut app, SIZE);
     assert!(app.tools_open && app.tool == Tool::Search);
     assert_automatic(&app, reopened);
@@ -1075,19 +1080,19 @@ fn tools_automatic_height_close_switch_disconnect_and_reconnect_retain_automatic
     assert!(!app.tools_open);
     assert_eq!(app.tools_height, None);
     assert!(settle(&mut app, SIZE).panel.is_none());
-    click_widget(&mut app, SIZE, "sidebar_Search");
+    click_widget(&mut app, SIZE, "find_results_entry");
     let reopened = settle(&mut app, SIZE);
     assert!(app.tools_open && app.tool == Tool::Search);
     assert_automatic(&app, reopened);
     near(reopened.panel.unwrap().height(), baseline);
     for (tool, label) in [
-        (Tool::Git, "GIT CHANGES"),
-        (Tool::Run, "COMMANDS"),
-        (Tool::Language, "LANGUAGE"),
-        (Tool::Tests, "TEST RESULTS"),
-        (Tool::Search, "FIND RESULTS"),
+        (Tool::Git, "Git Changes"),
+        (Tool::Run, "Commands"),
+        (Tool::Language, "Language"),
+        (Tool::Tests, "Test Results"),
+        (Tool::Search, "Find Results"),
     ] {
-        click_widget(&mut app, SIZE, label);
+        select_tool(&mut app, SIZE, label);
         let geometry = settle(&mut app, SIZE);
         assert!(app.tools_open && app.tool == tool);
         assert_automatic(&app, geometry);
@@ -1127,18 +1132,18 @@ fn tools_automatic_height_close_switch_disconnect_and_reconnect_retain_automatic
 
 #[test]
 fn tools_automatic_height_narrow_header_controls_remain_visible_and_clickable() {
-    let labels = [
-        "FIND RESULTS",
-        "GIT CHANGES",
-        "COMMANDS",
-        "LANGUAGE",
-        "TEST RESULTS",
-        AUTOMATIC,
-        "close_tools",
-    ];
     for size in [SIZE, [780.0, 540.0]] {
         for font_size in [13.0, 18.0] {
             for tool in [Tool::Search, Tool::Tests] {
+                let labels = [
+                    if tool == Tool::Search {
+                        "FIND RESULTS"
+                    } else {
+                        "TEST RESULTS"
+                    },
+                    AUTOMATIC,
+                    "close_tools",
+                ];
                 let (mut app, commands) = app(tool);
                 app.editor_ctx.style_mut(|style| {
                     style
@@ -1164,10 +1169,10 @@ fn tools_automatic_height_narrow_header_controls_remain_visible_and_clickable() 
                     }
                 }
                 assert!(
-                    rects[5].right() < rects[6].left(),
+                    rects[1].right() < rects[2].left(),
                     "close stays to the right of Automatic height"
                 );
-                near(rects[5].center().y, rects[6].center().y);
+                near(rects[1].center().y, rects[2].center().y);
                 let reset = click_widget(&mut app, size, AUTOMATIC);
                 assert!(reset.automatic_clicked);
                 let automatic = settle(&mut app, size);

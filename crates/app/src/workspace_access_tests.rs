@@ -79,14 +79,13 @@ fn focused(app: &CedarApp) -> Option<egui::Id> {
 fn frame(app: &mut CedarApp, size: [f32; 2], events: Vec<egui::Event>) {
     let ctx = app.editor_ctx.clone();
     let mut native = eframe::Frame::_new_kittest();
-    let _ = ctx.run(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
-            events,
-            ..Default::default()
-        },
-        |ctx| eframe::App::update(app, ctx, &mut native),
-    );
+    let mut input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let _ = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native));
 }
 
 fn settle(app: &mut CedarApp, size: [f32; 2]) {
@@ -203,7 +202,7 @@ fn selection(app: &CedarApp) -> Option<egui::text::CCursorRange> {
 }
 
 #[test]
-fn every_tool_hides_to_visible_editor_and_reopens_same_rendered_header_without_work() {
+fn every_tool_hides_to_visible_editor_and_reopens_useful_rendered_content_without_work() {
     for (tool, header) in TOOLS {
         let (mut app, commands) = app(tool);
         settle(&mut app, SIZE);
@@ -235,7 +234,17 @@ fn every_tool_hides_to_visible_editor_and_reopens_same_rendered_header_without_w
         assert!(app.tools_open && app.tool == tool);
         assert_eq!(
             focused(&app),
-            Some(widget(&app, header).id),
+            Some(
+                widget(
+                    &app,
+                    if tool == Tool::Search {
+                        "search_query"
+                    } else {
+                        header
+                    }
+                )
+                .id
+            ),
             "show {header}"
         );
         assert_eq!(app.documents[0].text, "precious draft 雪");
@@ -371,58 +380,67 @@ fn close_pointer_from_editor_or_find_allows_only_its_own_focus_surrender() {
     }
 }
 
+fn load_project(app: &mut CedarApp, commands: &Receiver<Command>, entries: Vec<Entry>) {
+    app.list(String::new());
+    let request = commands.try_recv().expect("explicit fixture List");
+    assert!(matches!(request.op, Operation::List { .. }));
+    app.apply_event(Event {
+        generation: app.generation,
+        id: request.id,
+        connected: true,
+        result: Ok(Payload::Entries { entries }),
+    });
+}
+
+fn project_rows(count: usize) -> Vec<Entry> {
+    (0..count)
+        .map(|index| Entry {
+            name: format!("dir-{index:02}"),
+            path: format!("dir-{index:02}"),
+            is_dir: true,
+        })
+        .collect()
+}
+
 #[test]
-fn offline_explorer_shortcut_does_not_focus_an_unrequested_fallback() {
+fn offline_project_shortcut_focuses_explicit_heading_and_keeps_find_open() {
     let (mut app, commands) = app(Tool::Search);
     app.state = ConnectionState::Disconnected;
     settle(&mut app, SIZE);
     let source = widget(&app, "search_query").id;
     focus(&mut app, source);
     explorer(&mut app, SIZE);
-    assert!(!app.tools_open);
-    assert_ne!(focused(&app), Some(widget(&app, "explorer_refresh").id));
-    assert_ne!(focused(&app), Some(widget(&app, "sidebar_Search").id));
-    // No-document hide may use a rendered enabled Explorer selector instead.
+    assert!(app.tools_open);
+    assert_eq!(focused(&app), Some(widget(&app, "project_heading").id));
     app.documents.clear();
     app.active_document = None;
     toggle(&mut app, SIZE);
-    toggle(&mut app, SIZE);
-    assert_eq!(focused(&app), Some(widget(&app, "sidebar_Search").id));
+    assert!(!app.tools_open);
+    assert_eq!(focused(&app), Some(widget(&app, "project_heading").id));
     assert!(commands.try_recv().is_err());
 }
 
 #[test]
-fn explorer_shortcut_focuses_refresh_without_read_and_tabs_through_first_and_last_entries() {
-    let (mut app, commands) = app(Tool::Language);
-    app.entries = (0..24)
-        .map(|index| Entry {
-            name: format!("dir-{index:02}"),
-            path: format!("dir-{index:02}"),
-            is_dir: true,
-        })
-        .collect();
+fn project_shortcut_focuses_current_first_row_and_flat_retains_native_tab_navigation() {
+    let (mut app, commands) = app(Tool::Search);
+    load_project(&mut app, &commands, project_rows(24));
     settle(&mut app, SIZE);
     explorer(&mut app, SIZE);
-    assert!(!app.tools_open);
-    assert_eq!(focused(&app), Some(widget(&app, "explorer_refresh").id));
+    assert!(app.tools_open);
+    assert_eq!(focused(&app), Some(widget(&app, "dir-00").id));
     assert!(commands.try_recv().is_err());
-    let mut saw_first = false;
     let mut saw_last = false;
     for _ in 0..40 {
         frame(&mut app, SIZE, key(egui::Key::Tab, egui::Modifiers::NONE));
         frame(&mut app, SIZE, vec![]);
-        for (name, seen) in [("dir-00", &mut saw_first), ("dir-23", &mut saw_last)] {
-            let row = widget(&app, name);
-            if focused(&app) == Some(row.id) {
-                assert!(row.clip.contains_rect(row.rect), "{name} clipped");
-                *seen = true;
-            }
-        }
-        if saw_last {
+        let row = widget(&app, "dir-23");
+        if focused(&app) == Some(row.id) {
+            assert!(row.clip.contains_rect(row.rect), "last Flat row clipped");
+            saw_last = true;
             break;
         }
     }
-    assert!(saw_first && saw_last);
+    assert!(saw_last);
     assert!(commands.try_recv().is_err());
     frame(&mut app, SIZE, key(egui::Key::Enter, egui::Modifiers::NONE));
     assert!(
@@ -432,19 +450,20 @@ fn explorer_shortcut_focuses_refresh_without_read_and_tabs_through_first_and_las
 }
 
 #[test]
-fn no_document_empty_explorer_and_resize_use_available_anchors() {
+fn no_document_empty_project_and_resize_use_explicit_heading() {
     let (mut app, commands) = app(Tool::Tests);
     app.documents.clear();
     app.active_document = None;
     settle(&mut app, SIZE);
     toggle(&mut app, SIZE);
-    assert_eq!(focused(&app), Some(widget(&app, "explorer_refresh").id));
+    assert_eq!(focused(&app), Some(widget(&app, "project_heading").id));
     for size in [[1178.0, 814.0], SIZE, [640.0, 480.0]] {
         toggle(&mut app, size);
         assert_eq!(focused(&app), Some(widget(&app, "TEST RESULTS").id));
         explorer(&mut app, size);
-        assert!(!app.tools_open);
-        assert_eq!(focused(&app), Some(widget(&app, "explorer_refresh").id));
+        assert!(app.tools_open);
+        assert_eq!(focused(&app), Some(widget(&app, "project_heading").id));
+        toggle(&mut app, size);
     }
     assert!(commands.try_recv().is_err());
 }
@@ -548,7 +567,7 @@ fn held_key_repeats_do_not_toggle_or_take_focus_and_modifiers_are_exact() {
     }
     toggle(&mut app, SIZE);
     assert!(app.tools_open);
-    assert_eq!(focused(&app), Some(widget(&app, "FIND RESULTS").id));
+    assert_eq!(focused(&app), Some(widget(&app, "search_query").id));
     assert!(commands.try_recv().is_err());
 }
 
@@ -589,8 +608,8 @@ fn platform_command_forms_are_accepted_but_ctrl_plus_mac_command_is_not() {
             SIZE,
             key(egui::Key::E, modifiers | egui::Modifiers::SHIFT),
         );
-        assert!(!app.tools_open);
-        assert_eq!(focused(&app), Some(widget(&app, "explorer_refresh").id));
+        assert!(app.tools_open);
+        assert_eq!(focused(&app), Some(widget(&app, "project_heading").id));
         assert!(commands.try_recv().is_err());
     }
 }
@@ -626,38 +645,17 @@ fn populated_report_retains_scroll_offset_and_selection_after_reopening() {
 }
 
 #[test]
-fn access_actions_cancel_older_sidebar_activation_reveal_across_resize() {
-    for use_explorer in [false, true] {
-        let (mut app, commands) = app(Tool::Language);
-        app.editor_ctx.style_mut(|style| {
-            style
-                .text_styles
-                .insert(egui::TextStyle::Button, FontId::proportional(18.0));
-        });
+fn project_and_editor_access_keep_their_focus_across_resize() {
+    for use_project in [false, true] {
+        let (mut app, commands) = app(Tool::Tests);
         settle(&mut app, SIZE);
-        app.tools_open = false;
-        settle(&mut app, SIZE);
-        let selector = widget(&app, "sidebar_Tests").clone();
-        focus(&mut app, selector.id);
-        let at = widget(&app, "sidebar_Tests").rect.center();
-        let events = [true, false]
-            .into_iter()
-            .map(|pressed| egui::Event::PointerButton {
-                pos: at,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
-            })
-            .collect();
-        frame(&mut app, SIZE, events);
-        assert!(app.tools_open && app.tool == Tool::Tests);
-        if use_explorer {
+        if use_project {
             explorer(&mut app, SIZE);
         } else {
             toggle(&mut app, SIZE);
         }
-        let wanted = if use_explorer {
-            widget(&app, "explorer_refresh").id
+        let wanted = if use_project {
+            widget(&app, "project_heading").id
         } else {
             egui::Id::new(("editor", 1u64))
         };
@@ -665,7 +663,6 @@ fn access_actions_cancel_older_sidebar_activation_reveal_across_resize() {
         settle(&mut app, SIZE);
         settle(&mut app, [1178.0, 814.0]);
         assert_eq!(focused(&app), Some(wanted));
-        assert_ne!(focused(&app), Some(selector.id));
         assert!(commands.try_recv().is_err());
     }
 }
@@ -698,41 +695,50 @@ fn navigation_and_confirmation_keep_ownership_and_access_intent_never_replays() 
 
 #[test]
 fn same_frame_generation_document_navigation_and_new_focus_cancel_final_handoff() {
-    for change in ["generation", "document", "navigation", "focus", "modal"] {
+    for change in [
+        "generation",
+        "document",
+        "version",
+        "session",
+        "navigation",
+        "focus",
+        "modal",
+    ] {
         let (mut app, commands) = app(Tool::Search);
         settle(&mut app, SIZE);
         let source = widget(&app, "search_query").id;
         focus(&mut app, source);
         let ctx = app.editor_ctx.clone();
         let newer = egui::Id::new("newer_access_owner");
-        let _ = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SIZE.into())),
-                events: key(egui::Key::J, egui::Modifiers::COMMAND),
-                ..Default::default()
-            },
-            |ctx| {
-                app.workspace_access_shortcuts(ctx);
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    app.editor(ui);
-                    ui.add(egui::TextEdit::singleline(&mut String::new()).id(newer));
-                });
-                match change {
-                    "generation" => app.generation += 1,
-                    "document" => app.active_document = None,
-                    "navigation" => app.navigation_epoch += 1,
-                    "focus" => ctx.memory_mut(|memory| memory.request_focus(newer)),
-                    "modal" => app.confirm = Some(Confirm::CloseTab(1)),
-                    _ => unreachable!(),
-                }
-                app.finish_workspace_access_frame(ctx);
-                assert_ne!(
-                    ctx.memory(|memory| memory.focused()),
-                    Some(egui::Id::new(("editor", 1u64))),
-                    "stale {change} focus"
-                );
-            },
-        );
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SIZE.into())),
+            events: key(egui::Key::J, egui::Modifiers::COMMAND),
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+        let _ = ctx.run(input, |ctx| {
+            app.workspace_access_shortcuts(ctx);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.editor(ui);
+                ui.add(egui::TextEdit::singleline(&mut String::new()).id(newer));
+            });
+            match change {
+                "generation" => app.generation += 1,
+                "document" => app.active_document = None,
+                "version" => app.documents[0].edit_version += 1,
+                "session" => app.language.session += 1,
+                "navigation" => app.navigation_epoch += 1,
+                "focus" => ctx.memory_mut(|memory| memory.request_focus(newer)),
+                "modal" => app.confirm = Some(Confirm::CloseTab(1)),
+                _ => unreachable!(),
+            }
+            app.finish_workspace_access_frame(ctx);
+            assert_ne!(
+                ctx.memory(|memory| memory.focused()),
+                Some(egui::Id::new(("editor", 1u64))),
+                "stale {change} focus"
+            );
+        });
         assert!(commands.try_recv().is_err());
     }
 }
@@ -788,5 +794,766 @@ fn captured_close_survives_panel_motion_and_still_rejects_newer_mixed_input() {
             assert_eq!(focused(&app), Some(egui::Id::new(("editor", 1u64))));
         }
         assert!(commands.try_recv().is_err());
+    }
+}
+
+const LARGE: [f32; 2] = [1200.0, 900.0];
+
+fn load_search(app: &mut CedarApp, commands: &Receiver<Command>, count: usize) {
+    app.tool = Tool::Search;
+    app.tools_open = true;
+    app.tools_height = Some(420.0);
+    app.search();
+    let request = commands.try_recv().expect("explicit fixture Search");
+    assert!(matches!(request.op, Operation::Search { .. }));
+    app.apply_event(Event {
+        generation: app.generation,
+        id: request.id,
+        connected: true,
+        result: Ok(Payload::Matches {
+            matches: (0..count)
+                .map(|index| SearchMatch {
+                    path: "draft.txt".into(),
+                    line: index + 1,
+                    text: format!("retained hit {index}"),
+                })
+                .collect(),
+            truncated: false,
+        }),
+    });
+    settle(app, LARGE);
+}
+
+fn click_events(at: egui::Pos2) -> Vec<egui::Event> {
+    let mut events = vec![egui::Event::PointerMoved(at)];
+    events.extend(
+        [true, false]
+            .into_iter()
+            .map(|pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }),
+    );
+    events
+}
+
+#[test]
+fn find_entry_and_toggle_choose_only_current_visible_selected_hit_else_query() {
+    for state in [
+        "active",
+        "collapsed",
+        "inactive",
+        "retired",
+        "empty",
+        "clipped",
+    ] {
+        for entry in [false, true] {
+            let (mut app, commands) = app(Tool::Search);
+            let count = if state == "empty" {
+                0
+            } else if state == "clipped" {
+                80
+            } else {
+                2
+            };
+            load_search(&mut app, &commands, count);
+            if count > 0 {
+                app.select_search_row(count - 1);
+            }
+            if state == "collapsed" {
+                app.search_state.toggle_group(0);
+            }
+            if state == "inactive" {
+                app.search_query = "a new unsubmitted query".into();
+            }
+            if state == "retired" {
+                let query = app.search_query.clone();
+                app.search_query.push_str(" changed");
+                app.search_filters_changed();
+                app.search_query = query;
+            }
+            settle(&mut app, LARGE);
+            let selection = app.search_state.selected_index();
+            let expanded = count == 0 || app.search_state.group_expanded(0);
+            let source = app.search_state.accepted_snapshot_id();
+            let navigation = app.navigation_epoch;
+            let version = app.documents[0].edit_version;
+            let history = (
+                app.location_history.back.len(),
+                app.location_history.forward.len(),
+            );
+            toggle(&mut app, LARGE);
+            assert!(!app.tools_open);
+            assert_eq!(focused(&app), Some(egui::Id::new(("editor", 1u64))));
+            settle(&mut app, LARGE);
+            if entry {
+                let at = widget(&app, "find_results_entry").rect.center();
+                let events = click_events(at);
+                frame(&mut app, LARGE, events[..2].to_vec());
+                frame(&mut app, LARGE, events[2..].to_vec());
+            } else {
+                toggle(&mut app, LARGE);
+            }
+            assert!(
+                app.tools_open && app.tool == Tool::Search,
+                "{state}/{entry}"
+            );
+            let expected = if state == "active" {
+                "search_row:1"
+            } else {
+                "search_query"
+            };
+            assert_eq!(
+                focused(&app),
+                Some(widget(&app, expected).id),
+                "{state}/{entry}"
+            );
+            assert_eq!(app.search_state.selected_index(), selection);
+            assert_eq!(count == 0 || app.search_state.group_expanded(0), expanded);
+            assert_eq!(app.search_state.accepted_snapshot_id(), source);
+            assert_eq!(app.navigation_epoch, navigation);
+            assert_eq!(app.documents[0].edit_version, version);
+            assert_eq!(
+                (
+                    app.location_history.back.len(),
+                    app.location_history.forward.len()
+                ),
+                history
+            );
+            assert!(
+                commands.try_recv().is_err(),
+                "focus emitted work for {state}/{entry}"
+            );
+        }
+    }
+}
+
+#[test]
+fn project_selected_flat_row_is_revealed_without_hiding_find_or_loading() {
+    let (mut app, commands) = app(Tool::Search);
+    app.documents[0].path = "zz-selected.txt".into();
+    let mut entries = project_rows(32);
+    entries.push(Entry {
+        name: "zz-selected.txt".into(),
+        path: "zz-selected.txt".into(),
+        is_dir: false,
+    });
+    load_project(&mut app, &commands, entries);
+    settle(&mut app, SIZE);
+    let selected = widget(&app, "zz-selected.txt");
+    assert!(
+        !selected.rect.intersect(selected.clip).is_positive(),
+        "fixture must clip selected row"
+    );
+    explorer(&mut app, SIZE);
+    assert!(app.tools_open && app.tool == Tool::Search);
+    assert_eq!(focused(&app), Some(widget(&app, "zz-selected.txt").id));
+    settle(&mut app, SIZE);
+    let selected = widget(&app, "zz-selected.txt");
+    assert!(
+        selected.clip.contains_rect(selected.rect),
+        "selected Project row must be revealed"
+    );
+    assert_eq!(app.documents[0].text, "saved 雪");
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn tree_access_preserves_selection_and_native_tree_arrows_without_expanding() {
+    let (mut app, commands) = app(Tool::Search);
+    app.explorer_set_mode(explorer_tree::Mode::Tree);
+    app.explorer_refresh("");
+    let request = commands.try_recv().unwrap();
+    app.apply_event(Event {
+        generation: app.generation,
+        id: request.id,
+        connected: true,
+        result: Ok(Payload::Entries {
+            entries: project_rows(3),
+        }),
+    });
+    app.explorer_select("dir-01");
+    settle(&mut app, LARGE);
+    frame(&mut app, LARGE, key(egui::Key::Num1, egui::Modifiers::ALT));
+    assert!(app.tools_open);
+    assert_eq!(focused(&app), Some(widget(&app, "dir-01").id));
+    assert_eq!(app.explorer.selected, "dir-01");
+    assert!(commands.try_recv().is_err());
+    frame(
+        &mut app,
+        LARGE,
+        key(egui::Key::ArrowDown, egui::Modifiers::NONE),
+    );
+    assert_eq!(focused(&app), Some(widget(&app, "dir-02").id));
+    assert_eq!(app.explorer.selected, "dir-02");
+    assert_eq!(app.explorer_loaded_directory_count(), 1);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn project_rejects_retained_flat_rows_after_connection_reset() {
+    let (mut app, commands) = app(Tool::Search);
+    load_project(&mut app, &commands, project_rows(2));
+    settle(&mut app, LARGE);
+    app.explorer.reset_connection();
+    app.generation += 1;
+    settle(&mut app, LARGE);
+    explorer(&mut app, LARGE);
+    assert!(app.tools_open);
+    assert_eq!(focused(&app), Some(widget(&app, "project_heading").id));
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn original_owned_arrow_mixed_with_access_never_becomes_a_clean_shortcut() {
+    for tree in [false, true] {
+        let (mut app, commands) = app(Tool::Search);
+        if tree {
+            app.explorer_set_mode(explorer_tree::Mode::Tree);
+            settle(&mut app, LARGE);
+            frame(&mut app, LARGE, key(egui::Key::Num1, egui::Modifiers::ALT));
+        } else {
+            load_search(&mut app, &commands, 2);
+            recorded_response(&app, "search_row:0").request_focus();
+            frame(&mut app, LARGE, vec![]);
+        }
+        let mut events = key(egui::Key::J, egui::Modifiers::COMMAND);
+        events.extend(key(egui::Key::ArrowDown, egui::Modifiers::NONE));
+        frame(&mut app, LARGE, events);
+        assert!(app.tools_open, "mixed arrow must veto access, Tree={tree}");
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn access_rejects_prior_held_owned_arrow_pointer_and_ime_until_release() {
+    for held in ["tree", "search", "pointer", "ime"] {
+        let (mut app, commands) = app(Tool::Search);
+        if held == "tree" {
+            app.explorer_set_mode(explorer_tree::Mode::Tree);
+            settle(&mut app, LARGE);
+            frame(&mut app, LARGE, key(egui::Key::Num1, egui::Modifiers::ALT));
+        } else if held == "search" {
+            load_search(&mut app, &commands, 2);
+            recorded_response(&app, "search_row:0").request_focus();
+            frame(&mut app, LARGE, vec![]);
+        } else {
+            settle(&mut app, LARGE);
+        }
+        let event = match held {
+            "tree" | "search" => key_event(egui::Key::ArrowDown, egui::Modifiers::NONE, true),
+            "pointer" => egui::Event::PointerButton {
+                pos: egui::pos2(1190.0, 890.0),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            "ime" => egui::Event::Ime(egui::ImeEvent::Preedit("composition".into())),
+            _ => unreachable!(),
+        };
+        frame(&mut app, LARGE, vec![event]);
+        toggle(&mut app, LARGE);
+        assert!(app.tools_open, "held {held} must veto access");
+        let release = match held {
+            "tree" | "search" => key_event(egui::Key::ArrowDown, egui::Modifiers::NONE, false),
+            "pointer" => egui::Event::PointerButton {
+                pos: egui::pos2(1190.0, 890.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            "ime" => egui::Event::Ime(egui::ImeEvent::Disabled),
+            _ => unreachable!(),
+        };
+        frame(&mut app, LARGE, vec![release]);
+        toggle(&mut app, LARGE);
+        assert!(!app.tools_open, "released {held} allows fresh access");
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn capture_origin_changes_before_update_and_missing_metadata_fail_closed() {
+    for change in [
+        "document",
+        "version",
+        "session",
+        "generation",
+        "navigation",
+        "query",
+        "scope",
+        "masks",
+        "tool",
+        "focus",
+        "missing",
+    ] {
+        let (mut app, commands) = app(Tool::Search);
+        settle(&mut app, LARGE);
+        let ctx = app.editor_ctx.clone();
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, LARGE.into())),
+            events: key(egui::Key::J, egui::Modifiers::COMMAND),
+            ..Default::default()
+        };
+        if change != "missing" {
+            eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+        }
+        match change {
+            "document" => app.active_document = None,
+            "version" => app.documents[0].edit_version += 1,
+            "session" => app.language.session += 1,
+            "generation" => app.generation += 1,
+            "navigation" => app.navigation_epoch += 1,
+            "query" => app.search_query.push_str("changed"),
+            "scope" => app.search_scope = "changed".into(),
+            "masks" => app.search_masks = "*.changed".into(),
+            "tool" => app.tool = Tool::Git,
+            "focus" => {
+                ctx.memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", 1u64))))
+            }
+            "missing" => {}
+            _ => unreachable!(),
+        }
+        let mut native = eframe::Frame::_new_kittest();
+        let _ = ctx.run(input, |ctx| eframe::App::update(&mut app, ctx, &mut native));
+        assert!(app.tools_open, "stale origin {change}");
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn poisoned_or_stale_primary_press_cannot_hide_on_its_later_clean_release() {
+    for poison in ["text", "wheel", "ime", "version", "session", "navigation"] {
+        let (mut app, commands) = app(Tool::Search);
+        settle(&mut app, LARGE);
+        let at = widget(&app, "close_tools").rect.center();
+        let mut press = vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ];
+        match poison {
+            "text" => press.push(egui::Event::Text("newer".into())),
+            "wheel" => press.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -4.0),
+                modifiers: egui::Modifiers::NONE,
+            }),
+            "ime" => press.push(egui::Event::Ime(egui::ImeEvent::Preedit(
+                "composition".into(),
+            ))),
+            _ => {}
+        }
+        frame(&mut app, LARGE, press);
+        match poison {
+            "version" => app.documents[0].edit_version += 1,
+            "session" => app.language.session += 1,
+            "navigation" => app.navigation_epoch += 1,
+            _ => {}
+        }
+        frame(
+            &mut app,
+            LARGE,
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(
+            app.tools_open,
+            "poisoned/stale {poison} press must be retired"
+        );
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn native_space_activation_repeat_does_not_edit_the_returned_field() {
+    for close in [false, true] {
+        for activation in [egui::Key::Space, egui::Key::Enter] {
+            let (mut app, commands) = app(Tool::Search);
+            settle(&mut app, LARGE);
+            if !close {
+                toggle(&mut app, LARGE);
+                settle(&mut app, LARGE);
+            }
+            let probe = if close {
+                "close_tools"
+            } else {
+                "find_results_entry"
+            };
+            recorded_response(&app, probe).request_focus();
+            frame(&mut app, LARGE, vec![]);
+            let text = app.documents[0].text.clone();
+            let query = app.search_query.clone();
+            let version = app.documents[0].edit_version;
+            let press = || {
+                let mut events = vec![key_event(activation, egui::Modifiers::NONE, true)];
+                if activation == egui::Key::Space {
+                    events.push(egui::Event::Text(" ".into()));
+                }
+                events
+            };
+            frame(&mut app, LARGE, press());
+            assert_eq!(app.tools_open, !close);
+            assert_eq!(
+                app.documents[0].text, text,
+                "initial {activation:?}, close={close}"
+            );
+            assert_eq!(
+                app.search_query, query,
+                "initial {activation:?}, close={close}"
+            );
+            for _ in 0..2 {
+                frame(&mut app, LARGE, press());
+            }
+            assert_eq!(
+                app.documents[0].text, text,
+                "held {activation:?}, close={close}"
+            );
+            assert_eq!(app.documents[0].edit_version, version);
+            assert_eq!(
+                app.search_query, query,
+                "held {activation:?}, close={close}"
+            );
+            assert!(
+                commands.try_recv().is_err(),
+                "held activation must never submit Search"
+            );
+            // Release and a new press in the same original batch are distinct.
+            let mut fresh = vec![key_event(activation, egui::Modifiers::NONE, false)];
+            fresh.extend(press());
+            fresh.push(key_event(activation, egui::Modifiers::NONE, false));
+            frame(&mut app, LARGE, fresh);
+            if activation == egui::Key::Enter && !close {
+                assert!(
+                    matches!(commands.try_recv().unwrap().op, Operation::Search { .. }),
+                    "fresh Enter submits once"
+                );
+            } else if close {
+                assert_ne!(
+                    app.documents[0].text, text,
+                    "fresh key edits returned editor"
+                );
+            } else {
+                assert_eq!(
+                    app.search_query.len(),
+                    query.len() + 1,
+                    "fresh Space enters one character"
+                );
+            }
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn held_activation_filter_preserves_unrelated_text_paste_and_ime() {
+    let (mut app, commands) = app(Tool::Search);
+    settle(&mut app, LARGE);
+    toggle(&mut app, LARGE);
+    settle(&mut app, LARGE);
+    recorded_response(&app, "find_results_entry").request_focus();
+    frame(&mut app, LARGE, vec![]);
+    frame(
+        &mut app,
+        LARGE,
+        vec![
+            key_event(egui::Key::Space, egui::Modifiers::NONE, true),
+            egui::Event::Text(" ".into()),
+        ],
+    );
+    let keep = vec![
+        egui::Event::Text("unrelated".into()),
+        egui::Event::Paste("paste".into()),
+        egui::Event::Ime(egui::ImeEvent::Preedit("composition".into())),
+        egui::Event::Ime(egui::ImeEvent::Disabled),
+    ];
+    let mut events = vec![
+        key_event(egui::Key::Space, egui::Modifiers::NONE, true),
+        egui::Event::Text(" ".into()),
+    ];
+    events.extend(keep.clone());
+    let ctx = app.editor_ctx.clone();
+    let mut raw = egui::RawInput {
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(&mut app, &ctx, &mut raw);
+    assert_eq!(raw.events, keep);
+    let mut unassociated = vec![key_event(egui::Key::Space, egui::Modifiers::NONE, true)];
+    unassociated.extend(keep.clone());
+    unassociated.push(egui::Event::Text(" ".into()));
+    let mut raw = egui::RawInput {
+        events: unassociated,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(&mut app, &ctx, &mut raw);
+    let mut expected = keep;
+    expected.push(egui::Event::Text(" ".into()));
+    assert_eq!(
+        raw.events, expected,
+        "a later unassociated space remains ordinary input"
+    );
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn access_toggle_is_not_replayed_by_a_discarded_render_pass() {
+    let (mut app, commands) = app(Tool::Search);
+    settle(&mut app, LARGE);
+    let ctx = app.editor_ctx.clone();
+    let mut input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, LARGE.into())),
+        events: key(egui::Key::J, egui::Modifiers::COMMAND),
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+    let mut native = eframe::Frame::_new_kittest();
+    let mut renders = 0;
+    let output = ctx.run(input, |ctx| {
+        eframe::App::update(&mut app, ctx, &mut native);
+        assert!(
+            !app.tools_open,
+            "toggle must happen once on the original pass"
+        );
+        renders += 1;
+        if renders == 1 {
+            ctx.request_discard("access lifetime test");
+        }
+    });
+    assert!(output.platform_output.num_completed_passes >= 2);
+    assert!(!app.tools_open);
+    assert_eq!(focused(&app), Some(egui::Id::new(("editor", 1u64))));
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn zero_project_viewport_does_not_focus_invisible_rows() {
+    let (mut app, commands) = app(Tool::Search);
+    load_project(&mut app, &commands, project_rows(2));
+    app.tools_height = Some(500.0);
+    settle(&mut app, LARGE);
+    recorded_response(&app, "search_query").request_focus();
+    frame(&mut app, LARGE, vec![]);
+    let row_ids = [widget(&app, "dir-00").id, widget(&app, "dir-01").id];
+    let tiny = [640.0, 64.0];
+    explorer(&mut app, tiny);
+    assert!(app.tools_open);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, tiny.into());
+    for id in row_ids {
+        assert_ne!(focused(&app), Some(id));
+    }
+    app.editor_ctx.data(|data| {
+        let probes = data
+            .get_temp::<HashMap<String, Widget>>(egui::Id::new(PROBE))
+            .unwrap();
+        for name in ["dir-00", "dir-01"] {
+            if let Some(row) = probes.get(name) {
+                assert!(
+                    !row.clip.intersect(screen).is_positive(),
+                    "fixture must leave zero Project viewport"
+                );
+            }
+        }
+    });
+    settle(&mut app, LARGE);
+    assert!(
+        !focused(&app).is_some_and(|id| row_ids.contains(&id)),
+        "dropped request must not replay"
+    );
+    assert_eq!(app.documents[0].text, "saved 雪");
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn native_close_preserves_clean_keyboard_ownership_with_only_primary_pointer_held() {
+    for case in [
+        "retired",
+        "live",
+        "other_pointer",
+        "key",
+        "ime",
+        "mixed_text",
+        "find_entry",
+    ] {
+        let (mut app, commands) = app(Tool::Search);
+        settle(&mut app, LARGE);
+        let at = egui::pos2(1190.0, 890.0);
+        frame(
+            &mut app,
+            LARGE,
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        if case != "live" {
+            app.tools_height_reset.reset(true);
+        }
+        let probe = if case == "find_entry" {
+            "find_results_entry"
+        } else {
+            "close_tools"
+        };
+        recorded_response(&app, probe).request_focus();
+        frame(&mut app, LARGE, vec![]);
+        match case {
+            "other_pointer" => frame(
+                &mut app,
+                LARGE,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Secondary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            ),
+            "key" => frame(
+                &mut app,
+                LARGE,
+                vec![key_event(egui::Key::A, egui::Modifiers::NONE, true)],
+            ),
+            "ime" => frame(
+                &mut app,
+                LARGE,
+                vec![egui::Event::Ime(egui::ImeEvent::Preedit(
+                    "composition".into(),
+                ))],
+            ),
+            _ => {}
+        }
+        let before = focused(&app);
+        if case == "key" {
+            assert_eq!(
+                before,
+                Some(recorded_response(&app, probe).id),
+                "foreign held key must keep the native Close owner"
+            );
+        }
+        let mut events = key(egui::Key::Enter, egui::Modifiers::NONE);
+        if case == "mixed_text" {
+            events.push(egui::Event::Text("newer".into()));
+        }
+        frame(&mut app, LARGE, events);
+        let accepted = case == "retired" || case == "live";
+        assert_eq!(app.tools_open, !accepted, "{case}");
+        if accepted {
+            assert_eq!(focused(&app), Some(egui::Id::new(("editor", 1u64))));
+            if case == "retired" {
+                assert!(!app.tools_height_reset.capture_allowed());
+            }
+        }
+        if case == "find_entry" {
+            assert_eq!(focused(&app), before);
+        }
+        if let Ok(command) = commands.try_recv() {
+            panic!(
+                "{case}: unexpected operation kind {:?}; focus {:?}, intended control {:?}",
+                std::mem::discriminant(&command.op),
+                focused(&app),
+                recorded_response(&app, probe).id
+            );
+        }
+    }
+}
+
+#[test]
+fn witnessed_ready_retirement_rejects_every_unrelated_transition_and_overflow() {
+    for change in [
+        "navigation",
+        "document",
+        "version",
+        "session",
+        "generation",
+        "query",
+        "scope",
+        "masks",
+        "focus",
+        "missing_reply",
+        "unowned_reply",
+        "overflow",
+        "second_retirement",
+    ] {
+        let (mut app, commands) = app(Tool::Search);
+        settle(&mut app, LARGE);
+        app.open("target.txt".into(), None);
+        let request = commands.try_recv().expect("fixture's explicit Read");
+        assert!(matches!(request.op, Operation::Read { .. }));
+        if change == "overflow" {
+            app.navigation_epoch = u64::MAX;
+        }
+        let ready = workspace_access::ReadyNavigation {
+            request: request.id + u64::from(change == "unowned_reply"),
+            generation: app.generation,
+            navigation: app.navigation_epoch,
+        };
+        let ctx = app.editor_ctx.clone();
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, LARGE.into())),
+            events: key(egui::Key::J, egui::Modifiers::COMMAND),
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut raw);
+        let _ = ctx.run(raw, |ctx| {
+            let retirement = app.prepare_workspace_access_retirement(ctx, ready);
+            if change == "overflow" || change == "unowned_reply" {
+                assert!(retirement.is_none(), "{change} cannot mint a witness");
+                return;
+            }
+            let retirement = retirement.expect("fixture's current pending origin");
+            app.navigation_epoch += 1;
+            if change == "second_retirement" {
+                app.finish_workspace_access_retirement(ctx, retirement);
+                let second = workspace_access::ReadyNavigation {
+                    navigation: app.navigation_epoch,
+                    ..ready
+                };
+                assert!(
+                    app.prepare_workspace_access_retirement(ctx, second)
+                        .is_none(),
+                    "one gesture cannot chain retirement epochs"
+                );
+                return;
+            }
+            match change {
+                "navigation" => app.navigation_epoch += 1,
+                "document" => app.active_document = None,
+                "version" => app.documents[0].edit_version += 1,
+                "session" => app.language.session += 1,
+                "generation" => app.generation += 1,
+                "query" => app.search_query.push_str("changed"),
+                "scope" => app.search_scope = "changed".into(),
+                "masks" => app.search_masks = "*.changed".into(),
+                "focus" => ctx.memory_mut(|memory| {
+                    memory.request_focus(egui::Id::new("new retirement owner"))
+                }),
+                "missing_reply" => {
+                    app.pending.remove(&request.id);
+                }
+                _ => unreachable!(),
+            }
+            app.finish_workspace_access_retirement(ctx, retirement);
+            app.workspace_access_shortcuts(ctx);
+            assert!(
+                app.tools_open,
+                "{change} must not borrow the cancellation witness"
+            );
+            app.finish_workspace_access_frame(ctx);
+        });
+        assert!(
+            commands.try_recv().is_err(),
+            "retirement guard emitted work"
+        );
     }
 }

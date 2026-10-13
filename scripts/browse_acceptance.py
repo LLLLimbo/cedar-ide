@@ -98,6 +98,11 @@ def expected_receipt():
         "reopen_keeps_selection": True,
         "grouped_navigation_additional_operations": 0,
         "retained_dirty_preview_additional_reads": 0,
+        "shell_project_focus_retains_find": True,
+        "shell_find_reopen_active_hit": True,
+        "shell_hide_exact_editor_return": True,
+        "shell_state_preserved": True,
+        "shell_transition_operations": 0,
     }
 
 

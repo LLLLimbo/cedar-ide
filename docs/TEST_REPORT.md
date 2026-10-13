@@ -1,9 +1,96 @@
-# Verification checkpoint — 0.62.2 candidate
+# Verification checkpoint — 0.63.0 browsing shell candidate
 
-## 0.62.2 row-click correction and pending acceptance
+## Current candidate and acceptance boundary
 
-**0.62.2 is a pending correction candidate. The latest accepted bounded baseline
-is 0.61.0.** The 0.62.1 public CI and all three packages passed, but acceptance
+**0.63.0 has passed its final local checks; release acceptance remains pending.
+The latest accepted bounded baseline is 0.62.2.** The candidate concentrates the
+connected workspace on Project, the editor and Find; groups setup under
+Workspace and existing tools under Tools; moves Back/Forward into the tab band;
+and adjusts Project/Find/editor focus routes. Recovery, error, dirty-draft and
+connection states must remain visible and reachable. It adds no backend,
+protocol, search-option or Build/Run behavior.
+
+The final local Linux **0.63.0** workspace/all-target/all-feature/locked aggregate passed
+**50 suites: 2,045 passed / zero failed / 70 ignored**, including the app's
+**1,329 passed / zero failed / 53 ignored**. Formatting and strict Clippy passed;
+**779 Python tests across 28 suites** passed. Actual normal-agent Browse and
+scoped-search runtime proofs passed their existing strict validators with exact
+**seven/ten operations** and **zero shell-transition operations**, preserving
+query and accepted-result identity, grouping, selection, dirty full selection,
+Undo and location history within the measured scope. They used the compiled app test
+and normal debug agent directly through a bounded runner; the canonical CI
+compile/selection/release-driver route was **not executed locally**.
+
+Actual-frame checks assert **40/48** connected-header heights at **780 × 540**
+and **1280 × 900** with **13/18** fonts. The **28/34** tools values are title-row
+minima; margins, separator and body add height. These checks do not establish
+native geometry. The earlier **1,328-pass / 53-ignored** app checkpoint preceded
+a stronger ready-navigation test that exposed Ctrl+J cancellation ordering. The
+correction and stronger test now pass; the earlier failure remains recorded in
+the [candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+
+New exact-commit dual-platform CI, all three exact-source package audits and the
+bounded native journey remain pending. These local results do not imply release
+or CI acceptance. Windows GUI, real SSH, IDEA parity and comparative performance
+remain outside the established evidence.
+
+## Accepted 0.62.2 bounded scoped-search baseline
+
+Public commit
+[`91aa84cb79547207ed4deb296a61834df26089ef`](https://github.com/LLLLimbo/cedar-ide/commit/91aa84cb79547207ed4deb296a61834df26089ef)
+passed [CI 38282992861](https://github.com/LLLLimbo/cedar-ide/actions/runs/38282992861).
+All **four CI jobs** and **three exact-source packages** passed verification.
+Linux recorded **2,031 passed / zero failed / 70 ignored**; Windows recorded
+**1,969 passed / zero failed / 114 ignored**. Both platforms passed **58 Browse**,
+**43 Search** and **13 scoped-search frontend frame checks**.
+
+The normal-agent proofs retained their exact strict contracts: Browse
+**17 fields / seven operations**, Search **57 fields / 14 cases / 12 operations**,
+and scoped search **52 fields / 12 cases / ten operations**. These deterministic
+and process checks establish bounded input, compatibility and operation
+contracts; they are separate from observed native pointer delivery and pixels.
+
+A fresh bounded Linux native journey used the exact 0.62.2 desktop package with
+execution trust off. It independently observed:
+
+- Single-click selection of a previously unselected result, explicit Preview,
+  and genuine operating-system same-row double-click Open in both the shared
+  Project Text window and bottom FIND RESULTS tool
+- The submitted **Directory `src` / File masks `*.rs`** result set, and group
+  collapse and expansion
+- Return with Back to the dirty origin, followed by Undo/Redo
+- Safe normal exit with observed frontend exit code **0**
+
+The optional native invalid-scope, empty-mask, broader OR-mask, edited-tuple
+inactivity, modal-reopen and narrow-geometry checks were **not run**. Existing
+deterministic coverage remains evidence of its own scope; it is not a native
+execution of those branches. The fresh run does not establish Windows GUI,
+real SSH, native backend operation counts, exact selection affinities, descendant
+reaping or performance. The earlier Ctrl+Alt+Left/Right native navigation
+limitation has not been cleared by this scoped-search journey.
+
+Following an environment change, the original public CI and packages were
+recovered and verified. Earlier private native attachments were unavailable;
+they were not re-inspected or reconstructed. The fresh Linux journey above is
+new, separate evidence, not a recovery or reinterpretation of those observations.
+
+This accepts the stated **0.62.2 scoped-search and row-click correction scope**,
+not every roadmap journey or all of B2. The 0.62.0 public CI failure and 0.62.1
+controlled cross-widget defect remain below. The exact cause of 0.62.1's earlier
+unexpected native Open remains **unknown**: the controlled defect establishes a
+reason to fix both surfaces, but does not retroactively diagnose that native
+sequence. The new 0.62.2 pass does not erase it.
+
+## Preserved 0.62.2 preparation record
+
+The following preparation results and pending statements precede the accepted
+0.62.2 outcome above. They retain their original scope; they do not make the
+accepted baseline pending again or supply evidence for the 0.63 shell.
+
+### 0.62.2 row-click correction and acceptance state at preparation
+
+**At this preparation checkpoint, 0.62.2 was a pending correction candidate and
+the latest accepted bounded baseline was 0.61.0.** The 0.62.1 public CI and all three packages passed, but acceptance
 is blocked by a confirmed cross-widget result-activation defect. Its earlier
 native unexpected Open remains separately unexplained, and its narrow native
 layout remains unverified. None of those limits is cleared by preparing this

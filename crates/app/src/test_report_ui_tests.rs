@@ -471,38 +471,69 @@ fn test_report_snapshot_does_not_touch_same_path_dirty_editor_or_native_undo() {
 fn test_report_controls_and_entry_are_reachable_at_narrow_native_layout() {
     let (mut app, commands) = app();
     let ctx = app.editor_ctx.clone();
-    app.tools_open = true;
-    app.tool = Tool::Tests;
-    let output = ctx.run(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(760.0, 700.0),
-            )),
+    app.tools_open = false;
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(760.0, 700.0));
+    let draw = |app: &mut CedarApp, events| {
+        let mut input = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
             ..Default::default()
-        },
-        |ctx| {
-            app.sidebar(ctx);
-            app.tools(ctx);
-            egui::CentralPanel::default().show(ctx, |_| {});
-        },
+        };
+        eframe::App::raw_input_hook(app, &ctx, &mut input);
+        let mut native = eframe::Frame::_new_kittest();
+        ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native))
+    };
+    for _ in 0..3 {
+        draw(&mut app, vec![]);
+    }
+    let output = draw(&mut app, vec![]);
+    let menu = label_rect(&output, "Tools").center();
+    for pressed in [true, false] {
+        draw(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(menu),
+                egui::Event::PointerButton {
+                    pos: menu,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    let output = draw(&mut app, vec![]);
+    let item = label_rect(&output, "Test Results");
+    assert!(
+        screen.contains_rect(item),
+        "Test Results menu entry outside narrow window: {item:?}"
     );
+    let at = item.center();
+    for pressed in [true, false] {
+        draw(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    assert!(app.tools_open && app.tool == Tool::Tests);
+    let output = draw(&mut app, vec![]);
     for label in [
-        "Tests",
+        "Tools",
         "TEST RESULTS",
         "Load report",
         "Refresh report",
         "Clear report",
     ] {
         let rect = label_rect(&output, label);
-        assert!(
-            rect.min.x >= 0.0 && rect.max.x <= 760.0,
-            "offscreen {label}: {rect:?}"
-        );
-        assert!(
-            rect.min.y >= 0.0 && rect.max.y <= 700.0,
-            "offscreen {label}: {rect:?}"
-        );
+        assert!(screen.contains_rect(rect), "offscreen {label}: {rect:?}");
     }
     assert!(commands.try_recv().is_err());
 }

@@ -1,6 +1,6 @@
 # Cedar: project browsing and navigation roadmap
 
-Design decision, 2026-10-12. Documentation only; no product implementation or new release is established by this document.
+Design decision, 2026-10-12, with delivery status updated for the 0.63 shell candidate. This roadmap does not itself establish a new release or acceptance.
 
 ## Product decision and baseline
 
@@ -8,7 +8,16 @@ Cedar will prioritize understanding and navigating projects: finding files and t
 
 The interaction reference is **IntelliJ IDEA 2026.2, Windows New UI, Dark theme, Compact density and default Windows shortcuts**. This is a design reference, not a claim of pixel-perfect, platform, language or feature parity. Cedar keeps its own product identity. Linux validation does not establish Windows GUI behavior.
 
-The engineering baseline is accepted Cedar **0.59.3**, commit `1e2a26d6dd38c17ed3723ced54797fcb43255eb6`, tree `d3f951aa8acd77efebad5aa42c8d773563016c5e`. This roadmap is based solely on that accepted baseline and introduces no product implementation.
+The original design baseline was accepted Cedar **0.59.3**. The current accepted
+bounded engineering baseline is **0.62.2**, public commit
+[`91aa84cb79547207ed4deb296a61834df26089ef`](https://github.com/LLLLimbo/cedar-ide/commit/91aa84cb79547207ed4deb296a61834df26089ef),
+with [CI 38282992861](https://github.com/LLLLimbo/cedar-ide/actions/runs/38282992861),
+three exact-source packages and a separate bounded Linux native journey.
+[The verification report](TEST_REPORT.md#accepted-0622-bounded-scoped-search-baseline)
+keeps those evidence types and their limitations distinct. **0.63 is an
+unverified frontend shell candidate**, not a replacement accepted baseline.
+The original compatibility and phase decisions below retain their stated
+historical reference versions.
 
 ### Delivery decision
 
@@ -99,13 +108,38 @@ The response is an observation, not a filesystem lease. Result activation valida
 | C: semantic accuracy | Accurate Java project/dependency source navigation, then usages and hierarchy workflows | Existing JDT integration is reused; real projects, provider freshness and resource behavior are separately demonstrated. |
 | Later | Persistent file index/watchers, split editors, richer recent locations and additional languages | Add only when measured user journeys justify the storage/lifecycle cost. |
 
-Implementation note: the latest accepted browsing baseline is **0.61.0** with
-same-session retained grouped text results. The **0.62 work in progress** adds
-only B2's bounded Directory/File masks subset under the
-[Scoped Project Text contract](SCOPED_PROJECT_TEXT.md), preserving explicit
-submission and that retained flow. Its tests and native behavior need separate
-evidence. This does not mark B2 complete or add case/word options, regex, live
-queries or a parity claim; the original roadmap decisions above remain unchanged.
+Delivery status: **0.61.0** accepted same-session retained grouped text results;
+**0.62.2** is the latest accepted bounded baseline, adding B2's Directory/File
+masks subset under the [Scoped Project Text contract](SCOPED_PROJECT_TEXT.md)
+and the corrected same-row double-click guard. Explicit submission remains.
+This does not mark all of B2 complete or add case/word options, regex, live
+queries or a parity claim.
+
+### Current 0.63 shell candidate
+
+The next slice improves the connected Project/editor/Find journey using the
+existing providers and state. Workspace setup moves behind a **Workspace** menu
+while connection, errors, recovery and dirty state remain accessible. A **Tools**
+menu keeps Git, Commands, Language and Tests reachable. Back/Forward appears in
+the editor tab band without changing the underlying location history.
+**Alt+1** should focus a useful Project control while preserving Find;
+**Ctrl/Cmd+J** should reopen Find at an active visible selected hit, otherwise its
+query, and hiding it should restore the captured editor context.
+
+Connected-header heights of **40/48** logical pixels and tools **title-row
+minimum heights of 28/34** are design targets for the **13/18** font-size checks.
+The tools' enclosing margins, separator and body add height; 28/34 is not the
+whole header or panel height. These are not measured IDEA pixels or accepted
+fixed bounds. At **780 × 540**, wrapping or scrolling must keep
+controls reachable; larger text or state messages may need more height. These
+geometry and focus claims remain pending in the
+[0.63 candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+
+This slice adds no backend or protocol behavior, new search flags, Build/Run
+features, semantic provider, execution trust, theme-parity or performance claim.
+The exact candidate must pass its changed focus/geometry paths and retained
+safety checks before it can be accepted. The 0.62.2 native journey did not run
+its optional narrow-layout checks and cannot supply that evidence.
 
 Non-goals for A/B1: new Build/Run/DAP/test-execution features; deleting existing modules; package management; arbitrary Gradle/Maven execution; multi-file refactoring; SSH deployment/credential automation; persistent indexes; complete IDEA plugin compatibility; Windows privacy integration; unrestricted large files; generic Unicode search equivalence; automatic trust; or an unmeasured “faster/lighter than IDEA” claim.
 

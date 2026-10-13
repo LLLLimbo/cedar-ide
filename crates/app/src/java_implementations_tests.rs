@@ -143,18 +143,17 @@ fn key(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
 fn frame(app: &mut CedarApp, time: f64, events: Vec<egui::Event>) -> egui::FullOutput {
     let ctx = app.editor_ctx.clone();
     let mut native = eframe::Frame::_new_kittest();
-    ctx.run(
-        egui::RawInput {
-            time: Some(time),
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1320.0, 1080.0),
-            )),
-            events,
-            ..Default::default()
-        },
-        |ctx| eframe::App::update(app, ctx, &mut native),
-    )
+    let mut input = egui::RawInput {
+        time: Some(time),
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1320.0, 1080.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native))
 }
 fn label(output: &egui::FullOutput, wanted: &str) -> Option<egui::Pos2> {
     fn find(shape: &egui::epaint::Shape, wanted: &str) -> Option<egui::Pos2> {
@@ -662,8 +661,11 @@ fn actual_frame_ready_query_resolve_read_yield_to_text_paste_cursor_and_escape()
 #[test]
 fn actual_frame_ready_navigation_yields_to_cancel_tools_shortcuts_and_modal() {
     for phase in [1, 2] {
-        for input in 0..5 {
+        for input in 0..7 {
             let (mut app, commands) = app();
+            // A connected Project surface supplies the real fallback target.
+            app.workspace_key = app.active_form.as_ref().map(|form| form.key());
+            app.root = "/workspace".into();
             if phase == 1 {
                 app.documents.push(Document::new(
                     2,
@@ -694,18 +696,25 @@ fn actual_frame_ready_navigation_yields_to_cancel_tools_shortcuts_and_modal() {
                 };
             }
             let output = frame(&mut app, 0.1, vec![]);
+            let mut ready = Some(WorkerEvent::Response(event(&app, &command, Ok(value))));
+            let mut held_focus = None;
             let events = match input {
                 0 => key(egui::Key::J, egui::Modifiers::COMMAND),
                 1 => key(
                     egui::Key::E,
                     egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
                 ),
-                2 | 3 => {
+                2 | 3 | 5 | 6 => {
                     let at = if input == 2 {
                         label(&output, "Cancel").expect("visible Cancel")
                     } else {
                         crate::workspace_access_tests::recorded_rect(&app, "close_tools").center()
                     };
+                    if input == 5 || input == 6 {
+                        // The reply may already be queued when the clean press
+                        // arrives; its later release must retain its own Close.
+                        app.result_tx.send(ready.take().unwrap()).unwrap();
+                    }
                     frame(
                         &mut app,
                         0.11,
@@ -719,6 +728,11 @@ fn actual_frame_ready_navigation_yields_to_cancel_tools_shortcuts_and_modal() {
                             },
                         ],
                     );
+                    if input == 6 {
+                        app.search_query.push_str(" changed after press");
+                        app.search_scope = "different directory".into();
+                        held_focus = Some(app.editor_ctx.memory(|memory| memory.focused()));
+                    }
                     vec![
                         egui::Event::PointerMoved(at),
                         egui::Event::PointerButton {
@@ -732,11 +746,32 @@ fn actual_frame_ready_navigation_yields_to_cancel_tools_shortcuts_and_modal() {
                 4 => key(egui::Key::W, egui::Modifiers::COMMAND),
                 _ => unreachable!(),
             };
-            app.result_tx
-                .send(WorkerEvent::Response(event(&app, &command, Ok(value))))
-                .unwrap();
+            if let Some(ready) = ready {
+                app.result_tx.send(ready).unwrap();
+            }
             frame(&mut app, 0.2, events);
-            if input == 3 {
+            if input == 0 {
+                assert!(
+                    !app.tools_open,
+                    "Ctrl+J must hide after retiring ready navigation, phase {phase}"
+                );
+                assert_eq!(
+                    app.editor_ctx.memory(|memory| memory.focused()),
+                    Some(egui::Id::new(("editor", 1u64)))
+                );
+            }
+            if input == 1 {
+                assert!(app.tools_open && app.tool == crate::Tool::Language);
+                assert_eq!(
+                    app.editor_ctx.memory(|memory| memory.focused()),
+                    Some(
+                        crate::workspace_access_tests::recorded_response(&app, "project_heading")
+                            .id
+                    ),
+                    "Project must focus after retiring ready navigation, phase {phase}"
+                );
+            }
+            if input == 3 || input == 5 {
                 let close = crate::workspace_access_tests::recorded_response(&app, "close_tools");
                 assert!(
                     close.clicked_by(egui::PointerButton::Primary),
@@ -749,6 +784,17 @@ fn actual_frame_ready_navigation_yields_to_cancel_tools_shortcuts_and_modal() {
                 assert_eq!(
                     app.editor_ctx.memory(|memory| memory.focused()),
                     Some(egui::Id::new(("editor", 1u64)))
+                );
+            }
+            if input == 6 {
+                assert!(
+                    app.tools_open,
+                    "a carried Close must reject an unrelated query/scope change"
+                );
+                assert_eq!(
+                    app.editor_ctx.memory(|memory| memory.focused()),
+                    held_focus.unwrap(),
+                    "a rejected carried gesture must not transfer focus"
                 );
             }
             assert_eq!(app.active_document, Some(1), "phase {phase}, input {input}");

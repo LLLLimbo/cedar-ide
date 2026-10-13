@@ -1,14 +1,20 @@
 # Scoped Project Text search
 
-**0.62.2 correction candidate; acceptance pending.** This document defines the
-bounded directory and filename-mask addition to Project Text. The latest
-accepted baseline is **0.61.0**. The 0.62.1 CI and packages passed, but a confirmed
-cross-widget result-activation defect blocks acceptance; its earlier unexpected
-native Open remains unexplained and its narrow native layout is unverified.
-The 0.62.2 correction has passing local Linux checks and matching normal-agent
-proofs; fresh exact-commit dual-platform CI, exact-source packages and a bounded
-native-window journey remain required. See the
-[verification report](TEST_REPORT.md). No 0.62 acceptance is established here.
+**0.62.2 is the accepted bounded baseline.** This document defines its directory
+and filename-mask addition to Project Text and its same-row double-click guard.
+The exact public source passed dual-platform CI and all three package audits;
+a fresh exact-package Linux journey separately covered the scoped `src` / `*.rs`
+flow and selection, explicit Preview and genuine operating-system double-click
+Open in both Find views. The optional invalid-scope, empty-mask, broader OR-mask,
+edited-tuple inactivity, modal-reopen and narrow-layout native checks were not
+run. They must not be inferred from deterministic coverage. See the
+[accepted evidence and historical failures](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md#accepted-0622-bounded-scoped-search-baseline).
+
+The 0.62.0 CI failure and 0.62.1 confirmed cross-widget defect remain historical
+failures. The cause of 0.62.1's earlier unexpected native Open is still unknown.
+The [0.63 shell candidate](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md) reorganizes the
+frontend; it has separate pending gates and does not change this search contract.
+Windows GUI and real SSH remain unverified.
 
 This is a subset of roadmap B2. It preserves the retained grouped-result,
 explicit preview, ordinary Open and Back flow described in
@@ -205,7 +211,7 @@ Space explicitly previews; Enter or double-click performs ordinary Open.
 Hidden or fully clipped hits cannot activate. A successful rerun replaces the one
 accepted snapshot; there is no cross-restart search history.
 
-The 0.62.2 candidate requires a preceding accepted clean click on the **same
+The 0.62.2 guard requires a preceding accepted clean click on the **same
 exact result in the same view and preview pane** before either surface can use
 the interface framework's double-click classification for Open. A rapid group
 or other-row click followed by the first click on a result only selects that
@@ -216,7 +222,7 @@ shared window and bottom tool.
 Genuine same-row doubles retain the framework's timing; repeated layout passes
 cannot count one release twice. A triple-click classification does not itself
 perform Open. The two surfaces keep their existing focus, keyboard and Escape
-behavior. These correction results still require the acceptance evidence above.
+behavior. The accepted evidence remains bounded to the checks listed above.
 
 Preview of an already open file uses its **current buffer**, including a dirty
 draft, with zero backend Reads. Ordinary Open reuses that dirty tab and keeps
@@ -228,17 +234,18 @@ save, replace a dirty draft or promote preview bytes into an editable document.
 
 ## Verification boundary and non-goals
 
-Focused test sources target protocol compatibility,
-backend traversal/read bounds, client gates and the two frontend surfaces.
-Required evidence includes the actual accepted 0.61 reader, unsupported peers
-receiving zero new requests, out-of-scope and nonmatching files receiving zero
-content opens, independent incomplete reasons, malformed result rejection and
-the retained dirty-buffer journey. Source inspection alone does not pass those
-checks. Record executions against the final candidate before marking them
-passed; exact-package native checks remain separate from headless input tests.
+The accepted 0.62.2 evidence covers protocol compatibility, backend
+traversal/read bounds, client gates and both frontend surfaces. The deterministic
+and normal-agent checks include the actual accepted 0.61 reader, unsupported
+peers receiving zero new requests, out-of-scope and nonmatching files receiving
+zero content opens, independent incomplete reasons, malformed result rejection
+and the retained dirty-buffer journey. These checks establish their own bounded
+contracts; they do not supply unobserved native input, geometry or request counts.
+Later shell changes require new evidence for the changed presentation and focus
+paths. Source inspection alone does not establish that acceptance.
 
 This addition does not claim case-insensitive text search, whole-word search,
 regex, live or debounced queries, CamelCase matching, persistent indexing,
 broader semantic navigation, new Windows GUI or real-SSH acceptance, or
-IntelliJ IDEA parity. The latest accepted 0.61 behavior does not supply evidence
-for the new filtered-search path.
+IntelliJ IDEA parity. The older 0.61 evidence remains specific to its retained
+results behavior; the filtered-search evidence belongs to 0.62.2.

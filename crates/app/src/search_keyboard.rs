@@ -117,6 +117,19 @@ pub(super) struct Search {
     layout: u64,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct FocusIdentity {
+    accepted: Option<Source>,
+    pending: Option<Source>,
+    layout: u64,
+    selected: Option<usize>,
+    active: bool,
+    request: u64,
+    query: String,
+    scope: String,
+    masks: String,
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct PointerProbe {
@@ -638,6 +651,20 @@ impl CedarApp {
             })
     }
 
+    pub(super) fn search_focus_identity(&self) -> FocusIdentity {
+        FocusIdentity {
+            accepted: self.search_state.accepted.clone(),
+            pending: self.search_state.pending.clone(),
+            layout: self.search_state.layout,
+            selected: self.search_state.selected,
+            active: self.search_rows_active(),
+            request: self.search_request,
+            query: self.search_query.clone(),
+            scope: self.search_scope.clone(),
+            masks: self.search_masks.clone(),
+        }
+    }
+
     fn search_input_allowed(&self, ctx: &egui::Context) -> bool {
         self.search_rows_active()
             && self.tools_open
@@ -1153,6 +1180,7 @@ impl CedarApp {
             );
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "search_query", &edit);
+            self.record_find_access(ui, None, &edit);
             if edit.changed() {
                 self.search_filters_changed();
             }
@@ -1390,6 +1418,7 @@ impl CedarApp {
                                 })
                                 .inner;
                             app.search_state.keyboard.record(ui, index, &response);
+                            app.record_find_access(ui, Some(index), &response);
                             #[cfg(test)]
                             crate::workspace_access_tests::record(
                                 ui,

@@ -571,7 +571,11 @@ impl CedarApp {
         true
     }
 
-    pub(super) fn history_supersede_ready_navigation(&mut self, ctx: Option<&egui::Context>) {
+    pub(super) fn history_supersede_ready_navigation(
+        &mut self,
+        ctx: Option<&egui::Context>,
+        ready: crate::workspace_access::ReadyNavigation,
+    ) {
         // The guard is cancelling an older reply on behalf of current input.
         // Consume only this exact, already-owned history release here, after
         // preceding worker events and before this reply. Other invalidated
@@ -600,9 +604,13 @@ impl CedarApp {
             self.history_step(press.direction, ctx);
             return;
         }
+        let access = ctx.and_then(|ctx| self.prepare_workspace_access_retirement(ctx, ready));
         self.location_history.cancel_pending();
         self.navigation_epoch = self.navigation_epoch.wrapping_add(1);
         self.cancel_ready_language_navigation();
+        if let (Some(ctx), Some(access)) = (ctx, access) {
+            self.finish_workspace_access_retirement(ctx, access);
+        }
     }
 
     pub(super) fn history_newer_completion_input(&self, ctx: &egui::Context) -> bool {
@@ -731,7 +739,7 @@ impl CedarApp {
         {
             self.location_history.press = None;
         }
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
             let enabled = !self.history_blocked(ui.ctx()) && ui.is_enabled();
             // egui shares capture across buttons; a held secondary/middle/extra
             // button must not lend its widget to a later primary gesture.
@@ -788,12 +796,15 @@ impl CedarApp {
                     }
                 }
             }
-            if let Some(message) = &self.location_history.message {
-                ui.label(egui::RichText::new(message).small().color(MUTED));
-            }
         });
         if matches!(input, ButtonInput::Release | ButtonInput::Click) {
             self.location_history.press = None;
+        }
+    }
+
+    pub(super) fn history_message(&self, ui: &mut egui::Ui) {
+        if let Some(message) = &self.location_history.message {
+            ui.label(egui::RichText::new(message).small().color(MUTED));
         }
     }
 
