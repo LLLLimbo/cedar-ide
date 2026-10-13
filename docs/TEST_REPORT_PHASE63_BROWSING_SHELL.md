@@ -1,4 +1,4 @@
-# 0.63.0 browsing shell candidate
+# 0.63.1 browsing shell correction candidate
 
 **Acceptance pending.** The latest accepted bounded baseline is **0.62.2**,
 public commit
@@ -7,9 +7,18 @@ with [CI 38282992861](https://github.com/LLLLimbo/cedar-ide/actions/runs/3828299
 all four jobs and all three exact-source packages verified. Its bounded Linux
 native evidence and unrun optional checks are recorded separately in the
 [current report](TEST_REPORT.md#accepted-0622-bounded-scoped-search-baseline).
-The final local source is version **0.63.0**. Its aggregate, strict checks and
-bounded local process proofs passed as recorded below. Exact-commit dual-platform
-CI, all three package audits and native acceptance remain pending.
+The original 0.63.0 checks preceded a blocked native menu-dismissal
+observation. A delivered-Escape actual-frame regression separately failed because
+the generic shortcut handler consumed the event before egui rendered its menu.
+The 0.63.1 correction targets only a proven current Workspace/Tools root at that
+existing Escape branch, retaining earlier modal/language owners and the no-menu
+fallback. Original native key delivery remains unproven. See the
+[preserved failure record](TEST_REPORT.md#current-correction-and-blocked-predecessor).
+The preceding 0.63.0 exact CI completed all four jobs and three package audits:
+Linux 2,045/0/70 and Windows 1,983/0/114 across 50 suites, including the exact
+seven/ten-operation shell proofs and retained real-JDT checks. Its native gate
+remains blocked. Fresh 0.63.1 local checks are recorded below. Its exact-commit CI, package audits
+and native validation remain pending; earlier passes do not validate this new source.
 
 ## Scope
 
@@ -67,11 +76,11 @@ must independently establish its exercised geometry and control reachability.
 The optional narrow-geometry checks were not run in the fresh 0.62.2 native
 journey. That earlier acceptance cannot be reused as a 0.63 native-window pass.
 
-## Final local Linux checks — 0.63.0
+## Final local Linux checks — 0.63.1
 
 The **workspace, all-target, all-feature, locked** Rust aggregate passed
-**50 suites: 2,045 passed / zero failed / 70 ignored**. Its app suite recorded
-**1,329 passed / zero failed / 53 ignored**. Formatting passed, as did strict
+**50 suites: 2,051 passed / zero failed / 70 ignored**. Its app suite recorded
+**1,335 passed / zero failed / 53 ignored**. Formatting passed, as did strict
 workspace, all-target, all-feature Clippy with warnings denied. The selected
 Python checks passed **779 tests across 28 suites**.
 
@@ -90,21 +99,35 @@ selection and release-driver route was **not executed locally**. The direct
 runtime receipts establish their own bounded process results, not a release
 build, canonical driver run, built-package audit or dual-platform CI pass.
 
-### Preserved development failure and corrected check
+### Preserved development failures and corrected checks
 
 An earlier coherent app run recorded **1,328 passed / 53 ignored**. A subsequent
 strengthened shortcut test with ready navigation exposed a **Ctrl+J cancellation
 ordering problem**. The ordering was corrected and the strengthened check was
-re-run successfully; the final **1,329-test app pass** and workspace aggregate
-above include that correction. The earlier successful run did not cover this
+re-run successfully; the preceding 0.63.0 **1,329-test app pass** and its workspace aggregate
+include that correction. The earlier successful run did not cover this
 stronger condition and does not replace the preserved failed attempt.
+
+The original delivered-Escape regression now passes alongside five additional
+cases for both menu roots, native editor Undo/Redo, earlier language ownership,
+missing/stale/substituted menu identity, no-menu fallback and a ready ordinary
+Read. The focused Escape selection passed **19 tests**; all six new cases also
+ran in the full aggregate. The ready Read may remain as an inactive buffer under
+the existing Open contract; it must not replace the active dirty editor, selection
+or history. The correction does not discard ordinary read results globally.
+
+Initial development tests exposed missing native editor-focus preconditions and
+an incorrect expectation that a completed ordinary Read would not be retained.
+The corrected tests establish editor focus through real clicks before measuring
+the behavior and assert the exact inactive buffer plus unchanged active state.
+They do not seed focus, bypass replies or weaken the original Escape regression.
 
 ## Verification status
 
 | Gate | Status at this checkpoint | Evidence and remaining boundary |
 |---|---|---|
 | Selected Python checks | Passed locally | 779 tests across 28 suites; supporting checks, not built-package or native acceptance. |
-| Final local aggregate and strict checks | Passed locally on 0.63.0 | 50 workspace suites, 2,045/0/70; app 1,329/0/53; formatting and strict workspace/all-target/all-feature Clippy passed. |
+| Final local aggregate and strict checks | Passed locally on 0.63.1 | 50 workspace suites, 2,051/0/70; app 1,335/0/53; formatting and strict workspace/all-target/all-feature Clippy passed. |
 | Focus and connected-shell checks | Local checks passed; native pending | The strengthened ready-navigation Ctrl+J check passed after the preserved cancellation-ordering correction. Exact-package Project/Find/editor focus and input still require native observation. |
 | Geometry and menu reachability | Frame geometry passed; native pending | 40/48 connected-header heights asserted at 780 × 540 and 1280 × 900 with 13/18 fonts. The 28/34 tools title-row minima exclude margins, separator and body. Native wrapping and control reachability remain separate. |
 | Retained Browse, Search and scoped-search behavior | Local aggregate and two direct process proofs passed | Browse/scoped runtime receipts retained exact seven/ten operations and zero shell-transition operations, preserving dirty full selection, Undo and history. The canonical CI compile/selection/release-driver route remains pending. |

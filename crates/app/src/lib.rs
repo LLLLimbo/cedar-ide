@@ -359,6 +359,22 @@ enum Confirm {
     CloseWindow,
 }
 
+// Only the actual header render can identify its egui menu bar and roots.
+// Keep that evidence in its Context, valid for the next pass only.
+#[derive(Clone, Copy)]
+struct HeaderMenus {
+    pass: u64,
+    viewport: egui::ViewportId,
+    bar: egui::Id,
+    roots: [egui::Id; 2],
+}
+
+impl HeaderMenus {
+    fn key() -> egui::Id {
+        egui::Id::new("cedar_header_menus")
+    }
+}
+
 pub struct CedarApp {
     editor_ctx: egui::Context,
     enter_input: Option<enter_indent::FrameInput>,
@@ -2022,6 +2038,9 @@ impl CedarApp {
             }
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            if self.close_header_menu(ctx) {
+                return;
+            }
             self.dismiss_disk_review();
             if self.find_open {
                 self.close_find(ctx);
@@ -2032,6 +2051,30 @@ impl CedarApp {
                 self.open_form = false;
             }
         }
+    }
+
+    fn close_header_menu(&self, ctx: &egui::Context) -> bool {
+        if ctx != &self.editor_ctx {
+            return false;
+        }
+        let Some(header) = ctx.data(|data| data.get_temp::<HeaderMenus>(HeaderMenus::key())) else {
+            return false;
+        };
+        if header.viewport != ctx.viewport_id()
+            || header.pass.checked_add(1) != Some(ctx.cumulative_pass_nr())
+        {
+            return false;
+        }
+        let mut bar = egui::menu::BarState::load(ctx, header.bar);
+        if !bar
+            .as_ref()
+            .is_some_and(|root| header.roots.contains(&root.id))
+        {
+            return false;
+        }
+        bar.take();
+        bar.store(ctx, header.bar);
+        true
     }
 
     fn header(&mut self, ctx: &egui::Context) {
@@ -2053,6 +2096,7 @@ impl CedarApp {
                     let identity_width = (ui.available_width() - reserved).clamp(0.0, 180.0);
                     logo(ui, 22.0);
                     let workspace = ui.menu_button("Workspace", |ui| self.workspace_menu(ui, ctx)).response;
+                    let workspace_id = workspace.id;
                     #[cfg(test)]
                     workspace_access_tests::record(ui, "workspace_menu", &workspace);
                     workspace.on_hover_text(if self.root.is_empty() { "Workspace connection, recovery and save actions" } else { &self.root });
@@ -2075,6 +2119,13 @@ impl CedarApp {
                     let tools = ui.menu_button("Tools", |ui| self.tools_menu(ui)).response;
                     #[cfg(test)]
                     workspace_access_tests::record(ui, "tools_menu", &tools);
+                    let header = HeaderMenus {
+                        pass: ctx.cumulative_pass_nr(),
+                        viewport: ctx.viewport_id(),
+                        bar: ui.id(),
+                        roots: [workspace_id, tools.id],
+                    };
+                    ctx.data_mut(|data| data.insert_temp(HeaderMenus::key(), header));
                     tools.on_hover_text("Git, commands, language and test results");
                 });
             });

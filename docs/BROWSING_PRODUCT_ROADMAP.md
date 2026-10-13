@@ -1,6 +1,6 @@
 # Cedar: project browsing and navigation roadmap
 
-Design decision, 2026-10-12, with delivery status updated for the 0.63 shell candidate. This roadmap does not itself establish a new release or acceptance.
+Design decision, 2026-10-12, with delivery status updated for the 0.63.1 shell candidate. This roadmap does not itself establish a new release or acceptance.
 
 ## Product decision and baseline
 
@@ -14,7 +14,7 @@ bounded engineering baseline is **0.62.2**, public commit
 with [CI 38282992861](https://github.com/LLLLimbo/cedar-ide/actions/runs/38282992861),
 three exact-source packages and a separate bounded Linux native journey.
 [The verification report](TEST_REPORT.md#accepted-0622-bounded-scoped-search-baseline)
-keeps those evidence types and their limitations distinct. **0.63 is an
+keeps those evidence types and their limitations distinct. **0.63.1 is an
 unverified frontend shell candidate**, not a replacement accepted baseline.
 The original compatibility and phase decisions below retain their stated
 historical reference versions.
@@ -115,7 +115,7 @@ and the corrected same-row double-click guard. Explicit submission remains.
 This does not mark all of B2 complete or add case/word options, regex, live
 queries or a parity claim.
 
-### Current 0.63 shell candidate
+### Current 0.63.1 shell candidate
 
 The next slice improves the connected Project/editor/Find journey using the
 existing providers and state. Workspace setup moves behind a **Workspace** menu
@@ -133,7 +133,7 @@ whole header or panel height. These are not measured IDEA pixels or accepted
 fixed bounds. At **780 × 540**, wrapping or scrolling must keep
 controls reachable; larger text or state messages may need more height. These
 geometry and focus claims remain pending in the
-[0.63 candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+[0.63.1 candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
 
 This slice adds no backend or protocol behavior, new search flags, Build/Run
 features, semantic provider, execution trust, theme-parity or performance claim.

@@ -1,6 +1,51 @@
-# Verification checkpoint — 0.63.0 browsing shell candidate
+# Verification checkpoint — 0.63.1 owned-menu Escape correction
 
-## Current candidate and acceptance boundary
+## Current correction and blocked predecessor
+
+**0.63.1 is a correction candidate; the latest accepted bounded baseline remains
+0.62.2.** It closes only the currently owned Workspace or Tools menu when the
+existing generic Escape handler receives the key. Earlier navigation, modal and
+language Escape owners retain their existing priority. Without an owned menu,
+the previous generic dismissal behavior remains. It adds no backend operation,
+protocol, dependency, execution permission or new UI feature.
+
+The preceding public [0.63.0 source](https://github.com/LLLLimbo/cedar-ide/commit/bf912c834faf7685ef13437fbc3ad1b20d669a8c)
+and [CI 38327699936](https://github.com/LLLLimbo/cedar-ide/actions/runs/38327699936)
+remain a distinct checkpoint. All four CI jobs and all three exact-source
+packages passed. Linux recorded **2,045/0/70** and Windows **1,983/0/114**
+(passed/failed/ignored), each across **50 suites**. Both platforms passed five
+shell, 31 workspace-access and 24 retained row-continuity cases. The strict
+Browse **22-field/seven-operation** and scoped **57-field/12-case/ten-operation**
+receipts reported zero added shell operations; the retained 12-operation Search
+proof and both real-JDT producer proofs also passed. These headless results do
+not complete native acceptance.
+
+Its fresh Linux native attempt connected with
+execution trust off and showed Workspace/status/Recovery entries. An Escape
+request left the menu visible in both the immediate after-image and later
+quit-before image. Functional cases stopped immediately; the owned frontend
+exited normally with code 0, and the archive, source, package and six generated
+fixture files were unchanged. Project/Find/editor focus, Preview/Open/Back,
+dirty Undo/Redo and narrow-window native checks were not run.
+
+A separate actual-frame test established a source defect for a delivered Escape:
+the key survived the original raw-input hook, the generic shortcut handler
+consumed it before egui menu rendering, and the menu remained painted after key
+release and an idle repaint. This proves that controlled input path; it does not
+prove which native widget received the earlier tool-delivered key. The original
+native observation and failed regression remain preserved.
+
+The 0.63.1 local aggregate passed **2,051/0/70 across 50 suites**, including
+**1,335/0/53** in the app, all six new cases (the original Escape regression plus five additional cases).
+Strict Clippy and **779 Python tests across 28 suites** passed. Exact-commit
+dual-platform CI, three package audits and a new bounded native journey remain
+pending. None is inferred from 0.63.0. Current results are recorded in the
+[correction report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+
+The following preparation record predates the 0.63.0 native stop; its then-pending
+CI/native statements describe that earlier point, not current acceptance.
+
+## Preserved 0.63.0 local preparation record
 
 **0.63.0 has passed its final local checks; release acceptance remains pending.
 The latest accepted bounded baseline is 0.62.2.** The candidate concentrates the

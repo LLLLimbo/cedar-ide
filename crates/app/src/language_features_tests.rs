@@ -1003,3 +1003,42 @@ fn local_outline_location_history_admits_completed_selection_only_once() {
     app.navigate_outline_location(local);
     assert_eq!(app.location_history.back.len(), 1);
 }
+
+#[test]
+fn header_escape_preserves_earlier_language_owner_before_dismissing_menu() {
+    use crate::browsing_shell_tests::{
+        click, draft_snapshot, fixture, key, open_header_root, settle,
+    };
+    let size = [1280.0, 900.0];
+    for menu in ["workspace_menu", "tools_menu"] {
+        let (mut app, commands) = fixture(13.0);
+        settle(&mut app, size);
+        click(&mut app, size, "editor");
+        app.tool = crate::Tool::Language;
+        app.tools_open = true;
+        app.find_open = true;
+        app.language.view = View::JavaParameterInfo;
+        settle(&mut app, size);
+        let snapshot = draft_snapshot(&app);
+        click(&mut app, size, menu);
+        let root = open_header_root(&app.editor_ctx).unwrap();
+        assert!(app.language.view == View::JavaParameterInfo);
+        key(&mut app, size, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(app.language.view == View::Problems);
+        assert_eq!(open_header_root(&app.editor_ctx), Some(root));
+        assert!(
+            app.find_open,
+            "earlier language owner consumes first Escape"
+        );
+        key(&mut app, size, egui::Key::Escape, egui::Modifiers::NONE);
+        assert_eq!(open_header_root(&app.editor_ctx), None);
+        assert!(
+            app.find_open,
+            "owned menu Escape does not also close inline Find"
+        );
+        key(&mut app, size, egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!app.find_open);
+        assert_eq!(draft_snapshot(&app), snapshot);
+        assert!(commands.try_recv().is_err());
+    }
+}
