@@ -2,11 +2,11 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。**0.64 Recent Files 尚未验收**：候选功能只记录本次连接中已稳定激活且有已知 revision 的文件路径，最多 64 条、路径总量 256 KiB、单路径 4,096 字节。Windows/Linux 用 Ctrl+E，macOS 用 Cmd+E；macOS Ctrl+E 保留编辑器行为。本地筛选、Open/Closed 状态、This connection only 与 Clear recent 的范围见[使用指南](docs/RECENT_FILES.md)。打开现有脏稿零 Read 复用；关闭后的路径沿用普通 Open/Read 的默认光标位置，不保存或恢复已关闭文件的旧文本、光标或选区。Clear、断线、重连、工作区切换及重启都会清空，空闲帧不重新填充。最终版本本地 Rust 聚合已通过 50 套、2,082/0/70（app 1,366/0/53，含 19 项新增 Recent/位置对照测试），28 套 Python 合计 791 项、零失败、10 项跳过；严格 Clippy 通过；最终格式检查与当前版本普通 agent 的 Browse 8 操作/29 字段 v2、范围搜索 10 操作严格证明均通过；本地未运行规范编译/release 流程，精确 CI、包和原生验收仍待完成，见[0.64 候选报告](docs/TEST_REPORT_PHASE64_RECENT_FILES.md)。
+Cedar 是一个可构建、可运行的独立 Rust IDE 工程，当前优先完善项目浏览、查找、预览和返回原编辑位置。**0.65 Select Current File in Project 是已通过本地检查、尚未验收的候选**：显式按钮在保留 Flat/Tree 模式的同时，选择当前文件的精确可见 Project 行。仅可沿已知父目录/祖先链发送有界 List，共用一个在途槽，Flat 最多一次已知父目录 List，Tree 最多 32 次祖先 List，整个意图固定 30 秒期限，不因回复续期。取消、输入、导航或身份变化使旧意图失效；不增加 Read、递归或全项目扫描、自动跟随、协议或后端操作。Alt+1 保持既有零请求行为，脏稿选区、Undo、位置历史与 Find 状态须保留，见[使用契约](docs/FIND_AND_RETURN.md#select-current-file-in-project-065-candidate)与[候选报告](docs/TEST_REPORT_PHASE65_PROJECT_REVEAL.md)。最终同源码聚合、严格 Clippy、格式检查及普通 agent Browse/范围搜索证明均通过，Python 聚合也通过；精确 CI、包与原生检查尚未运行。
 
-最新已限定验收基线为 **0.63.3**：公开提交 [`5b6af6c51bfa8e460fc4b4b6367d09d744b1df78`](https://github.com/LLLLimbo/cedar-ide/commit/5b6af6c51bfa8e460fc4b4b6367d09d744b1df78) 的 [CI 38346482830](https://github.com/LLLLimbo/cedar-ide/actions/runs/38346482830) 四项作业与三种精确源码包均通过；两端各 50 套件，Linux 2,063/0/70，Windows 2,001/0/114（通过/失败/忽略）。新的限定 Linux 原生旅程观察到 Alt+1 的 Tree 功能焦点、脏稿未插入 `1`、Find 保留、Ctrl+J、显式 Preview、普通 Open、Back、Undo 及两种菜单 Escape。其范围与早先失败、模糊观察、缺失原始证据及诊断计时限制在[当前报告](docs/TEST_REPORT.md#accepted-0633-bounded-browsing-shell-baseline)中分开记录。Windows/macOS GUI、真实 SSH 与任意视口保证仍未验收，旧版本结果不替代 0.64 的新验证。
+最新已限定功能验收基线为 **0.64.0**：公开提交 [`cf6fbb4c3b7b3149a1c345a1485ccbb9b50ff49e`](https://github.com/LLLLimbo/cedar-ide/commit/cf6fbb4c3b7b3149a1c345a1485ccbb9b50ff49e) 的 [CI 38354618490](https://github.com/LLLLimbo/cedar-ide/actions/runs/38354618490) 四项作业与三种精确源码包审计均通过；两端各 50 套件，Linux 2,082/0/70，Windows 2,020/0/114（通过/失败/忽略），含 19 项新增 Recent Files/对照测试。限定 Linux 原生检查的必要功能和完整性检查通过，但发起退出晚了 **20.436 秒，严格计时门槛失败**；这不是全部门槛通过，也不声明后续原生重跑。详细边界、准备阶段失败与历史记录见[当前报告](docs/TEST_REPORT.md#accepted-0640-bounded-functional-baseline)。Windows/macOS GUI、真实 SSH 与任意视口保证仍未验收，0.64 结果不替代 0.65 的新验证。
 
-Recent Files 不增加预览、仅编辑文件筛选、后台索引、协议、持久化、光标历史或 Build/Run 行为。Cedar **不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识，不声明视觉等价或性能优势。
+[Recent Files](docs/RECENT_FILES.md) 保留本次连接内最多 64 条已稳定激活且有已知 revision 的路径，总路径字节 256 KiB、每条 4,096 字节；Windows/Linux Ctrl+E、macOS Cmd+E 打开。已有脏稿零 Read 复用，关闭路径沿用普通 Open/Read，不保存旧文本、光标或选区。Clear、断线、重连、工作区切换及重启清空，空闲帧不重新填充；没有预览、索引或跨连接持久化。Cedar **不是 IntelliJ IDEA 的完整替代品**，也不兼容其插件；没有复制 JetBrains 的专有实现或使用其产品标识，不声明视觉等价或性能优势。
 
 ## 已能实际使用
 
@@ -198,4 +198,4 @@ python3 scripts/package_checkpoint.py --output /absolute/path/cedar-checkpoint.z
 
 Public source history and omitted machine-specific evidence are described in [PUBLICATION.md](PUBLICATION.md).
 
-Linux GUI 的 Local folder 在 0.41 使用与前端同目录、同版本的独立 agent；缺失或不匹配会报错，没有内嵌回退。面向库调用者的 Client Local 仍保留内嵌模式。新的 Ubuntu 24.04 amd64 桌面包范围与运行依赖见 [Linux 桌面指南](docs/LINUX_DESKTOP_QUICKSTART.zh-CN.md)。0.59.2 的完整双平台 CI、真实 JDT 参数证明、三种包与限定 Linux 原生功能及独立清理补验已通过；0.59.3 仅新增渲染器 Unicode 测试，精确 CI 与三种包已验收，不新增原生运行；0.60.0 已完成精确双平台 CI、三种包及限定 Linux 原生浏览验收；0.61.0 保留分组结果及 0.62.2 范围搜索/双击保护均已完成各自限定验收；0.63.3 浏览外壳已完成自己的限定验收；0.64 Recent Files 仍须独立验证。
+Linux GUI 的 Local folder 在 0.41 使用与前端同目录、同版本的独立 agent；缺失或不匹配会报错，没有内嵌回退。面向库调用者的 Client Local 仍保留内嵌模式。新的 Ubuntu 24.04 amd64 桌面包范围与运行依赖见 [Linux 桌面指南](docs/LINUX_DESKTOP_QUICKSTART.zh-CN.md)。0.59.2 的完整双平台 CI、真实 JDT 参数证明、三种包与限定 Linux 原生功能及独立清理补验已通过；0.59.3 仅新增渲染器 Unicode 测试，精确 CI 与三种包已验收，不新增原生运行；0.60.0 已完成精确双平台 CI、三种包及限定 Linux 原生浏览验收；0.61.0 保留分组结果及 0.62.2 范围搜索/双击保护均已完成各自限定验收；0.63.3 浏览外壳已完成自己的限定验收；0.64 Recent Files 已接受为限定功能基线，严格原生计时失败保留；0.65 当前文件 Project 选择仍须独立验证。

@@ -766,6 +766,7 @@ impl CedarApp {
     }
 
     fn navigation_changed(&mut self) {
+        self.cancel_project_reveal();
         self.location_history.cancel_pending();
         self.navigation.cancel_coordinate_jump();
         self.replace.invalidate();
@@ -2432,6 +2433,24 @@ impl CedarApp {
                             sidebar_layout_tests::record(ui, "Tree", &tree);
                             if tree.clicked() { self.explorer_set_mode(explorer_tree::Mode::Tree); }
                         });
+                        ui.push_id("project_reveal_actions", |ui| {
+                            let select_current = ui.add_enabled(self.ready() && self.active().is_some(), egui::Button::new("Select Current File in Project").wrap()).on_hover_text("Select the active file, loading only its known parent folders when needed. Keeps Flat or Tree mode; never reads a file");
+                            reveal(&select_current);
+                            #[cfg(test)]
+                            workspace_access_tests::record(ui, "project_select_current", &select_current);
+                            #[cfg(test)]
+                            sidebar_layout_tests::record(ui, "Select Current File in Project", &select_current);
+                            self.select_current_file_in_project(ctx, &select_current);
+                            // Keep this footprint stable when the original
+                            // pointer press cancels before widgets process it.
+                            let cancel = ui.add_enabled(self.project_reveal_pending(), egui::Button::new("Cancel selecting current file").wrap());
+                            reveal(&cancel);
+                            #[cfg(test)]
+                            workspace_access_tests::record(ui, "project_reveal_cancel", &cancel);
+                            #[cfg(test)]
+                            sidebar_layout_tests::record(ui, "Cancel selecting current file", &cancel);
+                            if cancel.clicked() { self.cancel_project_reveal(); }
+                        });
                         // Isolate status/control counts from file-row identities.
                         ui.push_id("explorer_status", |ui| self.explorer_status(ui, resized));
                         ui.separator();
@@ -2483,7 +2502,8 @@ impl CedarApp {
                                     let explicit_tree_reveal = self.explorer.mode == explorer_tree::Mode::Tree
                                         && self.explorer.key_reveal.as_deref() == Some(entry.path.as_str()) && response.has_focus();
                                     let access_reveal = self.record_project_access(ui, &entry.path, &response);
-                                    let newly_revealed = response.gained_focus() || (resized && response.has_focus()) || explicit_tree_reveal || access_reveal;
+                                    let current_file_reveal = self.record_project_reveal_row(ui, &entry.path, &response);
+                                    let newly_revealed = response.gained_focus() || (resized && response.has_focus()) || explicit_tree_reveal || access_reveal || current_file_reveal;
                                     if newly_revealed || (pending_focus == Some(response.id) && response.has_focus()) {
                                         response.scroll_to_me(None);
                                         focused_entry = Some((response.id, newly_revealed, response.rect, viewport.min.y));
@@ -3384,6 +3404,7 @@ impl CedarApp {
 
 impl eframe::App for CedarApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.capture_project_reveal_input(raw_input);
         workspace_access::capture_input(self, ctx, raw_input);
         self.editor_tab_input = editor_tab::FrameInput::capture(self, ctx, raw_input);
         self.duplicate_input = self.capture_duplicate_input(ctx, raw_input);
@@ -3505,6 +3526,7 @@ impl eframe::App for CedarApp {
         self.finish_search_frame(ctx);
         self.browse_finish_frame(ctx);
         self.finish_recent_frame(ctx);
+        self.finish_project_reveal_frame(ctx);
     }
 }
 

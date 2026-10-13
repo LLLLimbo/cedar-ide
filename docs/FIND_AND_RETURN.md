@@ -4,15 +4,16 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-The latest accepted bounded baseline is **0.63.3**, including the connected
-browsing shell, retained grouped Project Text results, shared Directory and File
-masks, and same-row click continuity before double-click Open. Its exact CI and
-package results are separate from the bounded Linux native observations in the
-[verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md#accepted-0633-bounded-browsing-shell-baseline).
+The latest accepted bounded functional baseline is **0.64.0**, including Recent
+Files and the retained connected browsing shell. Its exact CI and package checks
+passed. The bounded Linux native run passed its essential functional and
+integrity checks, but quit initiation was **20.436 seconds late**, failing the
+strict timing gate. This is not an all-gates pass; see the
+[verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md#accepted-0640-bounded-functional-baseline).
 
-## 0.64 Recent Files candidate
+## Recent Files (0.64 bounded functional acceptance)
 
-[Recent Files](RECENT_FILES.md) is a separate, not-yet-accepted path list for the
+[Recent Files](RECENT_FILES.md) is a separate path list for the
 current connection. Ctrl+E on Windows/Linux or Cmd+E on macOS opens its local
 filter and Open/Closed rows; macOS Ctrl+E retains its editor behavior. It remembers
 only settled active paths with known revisions, within 64 paths, 256 KiB total
@@ -22,9 +23,60 @@ Opening a live dirty file reuses its buffer without a Read. A closed path uses
 ordinary Open/Read with its default caret position. Recent Files stores and
 restores no closed text, caret or selection. Clear, disconnect, reconnect,
 workspace change and restart clear the list; idle frames cannot repopulate it.
-Final-version aggregate, Python, strict Clippy, formatting and current normal-agent
-process proofs have passed, including the Recent/ordinary-Open controls. Exact
-CI, package and native acceptance remain pending in the [0.64 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE64_RECENT_FILES.md).
+Its checks and the preserved strict native timing failure are recorded separately
+in the [0.64 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE64_RECENT_FILES.md).
+
+## Select Current File in Project (0.65 candidate)
+
+**Final local checks passed; this candidate is not yet accepted.** Aggregate,
+strict Clippy, formatting and both normal-agent process proofs passed on the
+final source. Exact CI, package and native checks have not run.
+The explicit, visible
+**Select Current File in Project** button below the Flat/Tree controls selects
+the active file in Project without opening or rereading it. The chosen **Flat**
+or **Tree** mode stays in place. Flat sends at most **one List of the known parent
+directory**, when needed; Tree uses only the known ancestor chain needed to
+expose that exact path.
+Existing accepted cache entries can be reused. It does not search for the file
+in other directories or run a recursive or project-wide scan; only the exact
+known parent or ancestor directories are listed.
+
+The action shares Explorer's single in-flight List slot. If Project is already
+waiting for a List, wait and select the current file again; no attempt is queued.
+One Tree attempt admits at most **32 List requests**. Both modes use a **fixed
+30-second total deadline** that is not renewed by replies. Directory replies
+still obey the existing path, entry and
+cache bounds. A missing, invalid, stale or over-budget reply cannot be presented
+as a successful selection. Success requires the exact file row to be selected,
+focused and visible in the current Project view, after a final identity check.
+
+**Cancel selecting current file** remains visible and is disabled while idle,
+keeping the controls in place. While selection is pending, it retires the intent.
+Cancellation is conservative: new meaningful input, window blur,
+editor document/path/edit-version changes,
+navigation, mode or connection changes, and manual Project commands also retire
+the old intent. Pointer movement and the initiating key's matching release alone
+do not. For an intent already admitted from clean input, IME Enabled/Disabled
+lifecycle notifications alone also do not cancel it. Active composition still
+blocks entry; Preedit/Commit events, even empty, and mixed meaningful input
+cancel pending intent. The existing keyboard-entry rules are unchanged.
+Late replies cannot focus another row or continue an old ancestor
+sequence. The existing per-List timeout remains 30 seconds; the selection
+deadline expires independently, including before the final row is rendered.
+An already-admitted ordinary List may settle through its existing guards after
+cancellation or expiry, but cannot continue or focus the old selection intent.
+In Flat mode, that List can still replace the displayed parent directory;
+cancellation does not roll back admitted directory work or forcibly interrupt
+an already-running filesystem call. A new explicit attempt is needed
+after a failed or cancelled attempt. Switching editor tabs or repainting alone
+never requests automatic file selection.
+
+Selection keeps the active editor's dirty text, selection, Undo and location
+history intact, and retains Find state. It sends no content Read, discovery or
+search request and adds no backend operation or protocol extension. **Alt+1**
+keeps its existing zero-request Project-focus behavior; it does not invoke this
+action. The [0.65 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE65_PROJECT_REVEAL.md)
+tracks candidate validation separately from accepted 0.64 evidence.
 
 ## Accepted 0.63.3 connected shell
 

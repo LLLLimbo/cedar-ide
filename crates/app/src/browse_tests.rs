@@ -4418,6 +4418,13 @@ struct NormalBrowse {
     recent_live_dirty_reuse_reads: Option<usize>,
     recent_live_dirty_reuse_exact: bool,
     recent_find_state_preserved: bool,
+    project_reveal_ancestor_lists: Option<usize>,
+    project_reveal_additional_reads: Option<usize>,
+    project_reveal_cached_operations: Option<usize>,
+    project_reveal_selected_and_focused: bool,
+    project_reveal_state_preserved: bool,
+    project_reveal_cancelled_lists: Option<usize>,
+    project_reveal_cancelled_followup_operations: Option<usize>,
 }
 
 fn source_digest(path: &std::path::Path) -> String {
@@ -4441,7 +4448,7 @@ fn normal_operation(operation: &Operation) -> serde_json::Value {
             serde_json::json!({"op": "Search", "query": query, "limit": limit})
         }
         _ => panic!(
-            "normal Browse proof dispatched an operation outside its eight-operation contract"
+            "normal Browse proof dispatched an operation outside its twelve-operation contract"
         ),
     }
 }
@@ -4518,6 +4525,13 @@ impl NormalBrowse {
             recent_live_dirty_reuse_reads: None,
             recent_live_dirty_reuse_exact: false,
             recent_find_state_preserved: false,
+            project_reveal_ancestor_lists: None,
+            project_reveal_additional_reads: None,
+            project_reveal_cached_operations: None,
+            project_reveal_selected_and_focused: false,
+            project_reveal_state_preserved: false,
+            project_reveal_cancelled_lists: None,
+            project_reveal_cancelled_followup_operations: None,
         };
         proof.admit_call();
         // Client's constructor performs one ordinary 30-second Hello. Register
@@ -4599,6 +4613,18 @@ impl NormalBrowse {
         assert_eq!(self.recent_live_dirty_reuse_reads, Some(0));
         assert!(self.recent_live_dirty_reuse_exact);
         assert!(self.recent_find_state_preserved);
+        assert_eq!(self.project_reveal_ancestor_lists, Some(3));
+        assert_eq!(self.project_reveal_additional_reads, Some(0));
+        assert_eq!(self.project_reveal_cached_operations, Some(0));
+        assert!(self.project_reveal_selected_and_focused);
+        assert!(self.project_reveal_state_preserved);
+        assert_eq!(
+            explorer_tree::PROJECT_REVEAL_DEADLINE,
+            std::time::Duration::from_secs(30)
+        );
+        assert_eq!(explorer_tree::MAX_PROJECT_REVEAL_LISTS, 32);
+        assert_eq!(self.project_reveal_cancelled_lists, Some(1));
+        assert_eq!(self.project_reveal_cancelled_followup_operations, Some(0));
         assert_eq!(
             self.ledger,
             vec![
@@ -4610,6 +4636,10 @@ impl NormalBrowse {
                 serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
                 serde_json::json!({"op": "Search", "query": "needle", "limit": 500}),
                 serde_json::json!({"op": "Read", "path": NORMAL_TARGET}),
+                serde_json::json!({"op": "List", "path": ""}),
+                serde_json::json!({"op": "List", "path": "untouched"}),
+                serde_json::json!({"op": "List", "path": "untouched/deep"}),
+                serde_json::json!({"op": "List", "path": ""}),
             ]
         );
         for (path, hash) in &self.hashes {
@@ -4638,7 +4668,7 @@ impl NormalBrowse {
         println!(
             "browse_normal_acceptance {}",
             serde_json::json!({
-                "receipt_version": 2,
+                "receipt_version": 3,
                 "operation_ledger": self.ledger, "source_sha256": self.hashes,
                 "connections": 1, "agents_reaped": 1, "trust": false,
                 "active_budget_seconds": 240, "cleanup_timeout_seconds": 30,
@@ -4661,6 +4691,15 @@ impl NormalBrowse {
                 "recent_live_dirty_reuse_reads": self.recent_live_dirty_reuse_reads.unwrap(),
                 "recent_live_dirty_reuse_exact": self.recent_live_dirty_reuse_exact,
                 "recent_find_state_preserved": self.recent_find_state_preserved,
+                "project_reveal_ancestor_lists": self.project_reveal_ancestor_lists.unwrap(),
+                "project_reveal_additional_reads": self.project_reveal_additional_reads.unwrap(),
+                "project_reveal_cached_operations": self.project_reveal_cached_operations.unwrap(),
+                "project_reveal_selected_and_focused": self.project_reveal_selected_and_focused,
+                "project_reveal_state_preserved": self.project_reveal_state_preserved,
+                "project_reveal_cancelled_lists": self.project_reveal_cancelled_lists.unwrap(),
+                "project_reveal_cancelled_followup_operations": self.project_reveal_cancelled_followup_operations.unwrap(),
+                "project_reveal_intent_timeout_seconds": explorer_tree::PROJECT_REVEAL_DEADLINE.as_secs(),
+                "project_reveal_max_ancestor_lists": explorer_tree::MAX_PROJECT_REVEAL_LISTS,
             })
         );
     }
@@ -4840,7 +4879,7 @@ fn recent_closed_reopen_matches_independent_ordinary_open_after_native_settling(
 
 #[test]
 #[ignore = "requires CEDAR_BROWSE_AGENT_BIN selecting the normal shipping agent"]
-fn browse_normal_agent_find_recent_reopen_and_exact_return() {
+fn browse_normal_agent_find_recent_project_reveal_and_exact_return() {
     let mut proof = NormalBrowse::new();
     let mut app = CedarApp::empty();
     app.open_form = false;
@@ -5298,6 +5337,150 @@ fn browse_normal_agent_find_recent_reopen_and_exact_return() {
             .collect::<Vec<_>>()
     );
     proof.recent_find_state_preserved = true;
+    assert!(!app.execution_trusted());
+
+    // All v2 observations above retain their exact eight-operation prefix.
+    // Reveal reuses that same generated nested file and normal Client owner.
+    assert_eq!(proof.ledger.len(), 8);
+    let target_id = app
+        .documents
+        .iter()
+        .find(|document| document.path == NORMAL_TARGET)
+        .unwrap()
+        .id;
+    click(&mut app, &format!("editor_tab:{target_id}"));
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(target_id));
+    frame(&mut app, modified_key(egui::Key::End, command_modifiers()));
+    frame(&mut app, vec![egui::Event::Text("reveal draft Ω😀".into())]);
+    frame(
+        &mut app,
+        modified_key(egui::Key::Home, egui::Modifiers::SHIFT),
+    );
+    settle(&mut app);
+    assert!(app.active().unwrap().dirty());
+    let (_, reveal_selection) = normal_editor_position(&app);
+    assert_ne!(reveal_selection.0, reveal_selection.1);
+    assert_eq!(normal_origin_state(&app), recent_origin);
+    assert!(commands.try_recv().is_err());
+    let reveal_state = normal_shell_snapshot(&app);
+    let reveal_ledger_start = proof.ledger.len();
+    click(&mut app, "explorer_tree_mode");
+    settle(&mut app);
+    assert_eq!(app.explorer.mode, explorer_tree::Mode::Tree);
+    let unloaded = app.explorer_visible_rows();
+    assert_eq!(unloaded.len(), 1);
+    assert_eq!(unloaded[0].entry.path, "");
+    assert!(!unloaded[0].loaded && !unloaded[0].expanded);
+    assert_eq!(app.explorer_loaded_directory_count(), 0);
+    assert!(commands.try_recv().is_err());
+    click(&mut app, "project_select_current");
+    let reveal_started = std::time::Instant::now();
+    assert!(app.project_reveal_pending());
+    for ancestor in ["", "untouched", "untouched/deep"] {
+        proof.exchange(
+            &mut app,
+            &commands,
+            serde_json::json!({"op": "List", "path": ancestor}),
+        );
+        settle(&mut app);
+        assert!(reveal_started.elapsed() < std::time::Duration::from_secs(30));
+        assert_eq!(normal_shell_snapshot(&app), reveal_state);
+    }
+    assert!(!app.project_reveal_pending());
+    assert_eq!(app.explorer.selected, NORMAL_TARGET);
+    let row = recorded_response(&app, "Needle.rs");
+    assert_eq!(row.id, explorer_tree::row_id(NORMAL_TARGET));
+    assert!(row.enabled() && row.sense.is_focusable());
+    assert!(recorded_clip(&app, "Needle.rs").contains_rect(row.rect));
+    assert_eq!(focused(&app), Some(row.id));
+    assert!(commands.try_recv().is_err());
+    proof.project_reveal_ancestor_lists = Some(proof.ledger.len() - reveal_ledger_start);
+    proof.project_reveal_selected_and_focused = true;
+
+    let cached_start = proof.ledger.len();
+    click(&mut app, "project_select_current");
+    settle(&mut app);
+    assert!(!app.project_reveal_pending());
+    assert_eq!(app.explorer.selected, NORMAL_TARGET);
+    assert_eq!(focused(&app), Some(recorded_response(&app, "Needle.rs").id));
+    assert_eq!(normal_shell_snapshot(&app), reveal_state);
+    assert!(
+        commands.try_recv().is_err(),
+        "cached reveal performs no operation"
+    );
+    proof.project_reveal_cached_operations = Some(proof.ledger.len() - cached_start);
+
+    // A new explicit intent uses the same fixed deadline contract. Cancel it
+    // before its first actual normal-agent response, then drain that response.
+    click(&mut app, "explorer_flat_mode");
+    click(&mut app, "explorer_tree_mode");
+    settle(&mut app);
+    let unloaded = app.explorer_visible_rows();
+    assert_eq!(unloaded.len(), 1);
+    assert_eq!(unloaded[0].entry.path, "");
+    assert!(!unloaded[0].loaded && !unloaded[0].expanded);
+    assert_eq!(app.explorer_loaded_directory_count(), 0);
+    assert!(commands.try_recv().is_err());
+    let cancelled_start = proof.ledger.len();
+    click(&mut app, "project_select_current");
+    assert!(app.project_reveal_pending());
+    // Pinned egui swaps its widget maps at end_pass; read_response first
+    // consults the preceding map. Render the newly enabled Cancel once more
+    // before reading its response, without input or delivering the pending List.
+    frame(&mut app, vec![]);
+    assert!(app.project_reveal_pending());
+    let cancel = recorded_response(&app, "project_reveal_cancel");
+    let cancel_rect = recorded_rect(&app, "project_reveal_cancel");
+    let cancel_pos = visible_center(&app, "project_reveal_cancel");
+    assert!(cancel.enabled());
+    frame(&mut app, vec![egui::Event::PointerMoved(cancel_pos)]);
+    assert_eq!(
+        recorded_response(&app, "project_reveal_cancel").id,
+        cancel.id
+    );
+    assert_eq!(recorded_rect(&app, "project_reveal_cancel"), cancel_rect);
+    assert!(recorded_response(&app, "project_reveal_cancel").enabled());
+    assert!(recorded_clip(&app, "project_reveal_cancel").contains(cancel_pos));
+    // Raw-input ownership cancels on this real press. The Cancel control then
+    // becomes disabled in its stable footprint before the native release.
+    frame(&mut app, pointer(cancel_pos, true));
+    assert!(!app.project_reveal_pending());
+    frame(&mut app, pointer(cancel_pos, false));
+    settle(&mut app);
+    assert!(!app.project_reveal_pending());
+    let cancelled_focus = focused(&app);
+    proof.exchange(
+        &mut app,
+        &commands,
+        serde_json::json!({"op": "List", "path": ""}),
+    );
+    proof.project_reveal_cancelled_lists = Some(proof.ledger.len() - cancelled_start);
+    let cancelled_followup_start = proof.ledger.len();
+    settle(&mut app);
+    assert!(!app.project_reveal_pending());
+    assert!(!app.explorer_busy());
+    assert_ne!(app.explorer.selected, NORMAL_TARGET);
+    assert_eq!(
+        focused(&app),
+        cancelled_focus,
+        "late response cannot steal focus"
+    );
+    assert_eq!(normal_shell_snapshot(&app), reveal_state);
+    assert_eq!(normal_origin_state(&app), recent_origin);
+    assert!(
+        commands.try_recv().is_err(),
+        "cancelled reveal must not dispatch its next ancestor List"
+    );
+    proof.project_reveal_cancelled_followup_operations =
+        Some(proof.ledger.len() - cancelled_followup_start);
+    proof.project_reveal_additional_reads = Some(
+        proof.ledger[reveal_ledger_start..]
+            .iter()
+            .filter(|operation| operation["op"] == "Read")
+            .count(),
+    );
+    proof.project_reveal_state_preserved = true;
     assert!(!app.execution_trusted());
     proof.finish();
 }

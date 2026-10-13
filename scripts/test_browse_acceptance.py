@@ -96,8 +96,8 @@ class ReceiptTests(unittest.TestCase):
         for name in (proof.BACKEND_TEST, proof.APP_TEST):
             proof.validate_execution(execution(name), name)
         receipt = proof.expected_receipt()
-        self.assertEqual(len(receipt["operation_ledger"]), 8)
-        self.assertEqual(receipt["receipt_version"], 2)
+        self.assertEqual(len(receipt["operation_ledger"]), 12)
+        self.assertEqual(receipt["receipt_version"], 3)
         self.assertEqual({key: receipt[key] for key in (
             "retained_text_snapshot", "grouped_original_indices",
             "text_open_back_exact", "reopen_keeps_selection",
@@ -164,7 +164,7 @@ class ReceiptTests(unittest.TestCase):
 
     def test_recent_contract_and_previous_seven_operation_receipt_are_strict(self):
         expected = {
-            "receipt_version": 2,
+            "receipt_version": 3,
             "recent_popup_filter_select_operations": 0,
             "recent_closed_reopen_reads": 1,
             "recent_closed_reopen_normal_position": True,
@@ -173,9 +173,9 @@ class ReceiptTests(unittest.TestCase):
             "recent_find_state_preserved": True,
         }
         receipt = proof.expected_receipt()
-        self.assertEqual(len(receipt), 29)
+        self.assertEqual(len(receipt), 38)
         self.assertEqual({key: receipt[key] for key in expected}, expected)
-        self.assertEqual(receipt["operation_ledger"][-1], {"op": "Read", "path": proof.TARGET})
+        self.assertEqual(receipt["operation_ledger"][7], {"op": "Read", "path": proof.TARGET})
         # Historical receipts remain historical evidence and cannot satisfy the
         # new exact test/receipt contract by merely retaining a successful exit.
         old = {key: value for key, value in receipt.items() if key not in expected}
@@ -194,6 +194,75 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(suffix=suffix), self.assertRaises(proof.AcceptanceError):
                 proof.validate_execution(execution(proof.APP_TEST, changed), proof.APP_TEST)
         old_name = "browse_tests::browse_normal_agent_find_preview_open_and_exact_return"
+        with self.assertRaises(proof.AcceptanceError):
+            proof.validate_execution(execution(proof.APP_TEST).replace(proof.APP_TEST.encode(), old_name.encode()), proof.APP_TEST)
+
+    def test_project_reveal_contract_preserves_v2_prefix_and_requires_exact_suffix(self):
+        expected = {
+            "project_reveal_ancestor_lists": 3,
+            "project_reveal_additional_reads": 0,
+            "project_reveal_cached_operations": 0,
+            "project_reveal_selected_and_focused": True,
+            "project_reveal_state_preserved": True,
+            "project_reveal_cancelled_lists": 1,
+            "project_reveal_cancelled_followup_operations": 0,
+            "project_reveal_intent_timeout_seconds": 30,
+            "project_reveal_max_ancestor_lists": 32,
+        }
+        receipt = proof.expected_receipt()
+        self.assertEqual({key: receipt[key] for key in expected}, expected)
+        self.assertEqual(receipt["receipt_version"], 3)
+        self.assertEqual(len(receipt), 38)
+        prefix = [
+            {"op": "Hello"}, {"op": "List", "path": ""},
+            {"op": "Read", "path": "origin.txt"},
+            {"op": "FindFiles", "query": "Needle.rs", "scope": "", "limit": 100},
+            {"op": "Read", "path": proof.TARGET},
+            {"op": "Read", "path": proof.TARGET},
+            {"op": "Search", "query": "needle", "limit": 500},
+            {"op": "Read", "path": proof.TARGET},
+        ]
+        suffix = [
+            {"op": "List", "path": ""},
+            {"op": "List", "path": "untouched"},
+            {"op": "List", "path": "untouched/deep"},
+            {"op": "List", "path": ""},
+        ]
+        self.assertEqual(receipt["operation_ledger"], prefix + suffix)
+        for key, required in expected.items():
+            self.assertIs(type(receipt[key]), type(required))
+            wrong = ((False, 1, "true", None) if required is True else
+                     (True, float(required), str(required), None, required + 1))
+            for value in wrong:
+                with self.subTest(key=key, value=value), self.assertRaises(proof.AcceptanceError):
+                    proof.validate_execution(execution(proof.APP_TEST, {**receipt, key: value}), proof.APP_TEST)
+            missing = {name: value for name, value in receipt.items() if name != key}
+            with self.subTest(missing=key), self.assertRaises(proof.AcceptanceError):
+                proof.validate_execution(execution(proof.APP_TEST, missing), proof.APP_TEST)
+        old = {key: value for key, value in receipt.items() if key not in expected}
+        old["receipt_version"] = 2
+        old["operation_ledger"] = prefix
+        self.assertEqual(len(old), 29)
+        with self.assertRaises(proof.AcceptanceError):
+            proof.validate_execution(execution(proof.APP_TEST, old), proof.APP_TEST)
+        # Neither another directory, an extra request after cancellation, nor a
+        # Read disguised as reveal work can satisfy the exact normal-agent proof.
+        changed_suffixes = [[], suffix[:-1], list(reversed(suffix)), suffix * 2,
+                            suffix + [{"op": "List", "path": "untouched"}],
+                            suffix + [{"op": "Read", "path": proof.TARGET}]]
+        for index in range(len(suffix)):
+            changed = copy.deepcopy(suffix)
+            changed[index]["path"] = "wrong/ancestor"
+            changed_suffixes.append(changed)
+            changed = copy.deepcopy(suffix)
+            changed[index]["op"] = "Read"
+            changed_suffixes.append(changed)
+        for changed in changed_suffixes:
+            with self.subTest(suffix=changed), self.assertRaises(proof.AcceptanceError):
+                proof.validate_execution(execution(proof.APP_TEST, {
+                    **receipt, "operation_ledger": prefix + changed,
+                }), proof.APP_TEST)
+        old_name = "browse_tests::browse_normal_agent_find_recent_reopen_and_exact_return"
         with self.assertRaises(proof.AcceptanceError):
             proof.validate_execution(execution(proof.APP_TEST).replace(proof.APP_TEST.encode(), old_name.encode()), proof.APP_TEST)
 

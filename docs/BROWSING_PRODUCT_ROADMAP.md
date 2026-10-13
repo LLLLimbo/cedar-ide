@@ -1,6 +1,6 @@
 # Cedar: project browsing and navigation roadmap
 
-Design decision, 2026-10-12, with delivery status updated for the 0.64 Recent Files candidate. This roadmap does not itself establish a new release or acceptance.
+Design decision, 2026-10-12, with delivery status updated for the 0.65 Select Current File in Project candidate. This roadmap does not itself establish a new release or acceptance.
 
 ## Product decision and baseline
 
@@ -9,14 +9,16 @@ Cedar will prioritize understanding and navigating projects: finding files and t
 The interaction reference is **IntelliJ IDEA 2026.2, Windows New UI, Dark theme, Compact density and default Windows shortcuts**. This is a design reference, not a claim of pixel-perfect, platform, language or feature parity. Cedar keeps its own product identity. Linux validation does not establish Windows GUI behavior.
 
 The original design baseline was accepted Cedar **0.59.3**. The current accepted
-bounded engineering baseline is **0.63.3**, public commit
-[`5b6af6c51bfa8e460fc4b4b6367d09d744b1df78`](https://github.com/LLLLimbo/cedar-ide/commit/5b6af6c51bfa8e460fc4b4b6367d09d744b1df78),
-with [CI 38346482830](https://github.com/LLLLimbo/cedar-ide/actions/runs/38346482830),
-three exact-source packages and a separate bounded Linux native journey.
-[The verification report](TEST_REPORT.md#accepted-0633-bounded-browsing-shell-baseline)
+bounded functional baseline is **0.64.0**, public commit
+[`cf6fbb4c3b7b3149a1c345a1485ccbb9b50ff49e`](https://github.com/LLLLimbo/cedar-ide/commit/cf6fbb4c3b7b3149a1c345a1485ccbb9b50ff49e),
+with [CI 38354618490](https://github.com/LLLLimbo/cedar-ide/actions/runs/38354618490)
+and three exact-source package audits passed. Its bounded Linux native essential
+functional and integrity checks passed, but quit initiation was **20.436 seconds
+late** and the strict timing gate failed. This is not an all-gates pass.
+[The verification report](TEST_REPORT.md#accepted-0640-bounded-functional-baseline)
 keeps those evidence types, earlier failures and their limitations distinct.
-**0.64 Recent Files is an unaccepted candidate** and does not replace that
-accepted baseline. Original compatibility and phase decisions retain their
+**0.65 Select Current File in Project remains an unaccepted candidate** and does not
+replace that baseline. Original compatibility and phase decisions retain their
 stated historical reference versions.
 
 ### Delivery decision
@@ -111,20 +113,21 @@ The response is an observation, not a filesystem lease. Result activation valida
 Delivery status: **0.61.0** accepted same-session retained grouped text results;
 **0.62.2** accepted the Directory/File masks subset and corrected same-row
 activation under the [scoped-search contract](SCOPED_PROJECT_TEXT.md). Explicit
-submission remains; this does not complete all B2 options. **0.63.3** is the latest
-accepted bounded baseline, adding the connected browsing shell and its narrow
-Alt+1 companion correction. Its native evidence is limited to the recorded Linux
-journey; earlier failures and ambiguous observations remain preserved.
+submission remains; this does not complete all B2 options. **0.63.3** added the
+connected browsing shell and its narrow Alt+1 companion correction. **0.64.0**
+is the latest accepted bounded functional baseline, adding Recent Files. Its
+native strict timing failure, earlier failures and ambiguous observations remain
+preserved.
 
-### Current 0.64 Recent Files candidate
+### Recent Files (0.64 bounded functional acceptance)
 
-The next slice adds a bounded path list for **This connection**. It remembers only
+This slice adds a bounded path list for **This connection**. It remembers only
 settled active files with known revisions, at most **64 paths**, **256 KiB of
 path bytes** in total and **4,096 bytes per path**. Closing a tab retains its path,
 not its text or caret. Clear, disconnect, reconnect, workspace changes and app
 restart empty the list; idle repaint cannot repopulate it.
 
-**Ctrl+E on Windows/Linux** and **Cmd+E on macOS** open the candidate. macOS Ctrl+E
+**Ctrl+E on Windows/Linux** and **Cmd+E on macOS** open Recent Files. macOS Ctrl+E
 keeps its editor behavior. A local filter narrows remembered paths, with
 **Open/Closed** state visible. Opening an already-live dirty file reuses its
 buffer with zero Read. Opening a closed path uses ordinary Open/Read with its
@@ -141,7 +144,9 @@ The final 0.64.0 local aggregate passed 2,082/0/70 across 50 suites, including
 19 new Recent Files/control tests. The updated Python aggregate reported
 791 total tests, zero failures and 10 skips across 28 suites; strict Clippy passed.
 The final format check and current-version normal-agent proofs passed. Exact
-CI, packages and native acceptance remain pending. The Browse process proof
+CI and all three package audits passed; the bounded native essential functional
+and integrity checks passed with the strict timing failure preserved above.
+The Browse process proof
 keeps its historical seven-operation prefix and all assertions, then adds the
 recent closed-file reopen and dirty-buffer reuse for an eight-operation version-2
 receipt. Its first caret-assumption failure is preserved; the expected cursor
@@ -150,14 +155,37 @@ receipt passed before the version bump; the final 0.64.0 rerun passed the strict
 29-field version-2 validator, alongside the retained ten-operation scoped proof.
 The canonical compile/release pipeline was not run locally. Focused, aggregate,
 process, exact CI, package and native gates are reported separately in the
-[candidate report](TEST_REPORT_PHASE64_RECENT_FILES.md).
+[0.64 report](TEST_REPORT_PHASE64_RECENT_FILES.md).
 Existing seven-operation historical evidence is unchanged.
+
+### Current 0.65 Select Current File in Project candidate
+
+This explicit visible action selects the active file's exact visible Project row
+without changing Flat/Tree mode. It may use the existing List operation for only
+the known parent or ancestor chain, through the shared single List slot: at most
+**one known-parent List in Flat** or **32 ancestor Lists in Tree**, with a
+**fixed 30-second total intent deadline** in either mode. Final selection
+requires a current, visible row identity. Cancellation, newer input or navigation,
+document changes and connection changes retire intent; late replies cannot
+continue it or focus another row. An already-admitted List may settle under its
+existing timeout without renewing expired intent.
+
+The action preserves dirty selection, Undo, location history and Find state. It
+lists only exact known parent or ancestor directories, with no recursive or
+project-wide scan. It adds no Read, automatic follow, backend operation or
+protocol. Alt+1 keeps
+its zero-request focus behavior. Final same-source aggregate, strict Clippy,
+formatting and the normal-agent Browse/scoped-search proofs have passed. Exact
+CI, package and native checks have not run, so the candidate remains unaccepted.
+0.64 results do not validate it. See the
+[packaged guide](FIND_AND_RETURN.md#select-current-file-in-project-065-candidate)
+and [candidate report](TEST_REPORT_PHASE65_PROJECT_REVEAL.md).
 
 Connected-header **40/48** logical pixels and tools **28/34** title-row minima
 remain local frame checks at **13/18** font sizes, not arbitrary native viewport
 or IDEA pixel guarantees. Tool margins, separator and body add height; wrapping
 or scrolling must preserve reachability. The 0.63.3 accepted bounded journey
-does not validate 0.64 or erase earlier omitted narrow-window observations.
+does not validate 0.65 or erase earlier omitted narrow-window observations.
 
 Non-goals for A/B1: new Build/Run/DAP/test-execution features; deleting existing modules; package management; arbitrary Gradle/Maven execution; multi-file refactoring; SSH deployment/credential automation; persistent indexes; complete IDEA plugin compatibility; Windows privacy integration; unrestricted large files; generic Unicode search equivalence; automatic trust; or an unmeasured “faster/lighter than IDEA” claim.
 

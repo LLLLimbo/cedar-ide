@@ -6,6 +6,11 @@ use cedar_protocol::{Entry, Operation, Payload};
 use eframe::egui::{self, NumExt, RichText};
 use std::collections::{BTreeMap, HashSet};
 
+#[path = "project_reveal.rs"]
+mod project_reveal;
+#[cfg(test)]
+pub(crate) use project_reveal::{MAX_PROJECT_REVEAL_LISTS, PROJECT_REVEAL_DEADLINE};
+
 pub(crate) const MAX_SNAPSHOTS: usize = 64;
 pub(crate) const MAX_ROWS: usize = 4096;
 pub(crate) const MAX_TEXT_BYTES: usize = 512 * 1024;
@@ -60,6 +65,8 @@ pub(crate) struct Explorer {
     held_keys: HashSet<egui::Key>,
     claimed_keys: HashSet<egui::Key>,
     retry_path: Option<String>,
+    reveal: Option<project_reveal::RevealIntent>,
+    reveal_response: Option<(egui::Response, bool)>,
 }
 
 /// Original-batch admission survives another focused surface claiming held
@@ -768,6 +775,7 @@ impl CedarApp {
         if self.explorer.mode == mode {
             return;
         }
+        self.cancel_project_reveal();
         let Some(epoch) = self
             .explorer
             .mode_epoch
@@ -800,6 +808,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_select(&mut self, path: &str) {
+        self.cancel_project_reveal();
         if self
             .explorer
             .visible_rows()
@@ -957,6 +966,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_new_file(&mut self) {
+        self.cancel_project_reveal();
         let scope = self.explorer_scope();
         self.new_file = true;
         self.new_path = if scope.is_empty() {
@@ -967,6 +977,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_expand(&mut self, path: &str) {
+        self.cancel_project_reveal();
         if self.explorer.branches.contains_key(path) {
             return;
         }
@@ -974,6 +985,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_refresh(&mut self, path: &str) {
+        self.cancel_project_reveal();
         if self.explorer.mode == Mode::Flat {
             self.list(path.into());
             return;
@@ -1043,6 +1055,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_collapse(&mut self, path: &str) {
+        self.cancel_project_reveal();
         self.explorer.advance_epoch();
         self.explorer
             .branches
@@ -1074,6 +1087,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_saved(&mut self, path: &str) {
+        self.cancel_project_reveal();
         if self.explorer.mode == Mode::Tree {
             self.explorer.advance_epoch();
             if let Some(branch) = self.explorer.branches.get_mut(&parent_path(path)) {
@@ -1089,6 +1103,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_list_flat(&mut self, path: String) {
+        self.cancel_project_reveal();
         if self.explorer.mode != Mode::Flat {
             return;
         }
@@ -1159,11 +1174,13 @@ impl CedarApp {
             Ok(_) => Err("Explorer expected a complete directory listing; response ignored".into()),
             Err(error) => Err(error),
         };
+        let admitted;
         if ticket.mode == Mode::Tree {
             if !self.explorer.advance_epoch() {
                 return;
             }
             let result = result.and_then(|entries| self.explorer.admit(&path, entries));
+            admitted = result.is_ok();
             if let Err(error) = result {
                 self.explorer.fail(&path, error);
             }
@@ -1182,6 +1199,7 @@ impl CedarApp {
                 validate_entries(&path, &entries, false)?;
                 Ok(entries)
             });
+            admitted = result.is_ok();
             match result {
                 Ok(mut entries) => {
                     sort_entries(&mut entries);
@@ -1201,6 +1219,7 @@ impl CedarApp {
                 }
             }
         }
+        self.project_reveal_list_settled(&ticket, admitted);
     }
 
     pub(crate) fn explorer_status(&mut self, ui: &mut egui::Ui, resized: bool) {

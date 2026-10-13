@@ -18,7 +18,7 @@ from copy_draft_acceptance import (
 from report_triage_diagnostics import CapturedFailure, bounded_process
 
 BACKEND_TEST = "file_discovery_normal_agent_finds_untouched_binary_and_large_paths_without_trust"
-APP_TEST = "browse_tests::browse_normal_agent_find_recent_reopen_and_exact_return"
+APP_TEST = "browse_tests::browse_normal_agent_find_recent_project_reveal_and_exact_return"
 PREFIX = "browse_normal_acceptance "
 COMPILE_TIMEOUT = 120
 BACKEND_TIMEOUT = 180
@@ -77,7 +77,7 @@ def select_artifacts(data, root, platform):
 
 def expected_receipt():
     return {
-        "receipt_version": 2,
+        "receipt_version": 3,
         "operation_ledger": [
             {"op": "Hello"}, {"op": "List", "path": ""},
             {"op": "Read", "path": "origin.txt"},
@@ -85,6 +85,10 @@ def expected_receipt():
             {"op": "Read", "path": TARGET}, {"op": "Read", "path": TARGET},
             {"op": "Search", "query": "needle", "limit": 500},
             {"op": "Read", "path": TARGET},
+            {"op": "List", "path": ""},
+            {"op": "List", "path": "untouched"},
+            {"op": "List", "path": "untouched/deep"},
+            {"op": "List", "path": ""},
         ],
         "source_sha256": [
             ["origin.txt", hashlib.sha256("saved Ω😀\r\nneedle second\nlast\n".encode()).hexdigest()],
@@ -111,6 +115,15 @@ def expected_receipt():
         "recent_live_dirty_reuse_reads": 0,
         "recent_live_dirty_reuse_exact": True,
         "recent_find_state_preserved": True,
+        "project_reveal_ancestor_lists": 3,
+        "project_reveal_additional_reads": 0,
+        "project_reveal_cached_operations": 0,
+        "project_reveal_selected_and_focused": True,
+        "project_reveal_state_preserved": True,
+        "project_reveal_cancelled_lists": 1,
+        "project_reveal_cancelled_followup_operations": 0,
+        "project_reveal_intent_timeout_seconds": 30,
+        "project_reveal_max_ancestor_lists": 32,
     }
 
 

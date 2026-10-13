@@ -1,12 +1,33 @@
-# 0.64.0 Recent Files candidate
+# 0.64.0 Recent Files bounded functional acceptance
 
-**Local checks passed; acceptance pending. The latest accepted bounded baseline
-is 0.63.3.**
-Its exact public source, CI, packages and bounded Linux native scope are recorded
-in the [accepted baseline](TEST_REPORT.md#accepted-0633-bounded-browsing-shell-baseline).
-Those results do not validate the new Recent Files behavior.
+**0.64.0 is the latest accepted bounded functional baseline. The strict native
+timing gate failed; this is not an all-gates pass.**
 
-## Candidate contract
+## Accepted source, CI and bounded native result
+
+Public commit
+[`cf6fbb4c3b7b3149a1c345a1485ccbb9b50ff49e`](https://github.com/LLLLimbo/cedar-ide/commit/cf6fbb4c3b7b3149a1c345a1485ccbb9b50ff49e)
+passed all **four jobs** in
+[CI 38354618490](https://github.com/LLLLimbo/cedar-ide/actions/runs/38354618490)
+and all **three exact-source package audits**. Each platform ran **50 suites**:
+Linux **2,082 passed / zero failed / 70 ignored** and Windows
+**2,020 passed / zero failed / 114 ignored**, including the **19 new Recent
+Files/control cases**.
+
+The bounded Linux native run passed its essential functional and integrity
+checks. Quit initiation was **20.436 seconds after the required deadline**,
+so the strict timing gate failed. That failure is retained alongside the
+functional result; acceptance of the bounded functional baseline does not turn
+it into a timing pass or establish an all-gates result. No later native rerun is
+claimed here. Windows/macOS GUI, real SSH and arbitrary viewport behavior remain
+outside this acceptance.
+
+The preparation results below predate that checkpoint. Statements that exact CI,
+package and native checks were still pending describe their historical stage;
+they do not make the current functional baseline pending again. New 0.65 work
+requires independent validation.
+
+## Recent Files contract
 
 Recent Files retains at most **64 current-connection paths**, **256 KiB of UTF-8
 path bytes in total**, and **4,096 UTF-8 bytes per path**. Only a settled active
@@ -28,7 +49,7 @@ or restored, and no line-1 position is promised.
 Current session, document, input and activation guards must still apply.
 
 No preview, edited-only toggle, index, new protocol/backend operation, durable
-history, saved caret or parity claim is part of this candidate. The
+history, saved caret or parity claim is part of this slice. The
 [usage guide](RECENT_FILES.md) keeps Recent Files distinct from filename discovery,
 search results and precise open-buffer location history.
 
@@ -82,7 +103,7 @@ checkpoint passed **19 focused tests** and the complete **eight-operation Browse
 runtime proof** before the final version bump. These are successful earlier
 results, not passes for the subsequently selected 0.64.0 artifacts.
 
-## Process proof and remaining validation
+## Preserved process proof and then-pending validation
 
 The final 0.64.0 normal-agent Browse proof retains the existing
 **seven-operation prefix and all its assertions**, then appends a Recent Files

@@ -1,6 +1,74 @@
-# Verification checkpoint — 0.64.0 Recent Files candidate
+# Verification checkpoint — 0.65 Project selection candidate
 
-## Current Recent Files candidate
+## Current 0.65 Select Current File in Project candidate
+
+**0.65 has passed final local checks but remains an unaccepted candidate. The
+latest accepted bounded functional
+baseline is 0.64.0, with its strict native timing failure preserved below.**
+The explicit **Select Current File in Project** action keeps Flat/Tree mode and
+uses only bounded Lists of the active file's known ancestors. It shares the
+single Explorer List slot: Flat admits at most one known-parent List and Tree
+at most 32 ancestor Lists. Both modes have one fixed 30-second total intent
+deadline, including final visible-row selection. Cancellation,
+late replies and changed document, navigation or connection identity cannot
+complete stale intent. The existing 30-second per-List timeout is unchanged.
+An admitted ordinary List may still settle through its existing guards,
+including replacing Flat's displayed parent directory; cancellation stops intent
+continuation and focus, without promising rollback. The Cancel control stays
+visible and is disabled while idle to keep its geometry stable.
+
+IME Enabled/Disabled lifecycle metadata alone does not cancel an intent already
+admitted from clean input. The existing keyboard-entry classifier and the block
+on active composition remain; Preedit/Commit, even empty, and mixed meaningful
+input still cancel intent. This preventive source-derived alignment is not a
+claim to have reproduced a native failure.
+
+Only exact known parent or ancestor directories are listed, with no recursive or
+project-wide scan. It adds no content Read, automatic follow, new protocol or
+backend operation. Alt+1 retains its zero-request behavior; dirty selection, Undo,
+location history and Find state must remain intact. The passed Browse proof
+retains its eight-operation prefix and 29 existing fields, adding four Lists
+and nine fields for a version-3 **12-operation / 38-field** receipt, with zero
+additional Reads and one agent reaped.
+
+The Linux aggregate recorded **2,109/0/70 across 50 suites**, including **27 new
+Project selection tests**; Python recorded **792 total / zero failures / 10
+skipped across 28 suites**, and strict Clippy passed. The normal-agent proof's
+initial immediate-Cancel enabled probe failed; a test-only correction admits
+one idle production frame for the pinned egui response, preserving the original
+assertion. The fresh-binary Browse rerun passed, along with successful final
+same-source aggregate, strict Clippy (`-D warnings`) and formatting checks after
+the preventive IME lifecycle refinement.
+The current-artifact scoped-search proof also passed its strict validator with
+the retained ten operations.
+Exact CI, packages and native checks have not run. No local canonical
+compile/release-driver run is claimed. See the
+[candidate report](TEST_REPORT_PHASE65_PROJECT_REVEAL.md) and
+[packaged guide](FIND_AND_RETURN.md#select-current-file-in-project-065-candidate).
+
+## Accepted 0.64.0 bounded functional baseline
+
+Public commit
+[`cf6fbb4c3b7b3149a1c345a1485ccbb9b50ff49e`](https://github.com/LLLLimbo/cedar-ide/commit/cf6fbb4c3b7b3149a1c345a1485ccbb9b50ff49e)
+passed all **four jobs** in
+[CI 38354618490](https://github.com/LLLLimbo/cedar-ide/actions/runs/38354618490)
+and all **three exact-source package audits**. Each platform ran **50 suites**:
+Linux **2,082 passed / zero failed / 70 ignored** and Windows
+**2,020 passed / zero failed / 114 ignored**, including **19 new Recent
+Files/control cases**.
+
+The bounded Linux native run passed essential functional and integrity checks.
+Quit initiation was **20.436 seconds late**, so the **strict timing gate failed**.
+This is an accepted bounded functional baseline, not an all-gates pass. No later
+native rerun is claimed. Windows/macOS GUI, real SSH, arbitrary viewport behavior
+and IDEA parity remain outside the established result. The
+[0.64 report](TEST_REPORT_PHASE64_RECENT_FILES.md) preserves its preparation
+failures and separates local, process, CI, package and native evidence.
+
+The following 0.64 preparation record predates that checkpoint. Its then-pending
+statements describe that earlier stage and do not validate the 0.65 candidate.
+
+## Preserved 0.64 Recent Files preparation
 
 **0.64.0 is an unaccepted candidate. The latest accepted bounded baseline is
 0.63.3.** Recent Files is limited to 64 settled, known-revision active file paths
@@ -31,7 +99,7 @@ passed 18/18 tests; a subsequent checkpoint passed 19 focused tests and the full
 eight-operation Browse runtime proof before the final version bump. These
 successes do not substitute for checks of the final 0.64.0 artifacts.
 
-### Current 0.64.0 local results
+### Preserved final 0.64.0 local results
 
 The final Linux workspace/all-target/all-feature/locked aggregate passed
 **2,082/0/70 across 50 suites**, including app **1,366/0/53** and **19 new Recent

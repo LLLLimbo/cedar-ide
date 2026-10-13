@@ -798,6 +798,22 @@ impl CedarApp {
             .pointer_surrender = pointer;
     }
 
+    pub(super) fn select_current_file_in_project(
+        &mut self,
+        ctx: &egui::Context,
+        response: &egui::Response,
+    ) {
+        let Some(pointer) = clean_activation(self, ctx, response, false) else {
+            return;
+        };
+        if self.workspace_access_blocked(ctx) {
+            return;
+        }
+        claim_activation(ctx);
+        self.start_project_reveal(ctx);
+        self.project_reveal_allow_pointer_surrender(pointer);
+    }
+
     /// Project rows may be clipped inside a usable viewport: return a reveal
     /// request for the existing bounded nested-scroll path. This never expands
     /// a branch or loads a directory. A zero-height viewport fails closed.

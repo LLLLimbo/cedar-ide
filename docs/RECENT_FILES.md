@@ -1,9 +1,12 @@
-# Recent Files — 0.64 candidate
+# Recent Files — 0.64 bounded functional acceptance
 
-**Not yet accepted. The latest accepted bounded baseline is 0.63.3.**
+**0.64.0 is the latest accepted bounded functional baseline.** Exact CI and
+package checks passed. The bounded Linux native run passed essential functional
+and integrity checks, but quit initiation was **20.436 seconds late**, failing
+the strict timing gate. This is not an all-gates pass.
 Recent Files is a bounded list of paths visited during the current connection.
 It helps return to an open file or reopen a closed file without searching the
-workspace. New candidate checks and their limits belong in the
+workspace. The checks and their limits are recorded in the
 [0.64 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE64_RECENT_FILES.md).
 
 ## Open and choose a file
@@ -57,10 +60,12 @@ saving retain their own existing behavior.
 
 ## Validation boundary
 
-This guide describes the candidate contract. Final-version aggregate, Python
-and strict Clippy checks passed, including the Recent/ordinary-Open controls.
+Final-version aggregate, Python and strict Clippy checks passed, including the
+Recent/ordinary-Open controls.
 Final formatting and current-version normal-agent proofs also passed. Exact
-CI, package and native acceptance remain pending in the
+dual-platform CI and all three exact-source package audits passed. The bounded
+Linux native functional and integrity observations do not erase its strict
+timing failure, as recorded in the
 [report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE64_RECENT_FILES.md). Recent Files adds no protocol or
 backend command, execution permission, persistent recent-location store or
 IDEA parity claim. Windows and macOS GUI behavior still need their own native
