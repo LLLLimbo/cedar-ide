@@ -393,6 +393,8 @@ its reason; unavailable platform controls may be hidden entirely.
 
 Cedar's small bundled fonts do not cover Chinese. When CJK text first appears in an editor, file name, or workspace path, Cedar looks for an already installed system font in the background. It prefers a Simplified Chinese face identified from the collection's metadata, including Noto Sans Mono CJK SC on Linux, Microsoft YaHei on Windows, and suitable PingFang/Heiti faces on macOS. Latin code keeps the existing monospace font.
 
+The unaccepted 0.65.1 candidate also marks CJK in current, validated, accepted Project Text result paths and snippets for this existing loader; its local aggregate/focused tests, independent source review, strict Clippy, formatting and current-artifact Browse/scoped-search proofs passed. Exact CI, package and native checks have not run. The stopped 0.65.0 native search-path display observation is preserved in the [phase report](../../docs/TEST_REPORT_PHASE65_PROJECT_REVEAL.md).
+
 Only known system/user-font locations are checked. One regular font file, up to 32 MiB, is read and validated before being given to egui. There is no font download, installer, directory-wide scan, or redistribution of proprietary system fonts. Missing or oversized fonts produce a visible warning; text stays intact. Rare glyph coverage still depends on the selected font. The first fallback load increases memory use and may cause a short font-atlas rebuild.
 
 The installed Linux Noto collection was verified through actual egui glyph queries: the default fonts did not cover the Chinese test string, while collection face 7 (Noto Sans Mono CJK SC, 19,484,784 bytes) did. Windows/macOS font lookup paths require native-platform validation and are not claimed tested.

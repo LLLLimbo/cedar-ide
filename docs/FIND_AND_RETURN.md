@@ -28,9 +28,13 @@ in the [0.64 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_R
 
 ## Select Current File in Project (0.65 candidate)
 
-**Final local checks passed; this candidate is not yet accepted.** Aggregate,
-strict Clippy, formatting and both normal-agent process proofs passed on the
-final source. Exact CI, package and native checks have not run.
+**This Project selection candidate is not yet accepted.** 0.65.0 passed its
+local checks, exact CI and three package audits. Its Linux native journey stopped
+at a Project Text CJK path display problem before core selection, dirty-selection,
+Down/Up or Undo checks. The narrow 0.65.1 font-trigger correction below passed
+local aggregate/focused tests, independent source review, strict Clippy,
+formatting and current-artifact Browse/scoped-search proofs. Exact CI, package
+and native checks have not run.
 The explicit, visible
 **Select Current File in Project** button below the Flat/Tree controls selects
 the active file in Project without opening or rereading it. The chosen **Flat**
@@ -240,6 +244,13 @@ absent. Even a complete no-match result applies only to that scope and exclusion
 policy. A discovered binary or large file can still be refused by Open or Preview.
 
 ## Retained Project Text results
+
+**0.65.1 CJK trigger candidate, not yet accepted:** current, validated, accepted
+result paths and snippets can trigger the existing background local font loader.
+It checks known font locations and reads one validated regular font file within
+32 MiB; it does not download or install fonts. Display still depends on the
+installed font's glyph coverage. This addresses a source-level trigger omission;
+a corrected native rendering result has not yet been established.
 
 **Project Text** explicitly submits a case-sensitive literal search of disk text.
 It does not search unsaved draft bytes. Results display the submitted query and

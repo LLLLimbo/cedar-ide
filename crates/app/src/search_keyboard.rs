@@ -792,6 +792,10 @@ impl CedarApp {
             self.error = Some(error.into());
             return;
         }
+        self.cjk_seen |= matches.iter().any(|row| {
+            crate::system_fonts::contains_cjk(&row.path)
+                || crate::system_fonts::contains_cjk(&row.text)
+        });
         self.notice = format!(
             "{} matches for {}",
             matches.len(),

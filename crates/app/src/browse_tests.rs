@@ -968,13 +968,13 @@ fn browse_queued_search_success_and_error_yield_to_same_frame_query_provider_or_
                     id: pending.id,
                     connected: true,
                     result: if failed {
-                        Err("superseded search failure".into())
+                        Err("中文 superseded search failure".into())
                     } else {
                         Ok(Payload::Matches {
                             matches: vec![SearchMatch {
-                                path: "obsolete.txt".into(),
+                                path: "未読/obsolete.txt".into(),
                                 line: 2,
-                                text: "superseded search result".into(),
+                                text: "中文 superseded search result".into(),
                             }],
                             truncated: false,
                         })
@@ -1000,6 +1000,8 @@ fn browse_queued_search_success_and_error_yield_to_same_frame_query_provider_or_
             assert_eq!(app.notice, "current notice must survive");
             assert!(!app.browse.preview_visible());
             assert_eq!(app.active_document, Some(1));
+            assert!(!app.cjk_seen);
+            assert!(app.system_fonts.needs_probe());
             assert!(commands.try_recv().is_err());
         }
     }
@@ -3364,13 +3366,13 @@ fn browse_retained_bottom_search_hide_reopen_retires_unchanged_query_request() {
             &mut app,
             pending.id,
             if failed {
-                Err("obsolete same-query Search error".into())
+                Err("中文 obsolete same-query Search error".into())
             } else {
                 Ok(Payload::Matches {
                     matches: vec![SearchMatch {
-                        path: "b.txt".into(),
+                        path: "未読/b.txt".into(),
                         line: 7,
-                        text: "obsolete same-query result".into(),
+                        text: "中文 obsolete same-query result".into(),
                     }],
                     truncated: false,
                 })
@@ -3385,6 +3387,8 @@ fn browse_retained_bottom_search_hide_reopen_retires_unchanged_query_request() {
         assert_eq!(app.search_results.len(), 2);
         assert_eq!(app.search_results[0].path, "origin.txt");
         assert!(!app.search_rows_active());
+        assert!(!app.cjk_seen);
+        assert!(app.system_fonts.needs_probe());
         assert!(!recorded_response(&app, "search_row:0").enabled());
         assert_eq!(
             app.error.as_deref(),

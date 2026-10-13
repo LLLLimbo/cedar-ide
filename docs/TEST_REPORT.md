@@ -1,50 +1,62 @@
-# Verification checkpoint — 0.65 Project selection candidate
+# Verification checkpoint — 0.65.1 search CJK candidate
 
-## Current 0.65 Select Current File in Project candidate
+## Current 0.65.1 candidate and preserved 0.65.0 results
 
-**0.65 has passed final local checks but remains an unaccepted candidate. The
-latest accepted bounded functional
-baseline is 0.64.0, with its strict native timing failure preserved below.**
-The explicit **Select Current File in Project** action keeps Flat/Tree mode and
-uses only bounded Lists of the active file's known ancestors. It shares the
-single Explorer List slot: Flat admits at most one known-parent List and Tree
-at most 32 ancestor Lists. Both modes have one fixed 30-second total intent
-deadline, including final visible-row selection. Cancellation,
-late replies and changed document, navigation or connection identity cannot
-complete stale intent. The existing 30-second per-List timeout is unchanged.
-An admitted ordinary List may still settle through its existing guards,
-including replacing Flat's displayed parent directory; cancellation stops intent
-continuation and focus, without promising rollback. The Cancel control stays
-visible and is disabled while idle to keep its geometry stable.
+**0.65.1 passed final local checks but remains an unaccepted candidate.
+Exact CI, package and native checks have not run. The latest accepted bounded
+functional baseline is 0.64.0, with its strict native timing failure preserved
+below.** The narrow change
+connects CJK in accepted, current, validated Project Text result paths and
+snippets to the existing bounded local font loader. It adds no font download,
+installation, dependency, protocol or backend operation; glyph coverage still
+depends on the installed font.
 
-IME Enabled/Disabled lifecycle metadata alone does not cancel an intent already
-admitted from clean input. The existing keyboard-entry classifier and the block
-on active composition remain; Preedit/Commit, even empty, and mixed meaningful
-input still cancel intent. This preventive source-derived alignment is not a
-claim to have reproduced a native failure.
+The 0.65.1 Linux Rust aggregate passed **2,111/0/70 across 50 suites**; Python
+recorded **792 total / zero failures / 10 skipped across 28 suites**. Focused
+checks passed **117 / one ignored**, including two new tests with **12
+positive/control cases and 14 rejection cases**; independent source review
+passed, along with strict Clippy and formatting. Current Cargo-JSON-selected
+app/normal-agent Browse (**v3, 38 fields / 12 operations**) and scoped-search
+(**ten operations**) proofs passed the unchanged strict validators. The first
+focused epoch-baseline fixture failure and its test-only correction are preserved
+in the [phase report](TEST_REPORT_PHASE65_PROJECT_REVEAL.md#0651-local-validation-checkpoint).
 
-Only exact known parent or ancestor directories are listed, with no recursive or
-project-wide scan. It adds no content Read, automatic follow, new protocol or
-backend operation. Alt+1 retains its zero-request behavior; dirty selection, Undo,
-location history and Find state must remain intact. The passed Browse proof
-retains its eight-operation prefix and 29 existing fields, adding four Lists
-and nine fields for a version-3 **12-operation / 38-field** receipt, with zero
-additional Reads and one agent reaped.
+The preceding 0.65.0 public commit
+[`ec8428a020acc58e47eb5c722de331fcb2b55a03`](https://github.com/LLLLimbo/cedar-ide/commit/ec8428a020acc58e47eb5c722de331fcb2b55a03)
+passed all **four jobs** in
+[CI 38365574615](https://github.com/LLLLimbo/cedar-ide/actions/runs/38365574615)
+and all **three exact-source package audits**. Linux recorded **2,109/0/70** and
+Windows **2,047/0/114** (passed/failed/ignored), each across **50 suites**, with
+**27 new Project selection tests**. The strict Browse version-3 proof retained
+**38 fields / 12 operations**, its original field assertions and eight-operation
+ledger prefix. Scoped-search and Search retained **ten** and **twelve
+operations**. Linux Java restart used forced `grace_expired` cleanup with
+**SIGKILL (signal 9)** and satisfied the existing cleanup predicate; both Java
+stops must not be described as graceful.
 
-The Linux aggregate recorded **2,109/0/70 across 50 suites**, including **27 new
-Project selection tests**; Python recorded **792 total / zero failures / 10
-skipped across 28 suites**, and strict Clippy passed. The normal-agent proof's
-initial immediate-Cancel enabled probe failed; a test-only correction admits
-one idle production frame for the pinned egui response, preserving the original
-assertion. The fresh-binary Browse rerun passed, along with successful final
-same-source aggregate, strict Clippy (`-D warnings`) and formatting checks after
-the preventive IME lifecycle refinement.
-The current-artifact scoped-search proof also passed its strict validator with
-the retained ten operations.
-Exact CI, packages and native checks have not run. No local canonical
-compile/release-driver run is claimed. See the
-[candidate report](TEST_REPORT_PHASE65_PROJECT_REVEAL.md) and
+The 0.65.0 Linux native journey stopped early after Project Text rendered a box
+in `src/层/Target.rs`; fixture UTF-8 remained intact and a supported-location
+**19,484,784-byte** Noto CJK collection was already installed. Core current-file
+selection, dirty-selection preservation, Down/Up and Undo were **not run**.
+Safe exit returned **0**. Source inspection found the search acceptance path
+omitted the CJK-seen trigger used by filename discovery and Explorer. That
+finding motivates 0.65.1; it does not prove native rendering is fixed.
+
+The retained **Select Current File in Project** contract preserves Flat/Tree,
+uses the shared single Explorer List slot, and permits at most one known-parent
+List in Flat or 32 ancestor Lists in Tree within one fixed **30-second total
+intent deadline**. Final selection requires current visible-row identity.
+Cancellation or stale identity prevents continuation and focus; an already
+admitted List can still settle under its existing guards. There is no content
+Read, recursive or project-wide scan, automatic follow or new backend operation.
+Alt+1 remains a zero-request focus action; dirty selection, Undo, location history
+and Find state must survive.
+
+The preserved 0.65.0 local results, immediate-Cancel proof correction, preventive
+IME lifecycle refinement, full contract and new candidate boundary are in the
+[phase report](TEST_REPORT_PHASE65_PROJECT_REVEAL.md) and
 [packaged guide](FIND_AND_RETURN.md#select-current-file-in-project-065-candidate).
+No local canonical compile/release-driver run or 0.65.1 native success is claimed.
 
 ## Accepted 0.64.0 bounded functional baseline
 
@@ -66,7 +78,7 @@ and IDEA parity remain outside the established result. The
 failures and separates local, process, CI, package and native evidence.
 
 The following 0.64 preparation record predates that checkpoint. Its then-pending
-statements describe that earlier stage and do not validate the 0.65 candidate.
+statements describe that earlier stage and do not validate the 0.65.1 candidate.
 
 ## Preserved 0.64 Recent Files preparation
 

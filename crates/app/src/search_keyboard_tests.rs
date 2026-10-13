@@ -635,23 +635,44 @@ fn search_keyboard_history_uses_submitted_query_and_old_rows_stay_inactive() {
 
 #[test]
 fn search_keyboard_rejected_whole_batch_and_current_error_keep_old_rows_inactive() {
+    let mut too_many = rows(MAX_ROWS + 1);
+    too_many[0].text = "中文 first row in oversized batch".into();
     for result in [
         Ok(Payload::Matches {
-            matches: rows(501),
+            matches: too_many,
             truncated: false,
         }),
         Ok(Payload::Matches {
             matches: vec![SearchMatch {
-                path: "file".into(),
+                path: "中文/file".into(),
                 line: 1,
                 text: "x".repeat(MAX_TEXT_BYTES),
             }],
             truncated: false,
         }),
         Ok(Payload::GitStatus {
-            text: "wrong payload".into(),
+            text: "中文 wrong payload".into(),
         }),
-        Err("current search failure".into()),
+        Ok(Payload::ScopedMatches {
+            result: cedar_protocol::ScopedSearchResult {
+                request: cedar_protocol::ScopedSearchRequest {
+                    query: "second".into(),
+                    scope: String::new(),
+                    masks: vec![],
+                    limit: MAX_ROWS,
+                },
+                matches: vec![SearchMatch {
+                    path: "中文/file".into(),
+                    line: 1,
+                    text: "second 中文".into(),
+                }],
+                incomplete: false,
+                reasons: vec![],
+                examined_entries: 1,
+                read_bytes: 128,
+            },
+        }),
+        Err("中文 current search failure".into()),
     ] {
         let (mut app, commands) = app(8);
         let source = app.search_state.accepted.clone();
@@ -664,20 +685,26 @@ fn search_keyboard_rejected_whole_batch_and_current_error_keep_old_rows_inactive
         assert!(app.search_state.pending.is_none());
         assert!(app.error.is_some());
         assert!(!app.search_rows_active());
+        assert!(!app.cjk_seen);
+        assert!(app.system_fonts.needs_probe());
+        assert!(commands.try_recv().is_err());
     }
 }
 
 #[test]
 fn search_keyboard_retired_success_error_and_payload_are_silent_but_transport_loss_wins() {
+    let mut retired_rows = rows(99);
+    retired_rows[0].path = "未読/retired.txt".into();
+    retired_rows[0].text = "中文 retired result".into();
     for result in [
         Ok(Payload::Matches {
-            matches: rows(99),
+            matches: retired_rows,
             truncated: true,
         }),
         Ok(Payload::GitStatus {
-            text: "retired unexpected payload".into(),
+            text: "中文 retired unexpected payload".into(),
         }),
-        Err("retired failure".into()),
+        Err("中文 retired failure".into()),
     ] {
         let (mut app, commands) = app(8);
         let original_source = app.search_state.accepted.clone();
@@ -705,6 +732,8 @@ fn search_keyboard_retired_success_error_and_payload_are_silent_but_transport_lo
         assert_eq!(app.notice, staged_notice);
         assert!(!app.search_rows_active());
         assert!(commands.try_recv().is_err());
+        assert!(!app.cjk_seen);
+        assert!(app.system_fonts.needs_probe());
         reply(
             &mut app,
             newer.id,
@@ -727,6 +756,8 @@ fn search_keyboard_retired_success_error_and_payload_are_silent_but_transport_lo
         assert_eq!(app.error.as_deref(), Some("newer error must survive"));
         assert_eq!(app.notice, notice);
         assert!(app.search_rows_active());
+        assert!(!app.cjk_seen);
+        assert!(app.system_fonts.needs_probe());
     }
     let (mut app, commands) = app(8);
     app.search();

@@ -1,6 +1,6 @@
 # Cedar: project browsing and navigation roadmap
 
-Design decision, 2026-10-12, with delivery status updated for the 0.65 Select Current File in Project candidate. This roadmap does not itself establish a new release or acceptance.
+Design decision, 2026-10-12, with delivery status updated for the 0.65.1 search CJK trigger candidate. This roadmap does not itself establish a new release or acceptance.
 
 ## Product decision and baseline
 
@@ -17,9 +17,9 @@ functional and integrity checks passed, but quit initiation was **20.436 seconds
 late** and the strict timing gate failed. This is not an all-gates pass.
 [The verification report](TEST_REPORT.md#accepted-0640-bounded-functional-baseline)
 keeps those evidence types, earlier failures and their limitations distinct.
-**0.65 Select Current File in Project remains an unaccepted candidate** and does not
-replace that baseline. Original compatibility and phase decisions retain their
-stated historical reference versions.
+**0.65.1 remains an unaccepted candidate**, and the 0.65 native Project-selection
+journey remains incomplete. Neither replaces that baseline. Original compatibility
+and phase decisions retain their stated historical reference versions.
 
 ### Delivery decision
 
@@ -158,10 +158,17 @@ process, exact CI, package and native gates are reported separately in the
 [0.64 report](TEST_REPORT_PHASE64_RECENT_FILES.md).
 Existing seven-operation historical evidence is unchanged.
 
-### Current 0.65 Select Current File in Project candidate
+### Current 0.65.1 search CJK candidate and retained Project selection
 
-This explicit visible action selects the active file's exact visible Project row
-without changing Flat/Tree mode. It may use the existing List operation for only
+0.65.1 narrowly triggers the existing bounded local CJK font loader from current,
+validated, accepted Project Text result paths or snippets. It adds no download,
+installation, dependency, protocol or backend operation, and cannot guarantee
+all glyph coverage. Its local aggregate/focused tests, independent source review,
+strict Clippy, formatting and current-artifact Browse/scoped-search proofs passed.
+Exact CI, package and native checks have not run.
+
+The retained explicit visible Project action selects the active file's exact
+visible Project row without changing Flat/Tree mode. It may use the existing List operation for only
 the known parent or ancestor chain, through the shared single List slot: at most
 **one known-parent List in Flat** or **32 ancestor Lists in Tree**, with a
 **fixed 30-second total intent deadline** in either mode. Final selection
@@ -174,10 +181,12 @@ The action preserves dirty selection, Undo, location history and Find state. It
 lists only exact known parent or ancestor directories, with no recursive or
 project-wide scan. It adds no Read, automatic follow, backend operation or
 protocol. Alt+1 keeps
-its zero-request focus behavior. Final same-source aggregate, strict Clippy,
-formatting and the normal-agent Browse/scoped-search proofs have passed. Exact
-CI, package and native checks have not run, so the candidate remains unaccepted.
-0.64 results do not validate it. See the
+its zero-request focus behavior. 0.65.0 passed local checks, all four exact CI
+jobs and all three package audits. Its native journey stopped at a Project Text
+CJK path rendered as a box, before core selection, dirty-selection, Down/Up and
+Undo checks; intact UTF-8 and safe exit 0 do not establish native acceptance.
+The narrow source-derived trigger correction still needs independent validation.
+See the
 [packaged guide](FIND_AND_RETURN.md#select-current-file-in-project-065-candidate)
 and [candidate report](TEST_REPORT_PHASE65_PROJECT_REVEAL.md).
 
@@ -185,7 +194,7 @@ Connected-header **40/48** logical pixels and tools **28/34** title-row minima
 remain local frame checks at **13/18** font sizes, not arbitrary native viewport
 or IDEA pixel guarantees. Tool margins, separator and body add height; wrapping
 or scrolling must preserve reachability. The 0.63.3 accepted bounded journey
-does not validate 0.65 or erase earlier omitted narrow-window observations.
+does not validate 0.65.1 or erase earlier omitted narrow-window observations.
 
 Non-goals for A/B1: new Build/Run/DAP/test-execution features; deleting existing modules; package management; arbitrary Gradle/Maven execution; multi-file refactoring; SSH deployment/credential automation; persistent indexes; complete IDEA plugin compatibility; Windows privacy integration; unrestricted large files; generic Unicode search equivalence; automatic trust; or an unmeasured “faster/lighter than IDEA” claim.
 

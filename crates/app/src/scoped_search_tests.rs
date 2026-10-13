@@ -352,6 +352,162 @@ fn history(app: &CedarApp) -> HistorySnapshot {
 }
 
 #[test]
+fn search_cjk_accepted_path_or_snippet_triggers_existing_font_probe_on_both_surfaces() {
+    for surface in [Surface::Browse, Surface::Bottom] {
+        for scoped_request in [false, true] {
+            // ASCII controls must remain lazy. Each CJK case is search-only:
+            // document, query, scope, masks and the other result field are ASCII
+            // or non-CJK, and the CJK row is not the first result.
+            for field in 0..3 {
+                let (mut app, commands) = fixture();
+                let departure = selection(&app);
+                let undo = history(&app);
+                enter(&mut app, surface);
+                let pending = if scoped_request {
+                    scoped(&mut app, &commands, surface)
+                } else {
+                    replace(&mut app, surface.query(), "needle");
+                    let pending = submit(&mut app, &commands, surface);
+                    assert!(
+                        matches!(&pending.op, Operation::Search { query, limit: 500 } if query == "needle")
+                    );
+                    pending
+                };
+                let epoch = app.navigation_epoch;
+                let mut matches = rows();
+                if field == 1 {
+                    matches.last_mut().unwrap().path = "src/未読.rs".into();
+                } else if field == 2 {
+                    matches.last_mut().unwrap().text = "needle 中文注释 Ω😀".into();
+                }
+                let expected: Vec<_> = matches
+                    .iter()
+                    .map(|row| (row.path.clone(), row.line, row.text.clone()))
+                    .collect();
+                let result = if scoped_request {
+                    payload(request("needle", "src", &["*.rs"]), matches)
+                } else {
+                    Payload::Matches {
+                        matches,
+                        truncated: false,
+                    }
+                };
+                assert!(!app.cjk_seen && !app.language.cjk_seen);
+                assert!(app.documents.iter().all(|doc| !doc.has_cjk));
+                assert!(app.system_fonts.needs_probe());
+                app.result_tx
+                    .send(WorkerEvent::Response(Event {
+                        generation: app.generation,
+                        id: pending.id,
+                        connected: true,
+                        result: Ok(result),
+                    }))
+                    .unwrap();
+                // Stop on the acceptance frame, as in Browse's discovery/font
+                // regression. A further frame could start optional OS font I/O.
+                frame(&mut app, vec![]);
+                assert_eq!(
+                    app.cjk_seen,
+                    field != 0,
+                    "{surface:?}, scoped={scoped_request}, field={field}"
+                );
+                assert!(app.system_fonts.needs_probe());
+                assert!(app.search_rows_active());
+                assert_eq!(
+                    app.search_state.accepted.as_ref().unwrap().request,
+                    pending.id
+                );
+                assert_eq!(
+                    app.search_results
+                        .iter()
+                        .map(|row| (row.path.clone(), row.line, row.text.clone()))
+                        .collect::<Vec<_>>(),
+                    expected,
+                    "font detection must preserve exact UTF-8 result triples and order"
+                );
+                assert_eq!(app.documents[0].text, DRAFT);
+                assert_eq!(app.documents[0].saved_text, SAVED);
+                assert!(app.documents[0].dirty());
+                assert_eq!(selection(&app), departure);
+                assert_eq!(history(&app), undo);
+                assert_eq!(app.navigation_epoch, epoch);
+                assert!(app.location_history.back.is_empty());
+                assert!(app.location_history.forward.is_empty());
+                assert_eq!(app.documents.len(), 1);
+                assert!(!app.has_search_preview() && !app.browse.preview_visible());
+                assert!(commands.try_recv().is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn search_cjk_invalid_scoped_batch_or_payload_cannot_probe_or_replace_retained_rows() {
+    for surface in [Surface::Browse, Surface::Bottom] {
+        for invalid in 0..7 {
+            let (mut app, commands) = fixture();
+            enter(&mut app, surface);
+            accepted(&mut app, &commands, surface);
+            let source = app.search_state.accepted.clone();
+            let expected: Vec<_> = app
+                .search_results
+                .iter()
+                .map(|row| (row.path.clone(), row.line, row.text.clone()))
+                .collect();
+            let pending = submit(&mut app, &commands, surface);
+            let mut matches = rows();
+            matches[0].text = "needle 中文 result in otherwise rejected batch".into();
+            let mut result = match payload(request("needle", "src", &["*.rs"]), matches) {
+                Payload::ScopedMatches { result } => result,
+                _ => unreachable!(),
+            };
+            let response = match invalid {
+                0 => {
+                    result.matches.last_mut().unwrap().path = "other/outside.rs".into();
+                    Ok(Payload::ScopedMatches { result })
+                }
+                1 => {
+                    result.matches.last_mut().unwrap().line = 0;
+                    Ok(Payload::ScopedMatches { result })
+                }
+                2 => {
+                    result.matches.last_mut().unwrap().text.push('\n');
+                    Ok(Payload::ScopedMatches { result })
+                }
+                3 => {
+                    result.incomplete = true; // missing required reason
+                    Ok(Payload::ScopedMatches { result })
+                }
+                4 => Ok(Payload::Matches {
+                    matches: result.matches,
+                    truncated: false,
+                }),
+                5 => Ok(Payload::GitStatus {
+                    text: "中文 wrong payload".into(),
+                }),
+                _ => Err("中文 search failure".into()),
+            };
+            reply(&mut app, pending.id, response);
+            frame(&mut app, vec![]);
+            assert!(!app.cjk_seen, "{surface:?}, invalid={invalid}");
+            assert!(app.system_fonts.needs_probe());
+            assert_eq!(app.search_state.accepted, source);
+            assert_eq!(
+                app.search_results
+                    .iter()
+                    .map(|row| (row.path.clone(), row.line, row.text.clone()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert!(!app.search_rows_active());
+            assert!(app.search_state.pending.is_none());
+            assert!(app.error.is_some());
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
 fn scoped_find_both_surfaces_share_exact_filters_and_require_explicit_submit() {
     let (mut app, commands) = fixture();
     enter(&mut app, Surface::Bottom);
@@ -507,13 +663,13 @@ fn scoped_find_edit_and_edit_back_retire_late_success_error_and_preview_authorit
                     &mut app,
                     in_flight.id,
                     if late_error {
-                        Err("obsolete scoped error".into())
+                        Err("中文 obsolete scoped error".into())
                     } else {
                         let obsolete_rows = rows()
                             .into_iter()
                             .map(|mut row| {
                                 row.line += 10;
-                                row.text = "obsolete needle scoped result".into();
+                                row.text = "中文 obsolete needle scoped result".into();
                                 row
                             })
                             .collect();
@@ -537,6 +693,8 @@ fn scoped_find_edit_and_edit_back_retire_late_success_error_and_preview_authorit
                 assert!(!recorded_response(&app, &surface.row(0)).enabled());
                 assert!(!app.has_search_preview() && !app.browse.preview_visible());
                 assert!(!has_text(&output, "obsolete scoped error"));
+                assert!(!app.cjk_seen);
+                assert!(app.system_fonts.needs_probe());
                 assert!(commands.try_recv().is_err());
             }
         }
@@ -556,10 +714,14 @@ fn scoped_find_rejects_every_mismatched_echo_component() {
             2 => echoed.masks = vec!["*".into()],
             _ => echoed.limit = 499,
         }
-        reply(&mut app, pending.id, Ok(payload(echoed, rows())));
+        let mut rejected = rows();
+        rejected[0].text = "needle 中文 rejected echoed request".into();
+        reply(&mut app, pending.id, Ok(payload(echoed, rejected)));
         settle(&mut app);
         assert!(!app.search_rows_active());
         assert!(app.search_results.is_empty());
+        assert!(!app.cjk_seen);
+        assert!(app.system_fonts.needs_probe());
         assert!(commands.try_recv().is_err());
     }
 }

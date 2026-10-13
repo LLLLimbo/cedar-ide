@@ -1,13 +1,83 @@
-# 0.65 Select Current File in Project candidate
+# 0.65 Project selection and 0.65.1 search CJK candidate
 
-**Final local checks passed; candidate not accepted. Exact CI, package and native
-checks have not run.** The latest accepted bounded functional
-baseline is **0.64.0**. Its exact source, CI, package checks and preserved strict
-native timing failure are recorded in the
+**0.65.1 passed final local checks but remains an unaccepted candidate.
+Exact CI, package and native checks have not run.** It narrowly connects accepted, current, validated Project
+Text result paths and snippets to the existing bounded local CJK font loader.
+The latest accepted bounded functional baseline remains **0.64.0**, including
+its preserved strict native timing failure; see the
 [accepted baseline](TEST_REPORT.md#accepted-0640-bounded-functional-baseline).
-They do not validate this candidate.
 
-## Candidate contract
+## Preserved 0.65.0 CI, packages and stopped native journey
+
+Public commit
+[`ec8428a020acc58e47eb5c722de331fcb2b55a03`](https://github.com/LLLLimbo/cedar-ide/commit/ec8428a020acc58e47eb5c722de331fcb2b55a03)
+passed all **four jobs** in
+[CI 38365574615](https://github.com/LLLLimbo/cedar-ide/actions/runs/38365574615)
+and all **three exact-source package audits**. Linux recorded **2,109 passed /
+zero failed / 70 ignored** and Windows **2,047 passed / zero failed / 114
+ignored**, each across **50 suites**, including **27 new Project selection
+tests**. The strict Browse proof retained version 3, **38 fields / 12
+operations**, all pre-existing field assertions and the original eight-operation
+ledger prefix. The retained scoped-search and Search proofs kept **ten** and
+**twelve operations**, respectively.
+
+The Linux Java restart proof reported forced cleanup after `grace_expired`,
+with **SIGKILL (signal 9)**. Its result satisfied the existing cleanup predicate;
+this is not evidence that both Java stops were graceful.
+
+The fresh Linux native journey stopped early when Project Text displayed a box
+in the result path `src/层/Target.rs`. Fixture UTF-8 bytes remained intact; this
+display observation does not establish wrong-path selection. A
+**19,484,784-byte** Noto CJK collection was already installed at a supported
+fixed location; a missing download was not established as the cause. The
+journey did **not** exercise the core current-file selection, dirty-selection
+preservation, Down/Up or Undo checks. The application exited safely with code
+**0**. Neither the stopped run nor the green CI/packages establishes native
+acceptance of 0.65.
+
+## Narrow 0.65.1 font-trigger contract
+
+Source inspection found that Project Text result acceptance did not mark CJK
+text as seen, unlike the existing filename-discovery and Explorer acceptance
+paths. The candidate marks CJK found in accepted result **paths or snippets**
+only after the existing current-request and response validation gates pass.
+Both ordinary and scoped Project Text results use the retained result snapshot.
+Rejected, stale or invalid responses must not acquire this trigger.
+
+The change reuses the existing background font loader: known local font
+locations, one validated regular file of at most **32 MiB**, and the existing
+fallback families. It adds no font download, installation, dependency, protocol,
+backend operation or broader filesystem scan. Search bounds, result identity
+and navigation behavior remain unchanged. Finding a font does not guarantee
+that it contains every CJK glyph. Source diagnosis and this candidate contract
+are not a claim that the native display problem has been fixed.
+
+## 0.65.1 local validation checkpoint
+
+The final Linux Rust aggregate passed **2,111 tests / zero failures / 70 ignored
+across 50 suites**. The Python aggregate recorded **792 total tests / zero
+failures / 10 skipped across 28 suites**. The affected focused set passed
+**117 tests / one ignored**. Two new tests cover a **12-case positive/control
+matrix** and **14 rejection cases**. Independent source review passed.
+
+The first focused fixture failed because it captured the epoch baseline before
+legitimately opening Browse. The fixture now captures that baseline after
+opening, immediately before the response frame. This correction changed no
+production behavior; the original failure remains part of the record.
+
+Strict Clippy and the final formatting check passed. The final 0.65.1 app
+artifact selected from Cargo JSON and the matching normal agent passed the
+unchanged strict Browse validator: **version 3, 38 fields / 12 operations**,
+reported runtime **0.43 seconds**. The retained scoped-search proof passed its
+unchanged strict **ten-operation** validator, reported runtime **0.48 seconds**.
+App and agent identity were verified. These direct current-artifact runtime
+proofs are not comparative performance measurements; the canonical
+compile/release acceptance drivers were **not run locally**.
+
+Exact 0.65.1 CI, all three package audits and a fresh native journey have not
+run. Local evidence does not establish those gates or corrected native rendering.
+
+## Retained Project selection contract
 
 The explicit, visible **Select Current File in Project** button below the
 Flat/Tree controls selects and focuses the active file's exact visible Project
@@ -53,7 +123,7 @@ The editor's dirty text, selection, Undo and location history, together with Fin
 state, must survive the action. See the
 [packaged usage guide](FIND_AND_RETURN.md#select-current-file-in-project-065-candidate).
 
-## Local validation checkpoint
+## Preserved 0.65.0 local validation checkpoint
 
 The final 0.65.0 Linux workspace/all-target/all-feature/locked aggregate passed
 **2,109 tests / zero failures / 70 ignored across 50 suites**, including **27 new
@@ -64,11 +134,11 @@ and features, including `-D warnings`, and the final formatting check passed.
 The same-source aggregate, strict Clippy and formatting reruns all passed after
 the test-only normal-agent proof correction described below and the preventive
 IME lifecycle refinement.
-Exact-commit CI, all three exact-source package audits and a fresh
-native journey **have not run**. Earlier 0.64 evidence cannot substitute for
-these candidate checks or acceptance.
+The later exact-commit CI/package results and stopped native journey are
+recorded above. These 0.65.0 local results do not validate the 0.65.1 font-trigger
+change; its own checkpoint above separates passed and pending checks.
 
-## Normal-agent process proof and preserved failure
+## Preserved 0.65.0 normal-agent process proof and failure
 
 The first local normal-agent attempt failed while probing whether Cancel was
 enabled immediately after starting selection. Inspection established that the
@@ -92,7 +162,8 @@ current artifact, retaining **ten operations**; its test reported **0.45 seconds
 
 These are direct actual-runtime proofs with strict receipt validation. The
 canonical compile/release driver was **not run locally**. They do not establish
-exact-source package, CI or native GUI acceptance.
+native GUI acceptance or validation of 0.65.1. The later 0.65.0 CI and package
+results are separate evidence recorded above.
 
 Windows/macOS GUI, real SSH, arbitrary viewport behavior, IDEA parity and
-comparative performance remain unestablished by local candidate checks.
+comparative performance remain unestablished by these checks.
