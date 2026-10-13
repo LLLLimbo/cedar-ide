@@ -9,15 +9,22 @@ Project Text results, shared Directory and File masks controls, and same-row
 click continuity before double-click Open. Its dual-platform, normal-agent and
 package results are separate from the bounded Linux native observations in the
 [verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT.md#accepted-0622-bounded-scoped-search-baseline).
-The **0.63.1 browsing shell is an unverified candidate** with the changes below;
-no 0.63.1 acceptance is established by this guide.
+The **0.63.2 browsing shell is an unverified candidate** with the changes below;
+no 0.63.2 acceptance is established by this guide.
 
-## 0.63.1 connected shell candidate
+## 0.63.2 connected shell candidate
 
-The 0.63.1 correction lets Escape dismiss the currently owned Workspace or Tools
+The retained 0.63.1 correction lets Escape dismiss the currently owned Workspace or Tools
 menu at the existing generic dismissal branch. Earlier modal and language Escape
 owners retain priority; an owned-menu dismissal does not also dismiss editor
 Find or mutate a draft. Missing or stale menu ownership cannot close another root.
+
+The 0.63.2 candidate also permits IME Enabled/Disabled lifecycle notifications
+alongside an otherwise clean owned Find Results pointer gesture. Active composition,
+Preedit/Commit (even empty), typing, paste and competing input still veto activation.
+Keyboard shortcuts and keyboard button activation retain their stricter original
+event contract. This alignment does not establish the cause of prior native input
+observations; its exact-package native journey remains pending.
 
 
 The candidate puts **Project**, the editor and **Find** in the main connected
@@ -36,7 +43,7 @@ captured editor context; reopening Find targets an active visible selected hit,
 or its query field when no such hit can be used. Neither shortcut submits a
 search, opens a file or refreshes the tree by itself. Pending, inactive, hidden
 and disconnected contexts need their own focus tests. These are candidate
-behaviors, pending the [0.63.1 checks](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+behaviors, pending the [0.63.2 checks](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md).
 
 Compact header sizes are design targets, not a fixed-height guarantee. At
 **780 × 540**, with both **13** and **18** font sizes, controls must remain
@@ -65,7 +72,7 @@ under [Retained Project Text results](#retained-project-text-results).
 
 **Ctrl+Alt+Left/Right** are additional Back/Forward shortcuts. **Alt+1**, like the
 retained **Ctrl/Cmd+Shift+E**, hides tools and focuses the enabled Explorer
-**Refresh** control in the accepted 0.62.2 shell. The 0.63.1 Alt+1 candidate route
+**Refresh** control in the accepted 0.62.2 shell. The 0.63.2 Alt+1 candidate route
 above changes that presentation and preserves Find. It does not refresh, scan or read a file by itself. These
 shortcuts retain the existing modal, mixed-input and held-key guards.
 In the accepted 0.61 Linux native run, Ctrl+[ and Ctrl+] navigated successfully,
@@ -238,7 +245,7 @@ does not rewrite paths or change which original hit an action addresses.
 
 In the bottom FIND RESULTS tool, preview leaves focus on the selected row.
 Use the existing tool close/hide control or **Ctrl/Cmd+J** to return to the editor;
-**Ctrl/Cmd+J** also reopens the selected tool. The 0.63.1 candidate adds the
+**Ctrl/Cmd+J** also reopens the selected tool. The 0.63.2 candidate adds the
 active-visible-hit or query focus route described above. The bottom tool does
 not add an Escape action. The shared Find and return window keeps its preview/dismiss
 Escape behavior described above.

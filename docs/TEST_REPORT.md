@@ -1,6 +1,53 @@
-# Verification checkpoint — 0.63.1 owned-menu Escape correction
+# Verification checkpoint — 0.63.2 pointer lifecycle correction candidate
 
-## Current correction and blocked predecessor
+## Current pointer lifecycle correction candidate
+
+**0.63.2 remains a correction candidate**; the latest accepted bounded baseline
+remains **0.62.2**. A controlled actual-frame journey established that Find Results
+accepts a clean owned pointer gesture but rejects it when a standalone IME Enabled
+or Disabled lifecycle notification arrives while the pointer is held, even though
+egui reports the actual button click. Preedit and Commit controls were also rejected.
+All cases preserved the dirty draft, selection, Undo, location history and results,
+and added no operations. This establishes a classifier limitation; it does not
+identify the events delivered during the native observation below.
+
+The implemented alignment concerns pointer eligibility only. Lifecycle notifications
+may accompany an otherwise clean owned gesture when no composition was already
+active. Text, paste, keys, Preedit and Commit, including empty composition events,
+remain competing input. Keyboard activation and shortcuts retain their existing
+strict original-event rules. Raw input and all exact view/document/session,
+response ownership and frame guards remain authoritative.
+
+Local correction checks passed **47 focused tests**, then **2,057/0/70 across
+50 workspace suites** (app **1,341/0/53**), strict Clippy and **779 Python tests
+across 28 suites**. Exact-commit CI, package audits and new native acceptance
+remain pending. See the [candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+
+### Preserved 0.63.1 native boundary
+
+The [0.63.1 source](https://github.com/LLLLimbo/cedar-ide/commit/fdb6e1d82cd90b4d1128920fabfdb1bb7841fd81)
+uses the narrow menu Escape correction. [CI 38331547998](https://github.com/LLLLimbo/cedar-ide/actions/runs/38331547998)
+passed all four jobs and all three exact-source package audits. Linux recorded
+**2,051/0/70** and Windows **1,989/0/114**, each across **50 suites**, including
+all six new Escape cases and the retained process proofs. These headless results
+remain separate from incomplete native acceptance. Its first connection observation ended
+before the startup deadline and did not establish a result. A second, correctly
+bounded window-targeted input attempt remained Not connected through the deadline.
+Neither exercised menu or later functional cases; neither establishes a backend
+failure or actual widget click delivery.
+
+A subsequent documented desktop-input journey connected to the generated fixture
+with execution trust off. Both Workspace and Tools opened and closed with Escape.
+Filename discovery, opening the generated origin, a dirty draft, scoped two-hit
+search and selection restoration after modal Escape were observed. A later single
+Find Results click did not visibly open the bottom panel after a settled observation,
+so testing stopped. Project/Find/editor focus and the subsequent Preview/Open/Back/
+Undo sequence were not completed. Normal Discard and quit returned frontend and
+wrapper exit code 0, and original fixture, package and source bytes remained intact.
+The input-route difference and unknown native event cause remain explicit; a new
+candidate must pass its own exact-package native checks.
+
+## Preserved 0.63.1 correction and blocked predecessor
 
 **0.63.1 is a correction candidate; the latest accepted bounded baseline remains
 0.62.2.** It closes only the currently owned Workspace or Tools menu when the
@@ -37,10 +84,11 @@ native observation and failed regression remain preserved.
 
 The 0.63.1 local aggregate passed **2,051/0/70 across 50 suites**, including
 **1,335/0/53** in the app, all six new cases (the original Escape regression plus five additional cases).
-Strict Clippy and **779 Python tests across 28 suites** passed. Exact-commit
-dual-platform CI, three package audits and a new bounded native journey remain
-pending. None is inferred from 0.63.0. Current results are recorded in the
-[correction report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+Strict Clippy and **779 Python tests across 28 suites** passed. At that pre-CI
+preparation point, exact-commit CI, packages and native checks were pending.
+The later passed CI/packages and incomplete native results are recorded in the
+[preserved 0.63.1 boundary](#preserved-0631-native-boundary); none was inferred
+from 0.63.0.
 
 The following preparation record predates the 0.63.0 native stop; its then-pending
 CI/native statements describe that earlier point, not current acceptance.
@@ -72,7 +120,7 @@ minima; margins, separator and body add height. These checks do not establish
 native geometry. The earlier **1,328-pass / 53-ignored** app checkpoint preceded
 a stronger ready-navigation test that exposed Ctrl+J cancellation ordering. The
 correction and stronger test now pass; the earlier failure remains recorded in
-the [candidate report](TEST_REPORT_PHASE63_BROWSING_SHELL.md).
+the [historical 0.63.0 report](https://github.com/LLLLimbo/cedar-ide/blob/bf912c834faf7685ef13437fbc3ad1b20d669a8c/docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md).
 
 New exact-commit dual-platform CI, all three exact-source package audits and the
 bounded native journey remain pending. These local results do not imply release

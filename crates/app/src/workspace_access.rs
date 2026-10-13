@@ -196,6 +196,19 @@ pub(super) fn capture_input(app: &CedarApp, ctx: &egui::Context, raw: &egui::Raw
         .iter()
         .filter(|event| actionable(event))
         .collect();
+    // Pointer ownership ignores IME lifecycle notifications only. Keep the
+    // original view below for every keyboard shortcut/activation, and retain
+    // all content-bearing IME events (including empty Preedit/Commit).
+    let pointer_events: Vec<_> = events
+        .iter()
+        .copied()
+        .filter(|event| {
+            !matches!(
+                event,
+                egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Disabled)
+            )
+        })
+        .collect();
     let fresh_key = match events.as_slice() {
         [event @ egui::Event::Key {
             pressed: true,
@@ -251,7 +264,7 @@ pub(super) fn capture_input(app: &CedarApp, ctx: &egui::Context, raw: &egui::Raw
     let activation = if !focused {
         None
     } else {
-        match events.as_slice() {
+        match pointer_events.as_slice() {
             [egui::Event::PointerButton {
                 button: egui::PointerButton::Primary,
                 pressed: false,
@@ -269,24 +282,30 @@ pub(super) fn capture_input(app: &CedarApp, ctx: &egui::Context, raw: &egui::Raw
                 modifiers: up,
                 ..
             }] if fresh_pointer && down.is_none() && up.is_none() => Some(Activation::Pointer),
-            [event] => keyboard_activation(event, false),
-            [event, egui::Event::Text(text)] | [egui::Event::Text(text), event] if text == " " => {
-                keyboard_activation(event, true)
-            }
-            _ => None,
+            _ => match events.as_slice() {
+                [event] => keyboard_activation(event, false),
+                [event, egui::Event::Text(text)] | [egui::Event::Text(text), event]
+                    if text == " " =>
+                {
+                    keyboard_activation(event, true)
+                }
+                _ => None,
+            },
         }
     };
     let clean_primary_press = focused
         && fresh_pointer
-        && matches!(events.as_slice(),
+        && matches!(pointer_events.as_slice(),
         [egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed: true, modifiers, .. }] if modifiers.is_none());
     if !focused {
         lifetime = Lifetime::default();
     } else {
         // A poisoned press cannot become a clean click merely because its later
-        // release contains no competing input. Motion alone keeps capture.
+        // release contains no competing input. Motion and lifecycle-only IME
+        // notifications keep an already clean capture; active composition was
+        // checked before this batch can disable it.
         if lifetime.pointers[0]
-            && (!pointer_clear || events.iter().any(|event| !matches!(event,
+            && (!pointer_clear || pointer_events.iter().any(|event| !matches!(event,
                 egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed: false, modifiers, .. } if modifiers.is_none()))) {
             lifetime.primary_clean = false;
             lifetime.primary_retirement = None;
@@ -803,5 +822,219 @@ impl CedarApp {
             response.request_focus();
             ctx.request_repaint();
         }
+    }
+}
+
+// Read-only witnesses for the isolated actual-frame Find Results diagnostic.
+// Compiled out of every production build; no input or focus state is changed.
+#[cfg(test)]
+pub(super) fn find_activation_diagnostic(
+    app: &CedarApp,
+    ctx: &egui::Context,
+    response: Option<&egui::Response>,
+) -> String {
+    let input = ctx.data(|data| data.get_temp::<Input>(egui::Id::new(INPUT)));
+    let lifetime = ctx
+        .data(|data| data.get_temp::<Lifetime>(egui::Id::new(LIFETIME)))
+        .unwrap_or_default();
+    let current = Origin::of(app, ctx);
+    let origin = |value: Origin| {
+        let mut without_focus = value;
+        without_focus.focused = current.focused;
+        format!(
+            "focused={:?},current={},nonfocus_current={}",
+            value.focused,
+            value.current(app, ctx, true),
+            without_focus.current(app, ctx, true),
+        )
+    };
+    let activation = input.map(|input| match input.activation {
+        None => "none".to_owned(),
+        Some(Activation::Pointer) => "pointer".to_owned(),
+        Some(Activation::Keyboard(key)) => format!("keyboard:{key:?}"),
+    });
+    format!(
+        "pass={} input_pass={:?} current_focus={:?} input_origin={:?} press_origin={:?} activation={activation:?} primary_clean={} held_keys={:?} pointers={:?} composing={} response={:?} admission={:?} tools_open={} blocked={} navigation_blocks={} restore_focus={} foreign_modal={} find_focus={} jump_to={}",
+        ctx.cumulative_pass_nr(),
+        input.map(|input| input.pass),
+        current.focused,
+        input.map(|input| origin(input.origin)),
+        lifetime.primary_origin.map(origin),
+        lifetime.primary_clean,
+        lifetime.keys,
+        lifetime.pointers,
+        lifetime.composing,
+        response.map(|response| (response.id, response.clicked(), response.clicked_by(egui::PointerButton::Primary), response.has_focus(), response.is_pointer_button_down_on())),
+        response.and_then(|response| clean_activation(app, ctx, response, false)),
+        app.tools_open,
+        app.workspace_access_blocked(ctx),
+        app.navigation.blocks_editor(),
+        app.navigation.restore_focus,
+        app.foreign_modal_owns_input(ctx),
+        app.find_focus,
+        app.active().is_some_and(|doc| doc.jump_to.is_some()),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn find_activation_diagnostic_admission(
+    app: &CedarApp,
+    ctx: &egui::Context,
+    response: &egui::Response,
+) -> Option<bool> {
+    clean_activation(app, ctx, response, false)
+}
+
+#[cfg(test)]
+mod pointer_lifecycle_tests {
+    use super::*;
+
+    fn pointer(pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: egui::pos2(10.0, 10.0),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    // These classifier checks complement the rendered dirty-editor journeys.
+    // Feed the actual raw hook; never manufacture Input/Lifetime or focus tickets.
+    fn capture(app: &mut CedarApp, events: Vec<egui::Event>, modifiers: egui::Modifiers) -> Input {
+        let mut raw = egui::RawInput {
+            events,
+            modifiers,
+            focused: true,
+            ..Default::default()
+        };
+        let original = raw.clone();
+        let ctx = app.editor_ctx.clone();
+        eframe::App::raw_input_hook(app, &ctx, &mut raw);
+        assert_eq!(
+            raw.events, original.events,
+            "classification must retain original native events"
+        );
+        assert_eq!(raw.modifiers, original.modifiers);
+        original_input(&ctx).unwrap()
+    }
+
+    #[test]
+    fn active_composition_disabled_before_press_cannot_authorize_that_gesture() {
+        for preedit in ["", "composing"] {
+            let mut app = CedarApp::empty();
+            capture(
+                &mut app,
+                vec![egui::Event::Ime(egui::ImeEvent::Preedit(preedit.into()))],
+                egui::Modifiers::NONE,
+            );
+            let press = capture(
+                &mut app,
+                vec![egui::Event::Ime(egui::ImeEvent::Disabled), pointer(true)],
+                egui::Modifiers::NONE,
+            );
+            assert!(!press.clean_primary_press);
+            let release = capture(&mut app, vec![pointer(false)], egui::Modifiers::NONE);
+            assert!(release.activation.is_none());
+            // A genuinely new gesture after composition ended is eligible again.
+            let fresh = capture(
+                &mut app,
+                vec![pointer(true), pointer(false)],
+                egui::Modifiers::NONE,
+            );
+            assert!(matches!(fresh.activation, Some(Activation::Pointer)));
+        }
+    }
+
+    #[test]
+    fn lifecycle_notifications_preserve_atomic_pointer_but_never_clean_keyboard_batches() {
+        for lifecycle in [egui::ImeEvent::Enabled, egui::ImeEvent::Disabled] {
+            let mut app = CedarApp::empty();
+            let atomic = capture(
+                &mut app,
+                vec![
+                    pointer(true),
+                    egui::Event::Ime(lifecycle.clone()),
+                    pointer(false),
+                ],
+                egui::Modifiers::NONE,
+            );
+            assert!(matches!(atomic.activation, Some(Activation::Pointer)));
+            for (key_code, modifiers) in [
+                (egui::Key::Enter, egui::Modifiers::NONE),
+                (egui::Key::Space, egui::Modifiers::NONE),
+                (egui::Key::J, egui::Modifiers::COMMAND),
+                (
+                    egui::Key::E,
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                ),
+                (egui::Key::Num1, egui::Modifiers::ALT),
+            ] {
+                for lifecycle_first in [false, true] {
+                    let mut app = CedarApp::empty();
+                    let mut events = vec![
+                        key(key_code, modifiers),
+                        egui::Event::Ime(lifecycle.clone()),
+                    ];
+                    if lifecycle_first {
+                        events.reverse();
+                    }
+                    if key_code == egui::Key::Space {
+                        events.push(egui::Event::Text(" ".into()));
+                    }
+                    let input = capture(&mut app, events, egui::Modifiers::NONE);
+                    assert!(input.activation.is_none(), "mixed {key_code:?} activation");
+                    assert!(input.shortcut.is_none(), "mixed {key_code:?} shortcut");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lifecycle_cannot_clean_mixed_or_modifier_pointer_press_and_cannot_revive_it() {
+        for mixed in [
+            egui::Event::Text("newer".into()),
+            egui::Event::Paste("newer".into()),
+            key(egui::Key::A, egui::Modifiers::NONE),
+            egui::Event::Ime(egui::ImeEvent::Preedit(String::new())),
+            egui::Event::Ime(egui::ImeEvent::Commit(String::new())),
+        ] {
+            let mut app = CedarApp::empty();
+            let press = capture(
+                &mut app,
+                vec![
+                    pointer(true),
+                    egui::Event::Ime(egui::ImeEvent::Enabled),
+                    mixed,
+                ],
+                egui::Modifiers::NONE,
+            );
+            assert!(!press.clean_primary_press);
+            capture(
+                &mut app,
+                vec![egui::Event::Ime(egui::ImeEvent::Disabled)],
+                egui::Modifiers::NONE,
+            );
+            let release = capture(&mut app, vec![pointer(false)], egui::Modifiers::NONE);
+            assert!(release.activation.is_none());
+        }
+        let mut app = CedarApp::empty();
+        let press = capture(
+            &mut app,
+            vec![pointer(true), egui::Event::Ime(egui::ImeEvent::Disabled)],
+            egui::Modifiers::SHIFT,
+        );
+        assert!(!press.clean_primary_press);
+        let release = capture(&mut app, vec![pointer(false)], egui::Modifiers::NONE);
+        assert!(release.activation.is_none());
     }
 }

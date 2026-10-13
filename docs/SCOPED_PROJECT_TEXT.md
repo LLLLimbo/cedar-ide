@@ -12,7 +12,7 @@ run. They must not be inferred from deterministic coverage. See the
 
 The 0.62.0 CI failure and 0.62.1 confirmed cross-widget defect remain historical
 failures. The cause of 0.62.1's earlier unexpected native Open is still unknown.
-The [0.63.1 shell candidate](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md) reorganizes the
+The [0.63.2 shell candidate](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE63_BROWSING_SHELL.md) reorganizes the
 frontend; it has separate pending gates and does not change this search contract.
 Windows GUI and real SSH remain unverified.
 

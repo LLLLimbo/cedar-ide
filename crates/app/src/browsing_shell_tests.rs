@@ -687,3 +687,446 @@ fn header_escape_closes_menu_while_ready_open_is_retired_without_replacing_dirty
         );
     }
 }
+
+const FIND_DIAGNOSTIC: &str = "find_results_native_activation_diagnostic";
+const FIND_DIAGNOSTIC_RESPONSE: &str = "find_results_native_response_admission";
+
+pub(super) fn record_find_diagnostic(
+    app: &CedarApp,
+    ctx: &egui::Context,
+    stage: &str,
+    response: Option<&egui::Response>,
+) {
+    if ctx.data(|data| data.get_temp::<bool>(egui::Id::new(FIND_DIAGNOSTIC))) == Some(true) {
+        if stage == "after-header-response" {
+            if let Some(response) = response {
+                let observation = (
+                    response.clicked_by(egui::PointerButton::Primary),
+                    workspace_access::find_activation_diagnostic_admission(app, ctx, response),
+                );
+                ctx.data_mut(|data| {
+                    data.insert_temp(egui::Id::new(FIND_DIAGNOSTIC_RESPONSE), observation)
+                });
+            }
+        }
+        println!(
+            "find_results_diagnostic {stage}: {}",
+            workspace_access::find_activation_diagnostic(app, ctx, response)
+        );
+    }
+}
+
+fn diagnostic_frame(
+    app: &mut CedarApp,
+    size: [f32; 2],
+    stage: &str,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    let ctx = app.editor_ctx.clone();
+    let mut raw = egui::RawInput {
+        time: Some(ctx.input(|input| input.time) + 0.08),
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
+        focused: true,
+        events,
+        ..Default::default()
+    };
+    println!(
+        "find_results_diagnostic {stage} raw_events={:?}",
+        raw.events
+    );
+    record_find_diagnostic(app, &ctx, &format!("{stage}/pre-hook"), None);
+    let original = raw.events.clone();
+    eframe::App::raw_input_hook(app, &ctx, &mut raw);
+    assert_eq!(
+        raw.events, original,
+        "{stage}: preserve original native input"
+    );
+    record_find_diagnostic(app, &ctx, &format!("{stage}/post-hook"), None);
+    let mut native = eframe::Frame::_new_kittest();
+    ctx.run(raw, |ctx| {
+        eframe::App::update(app, ctx, &mut native);
+        let response = workspace_access_tests::recorded_response(app, "find_results_entry");
+        record_find_diagnostic(app, ctx, &format!("{stage}/post-update"), Some(&response));
+    })
+}
+
+fn isolated_native_click(app: &mut CedarApp, size: [f32; 2], name: &str) {
+    let at = visible(app, size, name).center();
+    frame(app, size, vec![egui::Event::PointerMoved(at)]);
+    for pressed in [true, false] {
+        frame(
+            app,
+            size,
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let response = workspace_access_tests::recorded_response(app, name);
+        assert!(
+            if pressed {
+                response.is_pointer_button_down_on()
+            } else {
+                response.clicked()
+            },
+            "{name}: actual native pointer {} missed rendered response",
+            if pressed { "press" } else { "release" },
+        );
+    }
+    settle(app, size);
+}
+
+fn native_replace_field(app: &mut CedarApp, size: [f32; 2], name: &str, text: &str) {
+    isolated_native_click(app, size, name);
+    key(
+        app,
+        size,
+        egui::Key::A,
+        scoped_search_tests::command_modifiers(),
+    );
+    frame(app, size, vec![egui::Event::Text(text.into())]);
+    settle(app, size);
+}
+
+fn native_undo_history(app: &CedarApp) -> String {
+    let state =
+        egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 1u64))).unwrap();
+    let current = (
+        state.cursor.char_range().unwrap(),
+        app.documents[0].text.clone(),
+    );
+    let mut snapshots: [Vec<_>; 2] = Default::default();
+    for (index, redo) in [false, true].into_iter().enumerate() {
+        let mut undoer = state.undoer();
+        let mut current = current.clone();
+        for _ in 0..=editor_state::MAX_UNDO_STATES + 1 {
+            let next = if redo {
+                undoer.redo(&current)
+            } else {
+                undoer.undo(&current)
+            }
+            .cloned();
+            let Some(next) = next else { break };
+            snapshots[index].push(next.clone());
+            current = next;
+        }
+    }
+    format!("{snapshots:?}")
+}
+
+#[test]
+fn diagnostic_find_results_native_pointer_after_scoped_modal_escape_preserves_dirty_selection() {
+    scoped_modal_find_pointer_case("clean", FindPointerCompanions::default(), true);
+}
+
+#[derive(Default)]
+struct FindPointerCompanions {
+    press: Vec<egui::Event>,
+    held: Vec<Vec<egui::Event>>,
+    release: Vec<egui::Event>,
+}
+
+impl FindPointerCompanions {
+    fn at(placement: &str, event: egui::Event) -> Self {
+        let mut result = Self::default();
+        match placement {
+            "press" => result.press.push(event),
+            "held" => result.held.push(vec![event]),
+            "release" => result.release.push(event),
+            _ => unreachable!(),
+        }
+        result
+    }
+}
+
+#[test]
+fn find_results_pointer_ime_lifecycle_preserves_scoped_modal_draft_at_each_placement() {
+    // Pinned egui-winit 0.31.1 emits Disabled from native Disabled/Preedit(None).
+    // Linux ignores native Enabled; the bridge synthesizes it before Preedit.
+    // These controlled batches establish the contract, not the original desktop cause.
+    for placement in ["press", "held", "release"] {
+        for (name, event) in [
+            ("enabled", egui::ImeEvent::Enabled),
+            ("disabled", egui::ImeEvent::Disabled),
+        ] {
+            scoped_modal_find_pointer_case(
+                &format!("ime-{name}-{placement}"),
+                FindPointerCompanions::at(placement, egui::Event::Ime(event)),
+                true,
+            );
+        }
+    }
+    scoped_modal_find_pointer_case(
+        "mouse-motion-metadata",
+        FindPointerCompanions::at("held", egui::Event::MouseMoved(egui::vec2(1.0, 0.0))),
+        true,
+    );
+}
+
+#[test]
+fn find_results_pointer_ime_content_and_active_composition_keep_draft_and_veto_activation() {
+    for placement in ["press", "held", "release"] {
+        for (name, event) in [
+            ("preedit", egui::ImeEvent::Preedit("compose".into())),
+            ("empty-preedit", egui::ImeEvent::Preedit(String::new())),
+            ("commit", egui::ImeEvent::Commit("committed".into())),
+            ("empty-commit", egui::ImeEvent::Commit(String::new())),
+        ] {
+            let mut companions = FindPointerCompanions::at(placement, egui::Event::Ime(event));
+            // A lifecycle notification cannot cleanse the same content-bearing batch.
+            match placement {
+                "press" => companions
+                    .press
+                    .push(egui::Event::Ime(egui::ImeEvent::Disabled)),
+                "held" => companions.held[0].push(egui::Event::Ime(egui::ImeEvent::Disabled)),
+                "release" => companions
+                    .release
+                    .push(egui::Event::Ime(egui::ImeEvent::Disabled)),
+                _ => unreachable!(),
+            }
+            scoped_modal_find_pointer_case(&format!("ime-{name}-{placement}"), companions, false);
+        }
+    }
+    scoped_modal_find_pointer_case(
+        "prior-active-composition-disabled-on-release",
+        FindPointerCompanions {
+            held: vec![vec![egui::Event::Ime(egui::ImeEvent::Preedit(
+                "compose".into(),
+            ))]],
+            release: vec![egui::Event::Ime(egui::ImeEvent::Disabled)],
+            ..Default::default()
+        },
+        false,
+    );
+    scoped_modal_find_pointer_case(
+        "poisoned-press-lifecycle-cannot-revive",
+        FindPointerCompanions {
+            press: vec![egui::Event::Ime(egui::ImeEvent::Commit(String::new()))],
+            held: vec![
+                vec![egui::Event::Ime(egui::ImeEvent::Enabled)],
+                vec![egui::Event::Ime(egui::ImeEvent::Disabled)],
+            ],
+            ..Default::default()
+        },
+        false,
+    );
+    scoped_modal_find_pointer_case(
+        "lifecycle-with-held-key",
+        FindPointerCompanions {
+            held: vec![vec![
+                egui::Event::Ime(egui::ImeEvent::Disabled),
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: Some(egui::Key::A),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]],
+            ..Default::default()
+        },
+        false,
+    );
+}
+
+fn scoped_modal_find_pointer_case(case: &str, companions: FindPointerCompanions, accepted: bool) {
+    use cedar_protocol::{ScopedSearchDescriptor, ScopedSearchRequest, ScopedSearchResult};
+    println!("find_results_diagnostic CASE {case} expected_accepted={accepted}");
+
+    let size = [1364.0, 1024.0];
+    let (mut app, commands) = fixture(13.0);
+    app.documents[0].path = "src/origin.rs".into();
+    app.scoped_search = Some(ScopedSearchDescriptor { version: 1 });
+    settle(&mut app, size);
+
+    // Establish the real editor owner and a nonempty selection through native input.
+    isolated_native_click(&mut app, size, "editor");
+    frame(
+        &mut app,
+        size,
+        vec![egui::Event::Text(" native edit".into())],
+    );
+    key(&mut app, size, egui::Key::ArrowLeft, egui::Modifiers::SHIFT);
+    let draft = draft_snapshot(&app);
+    assert_ne!(
+        draft.4 .0, draft.4 .2,
+        "dirty editor must have a native selection"
+    );
+    assert!(app.documents[0].dirty());
+    let undo = native_undo_history(&app);
+    assert!(commands.try_recv().is_err());
+
+    isolated_native_click(&mut app, size, "project_text_entry");
+    assert!(app.browse_marker_open());
+    native_replace_field(&mut app, size, "browse_query", "needle");
+    native_replace_field(&mut app, size, "browse_text_scope", "src");
+    native_replace_field(&mut app, size, "browse_masks", "*.rs");
+    assert!(
+        commands.try_recv().is_err(),
+        "typing scoped filters stays local"
+    );
+    isolated_native_click(&mut app, size, "browse_submit");
+    let command = commands
+        .try_recv()
+        .expect("explicit scoped submit sends one request");
+    let request = ScopedSearchRequest {
+        query: "needle".into(),
+        scope: "src".into(),
+        masks: vec!["*.rs".into()],
+        limit: 500,
+    };
+    assert!(matches!(&command.op, Operation::SearchIn { request: actual } if actual == &request));
+    assert!(
+        commands.try_recv().is_err(),
+        "exactly one scoped search request"
+    );
+    app.apply_event(Event {
+        generation: app.generation,
+        id: command.id,
+        connected: true,
+        result: Ok(Payload::ScopedMatches {
+            result: ScopedSearchResult {
+                request,
+                matches: [2, 3]
+                    .into_iter()
+                    .map(|line| SearchMatch {
+                        path: "src/origin.rs".into(),
+                        line,
+                        text: "needle historical disk match".into(),
+                    })
+                    .collect(),
+                incomplete: false,
+                reasons: vec![],
+                examined_entries: 4,
+                read_bytes: 128,
+            },
+        }),
+    });
+    settle(&mut app, size);
+    assert_eq!(app.search_results.len(), 2);
+    isolated_native_click(&mut app, size, "browse_row:1");
+    assert_eq!(app.search_state.selected_index(), Some(1));
+    assert!(
+        commands.try_recv().is_err(),
+        "selecting a hit does not open it"
+    );
+    key(&mut app, size, egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!app.browse_marker_open());
+    assert!(!app.tools_open);
+    assert_eq!(
+        draft_snapshot(&app),
+        draft,
+        "modal Escape retains dirty selection/history"
+    );
+    assert_eq!(native_undo_history(&app), undo);
+    assert_eq!(
+        app.editor_ctx.memory(|memory| memory.focused()),
+        Some(egui::Id::new(("editor", 1u64)))
+    );
+    let identity = (app.generation, app.navigation_epoch, app.language.session);
+    let snapshot = app.search_state.accepted_snapshot_id();
+    assert!(app.search_rows_active());
+    assert!(app.search_state.visible(1));
+
+    let button = visible(&app, size, "find_results_entry");
+    let at = button.center();
+    println!("find_results_diagnostic actual_header_rect={button:?} pointer={at:?}");
+    app.editor_ctx
+        .data_mut(|data| data.insert_temp(egui::Id::new(FIND_DIAGNOSTIC), true));
+    diagnostic_frame(
+        &mut app,
+        size,
+        "arrival",
+        vec![egui::Event::PointerMoved(at)],
+    );
+    for (stage, pressed) in [("press", true), ("release", false)] {
+        let mut events = vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }];
+        events.extend(if pressed {
+            companions.press.clone()
+        } else {
+            companions.release.clone()
+        });
+        diagnostic_frame(&mut app, size, stage, events);
+        let response = workspace_access_tests::recorded_response(&app, "find_results_entry");
+        assert!(
+            if pressed {
+                response.is_pointer_button_down_on()
+            } else {
+                response.clicked_by(egui::PointerButton::Primary)
+            },
+            "{case}: Find Results {stage} must reach the current rendered button"
+        );
+        if pressed {
+            for events in &companions.held {
+                diagnostic_frame(&mut app, size, "held-companion", events.clone());
+                assert!(app.editor_ctx.input(|input| input.pointer.primary_down()));
+                assert!(!app.tools_open, "{case}: companion alone must not activate");
+            }
+        } else {
+            let observed = app.editor_ctx.data(|data| {
+                data.get_temp::<(bool, Option<bool>)>(egui::Id::new(FIND_DIAGNOSTIC_RESPONSE))
+                    .unwrap()
+            });
+            assert_eq!(
+                observed,
+                (true, accepted.then_some(true)),
+                "{case}: actual header click/admission"
+            );
+            println!("find_results_diagnostic CASE_OUTCOME {case} clicked={} admission={:?} tools_open={} focused={:?}", observed.0, observed.1, app.tools_open, app.editor_ctx.memory(|memory| memory.focused()));
+        }
+    }
+    let output = diagnostic_frame(&mut app, size, "settled", vec![]);
+    app.editor_ctx
+        .data_mut(|data| data.insert_temp(egui::Id::new(FIND_DIAGNOSTIC), false));
+
+    // Keep the preservation checks ahead of the expected UI outcome so a failing
+    // diagnostic distinguishes activation from data loss or extra backend work.
+    assert_eq!(draft_snapshot(&app), draft);
+    assert_eq!(native_undo_history(&app), undo);
+    assert!(app.documents[0].dirty());
+    assert_eq!(
+        (app.generation, app.navigation_epoch, app.language.session),
+        identity
+    );
+    assert_eq!(app.search_query, "needle");
+    assert_eq!(app.search_scope, "src");
+    assert_eq!(app.search_masks, "*.rs");
+    assert_eq!(app.search_results.len(), 2);
+    assert_eq!(app.search_state.accepted_snapshot_id(), snapshot);
+    assert_eq!(app.search_state.selected_index(), Some(1));
+    assert!(
+        commands.try_recv().is_err(),
+        "Escape and Find Results emit zero extra operations"
+    );
+    if accepted {
+        assert!(
+            app.tools_open && app.tool == Tool::Search,
+            "{case}: native Find Results activation must show the bottom panel"
+        );
+        assert!(scoped_search_tests::has_text(&output, "FIND RESULTS"));
+        visible(&app, size, "search_row:1");
+        assert_eq!(
+            app.editor_ctx.memory(|memory| memory.focused()),
+            Some(workspace_access_tests::recorded_response(&app, "search_row:1").id),
+            "{case}: native Find Results activation must focus the current visible selected hit"
+        );
+    } else {
+        assert!(
+            !app.tools_open,
+            "{case}: content, composing state or mixed input must veto activation"
+        );
+        assert!(!scoped_search_tests::has_text(&output, "FIND RESULTS"));
+        assert_eq!(
+            app.editor_ctx.memory(|memory| memory.focused()),
+            None,
+            "{case}: rejected click cannot claim a focus destination"
+        );
+    }
+}

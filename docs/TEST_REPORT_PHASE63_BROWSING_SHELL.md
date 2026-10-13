@@ -1,163 +1,103 @@
-# 0.63.1 browsing shell correction candidate
+# 0.63.2 browsing shell pointer lifecycle correction candidate
 
-**Acceptance pending.** The latest accepted bounded baseline is **0.62.2**,
-public commit
-[`91aa84cb79547207ed4deb296a61834df26089ef`](https://github.com/LLLLimbo/cedar-ide/commit/91aa84cb79547207ed4deb296a61834df26089ef),
-with [CI 38282992861](https://github.com/LLLLimbo/cedar-ide/actions/runs/38282992861),
-all four jobs and all three exact-source packages verified. Its bounded Linux
-native evidence and unrun optional checks are recorded separately in the
-[current report](TEST_REPORT.md#accepted-0622-bounded-scoped-search-baseline).
-The original 0.63.0 checks preceded a blocked native menu-dismissal
-observation. A delivered-Escape actual-frame regression separately failed because
-the generic shortcut handler consumed the event before egui rendered its menu.
-The 0.63.1 correction targets only a proven current Workspace/Tools root at that
-existing Escape branch, retaining earlier modal/language owners and the no-menu
-fallback. Original native key delivery remains unproven. See the
-[preserved failure record](TEST_REPORT.md#current-correction-and-blocked-predecessor).
-The preceding 0.63.0 exact CI completed all four jobs and three package audits:
-Linux 2,045/0/70 and Windows 1,983/0/114 across 50 suites, including the exact
-seven/ten-operation shell proofs and retained real-JDT checks. Its native gate
-remains blocked. Fresh 0.63.1 local checks are recorded below. Its exact-commit CI, package audits
-and native validation remain pending; earlier passes do not validate this new source.
+**Acceptance pending. The latest accepted bounded baseline remains 0.62.2.**
+Its exact public source, CI, package and limited native evidence are recorded in
+[the accepted baseline](TEST_REPORT.md#accepted-0622-bounded-scoped-search-baseline).
+The preceding 0.63.0 and 0.63.1 checks and incomplete native attempts remain
+separate in the [current verification report](TEST_REPORT.md).
 
-## Scope
+## Connected browsing scope
 
-The connected workspace should place **Project**, the editor and **Find** first.
-The candidate reduces persistent setup chrome while keeping the existing
-workspace and safety states usable:
+Project, the editor and Find are the main connected workspace. Workspace groups
+connection/setup, recovery and save controls; Tools retains Git, Commands,
+Language and Tests. Error, recovery, connection and dirty states remain visible
+or directly reachable. Back/Forward uses the existing location history in the
+editor tab band. No execution behavior or trust permission changes.
 
-- **Workspace** groups connection and setup controls. Disconnected, connecting,
-  failed and connected states must retain their relevant actions. Errors,
-  recovery notices, dirty state and connection status remain visible or directly
-  reachable; compactness must not conceal an action needed to protect a draft.
-- **Tools** retains entry points for **Git**, **Commands**, **Language** and
-  **Tests**. The existing tools, trust gates and execution behavior remain.
-- **Back/Forward** is presented in the editor tab band, using the existing
-  location-history rules and disabled states.
-- **Alt+1** focuses a useful enabled Project control while preserving the Find
-  tool. Focus alone does not refresh, traverse, preview or open anything.
-- **Ctrl/Cmd+J** restores the captured editor context when hiding tools. Reopening
-  Find targets an active visible selected hit; when none is eligible, it targets
-  the query field. Old, hidden, collapsed, clipped, pending or disconnected result
-  identities must not gain activation authority through a focus shortcut.
+Alt+1 focuses a useful enabled Project item without hiding Find or issuing a
+request. Ctrl/Cmd+J returns to the captured editor when hiding tools; reopening
+Find targets an eligible current visible selected hit or the query field.
+Historical, hidden, collapsed, clipped or stale results do not gain authority.
+Find retains explicit submission, scoped literal search, grouped retained results,
+single-click selection, explicit Preview and guarded same-row double-click Open.
+See [Find and return](FIND_AND_RETURN.md) and [scoped search](SCOPED_PROJECT_TEXT.md).
 
-The existing shared and bottom Find views retain explicit submission, one-click
-selection, explicit Preview, guarded same-row double-click/Enter Open, grouped
-historical results and dirty-buffer return. The
-[search contract](SCOPED_PROJECT_TEXT.md) and
-[usage guide](FIND_AND_RETURN.md) continue to define those boundaries. Changing
-presentation cannot authorize an extra backend request or turn historical
-results into current ones.
+The retained 0.63.1 Escape correction closes only a proven current Workspace or
+Tools menu at the existing generic dismissal branch. Earlier modal/language
+owners keep priority. Missing or stale menu identity cannot close another root.
 
-This is a frontend presentation/focus slice. There is no new backend, protocol,
-search flag, search matching mode, semantic service, Build/Run feature or
-execution trust. It does not claim IntelliJ IDEA parity or a performance gain.
+## Pointer lifecycle correction
 
-## Geometry checks and native boundary
+The 0.63.2 change uses a separate pointer eligibility view that excludes only
+IME Enabled/Disabled lifecycle notifications. It applies to actual pointer
+press/release classification and an already owned held gesture. It does not
+consume, replace or replay input. The original full event view still controls
+keyboard shortcuts and Enter/Space button activation.
 
-Actual frontend-frame tests assert connected-header heights of **40 / 48 logical
-pixels** at both **780 × 540** and **1280 × 900**, using **13 / 18** font sizes.
-These checks passed on the final local source. They measure Cedar's frame layout;
-they do not establish native-window pixels or equivalence to IDEA.
+An active composition at the start of the batch remains a veto, even when that
+batch disables it. Preedit and Commit, including empty content, remain competing
+input, as do typing, paste, keys, modifiers and other pointer ownership. Lifecycle
+notifications cannot repair a poisoned press. Exact document/session/view,
+original-batch, response ownership, pass and final focus guards are unchanged.
+This follows the existing Search and replacement pointer policy; it does not
+claim broad IME correctness or identify the prior native event sequence.
 
-The corresponding **28 / 34 logical pixels** for tools are **title-row minimum
-heights**: enclosing margins, the separator and tool body consume additional
-height. They do not describe the whole tools header or panel. Longer state
-messages, larger text and wrapping may need more height; these minima are not
-fixed clipping bounds.
+## Evidence and limits
 
-Project, editor, Find, menus and recovery/error controls must remain reachable
-through appropriate wrapping or scrolling. Hidden or fully clipped rows remain
-ineligible for Preview/Open. Existing explicit tool height and **Automatic
-height** behavior must still allow recovery from a cramped layout; the candidate
-makes no guarantee for every tiny viewport. The exact-package native journey
-must independently establish its exercised geometry and control reachability.
+A clean actual-frame reproduction of dirty selection, scoped two-hit search,
+modal Escape and an isolated Find Results pointer click passed on unchanged
+0.63.1 shipping code. A separate six-scenario characterization found clean and
+MouseMoved clicks admitted, but standalone Enabled/Disabled, Preedit and Commit
+notifications rejected despite a genuine egui click. Every scenario preserved
+text, full selection, Undo, location history and result identity with no added
+operation. This established a classifier limitation, not the native cause.
 
-The optional narrow-geometry checks were not run in the fresh 0.62.2 native
-journey. That earlier acceptance cannot be reused as a 0.63 native-window pass.
+The corrected focused selection passed **47 tests**. It includes the clean and
+motion cases, all six Enabled/Disabled press/held/release placements, fifteen
+content/composition/poisoned/held-key journeys, three raw-input classifier tests,
+and retained shell/access behavior. Positive journeys require actual click
+admission, a visible bottom Find and exact current-row focus. Negative journeys
+require no activation and unchanged draft, selection, Undo, history and results.
+Raw-input tests retain atomic pointer handling, keyboard strictness and mixed
+input rejection. The original rejection characterization remains preserved.
 
-## Final local Linux checks — 0.63.1
+The final local Linux workspace/all-target/all-feature/locked aggregate passed
+**50 suites: 2,057 passed / zero failed / 70 ignored**; app **1,341/0/53**.
+Strict workspace/all-target/all-feature Clippy passed with warnings denied.
+Formatting and **779 Python tests across 28 suites** passed. The existing strict
+Browse and scoped-search runtime validators accepted direct normal-agent proofs
+with exactly **seven/ten operations** and **zero shell-transition operations**.
+Those proofs used the compiled app test and debug agent through a bounded runner;
+the canonical CI compile/selection/release-driver route was not run locally.
+They establish their own process results, not release packages or dual-platform CI.
+An earlier direct invocation accidentally paired an older app-test executable with
+the new agent. The scoped version guard rejected it; that failure and the earlier
+Browse result are excluded from current-candidate evidence. Both proofs then
+passed with the exact current package artifact selected from Cargo JSON. No source
+predicate was changed to bypass the version check.
 
-The **workspace, all-target, all-feature, locked** Rust aggregate passed
-**50 suites: 2,051 passed / zero failed / 70 ignored**. Its app suite recorded
-**1,335 passed / zero failed / 53 ignored**. Formatting passed, as did strict
-workspace, all-target, all-feature Clippy with warnings denied. The selected
-Python checks passed **779 tests across 28 suites**.
+Fresh exact-commit dual-platform CI, all three exact-source packages and the
+bounded Linux native journey remain required. Earlier package or native evidence
+is not a pass for this new shipping change.
 
-The actual normal-agent **Browse** and **scoped-search** proofs passed their
-existing strict runtime receipt validators with exactly **seven** and **ten
-operations**, respectively. Both recorded **`shell_transition_operations = 0`**;
-the shell focus transitions did not add backend operations to those journeys.
-The measured transitions preserved query and accepted result-batch identity,
-grouping, the selected hit, the dirty draft's full selection, Undo and location
-history. Request-state comparison covers the search request and accepted batch
-identity; it is not an exhaustive snapshot of pending jobs or future requests.
+## Geometry and native acceptance boundary
 
-These local proofs invoked the compiled app test and the normal **debug-built
-agent** directly through a bounded runner. The canonical CI compile, test
-selection and release-driver route was **not executed locally**. The direct
-runtime receipts establish their own bounded process results, not a release
-build, canonical driver run, built-package audit or dual-platform CI pass.
+Frame checks measure Cedar's connected header at **40/48 logical pixels** at
+**780 × 540** and **1280 × 900**, with **13/18** fonts. The **28/34** tools values
+are title-row minima, excluding margins, separator and body. Wrapping, scroll and
+Automatic height preserve reachability; these are not hard tiny-window caps or
+IDEA pixel-equivalence claims.
 
-### Preserved development failures and corrected checks
+The 0.63.1 desktop-input native journey connected and passed both menu Escape
+cases, filename discovery/open, a dirty draft, scoped two-hit search and selection
+restoration after modal Escape. Find Results did not visibly open its panel after
+a later isolated click, so the remaining focus/navigation cases were not run.
+Earlier window-targeted connection attempts and their observation limits remain
+separate. A subsequent successful route does not explain those failures.
 
-An earlier coherent app run recorded **1,328 passed / 53 ignored**. A subsequent
-strengthened shortcut test with ready navigation exposed a **Ctrl+J cancellation
-ordering problem**. The ordering was corrected and the strengthened check was
-re-run successfully; the preceding 0.63.0 **1,329-test app pass** and its workspace aggregate
-include that correction. The earlier successful run did not cover this
-stronger condition and does not replace the preserved failed attempt.
-
-The original delivered-Escape regression now passes alongside five additional
-cases for both menu roots, native editor Undo/Redo, earlier language ownership,
-missing/stale/substituted menu identity, no-menu fallback and a ready ordinary
-Read. The focused Escape selection passed **19 tests**; all six new cases also
-ran in the full aggregate. The ready Read may remain as an inactive buffer under
-the existing Open contract; it must not replace the active dirty editor, selection
-or history. The correction does not discard ordinary read results globally.
-
-Initial development tests exposed missing native editor-focus preconditions and
-an incorrect expectation that a completed ordinary Read would not be retained.
-The corrected tests establish editor focus through real clicks before measuring
-the behavior and assert the exact inactive buffer plus unchanged active state.
-They do not seed focus, bypass replies or weaken the original Escape regression.
-
-## Verification status
-
-| Gate | Status at this checkpoint | Evidence and remaining boundary |
-|---|---|---|
-| Selected Python checks | Passed locally | 779 tests across 28 suites; supporting checks, not built-package or native acceptance. |
-| Final local aggregate and strict checks | Passed locally on 0.63.1 | 50 workspace suites, 2,051/0/70; app 1,335/0/53; formatting and strict workspace/all-target/all-feature Clippy passed. |
-| Focus and connected-shell checks | Local checks passed; native pending | The strengthened ready-navigation Ctrl+J check passed after the preserved cancellation-ordering correction. Exact-package Project/Find/editor focus and input still require native observation. |
-| Geometry and menu reachability | Frame geometry passed; native pending | 40/48 connected-header heights asserted at 780 × 540 and 1280 × 900 with 13/18 fonts. The 28/34 tools title-row minima exclude margins, separator and body. Native wrapping and control reachability remain separate. |
-| Retained Browse, Search and scoped-search behavior | Local aggregate and two direct process proofs passed | Browse/scoped runtime receipts retained exact seven/ten operations and zero shell-transition operations, preserving dirty full selection, Undo and history. The canonical CI compile/selection/release-driver route remains pending. |
-| Exact-commit dual-platform CI | Pending | All required jobs at the sealed public candidate; local direct process results do not substitute for the canonical CI route. |
-| Three exact-source package audits | Pending | Windows development, Linux agent and Linux desktop packages matching the sealed source. |
-| Bounded exact-package Linux native journey | Pending | Independently observed Project/Find/editor focus, menu access, selection/explicit Preview/genuine OS double-click Open, dirty Back/Undo/Redo, relevant geometry and safe exit. |
-| Windows GUI and real SSH | Unverified | Independent platform/transport evidence; Linux native and headless Windows CI do not establish these. |
-
-Local tests, canonical CI, package audits and native observations remain distinct
-forms of evidence associated with the source actually exercised. Passing the
-final local source does not establish release acceptance. Any later failure or
-skipped gate must retain its own scope before a corrected execution is recorded.
-
-## Evidence carried from 0.62.2
-
-The accepted baseline recorded Linux **2,031/0/70** and Windows **1,969/0/114**
-(passed/failed/ignored), **58 Browse**, **43 Search** and **13 scoped-search**
-frame checks, and exact **7/12/10-operation** Browse/Search/scoped normal-agent
-proofs. Its fresh Linux journey covered both Find views' single selection,
-explicit Preview and genuine OS double-click Open, `src` / `*.rs`, group
-collapse/expand, dirty-origin Back, Undo/Redo and frontend exit code 0.
-
-The optional invalid-scope, empty-mask, broader OR-mask, edited-tuple inactivity,
-modal-reopen and narrow-geometry native cases were not run. Deterministic carry
-is distinct from native coverage. Earlier private native attachments were
-unavailable after an environment change; recovery of public CI/packages did not
-recover those attachments. The fresh native observations stand separately.
-
-The [0.62.0 failed CI and 0.62.1 defect record](TEST_REPORT.md#0621-public-ci-passed-acceptance-blocked)
-remain preserved. The 0.62.1 controlled cross-widget defect does not establish
-the cause of its earlier unexpected native Open, which remains unknown. The
-historical native Ctrl+Alt+Left/Right limitation is also retained. No shell layout
-change alone resolves these historical evidence gaps.
+The next native gate must observe the exact new package with execution trust off,
+menu Escape, Project/Find/editor focus and retention, explicit Preview, genuine
+same-row Open, Back and dirty Undo/Redo, followed by safe discard/quit and file
+integrity checks. Native event delivery, raw affinity and backend operation counts
+cannot be inferred from pixels. Windows GUI, real SSH, full IDEA parity and
+comparative performance remain unverified.

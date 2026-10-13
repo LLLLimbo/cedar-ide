@@ -2112,9 +2112,14 @@ impl CedarApp {
                     #[cfg(test)]
                     workspace_access_tests::record(ui, "project_text_entry", &text);
                     if text.clicked() { self.show_browse(browse::Provider::ProjectText); }
+                    #[cfg(test)]
+                    browsing_shell_tests::record_find_diagnostic(self, ctx, "before-header-response", None);
                     let results = ui.selectable_label(self.tools_open && self.tool == Tool::Search, "Find Results").on_hover_text("Return to retained results or the search query · Ctrl/Cmd+J toggles tools");
                     #[cfg(test)]
-                    workspace_access_tests::record(ui, "find_results_entry", &results);
+                    {
+                        workspace_access_tests::record(ui, "find_results_entry", &results);
+                        browsing_shell_tests::record_find_diagnostic(self, ctx, "after-header-response", Some(&results));
+                    }
                     if results.clicked() { self.show_find_results(ctx, &results); }
                     let tools = ui.menu_button("Tools", |ui| self.tools_menu(ui)).response;
                     #[cfg(test)]
