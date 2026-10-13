@@ -4458,6 +4458,15 @@ struct NormalBrowse {
     files_live_dirty_preview_open_reads: Option<usize>,
     files_live_open_back_exact: bool,
     files_live_state_preserved: bool,
+    stale_open_harness_delayed_completion: bool,
+    stale_open_newer_navigation_preserved: bool,
+    stale_open_inactive_cache_exact: bool,
+    stale_open_inactive_jump_absent: bool,
+    stale_open_files_ordinary_position: bool,
+    stale_open_recent_ordinary_position: bool,
+    stale_open_back_dirty_undo_preserved: bool,
+    stale_open_additional_reads: Option<usize>,
+    stale_open_cached_reuse_operations: Option<usize>,
 }
 
 fn source_digest(path: &std::path::Path) -> String {
@@ -4481,7 +4490,7 @@ fn normal_operation(operation: &Operation) -> serde_json::Value {
             serde_json::json!({"op": "Search", "query": query, "limit": limit})
         }
         _ => panic!(
-            "normal Browse proof dispatched an operation outside its sixteen-operation contract"
+            "normal Browse proof dispatched an operation outside its seventeen-operation contract"
         ),
     }
 }
@@ -4587,6 +4596,15 @@ impl NormalBrowse {
             files_live_dirty_preview_open_reads: None,
             files_live_open_back_exact: false,
             files_live_state_preserved: false,
+            stale_open_harness_delayed_completion: false,
+            stale_open_newer_navigation_preserved: false,
+            stale_open_inactive_cache_exact: false,
+            stale_open_inactive_jump_absent: false,
+            stale_open_files_ordinary_position: false,
+            stale_open_recent_ordinary_position: false,
+            stale_open_back_dirty_undo_preserved: false,
+            stale_open_additional_reads: None,
+            stale_open_cached_reuse_operations: None,
         };
         proof.admit_call();
         // Client's constructor performs one ordinary 30-second Hello. Register
@@ -4702,6 +4720,16 @@ impl NormalBrowse {
         assert_eq!(self.files_live_dirty_preview_open_reads, Some(0));
         assert!(self.files_live_open_back_exact);
         assert!(self.files_live_state_preserved);
+        assert!(self.stale_open_harness_delayed_completion);
+        assert!(self.stale_open_newer_navigation_preserved);
+        assert!(self.stale_open_inactive_cache_exact);
+        assert!(self.stale_open_inactive_jump_absent);
+        assert!(self.stale_open_files_ordinary_position);
+        assert!(self.stale_open_recent_ordinary_position);
+        assert!(self.stale_open_back_dirty_undo_preserved);
+        assert_eq!(self.stale_open_additional_reads, Some(1));
+        assert_eq!(self.stale_open_cached_reuse_operations, Some(0));
+        assert_eq!(NORMAL_CALL, std::time::Duration::from_secs(30));
         assert_eq!(browse::FILES_DEBOUNCE_SECONDS, 0.250);
         assert_eq!(browse::PROJECT_TEXT_REVIEW_DEBOUNCE_SECONDS, 0.150);
         assert_eq!(browse::MAX_PROJECT_TEXT_CONTEXT_LINES, 41);
@@ -4731,11 +4759,15 @@ impl NormalBrowse {
             ]
         );
         assert_eq!(
-            self.ledger[14..],
+            self.ledger[14..16],
             [
                 serde_json::json!({"op": "FindFiles", "query": "Needle", "scope": "untouched", "limit": 100}),
                 serde_json::json!({"op": "FindFiles", "query": "origin.txt", "scope": "", "limit": 100}),
             ]
+        );
+        assert_eq!(
+            self.ledger[16..],
+            [serde_json::json!({"op": "Read", "path": NORMAL_TARGET})]
         );
         for (path, hash) in &self.hashes {
             assert_eq!(
@@ -4761,7 +4793,7 @@ impl NormalBrowse {
         std::fs::remove_dir_all(&self.root).expect("remove verified completed fixture");
         self.success = true;
         let mut receipt = serde_json::json!({
-            "receipt_version": 6,
+            "receipt_version": 7,
             "operation_ledger": self.ledger, "source_sha256": self.hashes,
             "connections": 1, "agents_reaped": 1, "trust": false,
             "active_budget_seconds": 240, "cleanup_timeout_seconds": 30,
@@ -4838,6 +4870,22 @@ impl NormalBrowse {
             .as_object_mut()
             .unwrap()
             .extend(files_live.as_object().unwrap().clone());
+        let stale_open = serde_json::json!({
+            "stale_open_harness_delayed_completion": self.stale_open_harness_delayed_completion,
+            "stale_open_newer_navigation_preserved": self.stale_open_newer_navigation_preserved,
+            "stale_open_inactive_cache_exact": self.stale_open_inactive_cache_exact,
+            "stale_open_inactive_jump_absent": self.stale_open_inactive_jump_absent,
+            "stale_open_files_ordinary_position": self.stale_open_files_ordinary_position,
+            "stale_open_recent_ordinary_position": self.stale_open_recent_ordinary_position,
+            "stale_open_back_dirty_undo_preserved": self.stale_open_back_dirty_undo_preserved,
+            "stale_open_additional_reads": self.stale_open_additional_reads.unwrap(),
+            "stale_open_cached_reuse_operations": self.stale_open_cached_reuse_operations.unwrap(),
+            "stale_open_call_timeout_seconds": NORMAL_CALL.as_secs(),
+        });
+        receipt
+            .as_object_mut()
+            .unwrap()
+            .extend(stale_open.as_object().unwrap().clone());
         println!("browse_normal_acceptance {receipt}");
     }
 }
@@ -5495,6 +5543,14 @@ fn browse_normal_agent_find_recent_project_reveal_continuous_preview_and_exact_r
         normal_editor_position(&app),
         closed_position,
         "Recent does not restore the historical closed-file caret"
+    );
+    // Independent ordinary new-document control for the appended stale-open
+    // journey; retain actual bytes, revision and fully settled native caret.
+    let stale_ordinary_control = (
+        reopened.id,
+        reopened.text.clone(),
+        reopened.revision.clone(),
+        normal_editor_position(&app),
     );
     proof.recent_closed_reopen_normal_position = true;
     assert_eq!(normal_origin_state(&app), recent_origin);
@@ -6225,5 +6281,612 @@ fn browse_normal_agent_find_recent_project_reveal_continuous_preview_and_exact_r
     assert!(commands.try_recv().is_err());
     proof.files_live_dirty_preview_open_reads = Some(proof.ledger.len() - dirty_live_start);
     proof.files_live_state_preserved = true;
+
+    // Preserve every v6 observation and its exact sixteen-operation prefix.
+    // This suffix adds one full ordinary 30-second Read, admitted against the
+    // original shared 240-second active / 300-second total deadlines. We hold
+    // the real returned Event in this harness, not on the server or network.
+    assert_eq!(proof.ledger.len(), 16);
+    proof.admit_call();
+    let stale_start = proof.ledger.len();
+    let stale_origin = normal_origin_state(&app);
+    let stale_closed = app
+        .documents
+        .iter()
+        .find(|document| document.path == NORMAL_TARGET)
+        .unwrap();
+    let stale_closed_id = stale_closed.id;
+    assert!(!stale_closed.dirty());
+    assert_eq!(stale_closed.text, stale_ordinary_control.1);
+    assert_eq!(stale_closed.revision, stale_ordinary_control.2);
+    assert_ne!(
+        stale_ordinary_control.3 .1 .0,
+        model::line_start(NORMAL_TARGET_TEXT, 2),
+        "ordinary control and retired line must differ"
+    );
+    click(&mut app, &format!("editor_tab:{stale_closed_id}"));
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(stale_closed_id));
+    frame(&mut app, modified_key(egui::Key::W, command_modifiers()));
+    settle(&mut app);
+    assert!(!app
+        .documents
+        .iter()
+        .any(|document| document.path == NORMAL_TARGET));
+    assert_eq!(app.active_document, Some(1));
+    assert_eq!(normal_origin_state(&app), stale_origin);
+    assert!(commands.try_recv().is_err());
+
+    enter(&mut app, true);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert_eq!(app.search_results[target].path, NORMAL_TARGET);
+    assert_eq!(app.search_results[target].line, 2);
+    assert!(app.search_rows_active() && app.search_state.group_expanded(target));
+    click(&mut app, &format!("browse_row:{target}"));
+    frame(&mut app, key(egui::Key::Enter));
+    proof.admit_call();
+    let stale_command = commands
+        .try_recv()
+        .expect("retained Text Open queues one Read");
+    let observed = normal_operation(&stale_command.op);
+    assert_eq!(
+        observed,
+        serde_json::json!({"op": "Read", "path": NORMAL_TARGET})
+    );
+    proof.ledger.push(observed);
+    assert!(commands.try_recv().is_err());
+    let stale_epoch = app.navigation_epoch;
+    assert!(matches!(app.pending.get(&stale_command.id),
+        Some(Job::Open { path, line: Some(2), navigation })
+        if path == NORMAL_TARGET && *navigation == stale_epoch));
+    assert!(app.location_history.pending.is_some());
+    let client = proof.client.as_mut().unwrap();
+    let result = client.request(stale_command.op);
+    assert!(client.is_connected());
+    assert!(matches!(&result, Ok(Payload::File { path, text, revision })
+        if path == NORMAL_TARGET && text == &stale_ordinary_control.1
+            && Some(revision) == stale_ordinary_control.2.as_ref()));
+    assert!(proof.started.elapsed() < NORMAL_ACTIVE);
+    let held_event = Event {
+        generation: app.generation,
+        id: stale_command.id,
+        connected: true,
+        result,
+    };
+    assert!(!app
+        .documents
+        .iter()
+        .any(|document| document.path == NORMAL_TARGET));
+
+    enter(&mut app, false);
+    assert!(app.navigation_epoch > stale_epoch);
+    assert!(app.location_history.pending.is_none());
+    let replacement_epoch = app.navigation_epoch;
+    let replacement_focus = focused(&app);
+    let location_state = |app: &CedarApp| {
+        let stack = |locations: &[location_history::Location]| {
+            locations
+                .iter()
+                .map(|location| {
+                    (
+                        location.generation,
+                        location.document,
+                        location.edit_version,
+                        selection_signature(location.selection),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        serde_json::json!({
+            "back": stack(&app.location_history.back),
+            "forward": stack(&app.location_history.forward),
+            "pending": app.location_history.pending.is_some(),
+            "message": app.location_history.message,
+        })
+    };
+    let replacement_history = location_state(&app);
+    assert!(commands.try_recv().is_err());
+    app.result_tx
+        .send(WorkerEvent::Response(held_event))
+        .unwrap();
+    settle(&mut app);
+    assert!(!app.pending.contains_key(&stale_command.id));
+    assert_eq!(app.navigation_epoch, replacement_epoch);
+    assert_eq!(app.active_document, Some(1));
+    assert_eq!(focused(&app), replacement_focus);
+    assert_eq!(location_state(&app), replacement_history);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert_draft_revision(&app, live_departure.1, &live_undo, &revision);
+    assert!(commands.try_recv().is_err());
+    proof.stale_open_harness_delayed_completion = true;
+    proof.stale_open_newer_navigation_preserved = true;
+    let cached = app
+        .documents
+        .iter()
+        .find(|document| document.path == NORMAL_TARGET)
+        .unwrap();
+    let cached_id = cached.id;
+    let cached_version = cached.edit_version;
+    assert_eq!(cached_version, 0);
+    assert_ne!(cached_id, stale_closed_id);
+    assert_ne!(cached_id, stale_ordinary_control.0);
+    assert_eq!(cached.text, stale_ordinary_control.1);
+    assert_eq!(cached.saved_text, stale_ordinary_control.1);
+    assert_eq!(cached.revision, stale_ordinary_control.2);
+    assert!(!cached.dirty());
+    assert!(
+        egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", cached_id))).is_none(),
+        "inactive cache has not rendered a TextEdit"
+    );
+    proof.stale_open_inactive_cache_exact = true;
+    assert!(
+        cached.jump_to.is_none(),
+        "retired Text line must not survive as a deferred jump"
+    );
+    proof.stale_open_inactive_jump_absent = true;
+    assert_eq!(proof.ledger.len() - stale_start, 1);
+    proof.stale_open_additional_reads = Some(proof.ledger.len() - stale_start);
+    let reuse_start = proof.ledger.len();
+
+    // An empty-query Files entry rebuilds its ordinary loaded-file snapshot.
+    // No FindFiles request or injected result is needed to open the cache.
+    enter(&mut app, false);
+    assert!(app.browse.query().is_empty());
+    let cached_row = app
+        .browse
+        .paths()
+        .iter()
+        .position(|path| *path == NORMAL_TARGET)
+        .unwrap();
+    click(&mut app, &format!("browse_row:{cached_row}"));
+    frame(&mut app, key(egui::Key::Enter));
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(cached_id));
+    assert_eq!(app.active().unwrap().path, NORMAL_TARGET);
+    assert!(app.active().unwrap().jump_to.is_none());
+    assert_eq!(normal_editor_position(&app), stale_ordinary_control.3);
+    assert_eq!(focused(&app), Some(recorded_response(&app, "editor").id));
+    assert!(app.location_history.pending.is_none());
+    assert_eq!(normal_origin_state(&app), stale_origin);
+    assert!(commands.try_recv().is_err());
+    proof.stale_open_files_ordinary_position = true;
+    let expected_departure = serde_json::json!([
+        app.generation,
+        1,
+        stale_origin["edit_version"],
+        stale_origin["selection"]
+    ]);
+    let expected_destination = serde_json::json!([
+        app.generation,
+        cached_id,
+        cached_version,
+        stale_ordinary_control.3 .1
+    ]);
+    // The prior journey already left this exact departure on top. Ordinary
+    // Open coalesces it; require the complete stack, not merely its top.
+    let mut expected_files_back = replacement_history["back"].as_array().unwrap().clone();
+    assert_eq!(expected_files_back.pop(), Some(expected_departure.clone()));
+    assert_eq!(location_state(&app)["back"], replacement_history["back"]);
+    assert_eq!(location_state(&app)["forward"], serde_json::json!([]));
+    frame(
+        &mut app,
+        modified_key(egui::Key::OpenBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(1));
+    assert_eq!(normal_editor_position(&app), live_departure);
+    assert_eq!(normal_origin_state(&app), stale_origin);
+    assert_eq!(
+        location_state(&app)["back"],
+        serde_json::json!(expected_files_back)
+    );
+    assert!(commands.try_recv().is_err());
+
+    assert_eq!(
+        location_state(&app)["forward"],
+        serde_json::json!([expected_destination])
+    );
+    assert_ne!(expected_files_back.last(), Some(&expected_departure));
+    let mut expected_recent_back = expected_files_back.clone();
+    expected_recent_back.push(expected_departure.clone());
+
+    normal_recent_select(&mut app, "Needle", NORMAL_TARGET);
+    click(&mut app, "recent_open");
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(cached_id));
+    assert_eq!(normal_editor_position(&app), stale_ordinary_control.3);
+    assert!(app.active().unwrap().jump_to.is_none());
+    assert_eq!(focused(&app), Some(recorded_response(&app, "editor").id));
+    assert!(app.location_history.pending.is_none());
+    assert_eq!(normal_origin_state(&app), stale_origin);
+    assert!(commands.try_recv().is_err());
+    proof.stale_open_recent_ordinary_position = true;
+    assert_eq!(
+        location_state(&app)["back"],
+        serde_json::json!(expected_recent_back)
+    );
+    assert_eq!(location_state(&app)["forward"], serde_json::json!([]));
+    frame(
+        &mut app,
+        modified_key(egui::Key::OpenBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(1));
+    assert_eq!(normal_editor_position(&app), live_departure);
+    assert_eq!(normal_origin_state(&app), stale_origin);
+    assert_eq!(
+        location_state(&app)["back"],
+        serde_json::json!(expected_files_back)
+    );
+    assert_eq!(
+        location_state(&app)["forward"],
+        serde_json::json!([expected_destination])
+    );
+    assert_eq!(undo_texts(&app), live_undo);
+    frame(&mut app, modified_key(egui::Key::Z, command_modifiers()));
+    settle(&mut app);
+    assert_eq!(app.active().unwrap().text, SAVED);
+    assert!(!app.active().unwrap().dirty());
+    assert_eq!(
+        app.active().unwrap().revision.as_deref(),
+        Some(revision.as_str())
+    );
+    frame(
+        &mut app,
+        modified_key(
+            egui::Key::Z,
+            egui::Modifiers {
+                shift: true,
+                ..command_modifiers()
+            },
+        ),
+    );
+    settle(&mut app);
+    assert_eq!(app.active().unwrap().text, DRAFT);
+    assert_eq!(app.active().unwrap().saved_text, SAVED);
+    assert!(app.active().unwrap().dirty());
+    assert_eq!(
+        app.active().unwrap().revision.as_deref(),
+        Some(revision.as_str())
+    );
+    assert_eq!(undo_texts(&app), live_undo);
+    assert_eq!(retained_snapshot(&app), snapshot);
+    assert!(!app.execution_trusted());
+    assert!(commands.try_recv().is_err());
+    proof.stale_open_back_dirty_undo_preserved = true;
+    proof.stale_open_cached_reuse_operations = Some(proof.ledger.len() - reuse_start);
     proof.finish();
+}
+
+// Regression ported from the preserved accepted-0.69 diagnostic. Each route uses real
+// raw-input-hook/update frames, recorded native controls, and queued Read replies.
+// The only controlled data are the fixture bytes and worker response timing.
+const STALE_OPEN_DIAGNOSTIC_TEXT: &str = "first Ω😀\r\nneedle target\nthird line\nlast";
+
+fn stale_open_diagnostic_history(app: &CedarApp) -> serde_json::Value {
+    let entries = |locations: &[location_history::Location]| {
+        locations
+            .iter()
+            .map(|entry| {
+                serde_json::json!([
+                    entry.generation,
+                    entry.document,
+                    entry.edit_version,
+                    entry.selection.primary.index,
+                    entry.selection.secondary.index,
+                    entry.selection.primary.prefer_next_row,
+                    entry.selection.secondary.prefer_next_row
+                ])
+            })
+            .collect::<Vec<_>>()
+    };
+    serde_json::json!({"back": entries(&app.location_history.back),
+        "forward": entries(&app.location_history.forward),
+        "pending": app.location_history.pending.is_some()})
+}
+
+fn stale_open_diagnostic_queue(app: &mut CedarApp, id: u64) {
+    app.result_tx
+        .send(WorkerEvent::Response(Event {
+            generation: app.generation,
+            id,
+            connected: true,
+            result: Ok(file("b.txt", STALE_OPEN_DIAGNOSTIC_TEXT)),
+        }))
+        .unwrap();
+}
+
+fn stale_open_diagnostic_text_request(app: &mut CedarApp, commands: &Receiver<Command>) -> Command {
+    enter(app, true);
+    submit_text(app, commands, &["b.txt"]);
+    frame(app, key(egui::Key::ArrowDown));
+    assert_eq!(
+        focused(app),
+        Some(recorded_response(app, "browse_row:0").id)
+    );
+    frame(app, key(egui::Key::Enter));
+    let read = commands
+        .try_recv()
+        .expect("Project Text Open must dispatch one ordinary Read");
+    assert!(matches!(&read.op, Operation::Read { path } if path == "b.txt"));
+    assert!(
+        matches!(app.pending.get(&read.id), Some(Job::Open { line: Some(2), navigation, .. })
+        if *navigation == app.navigation_epoch)
+    );
+    assert!(commands.try_recv().is_err());
+    assert!(!app.browse_marker_open());
+    read
+}
+
+fn stale_open_diagnostic_filename_case(
+    through_recent: bool,
+    cancelled_text_read: bool,
+) -> ((usize, usize), (usize, usize, bool, bool)) {
+    let (mut app, commands) = fixture();
+    let departure = selection_signature(selection(&app));
+    let undo = undo_texts(&app);
+    // Establish a genuine Recent entry, then close its document. This setup is
+    // identical in the independent ordinary control and cancelled-read case.
+    app.open("b.txt".into(), None);
+    let initial = commands.try_recv().unwrap();
+    stale_open_diagnostic_queue(&mut app, initial.id);
+    settle(&mut app);
+    let closed_id = app.active_document.unwrap();
+    frame(&mut app, modified_key(egui::Key::W, command_modifiers()));
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(1));
+    assert!(!app.documents.iter().any(|doc| doc.path == "b.txt"));
+    assert_draft(&app, departure, &undo);
+    let before = stale_open_diagnostic_history(&app);
+    let mut cancelled_epoch = None;
+    let mut cached_id = None;
+    let mut cached_jump = None;
+    if cancelled_text_read {
+        let read = stale_open_diagnostic_text_request(&mut app, &commands);
+        let old_epoch = app.navigation_epoch;
+        // A new explicit Files entry invalidates the old Project Text intent.
+        enter(&mut app, false);
+        assert!(app.navigation_epoch > old_epoch);
+        assert!(app.location_history.pending.is_none());
+        let current_epoch = app.navigation_epoch;
+        let current_focus = focused(&app);
+        stale_open_diagnostic_queue(&mut app, read.id);
+        settle(&mut app);
+        assert_eq!(
+            app.active_document,
+            Some(1),
+            "late bytes must not activate B"
+        );
+        assert_eq!(
+            focused(&app),
+            current_focus,
+            "late bytes must not steal focus"
+        );
+        assert_eq!(app.navigation_epoch, current_epoch);
+        assert_eq!(stale_open_diagnostic_history(&app), before);
+        assert_draft(&app, departure, &undo);
+        assert!(!app.pending.contains_key(&read.id));
+        let cached = app
+            .documents
+            .iter()
+            .find(|doc| doc.path == "b.txt")
+            .unwrap();
+        assert_ne!(cached.id, closed_id);
+        assert_eq!(cached.text, STALE_OPEN_DIAGNOSTIC_TEXT);
+        assert_eq!(cached.saved_text, STALE_OPEN_DIAGNOSTIC_TEXT);
+        assert_eq!(cached.revision.as_deref(), Some("b".repeat(64).as_str()));
+        assert!(!cached.dirty());
+        assert!(
+            egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", cached.id)))
+                .is_none(),
+            "the accepted inactive cache has never rendered an editor"
+        );
+        cancelled_epoch = Some((old_epoch, current_epoch));
+        cached_id = Some(cached.id);
+        cached_jump = cached.jump_to;
+    } else {
+        enter(&mut app, false);
+        assert_eq!(stale_open_diagnostic_history(&app), before);
+    }
+    if through_recent {
+        frame(&mut app, key(egui::Key::Escape));
+        settle(&mut app);
+        normal_recent_select(&mut app, "b.txt", "b.txt");
+        assert!(commands.try_recv().is_err());
+        click(&mut app, "recent_open");
+    } else {
+        query(&mut app, "b.txt");
+        frame(&mut app, key(egui::Key::Enter));
+        settle(&mut app);
+        assert_eq!(app.browse.paths(), vec!["b.txt"]);
+        click(&mut app, "browse_row:0");
+        frame(&mut app, key(egui::Key::Enter));
+    }
+    if cancelled_text_read {
+        assert!(
+            commands.try_recv().is_err(),
+            "filename Open reuses the accepted cache without Read"
+        );
+    } else {
+        let read = commands
+            .try_recv()
+            .expect("independent filename control sends one ordinary Read");
+        assert!(matches!(&read.op, Operation::Read { path } if path == "b.txt"));
+        assert!(matches!(
+            app.pending.get(&read.id),
+            Some(Job::Open { line: None, .. })
+        ));
+        stale_open_diagnostic_queue(&mut app, read.id);
+    }
+    settle(&mut app);
+    let target = app.active().unwrap();
+    assert_eq!(target.path, "b.txt");
+    assert_ne!(
+        target.id, closed_id,
+        "both arms allocate a new identity after the original close"
+    );
+    assert!(cached_id.is_none_or(|id| id == target.id));
+    assert_eq!(target.text, STALE_OPEN_DIAGNOSTIC_TEXT);
+    assert_eq!(target.saved_text, STALE_OPEN_DIAGNOSTIC_TEXT);
+    assert!(!target.dirty());
+    assert!(target.jump_to.is_none());
+    assert!(app.location_history.pending.is_none());
+    assert_eq!(focused(&app), Some(egui::Id::new(("editor", target.id))));
+    assert_draft(&app, departure, &undo);
+    assert!(commands.try_recv().is_err());
+    let position = normal_editor_position(&app);
+    println!(
+        "stale_open_diagnostic {}",
+        serde_json::json!({
+            "route": if through_recent { "Recent" } else { "Files" },
+            "cancelled_text_read": cancelled_text_read,
+            "generation": app.generation, "closed_document": closed_id,
+            "new_document": target.id, "cancelled_and_replacement_epochs": cancelled_epoch,
+            "final_navigation_epoch": app.navigation_epoch, "accepted_inactive_jump": cached_jump,
+            "source_line_index": model::line_start(STALE_OPEN_DIAGNOSTIC_TEXT, 2),
+            "source_scalar_count": STALE_OPEN_DIAGNOSTIC_TEXT.chars().count(),
+            "position": position, "history": stale_open_diagnostic_history(&app),
+            "late_focus_preserved": true, "dirty_origin_selection_undo_preserved": true,
+            "fresh_document_identity": true, "accepted_exact_bytes": true
+        })
+    );
+    // Back and actual Undo remain available after the later filename Open.
+    frame(
+        &mut app,
+        modified_key(egui::Key::OpenBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(1));
+    assert_draft(&app, departure, &undo);
+    frame(&mut app, modified_key(egui::Key::Z, command_modifiers()));
+    assert_eq!(app.documents[0].text, SAVED);
+    assert!(commands.try_recv().is_err());
+    position
+}
+
+#[test]
+fn stale_open_diagnostic_cancelled_project_text_cannot_change_later_filename_caret() {
+    let results: Vec<_> = [false, true]
+        .into_iter()
+        .map(|recent| {
+            let ordinary = stale_open_diagnostic_filename_case(recent, false);
+            let cancelled = stale_open_diagnostic_filename_case(recent, true);
+            (recent, ordinary, cancelled)
+        })
+        .collect();
+    // Keep the exact failed diagnostic expectation as the regression contract.
+    // Ordinary caret is measured independently rather than assumed to be line 1.
+    assert!(
+        results
+            .iter()
+            .all(|(_, ordinary, cancelled)| ordinary == cancelled),
+        "cancelled Project Text line leaked into a later filename-only Open; controls={results:?}"
+    );
+}
+
+#[test]
+fn stale_open_diagnostic_current_project_text_target_still_jumps() {
+    let (mut app, commands) = fixture();
+    let departure = selection_signature(selection(&app));
+    let undo = undo_texts(&app);
+    let read = stale_open_diagnostic_text_request(&mut app, &commands);
+    let epoch = app.navigation_epoch;
+    stale_open_diagnostic_queue(&mut app, read.id);
+    settle(&mut app);
+    let expected = model::line_start(STALE_OPEN_DIAGNOSTIC_TEXT, 2);
+    let position = normal_editor_position(&app);
+    assert_eq!(position.1 .0, expected);
+    assert_eq!(position.1 .1, expected);
+    assert_eq!(app.navigation_epoch, epoch);
+    assert_eq!(app.location_history.back.len(), 1);
+    assert!(app.location_history.pending.is_none());
+    assert_draft(&app, departure, &undo);
+    assert!(commands.try_recv().is_err());
+    println!(
+        "stale_open_diagnostic {}",
+        serde_json::json!({
+            "positive": "fresh_current_project_text", "document": app.active_document,
+            "navigation_epoch": epoch, "source_line_index": expected, "position": position
+        })
+    );
+}
+
+fn stale_open_replacement_case(
+    replace_pending: bool,
+    latest_line: Option<usize>,
+) -> ((usize, usize), (usize, usize, bool, bool)) {
+    let (mut app, commands) = fixture();
+    let departure = selection_signature(selection(&app));
+    let undo = undo_texts(&app);
+    app.open(
+        "b.txt".into(),
+        if replace_pending {
+            Some(2)
+        } else {
+            latest_line
+        },
+    );
+    let read = commands.try_recv().expect("one initial Read");
+    assert!(matches!(&read.op, Operation::Read { path } if path == "b.txt"));
+    let initial_epoch = app.navigation_epoch;
+    if replace_pending {
+        app.open("b.txt".into(), latest_line);
+        assert!(app.navigation_epoch > initial_epoch);
+    }
+    assert!(
+        matches!(app.pending.get(&read.id), Some(Job::Open { line, navigation, .. })
+        if *line == latest_line && *navigation == app.navigation_epoch)
+    );
+    assert!(
+        commands.try_recv().is_err(),
+        "newest same-path intent reuses the pending Read"
+    );
+    assert_eq!(app.active_document, Some(1));
+    assert_eq!(app.documents.len(), 1);
+    assert!(app.location_history.back.is_empty());
+    assert!(app.location_history.forward.is_empty());
+    assert!(app.location_history.pending.is_some());
+    assert_draft(&app, departure, &undo);
+    stale_open_diagnostic_queue(&mut app, read.id);
+    settle(&mut app);
+    let target = app.active().unwrap();
+    assert_eq!(target.path, "b.txt");
+    assert_eq!(target.text, STALE_OPEN_DIAGNOSTIC_TEXT);
+    assert_eq!(target.saved_text, STALE_OPEN_DIAGNOSTIC_TEXT);
+    assert!(!target.dirty());
+    assert!(target.jump_to.is_none());
+    assert_eq!(app.location_history.back.len(), 1);
+    assert!(app.location_history.forward.is_empty());
+    assert!(app.location_history.pending.is_none());
+    assert_draft(&app, departure, &undo);
+    assert!(commands.try_recv().is_err());
+    let position = normal_editor_position(&app);
+    if let Some(line) = latest_line {
+        let expected = model::line_start(STALE_OPEN_DIAGNOSTIC_TEXT, line);
+        assert_eq!(position.1 .0, expected);
+        assert_eq!(position.1 .1, expected);
+    }
+    frame(
+        &mut app,
+        modified_key(egui::Key::OpenBracket, command_modifiers()),
+    );
+    settle(&mut app);
+    assert_eq!(app.active_document, Some(1));
+    assert_draft(&app, departure, &undo);
+    frame(&mut app, modified_key(egui::Key::Z, command_modifiers()));
+    assert_eq!(app.documents[0].text, SAVED);
+    assert!(commands.try_recv().is_err());
+    position
+}
+
+#[test]
+fn stale_open_newest_same_path_pending_replacement_uses_its_line_or_none() {
+    for latest_line in [Some(3), None] {
+        let fresh = stale_open_replacement_case(false, latest_line);
+        let replacement = stale_open_replacement_case(true, latest_line);
+        assert_eq!(
+            replacement, fresh,
+            "latest line intent {latest_line:?} must match an independent fresh Open"
+        );
+    }
 }

@@ -4,9 +4,11 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-The latest accepted bounded baseline is **0.68.0 current-file Find**. The
-**0.69 Files search-as-you-type candidate is not yet accepted**; its complete
-[offline interaction contract](#files-search-as-you-type-069-candidate) is below.
+The latest accepted bounded baseline is **0.69.0 Files search-as-you-type**;
+its complete [offline interaction contract](#files-search-as-you-type-069-bounded-acceptance)
+is below. **0.70 stale-navigation hardening is a candidate and is not accepted**;
+its [separate contract](#stale-navigation-isolation-070-candidate) does not inherit
+0.69 verification results.
 
 **0.66.2 passed bounded continuous-preview acceptance.** Exact dual-platform
 CI, all three package audits and a fresh bounded Linux native journey passed.
@@ -35,16 +37,27 @@ symbols, real-JDT popup behavior and native Ctrl+F12 remain unmeasured. The
 preserved in the
 [phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
 
-## Files search-as-you-type (0.69 candidate)
+<a id="files-search-as-you-type-069-candidate"></a>
 
-**0.69.0 is a candidate and is not yet accepted.** Local versioned aggregate,
-strict/input-review and current-artifact process checks passed; final sealing,
-exact CI, packages and native validation remain pending. This changes only the **Files**
-provider in Find and return. **Project Text** still searches only after explicit
-Enter or Find. Current-file Find remains a separate local editor feature.
-The full interaction below is available offline; the
-[0.69 verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE69_FILES_LIVE_SEARCH.md)
-records new validation gates separately from the accepted 0.68 baseline.
+## Files search-as-you-type (0.69 bounded acceptance)
+
+**0.69.0 passed bounded acceptance.** Exact dual-platform CI passed all four
+jobs and all three exact-source package audits passed. Linux recorded
+**2,200/0/71**, Windows **2,138/0/114**, each across 50 suites; all 24 new Files
+checks passed. The bounded Trust-off Linux native journey passed typing without
+Enter, scope changes, explicit Preview, Open/Back, dirty Undo and cancel/reopen,
+with timing and integrity verified. A click replaced the planned Down step;
+that journey supplies no native Down-entry evidence. Native pixels do not
+measure the fixed 250 ms interval or backend operation counts.
+
+This changes only the **Files** provider in Find and return. **Project Text**
+still searches only after explicit Enter or Find. Current-file Find remains a
+separate local editor feature. The full interaction below is available offline;
+the [0.69 verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE69_FILES_LIVE_SEARCH.md#accepted-0690-follow-up)
+records acceptance separately from its unchanged original preparation history.
+Linux Java Restart cleanup reported `grace_expired`, signal 9; that is forced
+cleanup, not an all-graceful exit claim. Existing broad IME, native Windows/macOS,
+real SSH and positive Structure/JDT limitations remain.
 
 ### Type, settle, or search immediately
 
@@ -124,6 +137,28 @@ pause is an admission rule, not a response-time guarantee. No CamelCase, full
 case folding, persistent index, filesystem watcher, hard cancellation or
 performance advantage is implied. Preview stays explicit and adds **zero
 automatic Reads**.
+
+## Stale-navigation isolation (0.70 candidate)
+
+**0.70 is not yet accepted.** If a Text result starts an ordinary Read and you
+move elsewhere before it arrives, its bytes may still be cached in an inactive
+buffer. The canceled Text line must not become the destination when you later
+open that file normally from **Files** or **Recent Files**. That later Open uses
+the same caret behavior as a fresh ordinary Open of the same bytes.
+
+The candidate binds a newly created ordinary line jump to current navigation
+identity and excludes a language-navigation target. It retains the exact cached
+text/revision, existing valid background jumps, ordinary caret behavior, dirty
+buffers, Undo and location history. It adds no automatic Read, Save, search,
+retry, provider, transport or language capability.
+
+The old 0.69 production-frame control observed a stale line-2 scalar position
+of 10, versus 39 for a fresh ordinary Open of identical fixture bytes. This is a
+source-derived supplied-input reproduction, not a prior native GUI observation.
+The [0.70 verification report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE70_STALE_NAVIGATION.md)
+records frame, strict process, native and Windows evidence separately. Final
+0.70.0 local aggregate and process checks passed; exact-source CI, packages and
+native verification remain pending, so the candidate is not accepted.
 
 <a id="current-file-find-loop-068-candidate"></a>
 
@@ -350,7 +385,7 @@ Use its provider buttons to switch between filenames and text. The steps below
 describe this shared window; the retained bottom tool is described separately
 under [Retained Project Text results](#retained-project-text-results).
 
-1. Enter a query. In the **0.69 Files candidate**, leave valid committed input
+1. Enter a query. In the **accepted 0.69 Files contract**, leave valid committed input
    unchanged for 250 ms, or press **Enter** / **Find** to submit immediately.
    **Project Text** still requires Enter or Find.
 2. Press **Down** to focus the first result. Use **Up/Down** or **Home/End** to move
@@ -427,7 +462,7 @@ Project files accepts a nonempty single-line query of at most **256 UTF-8 bytes*
 without control characters. Matching compares the Rust Unicode lowercase form of
 the query and path. It does not perform Unicode normalization or full case folding,
 regular expressions, typo correction or CamelCase matching. Results retain their
-exact original path spelling. The 0.69 candidate changes only Files submission
+exact original path spelling. The 0.69 bounded contract changes only Files submission
 timing as described above; explicit Enter/Find remains available.
 
 Results rank by exact basename, basename prefix, basename substring, then path
@@ -450,7 +485,7 @@ Each submitted scan is bounded by:
 
 A blocking filesystem call can outlast the elapsed budget. Only one discovery
 request runs at a time, with at most one latest candidate waiting to replace it.
-In the 0.69 candidate, valid committed Files input can admit one scan after the
+In the 0.69 bounded contract, valid committed Files input can admit one scan after the
 fixed pause; it never admits a content Read. Retiring a query does not disconnect
 the transport or forcibly interrupt a filesystem call.
 
@@ -738,7 +773,9 @@ validated against current artifacts. It does not establish native GUI input,
 Windows/macOS GUI, real SSH, JDT/provider behavior or broader language support.
 
 
-## Files settlement process contract (0.69 candidate)
+<a id="files-settlement-process-contract-069-candidate"></a>
+
+## Files settlement process contract (0.69 bounded acceptance)
 
 The Browse **version-6** contract requires **exactly 64 typed fields and 16
 operations**. All 57 prior fields remain. Restoring the old schema version and
@@ -768,6 +805,36 @@ proof-only correction remain in the 0.69 report. The later **0.69.0** selected-
 artifact execution also passed **64 fields / 16 operations / zero automatic
 Reads**, alongside retained Structure **45/11**, Scoped Search **57/10** and
 Search **57/12** proofs. Structure uses the explicit mock; the canonical compile
-drivers were not run locally. Final sealing, exact CI, package and native
-acceptance remain pending. This headless evidence cannot establish native
-timing, raw event delivery, broad IME, Windows/macOS GUI or real SSH.
+drivers were not run locally. Exact dual-platform CI, all three package audits
+and the bounded Linux native journey subsequently passed as recorded above.
+This headless evidence itself cannot establish native timing, raw event delivery,
+broad IME, Windows/macOS GUI or real SSH.
+
+
+## Stale-navigation process contract (0.70 candidate)
+
+Browse **v7** requires **74 strict typed fields / 17 operations**. The entire
+v6 **64-field / 16-operation** contract remains an exact projection, including
+its nested values and older v5/v4 contracts. The sole appended operation is one
+ordinary Read of `untouched/deep/Needle.rs`. The harness retains its real normal-
+client response until after a newer Files navigation, then verifies that exact
+bytes are cached inactive without the canceled Text line jump.
+
+Files first activates the cached document; subsequent Recent reuse must match
+the separately observed fresh ordinary caret, with **zero operations** for both.
+Independent Recent-first activation is covered by a separate focused frame
+regression. Exact Back, dirty selection and Undo remain
+required. The ten new typed observations, exact ledger, 30-second call timeout,
+Trust-off state and owned-agent cleanup are strict requirements. Delaying response
+delivery in the harness is not a server/network delay or native-race observation.
+The unchanged process bounds remain **240/30/300 seconds** for active work,
+cleanup and watchdog. The [phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE70_STALE_NAVIGATION.md)
+records the **17/17 parser pass** and final **0.70.0** normal-agent **74/17** pass
+separately from the preserved development failures. The versioned local Rust
+aggregate passed **2,203/0/71 across 50 suites**; Python passed **806 total / ten
+skipped / zero failed suites across 29 suites**, alongside strict Clippy and
+formatting. Structure **45/11**, Scoped Search **57/10** and Search **57/12**
+selected-artifact proofs also passed. Structure uses a mock; canonical compile
+drivers were not run locally. Exact-source CI, packages and native gates remain
+pending. These checks do not establish Windows GUI, real SSH, broad IME or
+positive native Structure/JDT behavior.

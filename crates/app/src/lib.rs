@@ -1710,8 +1710,10 @@ impl CedarApp {
                     }
                 };
                 let mut doc = Document::new(id, path, text, revision);
-                if let Some(line) = line {
-                    doc.jump_to = Some(line_start(&doc.text, line));
+                if navigation == self.navigation_epoch && !language_target {
+                    if let Some(line) = line {
+                        doc.jump_to = Some(line_start(&doc.text, line));
+                    }
                 }
                 self.documents.push(doc);
                 if navigation == self.navigation_epoch && !language_target {

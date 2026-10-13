@@ -77,7 +77,7 @@ def select_artifacts(data, root, platform):
 
 def expected_receipt():
     return {
-        "receipt_version": 6,
+        "receipt_version": 7,
         "operation_ledger": [
             {"op": "Hello"}, {"op": "List", "path": ""},
             {"op": "Read", "path": "origin.txt"},
@@ -93,6 +93,7 @@ def expected_receipt():
             {"op": "Read", "path": TARGET},
             {"op": "FindFiles", "query": "Needle", "scope": "untouched", "limit": 100},
             {"op": "FindFiles", "query": "origin.txt", "scope": "", "limit": 100},
+            {"op": "Read", "path": TARGET},
         ],
         "source_sha256": [
             ["origin.txt", hashlib.sha256("saved Ω😀\r\nneedle second\nlast\n".encode()).hexdigest()],
@@ -154,6 +155,16 @@ def expected_receipt():
         "files_live_dirty_preview_open_reads": 0,
         "files_live_open_back_exact": True,
         "files_live_state_preserved": True,
+        "stale_open_harness_delayed_completion": True,
+        "stale_open_newer_navigation_preserved": True,
+        "stale_open_inactive_cache_exact": True,
+        "stale_open_inactive_jump_absent": True,
+        "stale_open_files_ordinary_position": True,
+        "stale_open_recent_ordinary_position": True,
+        "stale_open_back_dirty_undo_preserved": True,
+        "stale_open_additional_reads": 1,
+        "stale_open_cached_reuse_operations": 0,
+        "stale_open_call_timeout_seconds": 30,
     }
 
 

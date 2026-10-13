@@ -1,44 +1,82 @@
-# Verification checkpoint — 0.69 Files search-as-you-type candidate
+# Verification checkpoint — 0.70 stale-navigation candidate
 
-## Current 0.69 Files search-as-you-type candidate
+## Current 0.70 stale-navigation candidate
 
-**0.69 is not yet accepted.** The candidate adds fixed **250 ms** settlement for
-valid committed Files query/directory edits, one in-flight discovery with only
-the latest replacement, and Enter/Find flush with identical-pending deduplication.
-Editing immediately retires old rows, preview and activation identity. Automatic
-settlement and late replies preserve focus; content preview remains explicit.
-Root-empty and unsupported-peer fallback use zero FindFiles. Project Text stays
-explicit, with unchanged v1 matching, ranking, caps and incomplete reporting.
-Ambiguous IME cancellation pauses automatic search while preserving the visible
-query/scope bytes; a fresh valid committed edit or clean explicit Find can resume.
+**0.70 is not yet accepted.** A superseded ordinary Open Read may still populate
+an exact inactive buffer, but must not leave a canceled Text line jump on a newly
+created document. The candidate guards creation of that ordinary `jump_to` by
+current navigation identity and the absence of a language-navigation target.
+A later Files or Recent ordinary Open must match fresh ordinary-Open caret
+behavior for the same bytes. Existing valid background jumps, dirty drafts,
+Undo and location-history boundaries remain required.
 
-The [offline contract](FIND_AND_RETURN.md#files-search-as-you-type-069-candidate)
-and [phase report](TEST_REPORT_PHASE69_FILES_LIVE_SEARCH.md) distinguish behavior
-from evidence. **0.69.0** local workspace/all-target/all-feature Rust checks
-passed **2,200/0/71 across 50 suites**, with strict Clippy and formatting. Python
-passed **805 tests total / ten skipped / zero failed suites across 29 suites**.
-Independent input review, the proof-observer review and final-version addendum
-passed. All 24 new Files checks ran in the final versioned aggregate.
+The old 0.69 production-frame negative control observed scalar **10** after the
+stale Text line-2 Read was cached and the file reopened from Files or Recent;
+a fresh ordinary Open of identical bytes produced scalar **39**. Dirty Undo and
+history remained safe. Its two positive controls passed and its stale-line
+rejection assertion failed intentionally. This is a supplied-event production-
+frame result, not a prior native GUI observation.
 
-The current default-feature application and matching normal agent passed
-Structure **45 fields / 11 operations**, Browse v6 **64/16**, Scoped Search
-**57/10**, and Search **57/12**. Browse preserves the previous 57-field contract
-and fourteen-operation prefix, adds exactly two FindFiles and zero automatic
-Reads, and verifies owned-agent cleanup. File Structure uses the explicit mock
-provider. These are local selected-artifact executions; canonical compile drivers
-were not run locally. **Final sealing, exact CI, three package audits and native
-validation remain pending.**
+The [offline contract](FIND_AND_RETURN.md#stale-navigation-isolation-070-candidate)
+and [phase report](TEST_REPORT_PHASE70_STALE_NAVIGATION.md) distinguish the
+candidate's source-derived, frame, normal-agent, native and Windows evidence.
+The final **0.70.0** local Rust workspace/all-target/all-feature aggregate passed
+**2,203/0/71 across 50 suites**, with formatting and strict Clippy. Python passed
+**806 total / ten skipped / zero failed suites across 29 suites**. Current
+Cargo-JSON-selected default-feature artifacts passed Browse v7 **74 fields /
+17 operations**, Structure **45/11**, Scoped Search **57/10** and Search **57/12**.
+Browse retains exact v6/v5/v4 projections and adds one controlled normal-client
+Read completion; **17/17 pure parser checks** also passed. Structure uses the
+explicit mock. These are source-bound local proofs; canonical compile drivers
+were not run locally. Exact-source CI, all three packages and native validation
+remain pending, and **0.70 is not accepted**.
 
-The first versioned aggregate remains failed at the application suite's
-**1,483/1/54** result: a welcome-entry assertion still expected the old explicit
-filename-search label. Only the expected prefix changed to the approved typing-
-pause label, retaining the visible entry and zero-request assertions. This is an
-intentional UI-copy contract update, with no production change. The replacement
-application suite passed **1,484/0/54** within the complete aggregate above.
-Earlier focused failures and the early normal-agent disk-only preview-observer
-failure remain in the phase report. Its two helper substitutions and six added
-positive assertions changed no production input behavior. Those early artifacts
-still reported 0.68.0 and remain distinct from the final local 0.69.0 receipts.
+The first corrected-source focused **5/0/0** run and early passing v7 process proof
+still reported 0.69.0; they remain distinct from final 0.70 evidence. Initial
+proof-development failures are preserved: an old schema-version test literal,
+a private-field accessor compile error, and an overstrict new Back observer.
+The independently reviewed observer correction models entire Back/Forward stacks
+and ordinary duplicate-departure coalescing. It changes no production guard and
+does not establish a production history defect. The process journey activates
+Files first, then reuses the document through Recent; independent Recent-first
+activation is covered by the focused frame regression.
+
+<a id="current-069-files-search-as-you-type-candidate"></a>
+
+## Accepted 0.69.0 bounded baseline
+
+The [public source revision](https://github.com/LLLLimbo/cedar-ide/commit/2a1b50a2e220b910251b4afdbe0f8a83f3915303)
+(tree `13719ea38dbb7cbbf408be3017fca9e491b01679`) passed all **four jobs** in
+[CI 38458861975](https://github.com/LLLLimbo/cedar-ide/actions/runs/38458861975)
+and all **three exact-source package audits**. Linux recorded **2,200/0/71** and
+Windows **2,138/0/114** (passed/failed/ignored), each across **50 suites**. All
+**24 new Files checks** passed. Browse v6 retained **64 strict typed fields / 16
+operations**, including the complete prior 57-field contract and original
+fourteen-operation prefix, exactly two added FindFiles and zero automatic Reads.
+
+The bounded Trust-off Linux native journey passed typing without Enter,
+Directory scope changes, explicit Preview, ordinary Open/Back, dirty Undo and
+cancel/reopen, with timing and independent integrity/visual checks passed.
+A result click replaced the planned Down step; native Down entry was therefore
+**not measured** in that journey. Native pixels do not measure the fixed 250 ms
+admission interval or backend operation counts. No broad IME/CJK,
+Windows/macOS GUI, real SSH or positive File Structure/JDT GUI acceptance follows.
+
+Linux Java Restart cleanup reported **`grace_expired`, signal 9**. It is a forced
+cleanup result, not an all-graceful shutdown claim. Native owned-frontend exit
+(code zero) and window absence are separate evidence and do not prove descendant
+reaping. The original 0.68 startup observation remains incomplete, with no product
+startup-defect inference. All earlier failures retain their classifications.
+
+The [phase 69 report](TEST_REPORT_PHASE69_FILES_LIVE_SEARCH.md) adds an accepted
+follow-up and preserves its complete original preparation record. Local versioned
+Rust **2,200/0/71**, Python **805 total / ten skipped / zero failed suites across
+29 suites**, strict Clippy/formatting and independent input review passed.
+Selected-artifact Structure **45/11**, Browse v6 **64/16**, Scoped Search **57/10**
+and Search **57/12** proofs passed (fields/operations); Structure uses a mock.
+The first versioned welcome-label assertion failure, earlier focused failures,
+and disk-only preview-observer failure remain failed at their original scope.
+Their later bounded corrections and passing reruns do not rewrite them.
 
 ## Accepted 0.68.0 bounded baseline
 

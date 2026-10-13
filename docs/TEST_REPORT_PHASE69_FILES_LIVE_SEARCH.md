@@ -1,3 +1,42 @@
+# 0.69 Files search-as-you-type — bounded acceptance
+
+## Accepted 0.69.0 follow-up
+
+**0.69.0 is the latest accepted bounded baseline.**
+
+The [public source revision](https://github.com/LLLLimbo/cedar-ide/commit/2a1b50a2e220b910251b4afdbe0f8a83f3915303)
+(tree `13719ea38dbb7cbbf408be3017fca9e491b01679`) passed all **four jobs** in
+[CI 38458861975](https://github.com/LLLLimbo/cedar-ide/actions/runs/38458861975)
+and all **three exact-source package audits**. Linux recorded **2,200/0/71** and
+Windows **2,138/0/114** (passed/failed/ignored), each across **50 suites**. All
+**24 new Files checks** passed. Browse v6 retained **64 strict typed fields / 16
+operations**, including the complete prior 57-field contract and original
+fourteen-operation prefix, exactly two added FindFiles and zero automatic Reads.
+
+The bounded Trust-off Linux native journey passed typing without Enter,
+Directory scope changes, explicit Preview, ordinary Open/Back, dirty Undo and
+cancel/reopen, with timing and independent integrity/visual checks passed.
+A result click replaced the planned Down step; native Down entry was therefore
+**not measured** in that journey. Native pixels do not measure the fixed 250 ms
+admission interval or backend operation counts. No broad IME/CJK,
+Windows/macOS GUI, real SSH or positive File Structure/JDT GUI acceptance follows.
+
+Linux Java Restart cleanup reported **`grace_expired`, signal 9**. It is a forced
+cleanup result, not an all-graceful shutdown claim. Native owned-frontend exit
+(code zero) and window absence are separate evidence and do not prove descendant
+reaping. The original 0.68 startup observation remains incomplete, with no product
+startup-defect inference. All earlier failures retain their classifications.
+
+See the [current report](TEST_REPORT.md#accepted-0690-bounded-baseline) for this
+accepted baseline and the separately unaccepted 0.70 stale-navigation candidate.
+
+## Preserved original preparation checkpoint
+
+The original preparation text below is retained unchanged. Its candidate and
+pending statements describe that historical checkpoint, not the accepted 0.69
+status above. Its failed attempts, subsequent local passes and evidence limits
+remain separate.
+
 # 0.69 Files search-as-you-type — candidate verification
 
 ## Status and accepted baseline
