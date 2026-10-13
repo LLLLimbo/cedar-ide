@@ -1,51 +1,58 @@
-# Verification checkpoint — 0.66 continuous Project Text preview candidate
+# Verification checkpoint — 0.66.1 continuous-preview repaint correction candidate
 
-## Current 0.66 candidate
+## Current 0.66.1 correction candidate
 
-**0.66 passed final local checks but is not yet accepted.** The final Linux Rust
-aggregate passed **2,122/0/70 across 50 suites** (passed/failed/ignored), and final
-strict Clippy and formatting passed. Focused checks passed **11 new
-actual-frame/context tests**, **59 retained Browse tests** (one process test
-ignored there), and **43 Search tests**. Python recorded **793 total / zero
-failures / 10 skipped across 28 suites**; independent source review cleared the
-changes.
-
+**0.66.1 is not yet accepted.** It contains a narrow repaint correction for
+continuous Project Text preview. A controlled actual-frame diagnostic found that
+both Text surfaces could fulfill a due preview from an open draft after painting
+the pending state without requesting another frame. The correction requests
+one repaint when authorized due fulfillment synchronously produces a visible
+preview, preserving the existing preview contract. Final-version focused Rust
+checks passed **16/16** (11 retained and five new repaint regressions). The final
+workspace/all-target/all-feature/locked Rust aggregate passed **2,127/0/70 across
+50 suites**, and Python passed **793 total tests / zero failures / 10 skipped
+across 28 suites**. Independent review, strict Clippy and formatting passed.
 The final Cargo-JSON-selected current app and matching default-features normal
-agent passed strict Browse **v4, 50 fields / 14 operations**, retaining all 38
-old field assertions, the complete 12-operation prefix, and existing source-hash
-and cleanup checks. The retained scoped-search proof passed its strict
-ten-operation validator. The canonical release compile/acceptance drivers were
-**not run locally**; fresh exact CI, package audits and native validation have
-**not run**.
+agent passed strict Browse **v4, 50 fields / 14 operations**, retaining all
+38 prior field assertions and the 12-operation prefix, plus retained scoped
+search **ten operations**. The canonical release drivers were not run locally;
+new exact CI, package and native validation have not run. A stale version
+expectation in process fixtures stopped the first scoped-search attempt; narrow
+version maintenance and the final full/strict/runtime reruns passed before
+sealing.
 
-The first aggregate failed an old scoped-geometry assertion that ArrowDown
-clears the bottom preview (app **1,405/1/53**). Its narrow update checks the
-approved armed-follow behavior, settled historical context, visible pane/row,
-zero Read and real Escape disarming, retaining the original 13/18-font
-ordinary/narrow geometry cases. This is an intentional contract change, not a
-production correction. Two history/focus fixture failures and a later test
-assertion-style/formatting correction are also preserved. The final full and
-strict reruns passed after these changes. See the
-[phase report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md) for the separate failure
-and proof records. Accepted 0.65.1 results below do not validate this candidate.
+The latest accepted bounded baseline remains **0.65.1**. The source/frame
+diagnostic is separate from the 0.66.0 native observation and does not establish
+that run's exact internal cause. See the
+[phase report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md) and
+[packaged guide](FIND_AND_RETURN.md#continuous-project-text-preview-066-candidate).
 
-The candidate adds explicitly armed continuous preview only to Project Text in
-Find and return and bottom FIND RESULTS. Space / Preview arms the current exact
-surface and result view, immediately previews the first hit and keeps row focus.
-Later real owned selections settle for a fixed **150 ms**, without repaint
-renewal, through one preview Read in flight and one latest candidate. Unarmed
-selection, hover and query typing send zero preview Reads; open drafts supply
-their current bytes without a Read.
+## Preserved 0.66.0 CI, packages and native failure
 
-Text context is bounded to **41 lines / 64 KiB**, clipped on UTF-8 boundaries
-with explicit truncation and a historical-line hint. Past-EOF hints show
-unavailable instead of clamping. Escape, hide/dismiss, query/filter edits, rerun,
-provider/surface or bound document-version changes, navigation and reconnect
-disarm the feature. Reopening cannot automatically rearm, Read or restore late
-focus. Files, ordinary Open/Back and genuine same-row double-click retain their
-contracts. No protocol, service, index, editable preview tab, persistence or Save
-is added. See the [candidate report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md)
-and [packaged guide](FIND_AND_RETURN.md#continuous-project-text-preview-066-candidate).
+Public commit
+[`84d7393f3ace6ef153bed26994f480ccd9bf1abe`](https://github.com/LLLLimbo/cedar-ide/commit/84d7393f3ace6ef153bed26994f480ccd9bf1abe)
+passed all **four jobs** in
+[CI 38382019936](https://github.com/LLLLimbo/cedar-ide/actions/runs/38382019936)
+and all **three exact-source package audits**. Linux recorded **2,122/0/70** and
+Windows **2,060/0/114** (passed/failed/ignored), each across **50 suites**. Strict
+Browse passed **v4, 50 fields / 14 operations**, retaining all **38 prior field
+assertions** and the original **12-operation prefix**.
+
+The bounded Linux native journey **failed**: after bottom FIND RESULTS Down
+selected already-open B160, “Preview requested...” remained visible
+**37.223 seconds** later before quit. Modal continuous follow, ordinary Open/Back,
+dirty selection and Undo/Redo passed; bottom Up and bottom Escape/hide/reopen were
+not run. Startup was **16.444 seconds**; quit began **348.689 seconds after visible
+Connected**, exited **0** after **9.907 seconds**, and the window was absent after
+**10.027 seconds**. Timing, safe cleanup and source/package/fixture integrity
+passed separately from the failed functional gate.
+
+The Linux Java proof's spontaneous-diagnostic wait timed out at **60 seconds**;
+the existing allowed recovery refresh then matched. Java restart cleanup used
+`grace_expired` / **SIGKILL (signal 9)**, so both stops were not graceful. The
+earlier local history/focus fixture failures, first aggregate failure and strict-check
+corrections remain in the [phase report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md).
+None of these 0.66.0 results validates the 0.66.1 correction.
 
 ## Accepted 0.65.1 bounded baseline
 

@@ -1404,7 +1404,12 @@ impl CedarApp {
                 match preview_settlement_remaining(now, settlement.last_seen, settlement.deadline) {
                     None => self.retire_project_text_preview(),
                     Some(remaining) if remaining <= 0.0 => {
-                        self.fulfill_find_preview(settlement.ticket)
+                        self.fulfill_find_preview(settlement.ticket);
+                        // The pane was already painted this frame. Local draft
+                        // and refusal outcomes need a wake to display them.
+                        if self.browse.preview.is_some() {
+                            ctx.request_repaint();
+                        }
                     }
                     Some(remaining) => {
                         ctx.request_repaint_after(std::time::Duration::from_secs_f64(remaining));

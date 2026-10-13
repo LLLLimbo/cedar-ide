@@ -4,10 +4,13 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-The current **0.66 continuous Project Text preview candidate is not yet
-accepted**. Final local focused/aggregate checks, strict Clippy, formatting and
-current-artifact normal-agent proofs passed. Fresh exact CI, packages and native
-validation have not run. The candidate contract is described
+The current **0.66.1 continuous-preview repaint correction candidate is not yet
+accepted**. The preceding 0.66.0 passed exact CI and all three packages, but its
+bounded Linux native bottom preview remained at “Preview requested...” for an
+already-open result and failed. The correction passed independent review and
+local focused/full/strict checks plus current-artifact normal-agent proofs.
+Fresh exact CI, packages and native validation remain pending. The unchanged
+candidate contract is described
 [below](#continuous-project-text-preview-066-candidate); Files keeps its existing
 explicit-preview interaction.
 
@@ -388,9 +391,9 @@ are not part of the 0.62 scoped-search addition.
 
 ## Continuous Project Text preview (0.66 candidate)
 
-This candidate applies only to **Project Text in Find and return** and the
-bottom **FIND RESULTS** tool. It leaves Files preview and search submission
-unchanged. **Space** on an owned current hit or the labelled **Preview** action
+The current 0.66.1 correction candidate preserves this 0.66 contract. It applies
+only to **Project Text in Find and return** and the bottom **FIND RESULTS** tool.
+It leaves Files preview and search submission unchanged. **Space** on an owned current hit or the labelled **Preview** action
 arms only the exact current Text surface and accepted result view. The first
 preview is immediate and keeps result-row focus. Selecting or hovering over a
 result before that explicit action sends **zero preview Reads**; typing a query
@@ -426,7 +429,7 @@ explicit preview even though both views share the retained result snapshot.
 The candidate adds no protocol, backend operation, service, index, editable
 preview tab, cross-session persistence or Save action. Its validation status is
 recorded in the
-[0.66 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md).
+[0.66 / 0.66.1 report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md).
 
 ## Read-only preview and ordinary Open
 

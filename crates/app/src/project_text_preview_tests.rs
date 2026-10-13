@@ -102,6 +102,22 @@ fn fixture(bottom: bool) -> (CedarApp, Receiver<Command>) {
     fixture_with_target_line(bottom, 2)
 }
 fn fixture_with_target_line(bottom: bool, target_line: usize) -> (CedarApp, Receiver<Command>) {
+    fixture_with_target_lines(bottom, target_line, 2)
+}
+fn fixture_with_target_lines(
+    bottom: bool,
+    a_line: usize,
+    b_line: usize,
+) -> (CedarApp, Receiver<Command>) {
+    fixture_with_targets(
+        bottom,
+        [("origin.txt", 2), ("a.txt", a_line), ("b.txt", b_line)],
+    )
+}
+fn fixture_with_targets(
+    bottom: bool,
+    targets: [(&str, usize); 3],
+) -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
     let form = ConnectForm {
         local_root: "/workspace".into(),
@@ -142,11 +158,11 @@ fn fixture_with_target_line(bottom: bool, target_line: usize) -> (CedarApp, Rece
         id: search.id,
         connected: true,
         result: Ok(Payload::Matches {
-            matches: ["origin.txt", "a.txt", "b.txt"]
+            matches: targets
                 .into_iter()
-                .map(|path| SearchMatch {
+                .map(|(path, line)| SearchMatch {
                     path: path.into(),
-                    line: if path == "a.txt" { target_line } else { 2 },
+                    line,
                     text: "needle historical match".into(),
                 })
                 .collect(),
@@ -197,6 +213,444 @@ fn has_text(output: &egui::FullOutput, expected: &str) -> bool {
         .shapes
         .iter()
         .any(|shape| check(&shape.shape, expected))
+}
+
+fn repaint_delay(output: &egui::FullOutput) -> std::time::Duration {
+    output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+}
+
+// Simulate a quiet native event loop: an idle frame must have an emitted wake.
+// Zero-delay wakes advance by one small frame interval; egui can subtract its
+// predicted frame duration from a positive timer, so they must not freeze time.
+fn requested_frame(app: &mut CedarApp, output: &egui::FullOutput) -> Option<egui::FullOutput> {
+    let delay = repaint_delay(output);
+    (delay != std::time::Duration::MAX).then(|| idle(app, delay.as_secs_f64().max(0.01)))
+}
+
+fn drain_requested(app: &mut CedarApp, mut output: egui::FullOutput) -> egui::FullOutput {
+    for _ in 0..100 {
+        let Some(next) = requested_frame(app, &output) else {
+            return output;
+        };
+        output = next;
+    }
+    panic!(
+        "requested frames did not become quiet: causes={:?}, pending_jobs={}",
+        app.editor_ctx.repaint_causes(),
+        app.pending.len()
+    );
+}
+
+fn modified_preview_key(app: &mut CedarApp, key_: egui::Key, shift: bool) {
+    let events = key(key_)
+        .into_iter()
+        .map(|mut event| {
+            if let egui::Event::Key { modifiers, .. } = &mut event {
+                *modifiers = egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    shift,
+                    ..egui::Modifiers::NONE
+                };
+            }
+            event
+        })
+        .collect();
+    frame(app, now(app) + 0.01, events);
+}
+
+fn review_shell_snapshot(app: &CedarApp) -> serde_json::Value {
+    let mut snapshot = crate::browse_tests::normal_shell_snapshot(app);
+    let object = snapshot.as_object_mut().unwrap();
+    object.remove("selected");
+    object.remove("preview");
+    snapshot
+}
+
+fn open_target_repaint_journey(bottom: bool) {
+    let (mut app, commands) = fixture_with_target_lines(false, 150, 160);
+    let source_text = |name: &str| {
+        (1..=190)
+            .map(|line| format!("{name} source line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let a_text = source_text("A");
+    let b_text = source_text("B");
+    let origin_before = crate::browse_tests::normal_shell_snapshot(&app)["documents"][0].clone();
+
+    // Preserve the native prerequisite: preview unopened A and B in the modal,
+    // then use a real same-row double-click to ordinary-Open B, and Back.
+    click(&mut app, "browse_row:1");
+    press(&mut app, egui::Key::Space);
+    let a_preview = read(&commands, "a.txt");
+    reply(&mut app, &a_preview, &a_text);
+    let output = idle(&mut app, 0.01); // The external Read reply wakes the UI.
+    drain_requested(&mut app, output);
+    assert!(app
+        .project_text_preview_context()
+        .unwrap()
+        .note
+        .contains("line 150"));
+    let time = now(&app) + 0.01;
+    let output = frame(&mut app, time, key(egui::Key::ArrowDown));
+    drain_requested(&mut app, output);
+    let b_preview = read(&commands, "b.txt");
+    reply(&mut app, &b_preview, &b_text);
+    let output = idle(&mut app, 0.01);
+    drain_requested(&mut app, output);
+    assert!(app
+        .project_text_preview_context()
+        .unwrap()
+        .note
+        .contains("line 160"));
+    // Native observation separated the earlier A click from B's double-click.
+    // Do not let this compressed fixture turn the latter into a triple-click.
+    idle(&mut app, 0.5);
+    click(&mut app, "browse_row:2");
+    click(&mut app, "browse_row:2");
+    assert!(recorded_response(&app, "browse_row:2").double_clicked_by(egui::PointerButton::Primary));
+    let b_open = read(&commands, "b.txt");
+    assert_ne!(b_open.id, b_preview.id);
+    reply(&mut app, &b_open, &b_text);
+    for _ in 0..3 {
+        idle(&mut app, 0.01);
+    }
+    assert_eq!(app.active().unwrap().path, "b.txt");
+    assert!(!app.active().unwrap().dirty());
+    modified_preview_key(&mut app, egui::Key::OpenBracket, false);
+    for _ in 0..3 {
+        idle(&mut app, 0.01);
+    }
+    assert_eq!(app.active().unwrap().path, "origin.txt");
+    assert_eq!(
+        crate::browse_tests::normal_shell_snapshot(&app)["documents"][0],
+        origin_before,
+        "Back must restore the complete dirty Origin editor state"
+    );
+    modified_preview_key(&mut app, egui::Key::Z, false);
+    assert_eq!(app.active().unwrap().text, SAVED);
+    modified_preview_key(&mut app, egui::Key::Z, true);
+    assert_eq!(app.active().unwrap().text, DRAFT);
+    assert!(app.active().unwrap().dirty());
+    assert_eq!(app.documents.len(), 2);
+    assert!(commands.try_recv().is_err());
+
+    if bottom {
+        click(&mut app, "find_results_entry");
+    } else {
+        modified_preview_key(&mut app, egui::Key::F, true);
+    }
+    for _ in 0..3 {
+        idle(&mut app, 0.01);
+    }
+    click(&mut app, &row_probe(bottom, 1));
+    // Leave no hover tooltip or editor caret animation to supply a coincidental
+    // wake after the measured deadline. Keep the selected row's keyboard focus.
+    let time = now(&app) + 0.01;
+    frame(
+        &mut app,
+        time,
+        vec![egui::Event::PointerMoved(egui::pos2(1.0, 1.0))],
+    );
+    press(&mut app, egui::Key::Space);
+    let a_again = read(&commands, "a.txt");
+    reply(&mut app, &a_again, &a_text);
+    let output = idle(&mut app, 0.01);
+    let quiet = drain_requested(&mut app, output);
+    assert_eq!(repaint_delay(&quiet), std::time::Duration::MAX);
+    assert!(has_text(&quiet, "Historical requested line 150"));
+    assert!(app.project_text_review_armed());
+    let shell_before = review_shell_snapshot(&app);
+
+    let changed = now(&app) + 0.01;
+    let mut output = frame(&mut app, changed, key(egui::Key::ArrowDown));
+    assert_eq!(selected(&app, bottom), Some(2));
+    assert!(app.project_text_review_pending());
+    let ticket = app.find_preview_identity();
+    let row_focus = focus(&app);
+    assert_eq!(
+        row_focus,
+        Some(recorded_response(&app, &row_probe(bottom, 2)).id)
+    );
+    for _ in 0..100 {
+        if !app.project_text_review_pending() {
+            break;
+        }
+        output = requested_frame(&mut app, &output)
+            .expect("pending preview must schedule its fixed deadline");
+    }
+    assert!(!app.project_text_review_pending());
+    assert!(now(&app) >= changed + browse::PROJECT_TEXT_REVIEW_DEBOUNCE_SECONDS);
+    assert!(
+        app.project_text_review_armed(),
+        "the intent must remain eligible"
+    );
+    assert!(app.find_preview_identity() == ticket);
+    assert_eq!(focus(&app), row_focus);
+    assert_eq!(review_shell_snapshot(&app), shell_before);
+    assert!(
+        commands.try_recv().is_err(),
+        "open B must use its current draft without Read"
+    );
+    assert_eq!(
+        if bottom {
+            app.search_preview_text()
+        } else {
+            app.browse_preview_text()
+        },
+        Some(b_text.as_str()),
+        "the deadline must fulfill the open B draft before checking paint"
+    );
+    assert!(app
+        .project_text_preview_context()
+        .unwrap()
+        .text
+        .contains("▶ 160 | B source line 160"));
+    eprintln!(
+        "open_target_repaint bottom={bottom} elapsed={:.9} pending={} armed={} internal_b=true painted_pending={} painted_b={} repaint_delay={:?}",
+        now(&app) - changed,
+        app.project_text_review_pending(),
+        app.project_text_review_armed(),
+        has_text(&output, "Preview requested…"),
+        has_text(&output, "Historical requested line 160"),
+        repaint_delay(&output),
+    );
+    assert_eq!(
+        repaint_delay(&output),
+        std::time::Duration::ZERO,
+        "after-render synchronous fulfillment must request the frame that paints B"
+    );
+    output = requested_frame(&mut app, &output)
+        .expect("a ready open draft needs a requested follow-up paint");
+    assert_eq!(
+        app.editor_ctx
+            .repaint_causes()
+            .iter()
+            .filter(|cause| cause.file.ends_with("/browse.rs"))
+            .count(),
+        1,
+        "one application wake must publish the fulfilled preview"
+    );
+    assert!(has_text(&output, "Historical requested line 160"));
+    assert!(!has_text(&output, "Preview requested…"));
+    // egui itself emits an extra settling repaint for request_repaint(). The
+    // application must consume the settlement once and then become idle again.
+    let mut additional_paints = 0;
+    while let Some(next) = requested_frame(&mut app, &output) {
+        additional_paints += 1;
+        assert!(
+            additional_paints <= 100,
+            "fulfilled preview must become quiet: causes={:?}",
+            app.editor_ctx.repaint_causes()
+        );
+        assert!(
+            !app.editor_ctx
+                .repaint_causes()
+                .iter()
+                .any(|cause| cause.file.ends_with("/browse.rs")),
+            "the application must not renew a fulfilled preview's wake"
+        );
+        if additional_paints == 6 {
+            eprintln!(
+                "open_target_settling bottom={bottom} causes={:?}",
+                app.editor_ctx.repaint_causes()
+            );
+        }
+        output = next;
+        assert!(has_text(&output, "Historical requested line 160"));
+        assert!(!app.project_text_review_pending());
+        assert!(app.find_preview_identity() == ticket);
+    }
+    assert_eq!(repaint_delay(&output), std::time::Duration::MAX);
+    assert!(has_text(&output, "▶ 160 | B source line 160"));
+    let target = recorded_rect(&app, "project_text_context_target");
+    let clip = recorded_clip(&app, "project_text_context_target");
+    assert!(
+        clip.contains(egui::pos2(target.min.x + 1.0, target.center().y)),
+        "the emitted paint must reveal B's historical target marker"
+    );
+    assert_eq!(focus(&app), row_focus);
+    assert_eq!(review_shell_snapshot(&app), shell_before);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn continuous_preview_open_target_repaint_bottom_after_open_back() {
+    open_target_repaint_journey(true);
+}
+
+#[test]
+fn continuous_preview_open_target_repaint_modal_after_open_back() {
+    open_target_repaint_journey(false);
+}
+
+fn quiet_review(app: &mut CedarApp, commands: &Receiver<Command>, bottom: bool) {
+    arm(app, commands, bottom);
+    let time = now(app) + 0.01;
+    let output = frame(
+        app,
+        time,
+        vec![egui::Event::PointerMoved(egui::pos2(1.0, 1.0))],
+    );
+    let quiet = drain_requested(app, output);
+    assert_eq!(repaint_delay(&quiet), std::time::Duration::MAX);
+}
+
+fn drive_to_settlement(app: &mut CedarApp, mut output: egui::FullOutput) -> egui::FullOutput {
+    for _ in 0..100 {
+        if !app.project_text_review_pending() {
+            return output;
+        }
+        output = requested_frame(app, &output).expect("pending preview needs a scheduled wake");
+    }
+    panic!("preview did not settle using its requested frames");
+}
+
+#[test]
+fn continuous_preview_repaint_refusal_and_request_exhaustion() {
+    for bottom in [false, true] {
+        for case in ["invalid-path", "request-zero", "request-max"] {
+            // Legacy Search accepts bounded historical strings. Preview owns
+            // the workspace-relative path guard and must visibly explain it.
+            let target = if case == "invalid-path" {
+                "../refused.txt"
+            } else {
+                "a.txt"
+            };
+            let (mut app, commands) =
+                fixture_with_targets(bottom, [("origin.txt", 2), (target, 2), ("b.txt", 2)]);
+            quiet_review(&mut app, &commands, bottom);
+            if case == "request-zero" {
+                app.next_request = 0;
+            } else if case == "request-max" {
+                app.next_request = u64::MAX;
+            }
+            let shell_before = review_shell_snapshot(&app);
+            let time = now(&app) + 0.01;
+            let output = frame(&mut app, time, key(egui::Key::ArrowDown));
+            let output = drive_to_settlement(&mut app, output);
+            assert!(app.project_text_review_armed());
+            assert!(app.project_text_preview_context().is_none());
+            assert!(commands.try_recv().is_err());
+            assert_eq!(repaint_delay(&output), std::time::Duration::ZERO, "{case}");
+            let output = requested_frame(&mut app, &output).unwrap();
+            assert_eq!(
+                app.editor_ctx
+                    .repaint_causes()
+                    .iter()
+                    .filter(|cause| cause.file.ends_with("/browse.rs"))
+                    .count(),
+                1,
+                "{case} should publish once through its owning branch"
+            );
+            assert!(
+                has_text(
+                    &output,
+                    if case == "invalid-path" {
+                        "Preview is unavailable because this result is not a valid workspace-relative file path."
+                    } else {
+                        "Preview cannot read: the request identity counter is exhausted."
+                    }
+                ),
+                "{case}"
+            );
+            assert!(!has_text(&output, "Preview requested…"));
+            let quiet = drain_requested(&mut app, output);
+            assert_eq!(repaint_delay(&quiet), std::time::Duration::MAX);
+            assert_eq!(review_shell_snapshot(&app), shell_before);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn continuous_preview_repaint_due_escape_and_target_change_retire_intent() {
+    for bottom in [false, true] {
+        for case in ["escape", "target-change"] {
+            let (mut app, commands) = fixture(bottom);
+            app.documents.push(Document::new(
+                2,
+                "a.txt".into(),
+                "first\nopen target".into(),
+                "b".repeat(64),
+            ));
+            quiet_review(&mut app, &commands, bottom);
+            let changed = now(&app) + 0.01;
+            let output = frame(&mut app, changed, key(egui::Key::ArrowDown));
+            assert!(app.project_text_review_pending());
+            assert_ne!(repaint_delay(&output), std::time::Duration::MAX);
+            let events = if case == "escape" {
+                key(egui::Key::Escape)
+            } else {
+                app.documents[1].text.push_str(" newer");
+                app.documents[1].edit_version += 1;
+                vec![]
+            };
+            // This is the already-requested timer wake, with the competing
+            // native Escape edge (or newer document version) at the deadline.
+            let output = frame(&mut app, changed + 0.150, events);
+            assert!(!app.project_text_review_pending());
+            assert!(!app.project_text_review_armed());
+            assert!(app.find_preview_identity().is_none());
+            assert!(app.project_text_preview_context().is_none());
+            assert!(!has_text(&output, "open target"));
+            assert!(commands.try_recv().is_err());
+            let quiet = drain_requested(&mut app, output);
+            assert_eq!(repaint_delay(&quiet), std::time::Duration::MAX);
+            assert!(!has_text(&quiet, "open target"));
+            assert!(app.find_preview_identity().is_none());
+            assert!(commands.try_recv().is_err());
+            assert_eq!(app.documents[0].text, DRAFT);
+            assert_eq!(app.documents[0].saved_text, SAVED);
+        }
+    }
+}
+
+#[test]
+fn continuous_preview_repaint_canceled_late_reply_cannot_restart_preview() {
+    for bottom in [false, true] {
+        for successful in [false, true] {
+            let (mut app, commands) = fixture(bottom);
+            quiet_review(&mut app, &commands, bottom);
+            let time = now(&app) + 0.01;
+            let output = frame(&mut app, time, key(egui::Key::ArrowDown));
+            let output = drive_to_settlement(&mut app, output);
+            let pending = read(&commands, "a.txt");
+            // A disk replacement has no locally fulfilled state to publish.
+            assert_eq!(repaint_delay(&output), std::time::Duration::MAX);
+            let time = now(&app) + 0.01;
+            frame(&mut app, time, key(egui::Key::Escape));
+            assert!(!app.project_text_review_armed());
+            assert!(app.find_preview_identity().is_none());
+            // Cancellation retires UI authority but retains the physical Read
+            // slot and its busy indicator until this reply actually drains it.
+            assert!(app.pending.contains_key(&pending.id));
+            let shell_before = review_shell_snapshot(&app);
+            let row_focus = focus(&app);
+            if successful {
+                reply(&mut app, &pending, "first\nlate target");
+            } else {
+                app.apply_event(Event {
+                    generation: app.generation,
+                    id: pending.id,
+                    connected: true,
+                    result: Err("late read failure".into()),
+                });
+            }
+            let output = idle(&mut app, 0.01); // The reply is an external wake.
+            let quiet = drain_requested(&mut app, output);
+            assert_eq!(repaint_delay(&quiet), std::time::Duration::MAX);
+            assert!(!app.project_text_review_armed());
+            assert!(!app.project_text_review_pending());
+            assert!(app.find_preview_identity().is_none());
+            assert!(!has_text(&quiet, "late target"));
+            assert!(!has_text(&quiet, "late read failure"));
+            assert_eq!(focus(&app), row_focus);
+            assert_eq!(review_shell_snapshot(&app), shell_before);
+            assert!(commands.try_recv().is_err());
+        }
+    }
 }
 
 #[test]

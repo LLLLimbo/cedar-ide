@@ -1,6 +1,6 @@
 # Cedar: project browsing and navigation roadmap
 
-Design decision, 2026-10-12, with delivery status updated for the 0.66 continuous Project Text preview candidate. This roadmap does not itself establish a new release or acceptance.
+Design decision, 2026-10-12, with delivery status updated for the 0.66.1 continuous-preview repaint correction candidate. This roadmap does not itself establish a new release or acceptance.
 
 ## Product decision and baseline
 
@@ -20,10 +20,13 @@ CJK coverage remain unverified. The 0.65.0 native glyph stop and 0.64.0 quit
 initiation **20.436 seconds late**, which failed its strict timing gate, remain
 preserved in the
 [verification report](TEST_REPORT.md#accepted-0651-bounded-baseline).
-**0.66 remains an unaccepted candidate**. Its final local focused/aggregate
-checks, strict Clippy, formatting and current-artifact normal-agent proofs
-passed; fresh exact CI, packages and native validation have not run. Original compatibility and phase decisions
-retain their stated historical reference versions.
+**0.66.1 remains an unaccepted correction candidate**. The preceding 0.66.0
+passed exact CI and all three packages but failed the bounded native bottom B160
+continuous-preview step. An independent actual-frame diagnostic found missing
+repaint after due draft fulfillment on both Text surfaces. The narrow correction
+passed independent review, local focused/full/strict checks and current-artifact
+proofs. Fresh CI, package and native validation remain pending. Original compatibility and phase decisions retain their stated
+historical reference versions.
 
 ### Delivery decision
 
@@ -53,7 +56,7 @@ Use a compact header, left Project tool window, central editor tabs and bottom F
 
 A common navigation entry presents **Files**, **Project Text**, and available **Java Types** providers. Unsupported categories are explained rather than simulated. The first internal Files provider is labelled **Open and loaded files**. Once B1 is available, distinguish **Project files** from the fallback. Empty entry initially shows existing open/recent context; it must not silently trigger a full traversal.
 
-Use IDEA entry points where the corresponding behavior exists: Double Shift for the common entry, Ctrl+Shift+N for Files, Ctrl+Shift+F for Project Text, Alt+1 for Project, and Ctrl+Alt+Left/Right for location history. Ctrl+N or symbol shortcuts must not claim unavailable language providers. Native Tab, Enter, Escape and existing editing shortcuts must remain predictable. Search fields, results, preview and editor need explicit focus transitions; traversing dozens of unrelated controls is not an acceptable primary journey. In the initial explicit-submit contract, Enter in the query submits; Up/Down or a single result click selects; Space or the labelled Preview button requests preview; Enter on a result or a double-click permanently opens it. Hover alone does nothing. Escape from preview returns focus to the selected result; Escape from the entry dismisses it and restores the captured editor focus only while that identity remains current. Late Reads cannot reopen a dismissed view. Explicit preview was the bounded first-slice contract. The 0.66 candidate below adds explicitly armed continuous preview only for the two Text views; it does not claim identical IDEA behavior.
+Use IDEA entry points where the corresponding behavior exists: Double Shift for the common entry, Ctrl+Shift+N for Files, Ctrl+Shift+F for Project Text, Alt+1 for Project, and Ctrl+Alt+Left/Right for location history. Ctrl+N or symbol shortcuts must not claim unavailable language providers. Native Tab, Enter, Escape and existing editing shortcuts must remain predictable. Search fields, results, preview and editor need explicit focus transitions; traversing dozens of unrelated controls is not an acceptable primary journey. In the initial explicit-submit contract, Enter in the query submits; Up/Down or a single result click selects; Space or the labelled Preview button requests preview; Enter on a result or a double-click permanently opens it. Hover alone does nothing. Escape from preview returns focus to the selected result; Escape from the entry dismisses it and restores the captured editor focus only while that identity remains current. Late Reads cannot reopen a dismissed view. Explicit preview was the bounded first-slice contract. The 0.66.1 candidate below retains explicitly armed continuous preview only for the two Text views; it does not claim identical IDEA behavior.
 
 ### Separate presentation from provider authority
 
@@ -122,7 +125,7 @@ connected browsing shell and its narrow Alt+1 companion correction. **0.64.0**
 added Recent Files with bounded functional acceptance and a preserved native
 strict timing failure. **0.65.1** is the latest accepted bounded baseline,
 covering explicit current-file Project selection and the narrow accepted-search
-CJK font trigger. **0.66** is the continuous Text preview candidate below.
+CJK font trigger. **0.66.1** is the continuous Text preview correction candidate below.
 
 ### Recent Files (0.64 bounded functional acceptance)
 
@@ -189,7 +192,7 @@ failed earlier journey. See the
 [packaged guide](FIND_AND_RETURN.md#select-current-file-in-project-0651-bounded-acceptance)
 and [accepted phase report](TEST_REPORT_PHASE65_PROJECT_REVEAL.md).
 
-### Current 0.66 continuous Project Text preview candidate
+### Current 0.66.1 continuous-preview repaint correction candidate
 
 Only **Project Text in Find and return** and bottom **FIND RESULTS** gain
 continuous preview. A current owned **Space / Preview** action arms the exact
@@ -211,13 +214,18 @@ Escape, hide/dismiss, query/filter edits, rerun, provider or surface changes,
 bound document-version changes, navigation and reconnect disarm the feature and
 retire pending intent. Reopening does not rearm or Read; late replies cannot
 reopen a preview or steal focus. No new protocol, service, backend operation,
-index, preview editor tab, persistence or Save is added. Final local focused and
-aggregate checks, strict Clippy and formatting passed. Current-artifact proofs
-passed strict Browse v4 (50 fields / 14 operations, preserving the original
-38 assertions and 12-operation prefix) and retained ten-operation scoped search.
-The canonical release drivers were not run locally; fresh exact CI, packages and
-native validation have not run. Accepted 0.65.1 results do not
-validate this candidate. See the
+index, preview editor tab, persistence or Save is added. The 0.66.1 correction
+requests one repaint after authorized due fulfillment produces visible preview
+state; it preserves this contract. The preceding 0.66.0 passed exact CI and all three packages, with strict
+Browse v4 (50 fields / 14 operations, preserving the original 38 assertions and
+12-operation prefix). Its native modal follow and Open/Back journey passed, but
+bottom B160 remained at “Preview requested...” and the functional gate failed.
+The correction passed independent review, 16 focused Rust tests, the final
+2,127/0/70 Rust aggregate, Python aggregate, strict Clippy and formatting. Its
+current-artifact proofs passed the same strict Browse v4 contract and retained
+ten-operation scoped search. Fresh exact CI, packages and native validation
+remain pending. Accepted 0.65.1 and prior 0.66.0 results do not validate
+this candidate. See the
 [usage contract](FIND_AND_RETURN.md#continuous-project-text-preview-066-candidate)
 and [candidate report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md).
 
@@ -225,7 +233,7 @@ Connected-header **40/48** logical pixels and tools **28/34** title-row minima
 remain local frame checks at **13/18** font sizes, not arbitrary native viewport
 or IDEA pixel guarantees. Tool margins, separator and body add height; wrapping
 or scrolling must preserve reachability. The 0.63.3 accepted bounded journey
-does not validate 0.66 or erase earlier omitted narrow-window observations.
+does not validate 0.66.1 or erase earlier omitted narrow-window observations.
 
 Non-goals for A/B1: new Build/Run/DAP/test-execution features; deleting existing modules; package management; arbitrary Gradle/Maven execution; multi-file refactoring; SSH deployment/credential automation; persistent indexes; complete IDEA plugin compatibility; Windows privacy integration; unrestricted large files; generic Unicode search equivalence; automatic trust; or an unmeasured “faster/lighter than IDEA” claim.
 
