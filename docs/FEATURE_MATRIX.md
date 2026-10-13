@@ -1,8 +1,8 @@
-# 功能矩阵与后续验收 · 0.67 File Structure 候选（待验收）
+# 功能矩阵与后续验收 · 0.67.1 File Structure 菜单候选（待验收）
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-当前 **0.67 File Structure 候选尚未验收**。平台快捷键打开基于当前文件精确大纲快照的弹窗；本地字面量名称筛选保留源顺序、符号类型和已有层级，Enter 或点击跳到精确声明并沿用 Back、脏稿与 Undo 保护。仅使用已有且匹配的运行中语言服务，不自动启动或开启信任。有效缓存可复用；显式请求或 Refresh 沿用现有同步和 documentSymbols 路径，弹窗结果归属与 Language 工具隔离。编辑、切换标签/会话、Stop 或关闭使旧意图失效，晚到响应不能恢复弹窗或焦点。首次普通 agent 模拟运行暴露 Escape 后立即重开的焦点缺陷，两个清理操作通过；窄生产修正已通过 17 项本地实际帧检查、源码审查及 Linux 普通 agent 模拟证明（严格 45 字段/11 操作），第二次夹具完成判定失败也保留；最终 Rust 2,145/0/71（50 套件）、Python 803 项/0 失败/10 跳过（29 套件）、严格检查及保留 Browse/Scoped 证明通过；精确 CI 与三种包仍待完成，当前仅为 CI-first 部分结果，本轮以帧检查和普通 agent 模拟证明为先，不新增真实 JDT 原生或 GUI 信任开启验收，见[指南](FILE_STRUCTURE.md)和[阶段报告](TEST_REPORT_PHASE67_FILE_STRUCTURE.md)。
+当前 **0.67.1 File Structure 菜单候选尚未验收**。新增 **Tools → File Structure…** 可见入口，打开原有当前文件精确大纲弹窗；本地字面量名称筛选、源顺序/类型/层级、精确声明导航、Back、脏稿和 Undo 保护不变。仅使用已有且匹配的运行中 provider，不自动启动或开启 Trust；弹窗请求归属继续与 Language 工具隔离。Ctrl+F12/Cmd+F12 保持不变，不声称修复原生快捷键。原 0.67.0 精确 CI 四项作业、两端各 17 项帧检查、Linux 普通 agent 模拟证明及三种包通过，但首次限定 Linux 原生 Ctrl+F12 操作未出现弹窗。独立完整探针的 520 帧、零丢失、零 F12 按下和一次释放仅限定本次 raw-input hook 的观察，不证明上游拦截或此前发货失败原因。0.67.1 本地 32 项 File Structure 帧检查（17 项保留、15 项菜单）、40 项 workspace-access 检查、Rust 2,160/0/71（50 套件）、Python 803 项/0 失败/10 跳过（29 套件）及严格 Clippy/格式检查通过；当前默认产物的 Structure 45 字段/11 操作、Browse 50/14、Scoped 57/10、Search 57/12 进程证明通过；独立源码/输入审查通过；精确 CI、包及原生菜单路径仍待完成；后续 Trust OFF 原生检查仅能验证不可用入口负向路径，真实符号/JDT 弹窗正向原生路径仍未测量，见[指南](FILE_STRUCTURE.md)和[阶段报告](TEST_REPORT_PHASE67_FILE_STRUCTURE.md)。
 
 最新已限定验收基线为 **0.66.2**，公开提交 [`a0ecbdbe27577ef83a60eee1b8af88edb0c68f35`](https://github.com/LLLLimbo/cedar-ide/commit/a0ecbdbe27577ef83a60eee1b8af88edb0c68f35) 的 [CI 38392603729](https://github.com/LLLLimbo/cedar-ide/actions/runs/38392603729) 四项作业和三种包均通过；两端各 50 套件，Linux 2,128/0/70，Windows 2,066/0/114（通过/失败/忽略），各 17 项连续预览检查、严格 Browse 50 字段/14 操作、Scoped Search 10 操作、Search 12 操作及两端真实 JDT 证明均通过。限定 Linux 原生覆盖两个 Text 视图跟随、先前失败的底部 B160、Open/Back、脏稿与 Undo/Redo、Escape/隐藏/重开，并通过该轮计时检查。0.66.0 原生底部预览失败、0.66.1 Windows 调用者计数失败且未启动原生验证、0.65.0 方框停止及 0.64 严格计时失败均保留；不覆盖 Windows/macOS GUI、真实 SSH、任意视口或广泛 CJK/IME，详见[当前报告](TEST_REPORT.md#accepted-0662-bounded-baseline)。
 
@@ -12,7 +12,7 @@
 |---|---|---|
 | Project 当前文件选择（0.65.1 已限定验收） | 显式 Select Current File in Project；保留 Flat/Tree；单槽，Flat 最多一次已知父目录 List、Tree 最多 32 次祖先 List，固定 30 秒；精确可见行选择 | 精确 CI、三种包、普通 agent 证明及限定 Linux 原生 Tree/Flat、Down/Up、脏稿选区、Undo/Redo、Find 状态保留通过；原生取消未验证；不增加 Read、递归或全项目扫描、自动跟随；Alt+1 保持零请求 |
 | 搜索 CJK 触发（0.65.1 已限定验收） | 当前且通过验证的搜索结果路径/片段触发既有本地 CJK 回退；沿用已知字体位置、单文件 32 MiB 上限与后台加载 | 精确 CI、三种包与限定 Linux 原生 `src/层/Target.rs` 可读检查通过；不保证完整字形覆盖；无下载、安装、新依赖、协议或后端操作；0.65.0 原生提前停止记录保留 |
-| File Structure（0.67 候选） | 当前精确大纲快照弹窗；本地字面量名称筛选；保留源顺序、类型和层级；Enter/点击精确声明后沿用 Back、脏稿与 Undo；仅运行中匹配 provider，缓存复用和显式 Refresh | 17 项本地实际帧检查、源码审查及 Linux 普通 agent 严格 45 字段/11 操作证明通过；前两次运行分别暴露生产立即重开缺陷和夹具完成判定错误，失败保留；最终 Rust/Python 聚合、严格检查及保留 Browse 50 字段/14 操作、Scoped 57 字段/12 用例/10 操作通过；精确 CI 与三种包仍待完成，非完整原生验收，无新增真实 JDT 原生验收；独立弹窗归属，编辑/标签/会话/Stop/关闭及晚到响应保护；平面 SymbolInformation 保留无版本提示和既有 URI 解析；无自动启动、信任开启、继承成员、CamelCase、新解析器/协议/provider 或持久化 |
+| File Structure（0.67.1 菜单候选） | Tools → File Structure… 打开原有精确大纲弹窗；平台快捷键不变；本地字面量名称筛选；保留源顺序、类型和层级；Enter/点击精确声明后沿用 Back、脏稿与 Undo；仅运行中匹配 provider，缓存复用和显式 Refresh | 本地 32 项 File Structure 帧检查、40 项 workspace-access 检查、聚合/严格检查及当前产物 Structure/Browse/Scoped/Search 进程证明通过；独立源码/输入审查通过；精确 CI、三种包及原生菜单入口待验证；原 0.67.0 四项 CI/三种包及各 17 项帧检查通过，但原生 Ctrl+F12 未出现弹窗，失败保留；完整独立探针仅建立 raw-hook 观察边界；不承接为快捷键修复或原生正向验收；旧运行失败与修正保留；无自动启动、Trust 开启、继承成员、CamelCase、新解析器/协议/provider 或持久化 |
 | 连续文本预览（0.66.2 已限定验收） | 仅两个 Text 视图，显式 Space / Preview 启用；首次立即预览并保留行焦点；后续真实选择停稳 150 毫秒，单 Read / 最新候选；最多 41 行 / 64 KiB UTF-8 安全上下文，历史行标记、截断与 EOF 不可用 | 精确双平台 CI、三种包、各 17 项定向检查、严格 Browse v4/50 字段/14 操作及限定 Linux 原生两个 Text 跟随、底部 B160、Open/Back、脏稿/Undo、Escape/隐藏/重开通过；150 毫秒、请求账本与原始 affinity 来自各自确定性/进程证明，不由截图推断；0.66.0 原生失败和 0.66.1 Windows 失败/原生未运行保留；未启用选择、悬停与查询输入零 Read，脏稿来源零 Read；隐藏、Escape、查询/筛选/重跑、provider/视图、文档版本/导航/重连均停用；Files 不变，无预览编辑标签、持久化、Save 或新协议/服务 |
 | Recent Files（0.64 已限定功能验收） | 当前连接内有界路径；本地筛选；Open/Closed 状态；Clear；已有脏稿复用与关闭路径普通重开 | 精确 CI、三种包及必要 Linux 原生功能/完整性检查通过；退出发起晚 20.436 秒导致严格计时失败；不保留文本/光标或跨连接状态；八操作/29 字段 v2 证明通过；首次光标假设失败保留 |
 | 浏览外壳（0.63.3 已限定验收） | 连接后的 Project / 编辑器 / Find 为主要布局；Workspace 与 Tools 保留既有入口；标签带 Back/Forward；Alt+1 保留 Find 并安全处理精确伴随文本；Ctrl/Cmd+J 聚焦有效行或查询并返回编辑器 | 精确 CI、三种包及限定 Linux 原生旅程通过；40/48 逻辑像素头部与 28/34 工具标题行最小高度来自帧检查，外层边距、分隔线与正文另占高度；不保证任意原生视口、Windows/macOS GUI、真实 SSH 或 IDEA 像素等价 |
@@ -55,7 +55,7 @@
 
 ## 历史建议顺序（保留记录）
 
-下列顺序保留先前规划背景，不是 0.67 候选的交付顺序。当前在 0.66.2 已限定验收基线上推进 File Structure 的帧检查与普通 agent 模拟验证，保留既有失败和平台限制，再按[浏览路线](BROWSING_PRODUCT_ROADMAP.md)推进其余搜索深度与语义导航；既有执行与调试模块不因优先级调整而删除。
+下列顺序保留先前规划背景，不是 0.67.1 候选的交付顺序。当前在 0.66.2 已限定验收基线上推进 File Structure 可见菜单入口及其独立验证，保留既有失败和平台限制，再按[浏览路线](BROWSING_PRODUCT_ROADMAP.md)推进其余搜索深度与语义导航；既有执行与调试模块不因优先级调整而删除。
 
 1. 0.10.0显式断线保存核对已通过双平台验证；0.11.0慢连接/只读请求取消已通过原生双平台CI；进程树工作集观测已获得，0.11.1 CPU计时窗口修正也已验证。0.12.0固定两次长观察基线已通过原生验收；后段CPU很低但工作集仍高。0.13.0一次固定GC数值诊断已通过原生验证：G1、末次GC后378MiB/容量512MiB，非最终空闲存活量；生产设置不变。0.14.0带哈希清单和中文入门的Windows开发包已通过原生中文路径解压、信任关闭文件操作及双平台CI；0.14.1补充实际VC++ x64运行库前提。内存/空闲CPU基线应包括完整进程树与JVM，无同项目等价条件不声称优于IDEA。
 2. [Windows Java LSP](WINDOWS_JAVA_SETUP.md)：专用 Java 正常 agent/Client 路径已开放并通过真实语言服务、编辑事务、任务独立性及强制退出清理验证；仍需显式执行信任。通用 Windows LSP 不支持，原生 GUI 与真实 SSH 验证仍单独待完成。0.17为支持完整可选能力的agent增加后台启动/取消；旧agent仍顺序启动。已启动会话的查询与Stop仍可能阻塞，Stop如实报告强制清理。初始化期间文件操作的新路径已通过0.17精确提交原生验收

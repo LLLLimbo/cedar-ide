@@ -21,9 +21,14 @@ remain unverified. Native pixels do not establish the 150 ms interval, request
 counts or raw caret affinities; deterministic and process checks provide their
 own evidence.
 
-The separate [File Structure candidate](FILE_STRUCTURE.md) uses the existing
-current-file language outline for a local member chooser. Its final local checks
-and mock-provider proof passed; exact CI and packages remain pending. It does
+The separate [0.67.1 File Structure menu candidate](FILE_STRUCTURE.md) adds
+**Tools → File Structure…** to the existing current-file language-outline
+chooser. Original 0.67.0 exact CI and packages passed, but its first native
+Ctrl+F12 attempt showed no popup. The visible entry keeps the shortcut and
+provider/Trust boundaries unchanged. Its 32 File Structure frame tests, local
+aggregate/strict checks, current-artifact process proofs and independent
+source/input review passed; exact CI, packages and native menu validation remain
+pending. It does
 not inherit this preview feature’s native acceptance.
 
 ## Recent Files (0.64 bounded functional acceptance)

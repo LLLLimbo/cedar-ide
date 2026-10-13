@@ -101,14 +101,14 @@ fn key(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
         .collect()
 }
 fn frame(app: &mut CedarApp, events: Vec<egui::Event>) {
+    frame_sized(app, events, egui::vec2(1100.0, 850.0));
+}
+fn frame_sized(app: &mut CedarApp, events: Vec<egui::Event>, size: egui::Vec2) {
     let ctx = app.editor_ctx.clone();
     let time = ctx.input(|input| input.time) + 0.05;
     let mut input = egui::RawInput {
         time: Some(time),
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(1100.0, 850.0),
-        )),
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
         events,
         ..Default::default()
     };
@@ -162,6 +162,661 @@ fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
             modifiers: egui::Modifiers::NONE,
         },
     ]
+}
+
+fn tools_menu(app: &mut CedarApp) -> egui::Response {
+    let at = crate::workspace_access_tests::recorded_rect(app, "tools_menu").center();
+    frame(app, pointer(at, true));
+    frame(app, pointer(at, false));
+    settle(app);
+    crate::workspace_access_tests::recorded_response(app, "file_structure_menu")
+}
+
+fn queue_menu(app: &mut CedarApp) {
+    let response = tools_menu(app);
+    assert!(response.enabled());
+    frame(app, pointer(response.rect.center(), true));
+    frame(app, pointer(response.rect.center(), false));
+    assert!(
+        !app.file_structure_open(),
+        "menu intent waits for a native frame"
+    );
+    assert!(app.language.features.file_structure.menu.is_some());
+}
+
+#[test]
+fn file_structure_menu_actual_gesture_defers_once_and_immediate_filter_typing_is_local() {
+    let (mut app, rx) = app();
+    seed(&mut app, symbols());
+    settle(&mut app);
+    let departure = selection(&app);
+    queue_menu(&mut app);
+    frame(&mut app, vec![egui::Event::Text("same".into())]);
+    assert!(app.file_structure_open());
+    assert_eq!(app.file_structure_query(), Some("same"));
+    assert_eq!(app.documents[0].text, SOURCE);
+    assert_eq!(selection(&app), departure);
+    assert!(!app.tools_open);
+    assert!(app.language.view == View::Problems);
+    assert!(app.language.features.file_structure.menu.is_none());
+    frame(&mut app, key(egui::Key::Escape, egui::Modifiers::NONE));
+    settle(&mut app);
+    assert!(!app.file_structure_open());
+    assert_eq!(selection(&app), departure);
+    assert_eq!(
+        app.editor_ctx.memory(|memory| memory.focused()),
+        Some(egui::Id::new(("editor", 1u64)))
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn file_structure_menu_keyboard_enter_and_space_claim_the_owned_activation() {
+    for activation in [egui::Key::Enter, egui::Key::Space] {
+        let (mut app, rx) = app();
+        seed(&mut app, symbols());
+        settle(&mut app);
+        let response = tools_menu(&mut app);
+        app.editor_ctx
+            .memory_mut(|memory| memory.request_focus(response.id));
+        frame(&mut app, vec![]);
+        let mut press = key(activation, egui::Modifiers::NONE);
+        press.pop(); // The native activation remains held across the handoff.
+        if activation == egui::Key::Space {
+            press.push(egui::Event::Text(" ".into()));
+        }
+        frame(&mut app, press);
+        assert!(app.language.features.file_structure.menu.is_some());
+        let mut repeated = key(activation, egui::Modifiers::NONE);
+        repeated.pop();
+        if let egui::Event::Key { repeat, .. } = &mut repeated[0] {
+            *repeat = true;
+        }
+        if activation == egui::Key::Space {
+            repeated.push(egui::Event::Text(" ".into()));
+        }
+        frame(&mut app, repeated);
+        assert!(app.file_structure_open());
+        assert_eq!(app.file_structure_query(), Some(""));
+        frame(
+            &mut app,
+            vec![key(activation, egui::Modifiers::NONE).pop().unwrap()],
+        );
+        frame(&mut app, vec![egui::Event::Text("café".into())]);
+        assert_eq!(app.file_structure_query(), Some("café"));
+        assert_eq!(app.documents[0].text, SOURCE);
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[test]
+fn file_structure_menu_lifecycle_only_ime_preserves_pointer_ownership() {
+    let (mut app, rx) = app();
+    seed(&mut app, symbols());
+    settle(&mut app);
+    let at = tools_menu(&mut app).rect.center();
+    let mut press = vec![egui::Event::Ime(egui::ImeEvent::Enabled)];
+    press.extend(pointer(at, true));
+    frame(&mut app, press);
+    frame(
+        &mut app,
+        vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::Ime(egui::ImeEvent::Disabled),
+        ],
+    );
+    let mut release = vec![
+        egui::Event::Ime(egui::ImeEvent::Enabled),
+        egui::Event::Ime(egui::ImeEvent::Disabled),
+    ];
+    release.extend(pointer(at, false));
+    frame(&mut app, release);
+    assert!(app.language.features.file_structure.menu.is_some());
+    settle(&mut app);
+    assert!(app.file_structure_open());
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn file_structure_menu_mixed_or_composing_pointer_and_foreign_capture_never_open() {
+    for poison in [
+        "text",
+        "paste",
+        "key",
+        "wheel",
+        "preedit",
+        "empty_preedit",
+        "commit",
+        "empty_commit",
+        "prior_composition",
+        "foreign_capture",
+        "poisoned_press",
+    ] {
+        let (mut app, rx) = app();
+        seed(&mut app, symbols());
+        settle(&mut app);
+        let at = tools_menu(&mut app).rect.center();
+        if poison == "prior_composition" {
+            frame(
+                &mut app,
+                vec![egui::Event::Ime(egui::ImeEvent::Preedit("x".into()))],
+            );
+        }
+        let mut press = pointer(
+            if poison == "foreign_capture" {
+                egui::pos2(900.0, 500.0)
+            } else {
+                at
+            },
+            true,
+        );
+        if poison == "poisoned_press" {
+            press.push(egui::Event::Text("x".into()));
+        }
+        frame(&mut app, press);
+        let mut release = pointer(at, false);
+        match poison {
+            "text" => release.push(egui::Event::Text("x".into())),
+            "paste" => release.push(egui::Event::Paste("x".into())),
+            "key" => release.extend(key(egui::Key::ArrowDown, egui::Modifiers::NONE)),
+            "wheel" => release.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 1.0),
+                modifiers: egui::Modifiers::NONE,
+            }),
+            "preedit" => release.push(egui::Event::Ime(egui::ImeEvent::Preedit("x".into()))),
+            "empty_preedit" => {
+                release.push(egui::Event::Ime(egui::ImeEvent::Preedit(String::new())))
+            }
+            "commit" => release.push(egui::Event::Ime(egui::ImeEvent::Commit("x".into()))),
+            "empty_commit" => release.push(egui::Event::Ime(egui::ImeEvent::Commit(String::new()))),
+            "prior_composition" => release.push(egui::Event::Ime(egui::ImeEvent::Disabled)),
+            _ => {}
+        }
+        frame(&mut app, release);
+        settle(&mut app);
+        assert!(!app.file_structure_open(), "{poison}");
+        assert!(
+            app.language.features.file_structure.menu.is_none(),
+            "{poison}"
+        );
+        assert!(rx.try_recv().is_err(), "{poison}");
+    }
+}
+
+#[test]
+fn file_structure_menu_pending_identity_and_missing_raw_expire_without_resurrection() {
+    for change in [
+        "generation",
+        "session",
+        "document",
+        "edit",
+        "navigation",
+        "foreign_modal",
+        "foreign_focus",
+        "navigation_dialog",
+        "dismiss",
+        "escape",
+        "mixed_escape",
+        "new_pointer",
+        "focus_loss",
+        "missing",
+        "skipped",
+    ] {
+        let (mut app, rx) = app();
+        seed(&mut app, symbols());
+        settle(&mut app);
+        queue_menu(&mut app);
+        match change {
+            "generation" => app.generation += 1,
+            "session" => app.language.session += 1,
+            "document" => app.active_document = None,
+            "edit" => app.documents[0].edit_version += 1,
+            "navigation" => app.navigation_epoch += 1,
+            "foreign_modal" => app.confirm = Some(crate::Confirm::CloseWindow),
+            "foreign_focus" => app
+                .editor_ctx
+                .memory_mut(|memory| memory.request_focus(egui::Id::new("foreign focus"))),
+            "navigation_dialog" => app.show_file_chooser(),
+            "dismiss" => app.dismiss_file_structure(),
+            "skipped" => {
+                let ctx = app.editor_ctx.clone();
+                eframe::App::raw_input_hook(&mut app, &ctx, &mut egui::RawInput::default());
+            }
+            _ => {}
+        }
+        if change == "missing" {
+            let ctx = app.editor_ctx.clone();
+            let mut native = eframe::Frame::_new_kittest();
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                eframe::App::update(&mut app, ctx, &mut native)
+            });
+        } else {
+            let events = match change {
+                "escape" => key(egui::Key::Escape, egui::Modifiers::NONE),
+                "mixed_escape" => {
+                    let mut events = key(egui::Key::Escape, egui::Modifiers::NONE);
+                    events.push(egui::Event::Text("x".into()));
+                    events
+                }
+                "new_pointer" => pointer(egui::pos2(900.0, 500.0), true),
+                "focus_loss" => vec![egui::Event::WindowFocused(false)],
+                _ => vec![],
+            };
+            frame(&mut app, events);
+        }
+        assert!(!app.file_structure_open(), "{change}");
+        assert!(
+            app.language.features.file_structure.menu.is_none(),
+            "{change}"
+        );
+        app.confirm = None;
+        app.dismiss_navigation();
+        settle(&mut app);
+        assert!(!app.file_structure_open(), "no resurrection: {change}");
+        assert!(rx.try_recv().is_err(), "{change}");
+    }
+}
+
+#[test]
+fn file_structure_menu_unavailable_trust_off_and_uncached_provider_contracts() {
+    for case in 0..6 {
+        let (mut app, rx) = app();
+        match case {
+            0 => {
+                app.active_form.as_mut().unwrap().allow_run = false;
+                app.language.running = false;
+            }
+            1 => app.language.capabilities = json!({"documentSymbolProvider":false}),
+            2 => app.agent_info = None,
+            3 => app.documents[0].path = "notes.txt".into(),
+            4 => app.active_document = None,
+            _ => {}
+        }
+        settle(&mut app);
+        queue_menu(&mut app);
+        settle(&mut app);
+        assert!(app.file_structure_open());
+        assert!(!app.tools_open);
+        assert!(app.language.view == View::Problems);
+        if case < 5 {
+            assert!(app
+                .language
+                .features
+                .file_structure
+                .popup
+                .as_ref()
+                .unwrap()
+                .error
+                .is_some());
+            assert!(rx.try_recv().is_err());
+            if case == 0 {
+                assert!(!app.active_form.as_ref().unwrap().allow_run);
+                assert!(!app.language.running);
+            }
+        } else {
+            let query = rx.try_recv().unwrap();
+            assert!(matches!(
+                query.op,
+                Operation::LanguageDocumentSymbols { .. }
+            ));
+            reply(&mut app, &query, symbols());
+            assert_eq!(app.file_structure_rows().len(), 4);
+            assert!(rx.try_recv().is_err());
+            assert!(app.language.view == View::Problems);
+        }
+    }
+}
+
+#[test]
+fn file_structure_menu_discarded_passes_wait_for_native_frame_and_request_once() {
+    let (mut app, rx) = app();
+    settle(&mut app);
+    let at = tools_menu(&mut app).rect.center();
+    frame(&mut app, pointer(at, true));
+    let ctx = app.editor_ctx.clone();
+    let mut raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1100.0, 850.0),
+        )),
+        events: pointer(at, false),
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(&mut app, &ctx, &mut raw);
+    let mut native = eframe::Frame::_new_kittest();
+    let mut passes = 0;
+    let output = ctx.run(raw, |ctx| {
+        eframe::App::update(&mut app, ctx, &mut native);
+        assert!(!app.file_structure_open());
+        assert!(app.language.features.file_structure.menu.is_some());
+        assert!(rx.try_recv().is_err());
+        passes += 1;
+        if passes == 1 {
+            ctx.request_discard("menu authority sizing retry");
+        }
+    });
+    assert!(output.platform_output.num_completed_passes >= 2);
+    let mut raw = egui::RawInput::default();
+    eframe::App::raw_input_hook(&mut app, &ctx, &mut raw);
+    let mut serial = None;
+    let mut passes = 0;
+    let output = ctx.run(raw, |ctx| {
+        eframe::App::update(&mut app, ctx, &mut native);
+        assert!(app.file_structure_open());
+        let current = app
+            .language
+            .features
+            .file_structure
+            .popup
+            .as_ref()
+            .unwrap()
+            .serial;
+        if let Some(serial) = serial {
+            assert_eq!(serial, current);
+        } else {
+            serial = Some(current);
+        }
+        passes += 1;
+        if passes == 1 {
+            ctx.request_discard("popup sizing retry");
+        }
+    });
+    assert!(output.platform_output.num_completed_passes >= 2);
+    assert!(matches!(
+        rx.try_recv().unwrap().op,
+        Operation::LanguageDocumentSymbols { .. }
+    ));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn file_structure_menu_press_identity_changes_cannot_be_repaired_by_release() {
+    for change in [
+        "generation",
+        "session",
+        "document",
+        "edit",
+        "navigation",
+        "focus",
+        "missing",
+    ] {
+        let (mut app, rx) = app();
+        seed(&mut app, symbols());
+        settle(&mut app);
+        let at = tools_menu(&mut app).rect.center();
+        frame(&mut app, pointer(at, true));
+        match change {
+            "generation" => app.generation += 1,
+            "session" => app.language.session += 1,
+            "document" => app.active_document = None,
+            "edit" => app.documents[0].edit_version += 1,
+            "navigation" => app.navigation_epoch += 1,
+            "focus" => app
+                .editor_ctx
+                .memory_mut(|memory| memory.request_focus(egui::Id::new("foreign focus"))),
+            _ => {}
+        }
+        if change == "missing" {
+            let ctx = app.editor_ctx.clone();
+            let mut native = eframe::Frame::_new_kittest();
+            let _ = ctx.run(
+                egui::RawInput {
+                    events: pointer(at, false),
+                    ..Default::default()
+                },
+                |ctx| eframe::App::update(&mut app, ctx, &mut native),
+            );
+        } else {
+            frame(&mut app, pointer(at, false));
+        }
+        settle(&mut app);
+        assert!(!app.file_structure_open(), "{change}");
+        assert!(
+            app.language.features.file_structure.menu.is_none(),
+            "{change}"
+        );
+        assert!(rx.try_recv().is_err(), "{change}");
+    }
+}
+
+#[test]
+fn file_structure_menu_prelayout_has_no_live_authority_and_live_layout_stays_centered() {
+    for passes in [1, 2] {
+        let (mut app, rx) = app();
+        seed(&mut app, symbols());
+        app.editor_ctx
+            .options_mut(|options| options.max_passes = passes.try_into().unwrap());
+        settle(&mut app);
+        let departure = selection(&app);
+        let at = tools_menu(&mut app).rect.center();
+        frame(&mut app, pointer(at, true));
+        let focus = app.editor_ctx.memory(|memory| memory.focused());
+        let navigation = app.navigation_epoch;
+        let sequence = app.language.features.sequence;
+        frame(&mut app, pointer(at, false));
+        assert!(!app.file_structure_open());
+        assert!(app
+            .editor_ctx
+            .memory(|memory| memory.top_modal_layer().is_none()));
+        assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), focus);
+        assert_eq!(app.navigation_epoch, navigation);
+        assert_eq!(app.language.features.sequence, sequence);
+        assert_eq!(selection(&app), departure);
+        assert!(rx.try_recv().is_err());
+        frame(&mut app, vec![egui::Event::Text("same".into())]);
+        assert_eq!(app.file_structure_query(), Some("same"));
+        let filter = app
+            .language
+            .features
+            .file_structure
+            .popup
+            .as_ref()
+            .unwrap()
+            .filter;
+        assert_eq!(filter, 1);
+        let first = egui::AreaState::load(&app.editor_ctx, egui::Id::new(MODAL))
+            .unwrap()
+            .rect();
+        frame(&mut app, vec![]);
+        let final_rect = egui::AreaState::load(&app.editor_ctx, egui::Id::new(MODAL))
+            .unwrap()
+            .rect();
+        assert!((final_rect.center() - egui::pos2(550.0, 425.0)).length() <= 1.0);
+        if passes == 2 {
+            assert_eq!(first, final_rect, "discard must settle before presentation");
+        }
+        assert_eq!(app.file_structure_query(), Some("same"));
+        assert_eq!(
+            app.language
+                .features
+                .file_structure
+                .popup
+                .as_ref()
+                .unwrap()
+                .filter,
+            filter
+        );
+        assert_eq!(app.documents[0].text, SOURCE);
+        assert_eq!(selection(&app), departure);
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[test]
+fn file_structure_menu_disabled_and_sizing_response_have_no_admission() {
+    let (mut app, rx) = app();
+    settle(&mut app);
+    let at = tools_menu(&mut app).rect.center();
+    frame(&mut app, pointer(at, true));
+    let ctx = app.editor_ctx.clone();
+    let mut raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1100.0, 850.0),
+        )),
+        events: pointer(at, false),
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(&mut app, &ctx, &mut raw);
+    let mut native = eframe::Frame::_new_kittest();
+    let _ = ctx.run(raw, |ctx| {
+        eframe::App::update(&mut app, ctx, &mut native);
+        let response =
+            crate::workspace_access_tests::recorded_response(&app, "file_structure_menu");
+        assert!(response.clicked());
+        let mut ui = egui::Ui::new(
+            ctx.clone(),
+            egui::Id::new("menu guard test"),
+            egui::UiBuilder::new(),
+        );
+        assert!(
+            crate::workspace_access::claim_menu_activation(&app, &ui, &response),
+            "control proves current native clicked response"
+        );
+        let disabled = ui.new_child(egui::UiBuilder::new().disabled());
+        assert!(!crate::workspace_access::claim_menu_activation(
+            &app, &disabled, &response
+        ));
+        let sizing = ui.new_child(egui::UiBuilder::new().sizing_pass());
+        assert!(!crate::workspace_access::claim_menu_activation(
+            &app, &sizing, &response
+        ));
+    });
+    assert!(!app.file_structure_open());
+    assert!(app.language.features.file_structure.menu.is_some());
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn file_structure_menu_cancelled_prelayout_reopens_with_measured_geometry_and_text() {
+    let (mut app, rx) = app();
+    seed(&mut app, symbols());
+    settle(&mut app);
+    queue_menu(&mut app);
+    frame(&mut app, key(egui::Key::Escape, egui::Modifiers::NONE));
+    assert!(!app.file_structure_open());
+    assert!(app.language.features.file_structure.menu.is_none());
+    queue_menu(&mut app);
+    frame(&mut app, vec![egui::Event::Text("café".into())]);
+    assert_eq!(app.file_structure_query(), Some("café"));
+    let first = egui::AreaState::load(&app.editor_ctx, egui::Id::new(MODAL))
+        .unwrap()
+        .rect();
+    frame(&mut app, vec![]);
+    let next = egui::AreaState::load(&app.editor_ctx, egui::Id::new(MODAL))
+        .unwrap()
+        .rect();
+    assert_eq!(first, next);
+    assert!((first.center() - egui::pos2(550.0, 425.0)).length() <= 1.0);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn file_structure_menu_identity_exhaustion_never_focuses_missing_filter() {
+    let (mut app, rx) = app();
+    settle(&mut app);
+    app.language.features.file_structure.serial = u64::MAX;
+    queue_menu(&mut app);
+    frame(&mut app, vec![]);
+    assert!(!app.file_structure_open());
+    assert!(app.language.features.file_structure.exhausted);
+    assert_ne!(
+        app.editor_ctx.memory(|memory| memory.focused()),
+        Some(egui::Id::new(FILTER))
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn file_structure_menu_cancelled_prelayout_does_not_move_subsequent_shortcut_popup() {
+    let (mut app, rx) = app();
+    seed(&mut app, symbols());
+    settle(&mut app);
+    queue_menu(&mut app);
+    frame(&mut app, key(egui::Key::Escape, egui::Modifiers::NONE));
+    frame(
+        &mut app,
+        key(
+            egui::Key::F12,
+            egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+        ),
+    );
+    assert!(app.file_structure_open());
+    let first = egui::AreaState::load(&app.editor_ctx, egui::Id::new(MODAL))
+        .unwrap()
+        .rect();
+    frame(&mut app, vec![]);
+    let next = egui::AreaState::load(&app.editor_ctx, egui::Id::new(MODAL))
+        .unwrap()
+        .rect();
+    assert_eq!(first, next);
+    assert!((first.center() - egui::pos2(550.0, 425.0)).length() <= 1.0);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn file_structure_menu_first_frame_enter_cannot_activate_an_unpresented_row() {
+    let (mut app, rx) = app();
+    seed(&mut app, symbols());
+    settle(&mut app);
+    let departure = selection(&app);
+    queue_menu(&mut app);
+    frame(&mut app, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert!(app.file_structure_open());
+    assert!(!app.file_structure_activation_pending());
+    assert_eq!(selection(&app), departure);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn file_structure_menu_full_scroll_list_has_stable_narrow_and_ordinary_geometry() {
+    for size in [egui::vec2(480.0, 540.0), egui::vec2(1100.0, 850.0)] {
+        let (mut app, rx) = app();
+        let source_range = range_json(range(SOURCE, "same", false));
+        seed(
+            &mut app,
+            Value::Array(
+                (0..60)
+                    .map(|index| {
+                        json!({
+                            "name": format!("symbol{index:02}"), "kind":6,
+                            "range": source_range, "selectionRange": source_range
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+        for _ in 0..3 {
+            frame_sized(&mut app, vec![], size);
+        }
+        let root = crate::workspace_access_tests::recorded_rect(&app, "tools_menu").center();
+        frame_sized(&mut app, pointer(root, true), size);
+        frame_sized(&mut app, pointer(root, false), size);
+        for _ in 0..3 {
+            frame_sized(&mut app, vec![], size);
+        }
+        let item =
+            crate::workspace_access_tests::recorded_rect(&app, "file_structure_menu").center();
+        frame_sized(&mut app, pointer(item, true), size);
+        frame_sized(&mut app, pointer(item, false), size);
+        assert!(app.language.features.file_structure.menu.is_some());
+        frame_sized(&mut app, vec![egui::Event::Text("symbol".into())], size);
+        assert_eq!(app.file_structure_query(), Some("symbol"));
+        assert_eq!(app.file_structure_rows().len(), 60);
+        let filter = crate::workspace_access_tests::recorded_rect(&app, FILTER);
+        assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(filter));
+        let first = egui::AreaState::load(&app.editor_ctx, egui::Id::new(MODAL))
+            .unwrap()
+            .rect();
+        frame_sized(&mut app, vec![], size);
+        let next = egui::AreaState::load(&app.editor_ctx, egui::Id::new(MODAL))
+            .unwrap()
+            .rect();
+        assert_eq!(first, next, "viewport {size:?}");
+        assert!((first.center() - egui::Pos2::new(size.x / 2.0, size.y / 2.0)).length() <= 1.0);
+        assert!(rx.try_recv().is_err());
+    }
 }
 fn reply(app: &mut CedarApp, command: &Command, value: Value) {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -289,60 +944,67 @@ fn file_structure_actual_frames_pointer_identity_and_mixed_input_guards() {
 
 #[test]
 fn file_structure_actual_frames_dirty_selection_back_and_undo() {
-    let (mut app, rx) = app();
-    settle(&mut app);
-    let dirty = format!("{SOURCE}// dirty\r\n");
-    crate::editor_state::commit(&app.editor_ctx, &mut app.documents[0], dirty.clone(), 3);
-    acknowledge(&mut app);
-    seed(&mut app, symbols());
-    settle(&mut app);
-    let directional = egui::text::CCursorRange {
-        primary: egui::text::CCursor {
-            index: 2,
-            prefer_next_row: false,
-        },
-        secondary: egui::text::CCursor {
-            index: 8,
-            prefer_next_row: true,
-        },
-    };
-    let mut state = crate::editor_state::load(&app.editor_ctx, &mut app.documents[0]);
-    state.cursor.set_char_range(Some(directional));
-    state.store(&app.editor_ctx, egui::Id::new(("editor", 1u64)));
-    let departure = selection(&app);
-    open(&mut app);
-    frame(&mut app, key(egui::Key::End, egui::Modifiers::NONE));
-    frame(&mut app, key(egui::Key::Enter, egui::Modifiers::NONE));
-    settle(&mut app);
-    assert!(app.documents[0].dirty());
-    assert_eq!(app.documents[0].text, dirty);
-    frame(
-        &mut app,
-        key(
-            egui::Key::OpenBracket,
-            egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
-        ),
-    );
-    settle(&mut app);
-    assert_eq!(selection(&app), departure);
-    assert_eq!(
-        selection(&app).primary.prefer_next_row,
-        departure.primary.prefer_next_row
-    );
-    assert_eq!(
-        selection(&app).secondary.prefer_next_row,
-        departure.secondary.prefer_next_row
-    );
-    frame(
-        &mut app,
-        key(
-            egui::Key::Z,
-            egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
-        ),
-    );
-    settle(&mut app);
-    assert_eq!(app.documents[0].text, SOURCE);
-    assert!(rx.try_recv().is_err());
+    for menu in [false, true] {
+        let (mut app, rx) = app();
+        settle(&mut app);
+        let dirty = format!("{SOURCE}// dirty\r\n");
+        crate::editor_state::commit(&app.editor_ctx, &mut app.documents[0], dirty.clone(), 3);
+        acknowledge(&mut app);
+        seed(&mut app, symbols());
+        settle(&mut app);
+        let directional = egui::text::CCursorRange {
+            primary: egui::text::CCursor {
+                index: 2,
+                prefer_next_row: false,
+            },
+            secondary: egui::text::CCursor {
+                index: 8,
+                prefer_next_row: true,
+            },
+        };
+        let mut state = crate::editor_state::load(&app.editor_ctx, &mut app.documents[0]);
+        state.cursor.set_char_range(Some(directional));
+        state.store(&app.editor_ctx, egui::Id::new(("editor", 1u64)));
+        let departure = selection(&app);
+        if menu {
+            queue_menu(&mut app);
+            settle(&mut app);
+        } else {
+            open(&mut app);
+        }
+        frame(&mut app, key(egui::Key::End, egui::Modifiers::NONE));
+        frame(&mut app, key(egui::Key::Enter, egui::Modifiers::NONE));
+        settle(&mut app);
+        assert!(app.documents[0].dirty());
+        assert_eq!(app.documents[0].text, dirty);
+        frame(
+            &mut app,
+            key(
+                egui::Key::OpenBracket,
+                egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+            ),
+        );
+        settle(&mut app);
+        assert_eq!(selection(&app), departure);
+        assert_eq!(
+            selection(&app).primary.prefer_next_row,
+            departure.primary.prefer_next_row
+        );
+        assert_eq!(
+            selection(&app).secondary.prefer_next_row,
+            departure.secondary.prefer_next_row
+        );
+        frame(
+            &mut app,
+            key(
+                egui::Key::Z,
+                egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+            ),
+        );
+        settle(&mut app);
+        assert_eq!(app.documents[0].text, SOURCE);
+        assert!(rx.try_recv().is_err());
+    }
 }
 
 #[test]

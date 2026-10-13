@@ -3,6 +3,7 @@ use super::*;
 
 const MODAL: &str = "file_structure_modal";
 const FILTER: &str = "file_structure_filter";
+const MENU_LAYOUT: &str = "file_structure_menu_layout";
 const MAX_FILTER_CHARS: usize = 256;
 const FLAT_NOTICE: &str = "Flat symbol targets are unversioned and may have changed";
 
@@ -27,12 +28,14 @@ struct Input {
     press: bool,
     release: bool,
     newer: bool,
+    menu_cancel: bool,
 }
 impl Input {
     fn capture(input: &egui::RawInput) -> Self {
         let mut state = Self {
             pointer_clean: input.focused,
             newer: !input.focused,
+            menu_cancel: !input.focused,
             ..Self::default()
         };
         let mut keys = 0;
@@ -48,6 +51,7 @@ impl Input {
                 } => {
                     state.pointer_clean = false;
                     if *pressed {
+                        state.menu_cancel |= *key == egui::Key::Escape;
                         keys += 1;
                         state.newer = true;
                         let invoke = *key == egui::Key::F12
@@ -74,6 +78,7 @@ impl Input {
                     state.pointer_clean &=
                         *button == egui::PointerButton::Primary && modifiers.is_none();
                     if *pressed {
+                        state.menu_cancel = true;
                         state.press = true;
                     } else {
                         state.release = true;
@@ -83,6 +88,7 @@ impl Input {
                 egui::Event::WindowFocused(true)
                 | egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Disabled) => {}
                 _ => {
+                    state.menu_cancel |= matches!(event, egui::Event::WindowFocused(false));
                     key_clean = false;
                     state.pointer_clean = false;
                     state.newer = true;
@@ -116,6 +122,20 @@ struct Popup {
     activation_navigation: u64,
     error: Option<String>,
 }
+
+/// The header renders after the popup slot. Carry authority, never input text,
+/// to exactly the next native frame so the menu click cannot hit popup controls.
+#[derive(Clone, Copy)]
+struct MenuIntent {
+    frame: u64,
+    serial: u64,
+    generation: u64,
+    session: u64,
+    document: Option<(u64, u64)>,
+    navigation: u64,
+    focused: Option<egui::Id>,
+}
+
 #[derive(Default)]
 pub(super) struct State {
     serial: u64,
@@ -126,6 +146,7 @@ pub(super) struct State {
     composing: bool,
     shortcut_frame: Option<u64>,
     window_frame: Option<u64>,
+    menu: Option<MenuIntent>,
     replies: Vec<crate::worker::Event>,
 }
 impl State {
@@ -135,6 +156,7 @@ impl State {
             None => self.exhausted = true,
         }
         self.popup = None;
+        self.menu = None;
     }
 }
 
@@ -379,6 +401,7 @@ impl CedarApp {
     }
     pub(crate) fn dismiss_file_structure(&mut self) {
         let state = &mut self.language.features.file_structure;
+        state.menu = None;
         if state.popup.is_none() {
             return;
         }
@@ -542,7 +565,116 @@ impl CedarApp {
                 .as_ref()
                 .is_some_and(|popup| popup.activation.is_some())
     }
+
+    pub(crate) fn file_structure_menu(&mut self, ui: &mut egui::Ui) {
+        let enabled = !self.file_structure_open()
+            && !self.navigation.dialog_open()
+            && !self.file_structure_foreign_modal();
+        let response = ui
+            .add_enabled(enabled, egui::Button::new("File Structure…"))
+            .on_hover_text("Symbols in the current file · Ctrl/Cmd+F12");
+        #[cfg(test)]
+        crate::workspace_access_tests::record(ui, "file_structure_menu", &response);
+        if !enabled
+            || !self.navigation.input_frame_current(ui.ctx())
+            || !crate::workspace_access::claim_menu_activation(self, ui, &response)
+        {
+            return;
+        }
+        let document = self.active().map(|doc| (doc.id, doc.edit_version));
+        let prelayout = egui::AreaState::load(ui.ctx(), egui::Id::new(MODAL))
+            .is_none_or(|area| area.size.is_none());
+        let state = &mut self.language.features.file_structure;
+        state.menu = Some(MenuIntent {
+            frame: state.frame,
+            serial: state.serial,
+            generation: self.generation,
+            session: self.language.session,
+            document,
+            navigation: self.navigation_epoch,
+            focused: ui.ctx().memory(|memory| memory.focused()),
+        });
+        ui.close_menu();
+        if prelayout {
+            // Only cache an area geometry hint. There is no modal, control,
+            // focus handoff, provider request, or input processing on this frame.
+            // The real popup then gets an enabled first pass for immediate text.
+            egui::Area::new(egui::Id::new(MODAL))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .sense(egui::Sense::hover())
+                .interactable(false)
+                .enabled(false)
+                .show(ui.ctx(), |ui| {
+                    ui.set_invisible();
+                    ui.set_min_size(egui::vec2(
+                        (ui.ctx().screen_rect().width() - 64.0).clamp(240.0, 620.0)
+                            + egui::Frame::popup(ui.style()).total_margin().sum().x,
+                        (ui.ctx().screen_rect().height() - 64.0).max(0.0),
+                    ));
+                });
+            // Geometry belongs to this Context even if the intent/session is
+            // retired. Its first real modal render must measure the full layout.
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(egui::Id::new(MENU_LAYOUT), true));
+        }
+        ui.ctx().request_repaint();
+    }
+
+    fn resolve_file_structure_menu(&mut self, ctx: &egui::Context) -> bool {
+        let Some(intent) = self.language.features.file_structure.menu else {
+            return false;
+        };
+        if !self.navigation.input_frame_current(ctx) {
+            self.language.features.file_structure.menu = None;
+            return false;
+        }
+        if intent.frame == self.language.features.file_structure.frame {
+            return false; // A discarded pass is not a second native frame.
+        }
+        self.language.features.file_structure.menu = None;
+        let state = &self.language.features.file_structure;
+        if intent.frame.checked_add(1) != Some(state.frame)
+            || intent.serial != state.serial
+            || intent.generation != self.generation
+            || intent.session != self.language.session
+            || intent.document != self.active().map(|doc| (doc.id, doc.edit_version))
+            || intent
+                .document
+                .is_some_and(|(_, version)| version == u64::MAX)
+            || intent.navigation != self.navigation_epoch
+            || state.exhausted
+            || state.input.menu_cancel
+            || state
+                .input
+                .focused
+                .is_some_and(|focused| Some(focused) != intent.focused)
+            || ctx.memory(|memory| {
+                memory
+                    .focused()
+                    .is_some_and(|focused| Some(focused) != intent.focused)
+            })
+            || !ctx.input(|input| input.focused)
+            || self.navigation.dialog_open()
+            || self.file_structure_foreign_modal()
+        {
+            return false;
+        }
+        self.show_file_structure();
+        if !self.file_structure_open() {
+            return false;
+        }
+        // Only the accepted menu handoff gets first-render focus before the
+        // TextEdit runs, so immediate typing belongs to the new filter.
+        ctx.memory_mut(|memory| memory.request_focus(egui::Id::new(FILTER)));
+        true
+    }
+
     pub(crate) fn file_structure_window(&mut self, ctx: &egui::Context) {
+        let menu_opened = self.resolve_file_structure_menu(ctx);
+        if self.language.features.file_structure.popup.is_none() {
+            return;
+        }
         if !self.file_structure_context_current() || self.file_structure_foreign_modal() {
             self.dismiss_file_structure();
             return;
@@ -554,6 +686,10 @@ impl CedarApp {
             self.language.features.file_structure.popup = Some(popup);
             return;
         }
+        let menu_layout = ctx
+            .data_mut(|data| data.remove_temp::<bool>(egui::Id::new(MENU_LAYOUT)))
+            .unwrap_or(false)
+            || menu_opened;
         let native_frame = self.navigation.input_frame_current(ctx);
         let state = &mut self.language.features.file_structure;
         let fresh = native_frame && state.window_frame != Some(state.frame);
@@ -826,6 +962,12 @@ impl CedarApp {
                 );
             });
         });
+        if menu_layout {
+            // Input already reached the enabled filter. Retry only layout with
+            // the measured area size; egui drains events itself between passes.
+            ctx.request_discard("File Structure menu layout");
+            ctx.request_repaint();
+        }
         dismiss |= fresh && modal.backdrop_response.clicked() && input.pointer_clean;
         if activate.is_none() {
             activate = captured_enter;

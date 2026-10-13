@@ -509,6 +509,24 @@ fn clean_activation(
     }
 }
 
+/// Admit a rendered menu command through the original native gesture only.
+/// Its caller owns the destination and modal policy, not workspace focus access.
+pub(crate) fn claim_menu_activation(
+    app: &CedarApp,
+    ui: &egui::Ui,
+    response: &egui::Response,
+) -> bool {
+    if !ui.is_enabled()
+        || ui.is_sizing_pass()
+        || !response.enabled()
+        || clean_activation(app, ui.ctx(), response, false).is_none()
+    {
+        return false;
+    }
+    claim_activation(ui.ctx());
+    true
+}
+
 /// winit emits the printable Alt+1 companion after its key press. Unlike
 /// `actionable`, this matcher observes releases: text after release, a repress,
 /// or a reversed/mixed batch is ordinary input, never a shortcut companion.

@@ -1,6 +1,6 @@
 # Public source checkpoint
 
-This is the source-only public export of tested development stage `phase67-0.67.0-file-structure-r2`.
+This is the source-only public export of tested development stage `phase671-0.67.1-file-structure-menu`.
 It is an independent Rust IDE project, not a complete IntelliJ IDEA replacement.
 Public commits preserve the phase-by-phase development sequence, but their hashes
 differ from the private build checkpoints because generated evidence is omitted.

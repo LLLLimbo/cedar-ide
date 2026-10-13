@@ -1,13 +1,21 @@
-# File Structure — 0.67 candidate
+# File Structure — 0.67.1 menu candidate
 
-**0.67 is not yet accepted.** File Structure is a current-file popup over
-Cedar’s existing language-outline snapshot. It offers a local name filter and
-explicit declaration navigation while retaining the editor’s draft and Undo
-history. The corrected frontend passed **17 local actual-frame checks** and a
-Linux normal-agent/mock-provider proof, plus final aggregate/strict checks.
-Exact CI and package audits remain pending. This round includes no new positive
-native JDT or GUI Trust-enabled validation. The accepted 0.66.2 browsing baseline does not validate
-this new feature. See the
+**0.67.1 is not yet accepted.** It adds **Tools → File Structure…** as a visible
+entry to the existing current-file popup, local name filter and declaration
+navigation. The menu uses the same provider, draft, Back and Undo boundaries.
+The existing **Ctrl+F12** on Windows/Linux and **Cmd+F12** on macOS are unchanged;
+this addition does not establish a native shortcut repair.
+
+The original **0.67.0** passed exact dual-platform CI and all three package
+audits, but its first bounded Linux native Ctrl+F12 attempt showed no popup.
+A separate instrumented local probe recorded no F12 press and one release at
+Cedar’s raw-input hook; that observation does not establish an operating-system
+interception or the cause of the earlier shipping result. The 0.67.1 local
+aggregate/strict checks, **32 File Structure frame tests** and current-artifact
+process proofs passed. Independent source/input review passed without blocking
+findings. Exact CI, package audits and the native menu path remain pending. Positive native symbols and a real-JDT popup
+journey remain unmeasured. The latest
+accepted bounded baseline is **0.66.2**. See the
 [phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
 
 ## Provider and request boundary
@@ -32,8 +40,11 @@ explicit controls.
 
 ## Choose a declaration and return
 
-Use **Ctrl+F12** on Windows/Linux or **Cmd+F12** on macOS to open File Structure
-for the active file. The filter matches **case-sensitive literal substrings of
+Choose **Tools → File Structure…** for the active file. The existing
+**Ctrl+F12** on Windows/Linux and **Cmd+F12** on macOS remain available in the
+keymap, with native shortcut delivery still unproven. The visible entry opens
+the same popup and unavailable-provider explanation; it cannot enable Trust or
+start a provider. The filter matches **case-sensitive literal substrings of
 symbol names**, with at most **256 Unicode scalar-value characters**. It does
 not search details, containers or paths, normalize Unicode or change source
 order. Plain **Up/Down** and **Home/End** choose among matching rows; **Tab**
@@ -91,18 +102,34 @@ filename and project-text browsing.
 
 ## Validation boundary
 
-The corrected frontend passed **17 local actual-frame checks**, source review
-and a Linux normal-agent/mock-provider proof with a strict **45-field receipt /
-11 Client operations**. The proof verifies cache/filter/navigation/Back/Undo
-without extra operations, retired cancelled replies, unchanged fixture source
-bytes and owner cleanup. It uses a controlled mock provider. The earlier
-rapid-reopen production failure and later test-completion failure remain in the
-phase report. Final Rust/Python aggregates, strict Clippy and formatting also
-passed. Exact CI and package audits remain pending.
+The original 0.67.0 exact CI passed all four jobs, including all **17 File
+Structure actual-frame checks on each platform**, and all three package audits.
+Its Linux normal-agent/mock-provider proof passed a strict **45-field receipt /
+11 Client operations**, covering cache/filter/navigation/Back/Undo, cancelled
+replies, unchanged fixture bytes and owner cleanup. A controlled mock provider
+and supplied frame input do not establish native event delivery or a positive
+native typed-Java journey. The earlier rapid-reopen production failure and
+later test-completion failure remain in the phase report.
 
-Windows frame execution awaits exact CI. The Linux mock result does not establish
-a new positive Windows typed-Java provider journey. Existing platform language
-checks retain their own scope. A possible later Trust-off native check would
-cover only the unavailable-provider path, not positive structure navigation.
-No full native acceptance, new real-JDT popup acceptance, real SSH, arbitrary
-viewport, broad CJK/IME or IDEA parity is claimed.
+The 0.67.0 Trust-off native entry gate failed when Ctrl+F12 showed no popup.
+The subsequent complete, loss-free instrumented trace covers **520 finished
+frames**, **zero F12 presses** and **one release** at the raw-input hook. It does
+not prove an upstream delivery or interception cause, replay the earlier
+shipping input, or promote the shipping feature to native acceptance.
+
+The separate 0.67.1 local checks passed **32 File Structure actual-frame tests**
+(**17 retained plus 15 menu cases**) and **40 workspace-access tests**. The
+versioned aggregate passed **2,160 Rust tests / zero failures / 71 ignored in
+50 suites** and **803 Python tests / zero failures / ten skipped in 29 suites**,
+plus strict Clippy and formatting. Current default-features artifacts passed
+File Structure **45 fields / 11 operations**, Browse **50 / 14**, Scoped Search
+**57 / ten** and Search **57 / twelve** process proofs. These controlled frame
+and selected-artifact results are separate from the independent source/input
+review, which passed without blocking findings. Exact CI, packages and native
+menu validation remain pending.
+
+Any later Trust-off native observation can validate only opening and dismissing the unavailable
+popup through the menu, with the existing draft/focus protections. It cannot
+validate positive structure navigation, a real-JDT popup or shortcut delivery.
+No full native acceptance, Windows/macOS GUI, real SSH, arbitrary viewport,
+broad CJK/IME or IDEA parity is claimed.

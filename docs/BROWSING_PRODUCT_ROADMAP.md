@@ -1,6 +1,6 @@
 # Cedar: project browsing and navigation roadmap
 
-Design decision, 2026-10-12, with delivery status updated for the accepted 0.66.2 baseline and the 0.67 File Structure candidate. This roadmap does not itself establish a new release or acceptance.
+Design decision, 2026-10-12, with delivery status updated for the accepted 0.66.2 baseline and the 0.67.1 File Structure menu candidate. This roadmap does not itself establish a new release or acceptance.
 
 ## Product decision and baseline
 
@@ -19,12 +19,17 @@ and both JDT proofs were verified. The bounded Linux native journey passed both
 Text follow flows, bottom B160, Open/Back, dirty selection, Undo/Redo and
 Escape/hide/reopen within its timing bounds.
 
-**0.67 File Structure is the next CI-first candidate and is not yet accepted.**
-Its scope is a current-file chooser over the existing exact outline snapshot,
-with local name filtering and declaration/Back navigation. The rapid-reopen
-correction passed 17 local frame checks, the Linux normal-agent/mock proof and
-final local aggregate/strict checks. Exact CI and packages remain pending; no
-new positive native JDT or GUI Trust-enabled result is claimed. The
+**0.67.1 File Structure is the current menu candidate and is not yet accepted.**
+It adds **Tools → File Structure…** to the existing current-file chooser, local
+name filter and declaration/Back navigation. The popup/provider/Trust boundaries
+and Ctrl+F12/Cmd+F12 shortcuts are unchanged. Original 0.67.0 exact CI and all
+three packages passed, but its first bounded Linux native Ctrl+F12 attempt
+showed no popup. New local aggregate/strict checks, 32 File Structure frame
+tests and current-artifact process proofs passed. Independent source/input
+review passed without blocking findings; exact CI, packages and native menu
+validation remain pending. A visible entry does not
+establish a shortcut repair.
+Positive native symbols and real-JDT popup validation remain unmeasured. The
 0.66.0 bottom-preview failure, 0.66.1 Windows caller-count failure and unlaunched
 native check, 0.65.0 glyph stop, and 0.64.0 strict timing failure remain in the
 [verification report](TEST_REPORT.md#accepted-0662-bounded-baseline).
@@ -129,8 +134,9 @@ connected browsing shell and its narrow Alt+1 companion correction. **0.64.0**
 added Recent Files with bounded functional acceptance and a preserved native
 strict timing failure. **0.65.1** accepted explicit current-file Project selection
 and the narrow accepted-search CJK font trigger. **0.66.2** is the latest accepted
-bounded baseline, including continuous Text preview. **0.67** proposes the
-CI-first File Structure slice below, without completing Phase C.
+bounded baseline, including continuous Text preview. **0.67.0** passed exact CI
+and packages but failed its native shortcut entry gate. **0.67.1** adds the
+visible File Structure menu entry below, without completing Phase C.
 
 ### Recent Files (0.64 bounded functional acceptance)
 
@@ -241,10 +247,11 @@ See the
 [usage contract](FIND_AND_RETURN.md#continuous-project-text-preview-0662-bounded-acceptance)
 and [accepted report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md).
 
-### Current 0.67 File Structure candidate
+### Current 0.67.1 File Structure menu candidate
 
-The next slice uses the existing current-file language outline in a dedicated
-popup, with a platform keymap entry, bounded local literal name filtering,
+The current candidate adds **Tools → File Structure…** to the existing
+current-file language-outline popup. It retains the platform keymap entry,
+bounded local literal name filtering,
 source order, symbol kinds and existing hierarchy. Enter or click navigates to
 the exact declaration, preserving the existing Back, dirty-draft and Undo
 contract. Its interaction reference is the
@@ -267,26 +274,39 @@ selectionRange and nesting; flat SymbolInformation remains explicitly
 unversioned, flat and dependent on the existing checked agent URI resolution.
 Do not infer local structure or improve freshness claims from a popup layout.
 
-The round prioritizes positive frame tests and a normal-agent mock proof.
-The corrected frontend passed 17 local actual-frame tests, source review and
-the Linux normal-agent/mock proof with a strict 45-field / 11-operation receipt.
-The first runtime’s rapid-reopen production failure and the second runtime’s
-test-completion failure remain recorded. Final Rust **2,145/0/71 across 50
-suites**, Python **803 total / zero failures / ten skipped across 29 suites**,
-strict Clippy, formatting and retained Browse/Scoped proofs passed. Exact CI
-and package audits remain pending; this is a CI-first partial result. No new
-positive native JDT or GUI Trust-enabled validation is included. A later Trust-off native check, if run,
-could verify only its unavailable-provider path. It would not establish positive
-semantic navigation or full native acceptance. No parser, provider, protocol,
-persistent index, inherited-member query or general IDEA parity is added. See
-[File Structure](FILE_STRUCTURE.md) and the
-[phase report](TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
+Original 0.67.0 passed exact dual-platform CI, all three package audits, all
+17 File Structure frame checks on each platform and the Linux normal-agent/mock
+proof with a strict 45-field / 11-operation receipt. The first local runtime’s
+rapid-reopen production failure and the second runtime’s test-completion failure
+remain recorded. The later shipping native Trust-off journey stopped at its
+first Ctrl+F12 attempt because no popup appeared; its follow-on popup checks
+were not exercised.
+
+A separate complete instrumented local probe recorded 520 finished frames,
+zero dropped records, no F12 press and one release at Cedar’s raw-input hook.
+This establishes only that probe’s raw-hook observation, not an upstream
+interception or the cause of the earlier shipping failure. The 0.67.1 menu
+addition leaves the shortcut unchanged and does not inherit native acceptance.
+Its versioned local aggregate passed **2,160/0/71 across 50 Rust suites**,
+including **32 File Structure frame tests (17 retained plus 15 menu tests)**.
+The 40-test workspace-access set, Python **803 total / zero failures / ten
+skipped across 29 suites**, strict Clippy and formatting passed. Current default
+artifacts passed Structure **45 fields / 11 operations**, Browse **50 / 14**,
+Scoped Search **57 / ten** and Search **57 / twelve** process proofs. Independent
+source/input review passed without blocking findings. Exact CI, package audits
+and native menu entry remain pending.
+A later Trust-off native check can establish only the unavailable
+popup’s negative entry path and existing draft/focus protections. It cannot
+validate positive semantic navigation, a real-JDT popup or native shortcut
+delivery. No parser, provider, protocol, persistent index, inherited-member
+query or general IDEA parity is added. See [File Structure](FILE_STRUCTURE.md)
+and the [phase report](TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
 
 Connected-header **40/48** logical pixels and tools **28/34** title-row minima
 remain local frame checks at **13/18** font sizes, not arbitrary native viewport
 or IDEA pixel guarantees. Tool margins, separator and body add height; wrapping
 or scrolling must preserve reachability. The 0.63.3 accepted bounded journey
-does not validate 0.67 or erase earlier omitted narrow-window observations.
+does not validate 0.67.1 or erase earlier omitted narrow-window observations.
 
 Non-goals for A/B1: new Build/Run/DAP/test-execution features; deleting existing modules; package management; arbitrary Gradle/Maven execution; multi-file refactoring; SSH deployment/credential automation; persistent indexes; complete IDEA plugin compatibility; Windows privacy integration; unrestricted large files; generic Unicode search equivalence; automatic trust; or an unmeasured “faster/lighter than IDEA” claim.
 

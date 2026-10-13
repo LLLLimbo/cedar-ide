@@ -13,17 +13,29 @@ Both Text views passed follow, Open/Back, dirty selection/Undo and
 Escape/hide/reopen checks, including the earlier failed bottom B160 step.
 Earlier failed and omitted checks retain their historical status.
 
-The **0.67 File Structure candidate is not yet accepted**. It adds a current-file
-popup over the existing exact language-outline snapshot, local literal name
-filtering and explicit declaration/Back navigation. It uses only an already
-running matching provider, reuses current cached symbols, and separates popup
-request ownership from the Language tool. It does not start a service or change
-trust. The corrected frontend passed 17 local actual-frame checks, source review
-and the Linux normal-agent/mock proof with a strict 45-field / 11-operation
-receipt. Final aggregate/strict and retained Browse/Scoped proofs passed. Exact
-CI and package audits remain pending; this is a CI-first partial result, with
-both earlier runtime failures preserved in the phase report. No new positive native JDT or GUI
-Trust-enabled validation is claimed. See the
+The **0.67.1 File Structure menu candidate is not yet accepted**. It adds
+**Tools → File Structure…** to the existing current-file popup, local literal
+name filter and declaration/Back navigation. The same running matching provider,
+cache, request ownership, draft and Undo rules apply. Opening the menu entry
+cannot start a service or change Trust. Ctrl+F12/Cmd+F12 are unchanged and no
+native shortcut repair is claimed.
+
+The original 0.67.0 passed all four exact CI jobs and three package audits,
+including 17 actual-frame checks per platform and the Linux normal-agent/mock
+proof with a strict 45-field / 11-operation receipt. Its first bounded Linux
+native Ctrl+F12 attempt showed no popup. A separate complete instrumented probe
+recorded no F12 press and one release at Cedar’s raw-input hook, without proving
+an upstream cause or reconstructing the earlier shipping input. The versioned
+0.67.1 local aggregate passed **2,160/0/71 across 50 Rust suites**, including
+**32 File Structure frame tests (17 retained plus 15 menu tests)**; Python
+**803 total / zero failures / ten skipped across 29 suites**, strict Clippy and
+formatting passed. The 40-test workspace-access focused set and current-default
+Structure **45 fields / 11 operations**, Browse **50 / 14**, Scoped **57 / ten**
+and Search **57 / twelve** process proofs passed. Independent source/input
+review passed without blocking findings. Exact CI, packages and native menu
+validation remain pending. Positive
+native symbols and a real-JDT popup remain unmeasured; a later Trust-off menu
+check would cover only the unavailable-provider path. See the
 [guide](../../docs/FILE_STRUCTURE.md) and
 [phase report](../../docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
 

@@ -2267,6 +2267,8 @@ impl CedarApp {
     }
 
     fn tools_menu(&mut self, ui: &mut egui::Ui) {
+        self.file_structure_menu(ui);
+        ui.separator();
         for (tool, label) in [
             (Tool::Git, "Git Changes"),
             (Tool::Run, "Commands"),

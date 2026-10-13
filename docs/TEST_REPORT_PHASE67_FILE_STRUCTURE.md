@@ -1,20 +1,118 @@
-# 0.67 File Structure — CI-first candidate
+# 0.67 File Structure — original results and 0.67.1 menu candidate
 
-**0.67 is a CI-first candidate, not yet accepted.** Final local checks passed:
-**17 actual-frame tests**, Rust **2,145/0/71 across 50 suites**, Python **803 total
-/ zero failures / ten skipped across 29 suites**, independent source review,
-strict Clippy and formatting. The selected-artifact Linux normal-agent/mock
-proof passed **45 fields / 11 operations**; retained Browse and Scoped Search
-proofs also passed. The two earlier failed runtime attempts remain preserved
-below. Exact CI and three package audits remain pending. No new positive native
-JDT or GUI Trust-enabled validation was run; local results are partial evidence,
-not full native acceptance or IDEA parity.
+## Current 0.67.1 visible-menu candidate
+
+**0.67.1 is not yet accepted.** The bounded addition is **Tools → File
+Structure…**, which opens the existing popup through its existing provider,
+Trust, request, draft and navigation boundaries. The unavailable-provider
+explanation is the same. Ctrl+F12/Cmd+F12 remain unchanged; this is a visible
+entry addition, not an established native shortcut repair. The latest accepted
+bounded baseline remains **0.66.2**.
+
+| 0.67.1 gate | Current status |
+|---|---|
+| Independent source/input review | Passed without blocking findings; reviewed production/test bytes and the version-only changes match the verified candidate. This does not replace the final seal/provenance audit. |
+| Focused and actual-frame checks | **32 File Structure actual-frame tests passed: 17 retained plus 15 menu tests.** The workspace-access focused set passed **40 tests**. The versioned full aggregate repeats all 32 File Structure checks. |
+| Aggregate and strict checks | Versioned 0.67.1 Rust: **2,160 passed / zero failed / 71 ignored across 50 suites**. Python: **803 total / zero failures / ten skipped across 29 suites**. Strict workspace/all-target/all-feature Clippy with warnings denied and formatting passed. |
+| Current selected-artifact process proofs | File Structure **45 fields / 11 operations**, Browse **50 / 14**, Scoped Search **57 / ten**, and Search **57 / twelve** passed on the current default-features app and matching normal agent. |
+| Documentation and offline guide closure | Three current packaged-guide closure tests passed; all 162 local Markdown targets in the nine edited guides/reports resolve, and the documentation whitespace check passed. These are documentation checks only. |
+| Exact dual-platform CI and three package audits | Pending for the final candidate revision. |
+| Trust-off native menu entry | Pending. A later check covers only the unavailable-provider entry and existing draft/focus protections. |
+| Positive native symbols / real-JDT popup | Unmeasured. A Trust-off negative-path result cannot establish either. |
+| Native Ctrl+F12 delivery or repair | Unproven; shortcut code is unchanged. |
+
+### Verified 0.67.1 local scope
+
+The final versioned workspace aggregate uses all targets and all features.
+The 15 new menu actual-frame cases cover owned pointer and keyboard entry,
+lifecycle-only IME companions, mixed/composing input and foreign-capture refusal,
+context changes, disabled/sizing controls, stale or missing input, one-time
+opening/request behavior, immediate filter typing, cancelled layout preparation,
+and ordinary/narrow popup geometry. The 17 earlier File Structure checks remain
+passing. These are supplied-input frame tests, not native GUI observations.
+
+The explicit File Structure process test remains ignored in the aggregate and
+passed separately with the current default-features app, matching normal agent
+and controlled mock language server. Its strict **45-field / 11-operation**
+receipt verifies the retained popup/provider contract. The retained Browse,
+Scoped Search and Search process proofs also passed with those current default
+artifacts. The canonical compile drivers were not run locally; these selected
+artifact executions do not replace exact CI, built-package audits or native
+menu checks. Positive native symbols, a real-JDT popup and Windows-provider
+journeys remain unmeasured.
+
+### Preserved 0.67.1 development failures
+
+Four earlier local attempts remain failed. The first could not compile because
+a new test called a private helper. The first running menu test then expected
+immediate filter text but observed an empty filter. A subsequent cancelled-menu
+preparation test failed its first-versus-next shortcut-popup geometry assertion;
+a later focused run failed a further geometry equality assertion. The final
+candidate retains the immediate-typing and exact geometry checks and passes
+all 32 File Structure frame tests. These development observations do not explain
+the original shipping native Ctrl+F12 failure or demonstrate native event
+delivery.
+
+## Original 0.67.0 exact CI and package results
+
+Public commit
+[`212f885d59eeddcb2f12628e0b9eb45991271dca`](https://github.com/LLLLimbo/cedar-ide/commit/212f885d59eeddcb2f12628e0b9eb45991271dca)
+passed all **four jobs** in
+[CI 38410333307](https://github.com/LLLLimbo/cedar-ide/actions/runs/38410333307)
+and all **three package audits**. Linux recorded **2,145 passed / zero failed /
+71 ignored**, Windows **2,083 / zero / 114**, with **50 suites and all 17 File
+Structure actual-frame checks per platform**. The Linux normal-agent/mock
+proof passed **45 fields / 11 operations**. Retained Browse **50 fields / 14
+operations**, Scoped Search **57 fields / ten operations**, Search **twelve
+operations**, and existing platform/JDT checks passed within their established
+scopes. These are original-source results; none establishes native popup
+acceptance or validates the 0.67.1 menu addition.
+
+### Preserved shipping native entry failure
+
+The bounded Linux native Trust-off journey stopped at its first Ctrl+F12
+attempt because no File Structure popup was visible. Its unavailable-provider
+explanation, filter, immediate reopen, Escape restoration and Undo/Redo cases
+were not demonstrated. This failed entry gate remains unchanged. The captured
+input request and screenshots do not prove whether the key press reached Cedar
+or was intercepted upstream.
+
+### Separate local diagnostic evidence
+
+A separate test-only extension retained the original shipping production source
+and passed **20 supplied-input frame tests**: the original 17 plus three
+Trust-off diagnostics. Clean and lifecycle-only supplied inputs opened the
+unavailable popup; composition inputs were refused under the existing rules.
+These tests do not replay the original native input or prove native delivery.
+
+The later instrumented local observer probe completed **520 raw frames and 520
+updates**, with **zero dropped records**, **zero F12 presses** and **one release**
+at Cedar’s raw-input hook. Its independent source, build, privacy and native
+evidence audits passed. The hook is before input filtering, so the complete
+record establishes only that no F12 press reached that hook during this probe.
+It does not establish an operating-system interception, any other upstream
+cause, or the historical cause of the earlier shipping attempt. The local
+observer build is separate from the shipping artifact. Neither diagnostic
+promotes native acceptance or demonstrates positive symbol navigation, a
+real-JDT popup, Windows GUI behavior or descendant-process cleanup.
+
+## Preserved original 0.67.0 local verification summary
+
+Final original-source local checks passed: **17 actual-frame tests**, Rust
+**2,145/0/71 across 50 suites**, Python **803 total / zero failures / ten skipped
+across 29 suites**, independent source review, strict Clippy and formatting.
+The selected-artifact Linux normal-agent/mock proof passed **45 fields / 11
+operations**; retained Browse and Scoped Search proofs also passed. The two
+earlier failed runtime attempts remain preserved below. The later exact CI,
+packages and failed native entry are recorded above. No positive native JDT or
+GUI Trust-enabled popup validation was run.
 
 ## Bounded feature contract
 
 File Structure presents the existing exact outline snapshot in a dedicated
-current-file popup. The slice provides **Ctrl+F12** on Windows/Linux and
-**Cmd+F12** on macOS, a case-sensitive literal symbol-name filter bounded to
+current-file popup. The 0.67.1 candidate adds **Tools → File Structure…** beside
+the unchanged **Ctrl+F12** on Windows/Linux and **Cmd+F12** on macOS. The popup
+retains a case-sensitive literal symbol-name filter bounded to
 **256 Unicode scalar values**, source order, kind and hierarchy display, and exact
 Enter/click declaration navigation followed by ordinary Back. It preserves
 dirty text and Undo/Redo. Its usage and limitations are in
@@ -30,22 +128,22 @@ focus. Flat SymbolInformation remains unversioned and uses existing checked
 agent URI resolution. No inherited members, CamelCase, parser, provider,
 protocol, persistence or automatic trust/startup is added.
 
-## Evidence required for this round
+## Preserved original 0.67.0 evidence gates
 
 | Gate | Status and evidence boundary |
 |---|---|
 | Source review | Independent review passed for the narrow rapid-reopen correction. It changes admission from the popup’s own modal and clears obsolete editor-focus restoration, preserving foreign-modal refusal. |
-| Focused and actual-frame checks | **17 local actual-frame tests passed after correction**, including immediate Escape/reopen/text input without settling frames, unchanged editor bytes, foreign-modal refusal and pending-activation completion. This is local frame evidence, not Windows or native GUI evidence. |
+| Focused and actual-frame checks | **17 local actual-frame tests passed after correction**, including immediate Escape/reopen/text input without settling frames, unchanged editor bytes, foreign-modal refusal and pending-activation completion. These local checks were later repeated in exact CI on both platforms; none is native GUI evidence. |
 | Linux normal-agent/mock-provider proof | **Third runtime passed:** strict **45-field** receipt and exact **11 operations**, nine active plus two cleanup. The two earlier failed attempts remain separate below. |
-| Windows new positive coverage | Windows frame execution awaits exact CI. No new positive Windows typed-Java provider journey is measured; the Linux mock proof cannot establish one. Generic Windows LSP remains unsupported. |
+| Windows new positive coverage | All 17 File Structure frame checks passed in exact Windows CI. No new positive Windows typed-Java popup journey was measured; the Linux mock proof cannot establish one. Generic Windows LSP remains unsupported. |
 | Aggregate and strict checks | Final same-source Rust: **2,145 passed / zero failed / 71 ignored across 50 suites**. Python: **803 total tests, zero failures, ten skipped across 29 suites**, including all ten new proof-driver cases. Strict Clippy and formatting passed. |
 | Retained selected-artifact proofs | Browse passed **50 fields / 14 operations**. Scoped Search passed **57 fields / 12 cases / ten operations**. These are local current-artifact results, separate from exact CI. |
-| Exact dual-platform CI | Pending. Verify the final source revision, all required jobs and retained platform/JDT checks. |
-| Three package audits | Pending. The new guide is in all three source inventories; current recursive packaged-guide closure checks passed separately, without a release build or exact-package audit. |
+| Exact dual-platform CI | All four original-source jobs passed, including retained platform/JDT checks; see the exact commit and run above. |
+| Three package audits | All three original-source package audits passed. The new guide and recursive packaged-guide closure were verified; these results do not validate 0.67.1 packages. |
 | Positive native File Structure / real JDT | Not run in this round. No native-positive acceptance follows from frame or mock results. |
-| Trust-off native unavailable path | Not run. A later negative-path observation would not validate positive semantic navigation. |
+| Trust-off native unavailable path | Failed entry gate: the first Ctrl+F12 attempt showed no popup; the unavailable explanation and subsequent popup cases were unexercised. |
 
-## Final local verification
+## Preserved final original-source local verification
 
 The final same-source Rust aggregate passed **2,145/0/71 across 50 suites**,
 including all **17 File Structure actual-frame tests**. The normal-agent test
@@ -137,8 +235,8 @@ agent reaping and fixture removal passed. This is the ordinary Client/agent
 route with a controlled mock provider, not a positive native or real-JDT popup
 journey. The local run used the current selected default-features app, matching
 normal agent and compiled mock artifacts. The canonical compile driver’s local
-coverage is Python-mocked; that full compile path was not run locally, and exact
-CI remains a separate pending gate.
+coverage was Python-mocked; that full compile path was not run locally. The
+later exact CI result is a separate gate recorded above.
 
 ### Normal-agent proof contract
 
@@ -156,7 +254,7 @@ existing workflow; it does not add a fifth job. Existing platform language and
 JDT checks keep their established scope. The new popup still lacks positive
 native/JDT and Windows typed-provider evidence.
 
-## Documentation checks
+## Preserved original documentation checks
 
 The existing current-guide closure check passed for each of the Windows,
 Linux agent and Linux desktop bundles using Python’s `-B` option: **three tests,
