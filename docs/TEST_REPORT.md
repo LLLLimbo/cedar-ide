@@ -1,8 +1,38 @@
-# Verification checkpoint — 0.66.1 continuous-preview repaint correction candidate
+# Verification checkpoint — 0.66.2 test-caller portability candidate
 
-## Current 0.66.1 correction candidate
+## Current 0.66.2 correction candidate
 
-**0.66.1 is not yet accepted.** It contains a narrow repaint correction for
+**0.66.2 is not yet accepted.** It changes the test-only application-repaint
+caller helper to recognize the exact `browse.rs` basename with slash or backslash
+separators on any host. The original exact count assertions and old-production
+negative control remain required. The 0.66.1 production repaint implementation
+is byte-for-byte unchanged. Independent review, **17/17 focused checks**, the
+full Rust aggregate (**2,128/0/70 across 50 suites**) and Python aggregate
+(**793 total / zero failures / 10 skipped across 28 suites**), strict Clippy and
+formatting passed. Both negative controls retained their intended failures.
+The current Cargo-JSON-selected app and matching default-features normal agent
+passed strict Browse **v4, 50 fields / 14 operations** with all 38 prior
+assertions and the 12-operation prefix, plus retained scoped search **ten
+operations**. The canonical release drivers were not run locally. Fresh exact
+CI, all three package audits and bounded native validation remain pending.
+
+Public 0.66.1 commit
+[`f972998b212889a6cb8d2e900e2c077a9c3af165`](https://github.com/LLLLimbo/cedar-ide/commit/f972998b212889a6cb8d2e900e2c077a9c3af165)
+failed three new Windows repaint tests in
+[CI 38388794011](https://github.com/LLLLimbo/cedar-ide/actions/runs/38388794011):
+the caller count was zero instead of one despite a zero-delay due-frame repaint
+and valid internal B160 preview state. The raw cause filename was not logged;
+a separator mismatch in the `/browse.rs` suffix filter is a source-level
+hypothesis. No Windows-fix claim is made before new CI. Linux passed
+**2,127/0/70 across 50 suites**, its runtime proofs and both package audits.
+Windows stopped with an observed **1,421/3/57 prefix across eight suites**;
+its release/runtime proofs and package were absent. The dependent Java signature
+matrix was entirely skipped, including both producer jobs. **0.66.1 native
+validation was never launched**; it remained held at the Windows CI gate.
+
+## Preserved 0.66.1 local correction checks
+
+The unaccepted 0.66.1 candidate contains a narrow repaint correction for
 continuous Project Text preview. A controlled actual-frame diagnostic found that
 both Text surfaces could fulfill a due preview from an open draft after painting
 the pending state without requesting another frame. The correction requests
@@ -16,7 +46,7 @@ The final Cargo-JSON-selected current app and matching default-features normal
 agent passed strict Browse **v4, 50 fields / 14 operations**, retaining all
 38 prior field assertions and the 12-operation prefix, plus retained scoped
 search **ten operations**. The canonical release drivers were not run locally;
-new exact CI, package and native validation have not run. A stale version
+these local passes did not override the later Windows CI failure. A stale version
 expectation in process fixtures stopped the first scoped-search attempt; narrow
 version maintenance and the final full/strict/runtime reruns passed before
 sealing.
@@ -52,7 +82,7 @@ the existing allowed recovery refresh then matched. Java restart cleanup used
 `grace_expired` / **SIGKILL (signal 9)**, so both stops were not graceful. The
 earlier local history/focus fixture failures, first aggregate failure and strict-check
 corrections remain in the [phase report](TEST_REPORT_PHASE66_CONTINUOUS_PREVIEW.md).
-None of these 0.66.0 results validates the 0.66.1 correction.
+None of these 0.66.0 results validates either correction candidate.
 
 ## Accepted 0.65.1 bounded baseline
 

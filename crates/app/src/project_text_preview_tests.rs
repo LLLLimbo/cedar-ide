@@ -219,6 +219,90 @@ fn repaint_delay(output: &egui::FullOutput) -> std::time::Duration {
     output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
 }
 
+fn repaint_cause_is_browse(file: &str) -> bool {
+    // RepaintCause keeps Location::caller().file() verbatim. Match either host's
+    // source-path separators without accepting a longer or lookalike basename.
+    file.rsplit(['/', '\\']).next() == Some("browse.rs")
+}
+
+#[test]
+fn repaint_caller_basename_is_portable_and_exact() {
+    for file in [
+        "crates/app/src/browse.rs",
+        "/checkout/crates/app/src/browse.rs",
+        r"crates\app\src\browse.rs",
+        r"C:\checkout\crates\app\src\browse.rs",
+        "browse.rs",
+        r"crates/app\src/browse.rs",
+        r"crates\app/src\browse.rs",
+    ] {
+        assert!(repaint_cause_is_browse(file), "synthetic case: {file}");
+    }
+    for file in [
+        "",
+        "src/",
+        "src\\",
+        "src/not_browse.rs",
+        r"src\not_browse.rs",
+        "src/browse.rs.bak",
+        r"src\browse.rs.bak",
+        "src/Browse.rs",
+        "src/browse_rs",
+        "src/browse.rs/other.rs",
+        r"src\browse.rs\other.rs",
+        "other.rs",
+        "src/browse.rs/",
+        "src/browse.rs\\",
+    ] {
+        assert!(!repaint_cause_is_browse(file), "synthetic case: {file}");
+    }
+    for (files, expected) in [
+        (vec!["src/not_browse.rs", r"src\browse.rs.bak"], 0),
+        (vec!["src/browse.rs", r"src\other.rs"], 1),
+        (vec![r"src\browse.rs", "src/other.rs"], 1),
+        (vec!["src/browse.rs", r"src\browse.rs"], 2),
+    ] {
+        assert_eq!(
+            files
+                .into_iter()
+                .filter(|file| repaint_cause_is_browse(file))
+                .count(),
+            expected,
+            "each matching caller must count separately"
+        );
+    }
+}
+
+fn repaint_cause_diagnostics(app: &CedarApp, output: &egui::FullOutput) -> String {
+    let causes = app.editor_ctx.repaint_causes();
+    // A fixed 3-by-4 histogram exposes caller classification without logging
+    // source paths, line numbers, or free-form reasons. Causes describe the
+    // previous egui pass, so include this frame's pass count to expose multipass.
+    let mut categories = [[0_usize; 4]; 3];
+    for cause in &causes {
+        let basename = if repaint_cause_is_browse(cause.file) {
+            0
+        } else if cause.file.rsplit(['/', '\\']).next() == Some("") {
+            1
+        } else {
+            2
+        };
+        let separator = match (cause.file.contains('/'), cause.file.contains('\\')) {
+            (false, false) => 0,
+            (true, false) => 1,
+            (false, true) => 2,
+            (true, true) => 3,
+        };
+        categories[basename][separator] += 1;
+    }
+    format!(
+        "count={} num_completed_passes={} repaint_delay={:?} basename_rows=[browse.rs,empty,other] separator_columns=[none,forward,backslash,mixed] categories={categories:?}",
+        causes.len(),
+        output.platform_output.num_completed_passes,
+        repaint_delay(output),
+    )
+}
+
 // Simulate a quiet native event loop: an idle frame must have an emitted wake.
 // Zero-delay wakes advance by one small frame interval; egui can subtract its
 // predicted frame duration from a positive timer, so they must not freeze time.
@@ -235,8 +319,8 @@ fn drain_requested(app: &mut CedarApp, mut output: egui::FullOutput) -> egui::Fu
         output = next;
     }
     panic!(
-        "requested frames did not become quiet: causes={:?}, pending_jobs={}",
-        app.editor_ctx.repaint_causes(),
+        "requested frames did not become quiet: {}, pending_jobs={}",
+        repaint_cause_diagnostics(app, &output),
         app.pending.len()
     );
 }
@@ -419,7 +503,8 @@ fn open_target_repaint_journey(bottom: bool) {
     assert_eq!(
         repaint_delay(&output),
         std::time::Duration::ZERO,
-        "after-render synchronous fulfillment must request the frame that paints B"
+        "after-render synchronous fulfillment must request the frame that paints B: {}",
+        repaint_cause_diagnostics(&app, &output)
     );
     output = requested_frame(&mut app, &output)
         .expect("a ready open draft needs a requested follow-up paint");
@@ -427,10 +512,11 @@ fn open_target_repaint_journey(bottom: bool) {
         app.editor_ctx
             .repaint_causes()
             .iter()
-            .filter(|cause| cause.file.ends_with("/browse.rs"))
+            .filter(|cause| repaint_cause_is_browse(cause.file))
             .count(),
         1,
-        "one application wake must publish the fulfilled preview"
+        "one application wake must publish the fulfilled preview: {}",
+        repaint_cause_diagnostics(&app, &output)
     );
     assert!(has_text(&output, "Historical requested line 160"));
     assert!(!has_text(&output, "Preview requested…"));
@@ -441,20 +527,21 @@ fn open_target_repaint_journey(bottom: bool) {
         additional_paints += 1;
         assert!(
             additional_paints <= 100,
-            "fulfilled preview must become quiet: causes={:?}",
-            app.editor_ctx.repaint_causes()
+            "fulfilled preview must become quiet: {}",
+            repaint_cause_diagnostics(&app, &next)
         );
         assert!(
             !app.editor_ctx
                 .repaint_causes()
                 .iter()
-                .any(|cause| cause.file.ends_with("/browse.rs")),
-            "the application must not renew a fulfilled preview's wake"
+                .any(|cause| repaint_cause_is_browse(cause.file)),
+            "the application must not renew a fulfilled preview's wake: {}",
+            repaint_cause_diagnostics(&app, &next)
         );
         if additional_paints == 6 {
             eprintln!(
-                "open_target_settling bottom={bottom} causes={:?}",
-                app.editor_ctx.repaint_causes()
+                "open_target_settling bottom={bottom} {}",
+                repaint_cause_diagnostics(&app, &next)
             );
         }
         output = next;
@@ -533,16 +620,22 @@ fn continuous_preview_repaint_refusal_and_request_exhaustion() {
             assert!(app.project_text_review_armed());
             assert!(app.project_text_preview_context().is_none());
             assert!(commands.try_recv().is_err());
-            assert_eq!(repaint_delay(&output), std::time::Duration::ZERO, "{case}");
+            assert_eq!(
+                repaint_delay(&output),
+                std::time::Duration::ZERO,
+                "{case}: {}",
+                repaint_cause_diagnostics(&app, &output)
+            );
             let output = requested_frame(&mut app, &output).unwrap();
             assert_eq!(
                 app.editor_ctx
                     .repaint_causes()
                     .iter()
-                    .filter(|cause| cause.file.ends_with("/browse.rs"))
+                    .filter(|cause| repaint_cause_is_browse(cause.file))
                     .count(),
                 1,
-                "{case} should publish once through its owning branch"
+                "{case} should publish once through its owning branch: {}",
+                repaint_cause_diagnostics(&app, &output)
             );
             assert!(
                 has_text(

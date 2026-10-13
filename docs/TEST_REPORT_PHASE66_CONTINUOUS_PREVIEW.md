@@ -1,15 +1,93 @@
-# 0.66 continuous Project Text preview and 0.66.1 repaint correction
+# 0.66 continuous Project Text preview and repaint correction history
 
-## Current 0.66.1 correction candidate
+## Current 0.66.2 test-caller portability candidate
 
-**0.66.1 is not yet accepted.** It contains a narrow repaint correction after the
-0.66.0 native failure below. Independent review, focused and full local checks,
-strict Clippy, formatting and current-artifact proofs passed. Fresh 0.66.1 exact
-CI, packages and native validation have not run. The latest accepted
-bounded baseline remains
+**0.66.2 is not yet accepted.** It corrects only the test helper that identifies
+application repaint callers, plus version and documentation maintenance. The
+0.66.1 production repaint implementation is byte-for-byte unchanged. Independent
+review, focused and full local checks, strict Clippy, formatting and
+current-artifact proofs passed. Fresh exact CI, packages and native validation
+remain pending. The latest accepted bounded baseline remains
 [0.65.1](TEST_REPORT_PHASE65_PROJECT_REVEAL.md#accepted-0651-bounded-baseline).
 The 0.65.0 native glyph stop and 0.64.0 strict native timing failure remain
-preserved in their reports. None of those prior results validates this change.
+preserved in their reports. None of those prior results validates this candidate.
+
+The test-only helper recognizes an exact `browse.rs` basename with either slash
+or backslash path separators, independently of the host platform. It must not
+accept a different filename merely containing that text. Synthetic cases cover
+relative, absolute, bare and mixed-separator names, reject near matches, and
+retain separate counts for multiple matching callers. The original exact
+application-repaint count assertions and the old-production negative control
+remain required; platform portability does not relax them. Bounded diagnostics
+report a fixed basename/separator histogram and completed-pass count without raw
+caller paths. No production behavior, repaint timing, deadline, dependency or
+backend operation changes.
+
+The current focused Rust checks passed **17/17**, including the retained 16
+preview cases and the portable exact-basename test. The old slash-only predicate
+failed a controlled Windows-style path case as intended. With the corrected
+tests and exact old 0.66.0 production code, both Text surfaces still failed the
+missing-wake assertion: internal B160 was ready while the painted state remained
+pending, with no scheduled repaint instead of the required zero-delay repaint.
+The current production and test bytes were restored before the positive run.
+These negative controls establish test sensitivity, not a real Windows pass.
+
+The current workspace/all-target/all-feature/locked Rust aggregate passed
+**2,128 tests / zero failures / 70 ignored across 50 suites**. The Python
+aggregate passed **793 total tests / zero failures / 10 skipped across 28 suites**.
+Independent review confirmed the test-only scope and production-byte equivalence.
+Strict workspace/all-target/all-feature Clippy with warnings denied and formatting
+passed.
+
+The current Cargo-JSON-selected app and matching default-features normal agent
+passed strict Browse **v4, exactly 50 fields / 14 operations**, retaining all
+**38 prior field assertions** and the original **12-operation ledger prefix**.
+The retained scoped-search proof passed its strict **ten-operation** validator.
+The canonical release compile/acceptance drivers were **not run locally**;
+these current-artifact proofs do not replace fresh exact CI, package or native
+gates.
+
+All three current packaged-guide link-closure checks passed with Python's `-B`
+option: Windows bundle, Linux agent bundle and Linux desktop bundle. They validate
+nested local-link targets without building packages or establishing app/native
+behavior. The documentation diff passed `git diff --check`.
+
+## Preserved 0.66.1 CI failure and partial package results
+
+Public commit
+[`f972998b212889a6cb8d2e900e2c077a9c3af165`](https://github.com/LLLLimbo/cedar-ide/commit/f972998b212889a6cb8d2e900e2c077a9c3af165)
+ran in
+[CI 38388794011](https://github.com/LLLLimbo/cedar-ide/actions/runs/38388794011).
+Three new Windows repaint tests failed because the application-caller count was
+**zero instead of one**, despite a zero-delay due-frame repaint and valid
+internal B160 preview state. The raw repaint-cause filename was not logged.
+The source-level explanation is a path-separator mismatch between the test's
+hard-coded `/browse.rs` suffix and the platform path in pinned egui's
+`Location.file`; this remains a hypothesis, not a runtime-confirmed root cause.
+The 0.66.2 helper must be checked by fresh Windows CI before any Windows-fix claim.
+
+The Linux aggregate passed **2,127/0/70 across 50 suites** (passed/failed/ignored),
+including all **16 preview tests**. Strict Browse passed **50 fields / 14
+operations**, retained proofs passed, and both Linux packages were verified.
+The Windows app suite recorded **1,411 passed / three failed / 57 ignored**;
+the observed aggregate prefix was **1,421/3/57 across eight suites**, not a
+complete Windows aggregate. Preview coverage was **13 passed / three failed**.
+Windows release/runtime proofs and its package were absent. The dependent Java
+signature matrix was entirely skipped; neither platform producer job executed.
+
+The Linux Java proof matched a spontaneous diagnostic without recovery. Its
+restart cleanup used `grace_expired` / **SIGKILL (signal 9)** under the existing
+cleanup predicate, so that restart was not graceful. This does not replace the
+skipped signature-matrix producers.
+
+**No 0.66.1 native run was launched.** It remained held at the Windows CI gate.
+The two Linux package results and earlier local passes do not override that gate.
+
+## Preserved 0.66.1 local repaint correction checks
+
+The 0.66.1 correction followed the 0.66.0 native failure below. Independent
+review, focused and full local checks, strict Clippy, formatting and
+current-artifact proofs passed locally; those results do not validate 0.66.2.
 
 A separate controlled actual-frame diagnostic reproduced a missing repaint on
 both Text surfaces. At the accepted 150 ms settlement deadline, fulfillment from
@@ -72,7 +150,7 @@ Linux **2,122 passed / zero failed / 70 ignored** and Windows **2,060 passed /
 zero failed / 114 ignored**. Strict Browse retained **version 4, exactly 50
 fields / 14 operations**, including all **38 prior field assertions** and the
 original **12-operation ledger prefix**. These results belong to 0.66.0 and do
-not validate the 0.66.1 correction.
+not validate either correction candidate.
 
 The bounded Linux native journey **failed its essential functional gate**.
 In bottom FIND RESULTS, Down selected the already-open `src/层/B.rs` historical
@@ -103,7 +181,7 @@ stop was graceful; restart cleanup used `grace_expired` / **SIGKILL (signal 9)**
 Satisfying the cleanup predicate does not mean both Java stops were graceful.
 
 The preparation results below belong to **0.66.0**. They preserve earlier failed
-attempts and do not establish acceptance of either candidate.
+attempts and do not establish acceptance of the later candidates.
 
 ## Candidate contract
 
@@ -215,13 +293,15 @@ current-artifact Browse/scoped-search proof recheck after those edits all passed
 The final aggregate again recorded **2,122/0/70 across 50 suites**. The earlier
 failed strict check and aggregate remain in the record.
 
-## Remaining 0.66.1 validation
+## Remaining 0.66.2 validation
 
-Independent review, focused and full local checks, strict Clippy, formatting and
-current-artifact proofs passed. Fresh exact CI, all three package audits and
-bounded native validation remain pending. The passed 0.66.0 CI/package results and
-failed native journey above remain historical evidence. Neither they nor the
-accepted 0.65.1 receipts can be relabelled as 0.66.1 evidence.
+Independent review, focused Rust checks, both negative controls, full
+Rust/Python aggregates, strict Clippy, formatting and current-artifact proofs
+passed. Fresh exact CI, all three package audits and bounded native validation
+remain pending. The 0.66.1 Windows failure and never-launched native check, and
+the passed 0.66.0 CI/package results with failed native journey, remain historical
+evidence. Neither they nor the accepted 0.65.1 receipts can be relabelled as
+0.66.2 evidence.
 
 Native evidence must be bound to the new exact package and limited to observed
 journeys. Windows/macOS GUI, real SSH, arbitrary viewports, broad CJK/IME coverage,
