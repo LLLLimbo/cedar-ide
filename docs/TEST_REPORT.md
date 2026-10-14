@@ -1,6 +1,15 @@
 # Verification checkpoint — 0.71.1 narrow CI repair candidate
 
-## Current 0.71.1 narrow CI repair candidate
+## Current 0.71.1 candidate 2
+
+The [candidate 2 report](TEST_REPORT_PHASE711_CANDIDATE2.md) records the sole
+license-test canonical-path oracle correction. Fresh Python verification is
+811 passed plus ten skipped across 30 suites. All Rust/proof inputs are unchanged;
+prior local and successful candidate 1 Linux CI evidence is reused explicitly
+across commits, not presented as a new execution. Candidate 2 CI, three-package
+acceptance and new GUI verification remain pending.
+
+## Prior 0.71.1 candidate 1
 
 Exact-source 0.71.0 [CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38507906311)
 failed Windows export-byte tests and one Linux compact-editor layout test;

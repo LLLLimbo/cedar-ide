@@ -1,5 +1,7 @@
 # 0.71.1 narrow CI repair — verification candidate
 
+> Subsequent CI outcome: candidate 1 Linux passed, but Windows failed the license-collector test's short-name/canonical-name cwd oracle after public export passed. See [candidate 2](TEST_REPORT_PHASE711_CANDIDATE2.md). This historical report is not a release acceptance.
+
 ## Failed baseline and scope
 
 The immutable 0.71.0 public commit

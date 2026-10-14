@@ -15,8 +15,20 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class LicenseCollectionTests(unittest.TestCase):
     def test_regeneration_keeps_dependency_fixture_and_font_notices(self):
+        self.regeneration_case(alias_entry=False)
+
+    def test_noncanonical_script_entry_keeps_exact_canonical_cargo_root(self):
+        self.regeneration_case(alias_entry=True)
+
+    def regeneration_case(self, alias_entry):
         with tempfile.TemporaryDirectory(prefix='cedar-notice-test-') as directory:
             root = Path(directory)
+            expected_root = root.resolve()
+            if alias_entry:
+                (root / 'route').mkdir()
+                root = root / 'route' / '..'
+                self.assertNotEqual(root, expected_root)
+                self.assertEqual(root.resolve(), expected_root)
             (root / 'scripts').mkdir()
             script = root / 'scripts/collect_licenses.py'
             shutil.copyfile(ROOT / 'scripts/collect_licenses.py', script)
@@ -24,6 +36,7 @@ class LicenseCollectionTests(unittest.TestCase):
             fonts.mkdir(parents=True)
             for name in ['manifest.json', 'Inter-LICENSE.txt', 'JetBrainsMono-OFL.txt']:
                 shutil.copyfile(ROOT / 'crates/app/assets/fonts' / name, fonts / name)
+            font_bytes = {path.name: path.read_bytes() for path in fonts.iterdir()}
             dependency = root / 'dependency'
             dependency.mkdir()
             (dependency / 'LICENSE').write_text('Synthetic dependency license\n')
@@ -34,14 +47,16 @@ class LicenseCollectionTests(unittest.TestCase):
                  'repository': 'https://example.invalid/dependency'},
             ]}
             previous = None
+            previous_bytes = None
             for _ in range(2):
                 stdout = io.StringIO()
                 with mock.patch('subprocess.check_output', return_value=json.dumps(metadata).encode()) as cargo:
                     with contextlib.redirect_stdout(stdout):
                         runpy.run_path(str(script), run_name='__main__')
                 cargo.assert_called_once_with(
-                    ['cargo', 'metadata', '--format-version', '1', '--locked', '--offline'], cwd=root)
+                    ['cargo', 'metadata', '--format-version', '1', '--locked', '--offline'], cwd=expected_root)
                 self.assertIn('Collected notices for 1 locked packages', stdout.getvalue())
+                notice_bytes = (root / 'THIRD_PARTY_NOTICES.md').read_bytes()
                 text = (root / 'THIRD_PARTY_NOTICES.md').read_text()
                 self.assertIn('| synthetic-dependency | 1.0 | MIT |', text)
                 self.assertEqual(text.count('## Apache Maven Surefire report fixture'), 1)
@@ -52,7 +67,12 @@ class LicenseCollectionTests(unittest.TestCase):
                     self.assertIn(license_text, text)
                 if previous is not None:
                     self.assertEqual(previous, text)
+                    self.assertEqual(previous_bytes, notice_bytes)
                 previous = text
+                previous_bytes = notice_bytes
+                self.assertEqual({path.name: path.read_bytes() for path in fonts.iterdir()}, font_bytes)
+                self.assertEqual((root / 'third-party-licenses/synthetic-dependency-1.0/LICENSE').read_bytes(),
+                                 (dependency / 'LICENSE').read_bytes())
                 self.assertEqual((root / 'third-party-licenses/synthetic-dependency-1.0/LICENSE').read_text(),
                                  'Synthetic dependency license\n')
 
