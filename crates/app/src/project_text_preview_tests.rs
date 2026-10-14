@@ -1349,3 +1349,68 @@ fn continuous_preview_target_reveals_once_and_wheel_or_new_focus_cancels_late_re
         }
     }
 }
+
+#[test]
+fn continuous_preview_modal_hide_keeps_physical_flight_and_rejects_late_reply() {
+    for failed in [false, true] {
+        let (mut app, commands) = fixture(false);
+        let before = review_shell_snapshot(&app);
+        arm(&mut app, &commands, false);
+        press(&mut app, egui::Key::ArrowDown);
+        idle(&mut app, 0.151);
+        let pending = read(&commands, "a.txt");
+        idle(&mut app, 0.001);
+        assert!(app.browse.busy());
+        click(&mut app, "browse_hide_preview");
+        idle(&mut app, 0.001);
+        assert!(!app.project_text_review_armed());
+        assert!(!app.project_text_review_pending());
+        assert!(!app.browse.preview_visible());
+        assert!(app.browse.busy(), "Hide must retain the physical Read slot");
+        assert_eq!(selected(&app, false), Some(1));
+        assert_eq!(
+            focus(&app),
+            Some(recorded_response(&app, "browse_row:1").id)
+        );
+        assert_eq!(review_shell_snapshot(&app), before);
+        assert!(commands.try_recv().is_err());
+        if failed {
+            app.apply_event(Event {
+                generation: app.generation,
+                id: pending.id,
+                connected: true,
+                result: Err("late hidden preview failure".into()),
+            });
+        } else {
+            reply(&mut app, &pending, "old\nlate hidden preview bytes");
+        }
+        idle(&mut app, 0.2);
+        assert!(!app.browse.busy());
+        assert!(!app.project_text_review_armed());
+        assert!(!app.project_text_review_pending());
+        assert!(!app.browse.preview_visible());
+        assert!(app.project_text_preview_context().is_none());
+        assert_ne!(
+            app.browse.preview_message(),
+            Some("late hidden preview failure")
+        );
+        assert_eq!(selected(&app, false), Some(1));
+        assert_eq!(
+            focus(&app),
+            Some(recorded_response(&app, "browse_row:1").id)
+        );
+        assert_eq!(review_shell_snapshot(&app), before);
+        assert!(
+            commands.try_recv().is_err(),
+            "late hidden reply must not revive review"
+        );
+        press(&mut app, egui::Key::Escape);
+        assert!(!app.browse_marker_open());
+        app.show_browse(browse::Provider::ProjectText);
+        for _ in 0..3 {
+            idle(&mut app, 0.01);
+        }
+        assert!(!app.project_text_review_armed());
+        assert!(commands.try_recv().is_err());
+    }
+}

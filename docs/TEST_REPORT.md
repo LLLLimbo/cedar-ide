@@ -1,6 +1,20 @@
-# Verification checkpoint — 0.72.0 Files layout candidate
+# Verification checkpoint — 0.73.0 Project Text layout candidate
 
-## Current 0.72.0 Files layout candidate
+## Current 0.73.0 Project Text layout candidate
+
+The [phase 73 report](TEST_REPORT_PHASE73_TEXT_LAYOUT.md) records the Text-only
+presentation scope, fixed status/footer and bottom read-only preview, exact
+matching-line/file wording, independent review corrections, and the earlier
+0.72.0-versioned development candidate's bounded Linux native comparison.
+That candidate passed 194 focused checks with one existing ignored process test;
+21 native captures and a normal rc0/470.633-second Connected run passed complete
+postflight. Those images do not certify the final 0.73.0 binaries or measure
+pending/loading/150 ms timing. Final-version full local validation and shipping
+artifacts require separately source-bound receipts; external CI, packages and
+any final shipping smoke remain distinct. No anticipated gate result is asserted
+by this source report. Historical results below keep their original attribution.
+
+## Prior 0.72.0 Files layout candidate
 
 The [phase 72 report](TEST_REPORT_PHASE72_FILES_LAYOUT.md) separates the accepted
 bounded Linux Files visual baseline from final-version local gates and the still

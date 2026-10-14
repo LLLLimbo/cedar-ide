@@ -4,9 +4,9 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-The **0.72.0 Files layout candidate** changes only the Files presentation described
-[below](#files-layout-072-candidate); its version-specific gates are separate from
-the retained behavioral baseline.
+The **0.73.0 Project Text layout candidate** changes the Text presentation described
+[below](#project-text-layout-073-candidate). The earlier Files layout and retained
+behavioral contracts remain separate from version-specific validation.
 
 The accepted search-as-you-type behavioral baseline is **0.69.0**;
 its complete [offline interaction contract](#files-search-as-you-type-069-bounded-acceptance)
@@ -40,6 +40,33 @@ symbols, real-JDT popup behavior and native Ctrl+F12 remain unmeasured. The
 0.67.0 native shortcut-entry failure and independent raw-hook observation are
 preserved in the
 [phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
+
+## Project Text layout (0.73 candidate)
+
+Find in Files is the Project Text provider, with explicit Enter/Find submission
+and case-sensitive literal disk matching. Directory and File masks retain the
+existing exact scope and semicolon-mask rules. It adds no regex, Words, Replace,
+indexing or implicit content reads.
+
+When preview is unarmed or hidden, grouped results occupy the full width.
+Basenames are primary, parent paths are muted, and original full Unicode paths
+remain the action identities. The summary counts matching lines and exact-path
+file groups, not repeated literal occurrences within one line. Previous results
+stay visibly inactive after edits until an explicit fresh search succeeds.
+
+Preview/Space explicitly arms read-only context below the results. Selection
+following, Hide/Escape, physical Read retirement, dirty drafts and return history
+keep their existing behavior. The current status headline is fixed; longer
+historical, error and scan details scroll in a bounded area with vertical slack.
+Header, status and footer do not change height with the number of results.
+Closing and reopening retains query, accepted results and selection; it does not
+silently replace them with an empty state or rearm a hidden preview.
+
+Production-frame checks cover normal 1178x814 and minimum 780x540 at 13/18 points;
+700x480 is resilience only. The actual normal-window development comparison used
+an earlier 0.72.0-versioned pair, not the final 0.73.0 executable. See the
+[phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE73_TEXT_LAYOUT.md)
+for exact provenance and unverified native/CI/platform boundaries.
 
 ## Files layout (0.72 candidate)
 

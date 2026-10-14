@@ -3314,7 +3314,6 @@ fn browse_retained_native_tab_and_geometry_at_standard_and_narrow_sizes() {
                 "browse_preview",
                 "browse_open",
                 "browse_close",
-                "browse_preview_content",
             ] {
                 let rect = recorded_rect(&app, probe);
                 assert!(rect.is_finite() && rect.is_positive());
@@ -3327,6 +3326,39 @@ fn browse_retained_native_tab_and_geometry_at_standard_and_narrow_sizes() {
                     "font {font}, size {size:?}: {probe} clipped: {rect:?}"
                 );
             }
+            let (_, viewport): (egui::Id, egui::Rect) = app
+                .editor_ctx
+                .data(|data| data.get_temp(egui::Id::new(("project_text_context_scroll", false))))
+                .expect("production Text preview viewport");
+            let content = recorded_rect(&app, "browse_preview_content");
+            let clip = recorded_clip(&app, "browse_preview_content");
+            assert!(
+                viewport.is_finite()
+                    && viewport.is_positive()
+                    && screen.contains_rect(viewport)
+                    && clip.contains_rect(viewport)
+            );
+            assert!(
+                content.intersects(viewport),
+                "readonly context must intersect its viewport"
+            );
+            let code_font = egui::TextStyle::Monospace.resolve(&app.editor_ctx.style());
+            let (line_height, marker_width) = app.editor_ctx.fonts(|fonts| {
+                let line =
+                    fonts.layout_no_wrap("▶ 2 | needle second".into(), code_font.clone(), MUTED);
+                let marker = fonts.layout_no_wrap("▶".into(), code_font, MUTED);
+                (line.size().y, marker.size().x)
+            });
+            assert!(viewport.height() >= 3.0 * line_height,
+                "font={font}, size={size:?}: preview must expose three complete code lines: {viewport:?}/{line_height}");
+            let target = recorded_rect(&app, "project_text_context_target");
+            assert!(
+                viewport.contains_rect(egui::Rect::from_min_max(
+                    target.min,
+                    egui::pos2(target.left() + marker_width, target.bottom())
+                )),
+                "font={font}, size={size:?}: complete historical target marker must remain visible"
+            );
             frame_at_size(&mut app, size, key(egui::Key::Escape));
             assert_eq!(
                 focused(&app),
@@ -7574,4 +7606,1389 @@ fn files_compact_native_reverse_tab_hides_preview_and_restores_dirty_result() {
     compact_settle(&mut app, size);
     assert!(!app.browse_marker_open());
     assert_draft(&app, departure, &undo);
+}
+
+// Text probes retain scalar geometry only. In particular, none of these values
+// owns an egui Response/Context, and every production frame replaces the tuple.
+pub(super) fn record_text_status_scroll(
+    ctx: &egui::Context,
+    id: egui::Id,
+    rect: egui::Rect,
+    content: egui::Vec2,
+) {
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new("text_status_scroll_probe"),
+            (id, rect, content),
+        )
+    });
+}
+
+// Read native interaction flags before egui end_pass swaps widget maps.
+// read_response after run can prefer the previous this_pass map on transitions.
+fn text_observed_frame(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    dt: f64,
+    events: Vec<egui::Event>,
+    mut observe: impl FnMut(&CedarApp),
+) -> egui::FullOutput {
+    let ctx = app.editor_ctx.clone();
+    let mut input = egui::RawInput {
+        time: Some(ctx.input(|input| input.time) + dt),
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let mut native = eframe::Frame::_new_kittest();
+    ctx.run(input, |ctx| {
+        eframe::App::update(app, ctx, &mut native);
+        observe(app);
+    })
+}
+
+fn text_compact_enter(app: &mut CedarApp, size: egui::Vec2) -> egui::FullOutput {
+    let mut output = compact_frame(
+        app,
+        size,
+        0.001,
+        modified_key(
+            egui::Key::F,
+            egui::Modifiers {
+                shift: true,
+                ..command_modifiers()
+            },
+        ),
+    );
+    if !app
+        .editor_ctx
+        .data(|data| data.get_temp::<bool>(egui::Id::new("text_surface_visible_probe")))
+        .unwrap()
+    {
+        output = compact_frame(app, size, 0.001, vec![]);
+    }
+    assert!(
+        app.editor_ctx
+            .data(|data| { data.get_temp::<bool>(egui::Id::new("text_surface_visible_probe")) })
+            .unwrap(),
+        "inspect the first visible pass after native Area sizing"
+    );
+    assert_eq!(
+        focused(app),
+        Some(recorded_response(app, "browse_query").id)
+    );
+    output
+}
+
+fn text_rect(app: &CedarApp, key: &str) -> egui::Rect {
+    app.editor_ctx
+        .data(|data| data.get_temp(egui::Id::new(key)))
+        .unwrap_or_else(|| panic!("missing Text rectangle probe {key}"))
+}
+fn text_preview_rect(app: &CedarApp) -> Option<egui::Rect> {
+    app.editor_ctx
+        .data(|data| data.get_temp(egui::Id::new("text_preview_rect_probe")))
+        .expect("Text preview allocation must be explicitly recorded, including None")
+}
+fn text_controls_and_clip(app: &CedarApp, stage: &str) -> [egui::Rect; 3] {
+    let screen = app.editor_ctx.screen_rect();
+    let surface = text_rect(app, "text_surface_rect_probe");
+    let body = text_rect(app, "text_body_rect_probe");
+    assert!(
+        surface.is_finite() && surface.is_positive() && screen.contains_rect(surface),
+        "{stage}: surface {surface:?} outside {screen:?}"
+    );
+    assert!(
+        body.is_finite() && body.is_positive() && surface.contains_rect(body),
+        "{stage}: body {body:?} outside {surface:?}"
+    );
+    for probe in [
+        "browse_query",
+        "browse_text_scope",
+        "browse_masks",
+        "browse_submit",
+        "browse_preview",
+        "browse_open",
+        "browse_close",
+    ] {
+        let rect = recorded_rect(app, probe);
+        let clip = recorded_clip(app, probe);
+        assert!(
+            rect.is_finite()
+                && rect.is_positive()
+                && screen.contains_rect(rect)
+                && clip.contains_rect(rect),
+            "{stage}: {probe} {rect:?} clipped by {clip:?}"
+        );
+    }
+    let (_, results, _) = recorded_results_geometry(app, false);
+    assert!(
+        results.is_finite() && results.is_positive() && body.contains_rect(results),
+        "{stage}: results {results:?} outside body {body:?}"
+    );
+    assert!(
+        (results.left() - body.left()).abs() <= 1.0,
+        "{stage}: results must use the body's left edge"
+    );
+    // A native scrollbar may reserve its width at the right edge.
+    assert!(
+        body.right() - results.right() <= 18.0,
+        "{stage}: results leave an unused side column: {results:?} in {body:?}"
+    );
+    if let Some(preview) = text_preview_rect(app) {
+        assert!(preview.is_finite() && preview.is_positive() && body.contains_rect(preview));
+        assert!(
+            results.bottom() <= preview.top(),
+            "{stage}: preview must be below results"
+        );
+        assert!((preview.left() - body.left()).abs() <= 1.0);
+    } else {
+        assert!(
+            (results.height() - body.height()).abs() <= 1.0,
+            "{stage}: no-preview results must occupy the complete body: {results:?} / {body:?}"
+        );
+    }
+    let (_, details, _): (egui::Id, egui::Rect, egui::Vec2) = app
+        .editor_ctx
+        .data(|data| data.get_temp(egui::Id::new("text_status_scroll_probe")))
+        .unwrap();
+    let status = text_rect(app, "text_status_rect_probe");
+    let headline = text_rect(app, "text_status_headline_probe");
+    assert!(status.contains_rect(headline) && status.contains_rect(details));
+    assert!(
+        headline.bottom() <= details.top(),
+        "{stage}: fixed headline overlaps scroll details"
+    );
+    let body_font = egui::TextStyle::Body.resolve(&app.editor_ctx.style());
+    let line = app.editor_ctx.fonts(|fonts| {
+        fonts
+            .layout_no_wrap(
+                "Case-sensitive · Literal · Disk search".into(),
+                body_font,
+                MUTED,
+            )
+            .size()
+            .y
+    });
+    assert!(
+        status.height() >= 2.0 * line,
+        "{stage}: status reserves fewer than two measured Body lines: {status:?}/{line}"
+    );
+    assert!(
+        headline.height() >= line,
+        "{stage}: fixed headline must retain a complete Body line"
+    );
+    assert!(
+        details.height() >= line + 4.0,
+        "{stage}: details viewport needs a complete Body line plus 4-point slack against fractional-wheel edge clipping"
+    );
+    assert!(surface.contains_rect(status));
+    let footer = compact_footer(app);
+    eprintln!("TEXT_GEOMETRY stage={stage:?} pass={} window={:?} surface={surface:?} body={body:?} results={results:?} preview={:?} status={status:?} headline={headline:?} details={details:?} footer={footer:?}",
+        app.editor_ctx.cumulative_pass_nr(), screen.size(), text_preview_rect(app));
+    footer
+}
+
+fn text_geometry_rows() -> Vec<SearchMatch> {
+    (0..24)
+        .map(|index| SearchMatch {
+            path: if index < 2 {
+                "alpha/needle.rs"
+            } else {
+                "beta/needle.rs"
+            }
+            .into(),
+            line: index + 10,
+            text: format!("needle needle historical line {index}"),
+        })
+        .collect()
+}
+fn text_legacy_reply(
+    app: &mut CedarApp,
+    command: &Command,
+    matches: Vec<SearchMatch>,
+    truncated: bool,
+) {
+    assert!(matches!(&command.op, Operation::Search { query, limit: 500 } if query == "needle"));
+    reply(app, command.id, Ok(Payload::Matches { matches, truncated }));
+}
+fn text_complete_rows(app: &CedarApp, count: usize, groups: &[usize]) -> (usize, usize) {
+    let screen = app.editor_ctx.screen_rect();
+    let fully_visible = |probe: &str| {
+        let rect = recorded_rect(app, probe);
+        rect.is_positive()
+            && recorded_clip(app, probe).contains_rect(rect)
+            && screen.contains_rect(rect)
+    };
+    (
+        (0..count)
+            .filter(|index| fully_visible(&format!("browse_row:{index}")))
+            .count(),
+        groups
+            .iter()
+            .filter(|index| fully_visible(&format!("browse_group:{index}")))
+            .count(),
+    )
+}
+
+// Copies only frame-local text/rect/scalars for painted-galley assertions. This
+// is not inserted into Context, nor used to manufacture input or authority.
+fn text_painted_galleys(output: &egui::FullOutput) -> Vec<(String, egui::Rect, egui::Rect, f32)> {
+    fn visit(
+        shape: &egui::epaint::Shape,
+        clip: egui::Rect,
+        output: &mut Vec<(String, egui::Rect, egui::Rect, f32)>,
+    ) {
+        match shape {
+            egui::epaint::Shape::Text(draw) => {
+                let minimum_font = draw
+                    .galley
+                    .job
+                    .sections
+                    .iter()
+                    .map(|section| section.format.font_id.size)
+                    .fold(f32::INFINITY, f32::min);
+                output.push((
+                    draw.galley.text().into(),
+                    draw.galley.rect.translate(draw.pos.to_vec2()),
+                    clip,
+                    minimum_font,
+                ));
+            }
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    visit(shape, clip, output);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut draws = Vec::new();
+    for shape in &output.shapes {
+        visit(&shape.shape, shape.clip_rect, &mut draws);
+    }
+    draws
+}
+
+fn text_scroll_status_to_tail(app: &mut CedarApp, size: egui::Vec2, stage: &str) {
+    let (id, rect, content): (egui::Id, egui::Rect, egui::Vec2) = app
+        .editor_ctx
+        .data(|data| data.get_temp(egui::Id::new("text_status_scroll_probe")))
+        .unwrap();
+    assert!(
+        content.y > rect.height(),
+        "{stage}: fixture must actually overflow status"
+    );
+    compact_frame(
+        app,
+        size,
+        0.001,
+        vec![
+            egui::Event::PointerMoved(rect.center()),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -8000.0),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    compact_frame(app, size, 0.5, vec![]);
+    let offset = egui::scroll_area::State::load(&app.editor_ctx, id)
+        .unwrap()
+        .offset
+        .y;
+    assert!(offset > 0.0 && offset >= content.y - rect.height() - 1.0,
+        "{stage}: real native wheel must reach a positive status tail: {offset}/{content:?}/{rect:?}");
+    eprintln!("TEXT_STATUS_TAIL stage={stage:?} window={size:?} offset={offset} rect={rect:?} content={content:?}");
+}
+
+fn text_assert_first_status_headline(
+    app: &CedarApp,
+    output: &egui::FullOutput,
+    prefix: &str,
+    stage: &str,
+) {
+    let (id, details, _): (egui::Id, egui::Rect, egui::Vec2) = app
+        .editor_ctx
+        .data(|data| data.get_temp(egui::Id::new("text_status_scroll_probe")))
+        .unwrap();
+    let offset = egui::scroll_area::State::load(&app.editor_ctx, id)
+        .unwrap()
+        .offset
+        .y;
+    let status = text_rect(app, "text_status_rect_probe");
+    let headline = text_rect(app, "text_status_headline_probe");
+    assert!(status.contains_rect(headline) && status.contains_rect(details));
+    assert!(headline.bottom() <= details.top());
+    let visible = text_painted_galleys(output)
+        .iter()
+        .any(|(text, rect, clip, _)| {
+            text.starts_with(prefix)
+                && (rect.top() - headline.top()).abs() <= 1.0
+                && rect.bottom() <= headline.bottom()
+                && rect.top() >= clip.top()
+                && rect.bottom() <= clip.bottom()
+                && rect.left() < clip.right()
+        });
+    eprintln!("TEXT_STATUS_TRANSITION stage={stage:?} window={:?} pass={} details_offset={offset} visible_first_headline={visible} expected={prefix:?} rect={status:?} headline={headline:?} details={details:?}",
+        app.editor_ctx.screen_rect().size(), app.editor_ctx.cumulative_pass_nr());
+    assert!(
+        visible,
+        "{stage}: changed headline must be painted in the first visible status row: {prefix}"
+    );
+    // Residual native wheel smoothing is allowed to keep moving details.
+    // The independently painted headline must not move with that offset.
+    assert!(offset.is_finite() && offset >= 0.0);
+}
+
+fn text_assert_status_during_smooth_tail(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    prefix: &str,
+    stage: &str,
+    footer: [egui::Rect; 3],
+) {
+    let headline = text_rect(app, "text_status_headline_probe");
+    let results = recorded_results_scroll(app);
+    let results_offset = egui::scroll_area::State::load(&app.editor_ctx, results)
+        .unwrap()
+        .offset;
+    // Inspect subsequent actual frames with the existing wheel tail intact.
+    // This is not a wait-until-zero loop and never edits any input or offset.
+    for dt in [0.001, 0.016, 0.1] {
+        let output = compact_frame(app, size, dt, vec![]);
+        text_assert_first_status_headline(app, &output, prefix, stage);
+        assert_eq!(
+            text_rect(app, "text_status_headline_probe"),
+            headline,
+            "{stage}: scrolling details must not move the headline"
+        );
+        assert_eq!(text_controls_and_clip(app, stage), footer);
+        assert_eq!(recorded_results_scroll(app), results);
+        assert_eq!(
+            egui::scroll_area::State::load(&app.editor_ctx, results)
+                .unwrap()
+                .offset,
+            results_offset,
+            "{stage}: status detail scrolling must not move results"
+        );
+    }
+}
+
+#[test]
+fn text_matching_line_count_uses_exact_singular_and_plural_nouns() {
+    for (lines, files, complete, incomplete) in [
+        (
+            0,
+            0,
+            "0 matching lines in 0 files",
+            "0 matching lines observed in 0 files · incomplete",
+        ),
+        (
+            1,
+            1,
+            "1 matching line in 1 file",
+            "1 matching line observed in 1 file · incomplete",
+        ),
+        (
+            2,
+            2,
+            "2 matching lines in 2 files",
+            "2 matching lines observed in 2 files · incomplete",
+        ),
+        (
+            2,
+            1,
+            "2 matching lines in 1 file",
+            "2 matching lines observed in 1 file · incomplete",
+        ),
+    ] {
+        assert_eq!(
+            crate::browse::text_matching_line_count(lines, files, false),
+            complete
+        );
+        assert_eq!(
+            crate::browse::text_matching_line_count(lines, files, true),
+            incomplete
+        );
+    }
+}
+
+#[test]
+fn text_compact_multiple_literal_occurrences_count_as_one_matching_line_and_file() {
+    for (truncated, expected) in [
+        (false, "1 matching line in 1 file"),
+        (true, "1 matching line observed in 1 file · incomplete"),
+    ] {
+        let size = egui::vec2(1178.0, 814.0);
+        let (mut app, commands) = fixture();
+        text_compact_enter(&mut app, size);
+        compact_settle(&mut app, size);
+        compact_edit(&mut app, size, "needle");
+        compact_frame(&mut app, size, 0.001, key(egui::Key::Enter));
+        let search = commands.try_recv().expect("one explicit Search");
+        assert!(commands.try_recv().is_err());
+        let snippet = "needle needle needle";
+        text_legacy_reply(
+            &mut app,
+            &search,
+            vec![SearchMatch {
+                path: "alpha/needle.rs".into(),
+                line: 10,
+                text: snippet.into(),
+            }],
+            truncated,
+        );
+        compact_frame(&mut app, size, 0.001, vec![]);
+        assert_eq!(
+            app.search_state.accepted.as_ref().unwrap().request,
+            search.id
+        );
+        let accepted = compact_frame(&mut app, size, 0.001, vec![]);
+        assert_eq!(app.search_results.len(), 1);
+        assert_eq!(app.search_state.group_rows().len(), 1);
+        assert_eq!(app.search_results[0].text, snippet);
+        assert!(text_painted_galleys(&accepted)
+            .iter()
+            .any(|(text, _, _, _)| text == expected));
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn text_compact_first_visible_footer_stays_fixed_through_all_states() {
+    for size in [
+        egui::vec2(1178.0, 814.0),
+        egui::vec2(780.0, 540.0),
+        egui::vec2(700.0, 480.0),
+    ] {
+        for font in [13.0, 18.0] {
+            let (mut app, commands) = fixture();
+            compact_font(&app, font);
+            let empty = text_compact_enter(&mut app, size);
+            let footer = text_controls_and_clip(&app, "first visible empty");
+            let body = text_rect(&app, "text_body_rect_probe");
+            assert!(text_preview_rect(&app).is_none());
+            assert!(
+                !has_text(&empty, "0 matching lines"),
+                "unsubmitted is not a completed empty scan"
+            );
+            assert!(commands.try_recv().is_err());
+            compact_settle(&mut app, size);
+            assert_eq!(text_controls_and_clip(&app, "settled empty"), footer);
+            compact_edit(&mut app, size, "needle");
+            assert_eq!(text_controls_and_clip(&app, "edited"), footer);
+            assert!(
+                commands.try_recv().is_err(),
+                "typing does not Search or Read"
+            );
+            compact_frame(&mut app, size, 0.001, key(egui::Key::Enter));
+            let search = commands.try_recv().expect("one explicit Search");
+            assert!(commands.try_recv().is_err());
+            let mut submit_enabled = None;
+            let pending = text_observed_frame(&mut app, size, 0.001, vec![], |app| {
+                submit_enabled = Some(recorded_response(app, "browse_submit").enabled());
+            });
+            assert!(has_text(&pending, "Searching"));
+            assert!(!has_text(&pending, "No matching lines"));
+            assert_eq!(
+                submit_enabled,
+                Some(false),
+                "first pending native Find response must be disabled"
+            );
+            assert_eq!(text_controls_and_clip(&app, "first pending"), footer);
+            text_legacy_reply(&mut app, &search, text_geometry_rows(), false);
+            // The production end-of-frame completion step accepts the reply;
+            // the following frame is its first visible accepted presentation.
+            compact_frame(&mut app, size, 0.001, vec![]);
+            assert_eq!(
+                app.search_state.accepted.as_ref().unwrap().request,
+                search.id
+            );
+            assert_eq!(text_controls_and_clip(&app, "reply acceptance"), footer);
+            let accepted = compact_frame(&mut app, size, 0.001, vec![]);
+            assert!(has_text(&accepted, "24 matching lines in 2 files"));
+            assert!(!has_text(&accepted, "entries examined"));
+            assert!(
+                !has_text(&accepted, "bytes read"),
+                "legacy cannot invent scan counters"
+            );
+            assert_eq!(
+                text_controls_and_clip(&app, "first visible accepted"),
+                footer
+            );
+            let (first_hits, first_groups) = text_complete_rows(&app, 24, &[0, 2]);
+            eprintln!("TEXT_CAPACITY stage=first_visible_accepted window={size:?} font={font} complete_hits={first_hits} complete_groups={first_groups}");
+            if size.y >= 800.0 {
+                assert!(first_hits >= 12 && first_groups >= 2,
+                    "first visible accepted normal capacity: {size:?}/{font}: {first_hits}/{first_groups}");
+            }
+            compact_settle(&mut app, size);
+            assert_eq!(text_controls_and_clip(&app, "settled accepted"), footer);
+            assert_eq!(text_rect(&app, "text_body_rect_probe"), body);
+            let (hits, groups) = text_complete_rows(&app, 24, &[0, 2]);
+            eprintln!("TEXT_CAPACITY stage=settled_accepted window={size:?} font={font} complete_hits={hits} complete_groups={groups}");
+            if size.y >= 800.0 {
+                assert!(hits >= 12 && groups >= 2,
+                    "normal no-preview requires 12 complete hits + 2 groups: {size:?}/{font}: {hits}/{groups}");
+            }
+            compact_click(&mut app, size, "browse_preview");
+            let read = commands
+                .try_recv()
+                .expect("explicit preview must Read its closed path");
+            assert!(matches!(&read.op, Operation::Read { path } if path == "alpha/needle.rs"));
+            assert!(commands.try_recv().is_err());
+            compact_frame(&mut app, size, 0.001, vec![]);
+            assert!(text_preview_rect(&app).is_some());
+            assert_eq!(
+                text_controls_and_clip(&app, "first requested preview"),
+                footer
+            );
+            compact_settle(&mut app, size);
+            assert_eq!(
+                text_controls_and_clip(&app, "settled requested preview"),
+                footer
+            );
+            let bytes = (1..=90)
+                .map(|line| format!("needle line {line}: {}\n", "long code ".repeat(40)))
+                .collect::<String>();
+            reply(&mut app, read.id, Ok(file("alpha/needle.rs", &bytes)));
+            compact_frame(&mut app, size, 0.001, vec![]);
+            assert_eq!(
+                text_controls_and_clip(&app, "preview reply acceptance"),
+                footer
+            );
+            let first_loaded = compact_frame(&mut app, size, 0.001, vec![]);
+            assert!(has_text(&first_loaded, "Disk · read-only"));
+            let (_, first_viewport): (egui::Id, egui::Rect) = app
+                .editor_ctx
+                .data(|data| data.get_temp(egui::Id::new(("project_text_context_scroll", false))))
+                .unwrap();
+            let first_code = text_painted_galleys(&first_loaded)
+                .iter()
+                .filter(|(text, rect, clip, _)| {
+                    text.contains(" | needle line ")
+                        && rect.top() >= first_viewport.top()
+                        && rect.bottom() <= first_viewport.bottom()
+                        && rect.top() >= clip.top()
+                        && rect.bottom() <= clip.bottom()
+                        && rect.left() < clip.right()
+                })
+                .count();
+            let (first_hits, first_groups) = text_complete_rows(&app, 24, &[0, 2]);
+            eprintln!("TEXT_CAPACITY stage=first_visible_loaded_preview window={size:?} font={font} complete_hits={first_hits} complete_groups={first_groups} complete_code={first_code} viewport={first_viewport:?}");
+            if size.y >= 540.0 {
+                let (minimum_hits, minimum_groups, minimum_code) = if size.y >= 800.0 {
+                    (4, 2, 6)
+                } else {
+                    (2, 1, 3)
+                };
+                assert!(first_hits >= minimum_hits && first_groups >= minimum_groups,
+                    "first visible preview complete results {size:?}/{font}: {first_hits}/{first_groups}");
+                assert!(first_code >= minimum_code,
+                    "first visible preview complete code {size:?}/{font}: {first_code}/{minimum_code}");
+            }
+            assert_eq!(
+                text_controls_and_clip(&app, "first visible loaded preview"),
+                footer
+            );
+            compact_settle(&mut app, size);
+            let loaded = compact_frame(&mut app, size, 0.001, vec![]);
+            assert_eq!(
+                text_controls_and_clip(&app, "settled loaded preview"),
+                footer
+            );
+            assert_eq!(text_rect(&app, "text_body_rect_probe"), body);
+            let (_, viewport): (egui::Id, egui::Rect) = app
+                .editor_ctx
+                .data(|data| data.get_temp(egui::Id::new(("project_text_context_scroll", false))))
+                .unwrap();
+            let content = recorded_rect(&app, "browse_preview_content");
+            assert!(
+                content.width() > viewport.width(),
+                "long code must really overflow horizontally"
+            );
+            assert!(
+                content.height() > viewport.height(),
+                "bounded context must really overflow vertically"
+            );
+            let draws = text_painted_galleys(&loaded);
+            let code_lines = draws
+                .iter()
+                .filter(|(text, rect, clip, _)| {
+                    text.contains(" | needle line ")
+                        && rect.top() >= viewport.top()
+                        && rect.bottom() <= viewport.bottom()
+                        && rect.top() >= clip.top()
+                        && rect.bottom() <= clip.bottom()
+                        && rect.left() < clip.right()
+                })
+                .count();
+            let (settled_hits, settled_groups) = text_complete_rows(&app, 24, &[0, 2]);
+            eprintln!("TEXT_CAPACITY stage=settled_loaded_preview window={size:?} font={font} complete_hits={settled_hits} complete_groups={settled_groups} complete_code={code_lines} viewport={viewport:?}");
+            if size.y >= 540.0 {
+                let (hits, groups) = (settled_hits, settled_groups);
+                let (minimum_hits, minimum_groups, minimum_code) = if size.y >= 800.0 {
+                    (4, 2, 6)
+                } else {
+                    (2, 1, 3)
+                };
+                assert!(
+                    hits >= minimum_hits && groups >= minimum_groups,
+                    "preview complete result rows {size:?}/{font}: {hits} hits/{groups} groups"
+                );
+                assert!(code_lines >= minimum_code,
+                    "preview complete painted code lines {size:?}/{font}: {code_lines}, viewport={viewport:?}");
+                let target = recorded_rect(&app, "project_text_context_target");
+                assert!(
+                    viewport.contains_rect(egui::Rect::from_min_max(
+                        target.min,
+                        egui::pos2(target.left() + 1.0, target.bottom())
+                    )),
+                    "complete target marker must remain visible"
+                );
+            }
+            for prefix in ["Disk · read-only", "Historical requested line"] {
+                let draw = draws
+                    .iter()
+                    .find(|(text, _, _, _)| text.starts_with(prefix))
+                    .unwrap_or_else(|| panic!("missing visible preview detail {prefix}"));
+                assert!(draw.3 >= font, "preview detail shrank below Body: {draw:?}");
+                assert!(
+                    draw.2.intersects(draw.1),
+                    "preview detail not painted inside clip"
+                );
+            }
+            compact_click(&mut app, size, "browse_hide_preview");
+            compact_frame(&mut app, size, 0.001, vec![]);
+            assert!(text_preview_rect(&app).is_none());
+            assert_eq!(text_controls_and_clip(&app, "first visible Hide"), footer);
+            compact_settle(&mut app, size);
+            assert!(!app.project_text_review_armed());
+            assert!(text_preview_rect(&app).is_none());
+            assert_eq!(text_controls_and_clip(&app, "Hide"), footer);
+            assert_eq!(app.browse.selected_index(), Some(0));
+            assert_eq!(
+                focused(&app),
+                Some(recorded_response(&app, "browse_row:0").id)
+            );
+            compact_click(&mut app, size, "browse_preview");
+            let preview_error = commands.try_recv().expect("one explicit preview retry");
+            assert!(
+                matches!(&preview_error.op, Operation::Read { path } if path == "alpha/needle.rs")
+            );
+            assert!(commands.try_recv().is_err());
+            compact_frame(&mut app, size, 0.001, vec![]);
+            reply(
+                &mut app,
+                preview_error.id,
+                Err("Preview permission denied".into()),
+            );
+            compact_frame(&mut app, size, 0.001, vec![]);
+            let first_error = compact_frame(&mut app, size, 0.001, vec![]);
+            assert!(has_text(&first_error, "Preview permission denied"));
+            assert_eq!(
+                text_controls_and_clip(&app, "first preview Message"),
+                footer
+            );
+            compact_settle(&mut app, size);
+            assert_eq!(
+                text_controls_and_clip(&app, "settled preview Message"),
+                footer
+            );
+            compact_click(&mut app, size, "browse_hide_preview");
+            compact_frame(&mut app, size, 0.001, vec![]);
+            assert!(text_preview_rect(&app).is_none());
+            assert_eq!(text_controls_and_clip(&app, "first visible Hide"), footer);
+            compact_settle(&mut app, size);
+            assert_eq!(text_controls_and_clip(&app, "Hide preview Message"), footer);
+            compact_edit(&mut app, size, "failure");
+            let inactive = compact_frame(&mut app, size, 0.001, vec![]);
+            let status = text_rect(&app, "text_status_headline_probe");
+            assert!(
+                text_painted_galleys(&inactive)
+                    .iter()
+                    .any(|(text, rect, clip, _)| {
+                        text.starts_with("Previous results are inactive")
+                            && rect.top() >= status.top()
+                            && rect.bottom() <= status.bottom()
+                            && rect.top() >= clip.top()
+                            && rect.bottom() <= clip.bottom()
+                    }),
+                "inactive conclusion must be painted inside the reserved status viewport"
+            );
+            assert!(has_text(&inactive, "24 matching lines in 2 files"));
+            assert!(!recorded_response(&app, "browse_row:0").enabled());
+            compact_frame(&mut app, size, 0.001, key(egui::Key::Enter));
+            let failed = commands.try_recv().expect("one explicit failed rerun");
+            reply(
+                &mut app,
+                failed.id,
+                Err(format!(
+                    "Permission denied: {} END-OF-TEXT-ERROR",
+                    "long path / ".repeat(70)
+                )),
+            );
+            compact_frame(&mut app, size, 0.001, vec![]);
+            assert_eq!(
+                text_controls_and_clip(&app, "error reply acceptance"),
+                footer
+            );
+            let first_error = compact_frame(&mut app, size, 0.001, vec![]);
+            assert!(has_text(&first_error, "Permission denied"));
+            assert_eq!(text_controls_and_clip(&app, "first visible error"), footer);
+            compact_settle(&mut app, size);
+            assert_eq!(text_controls_and_clip(&app, "settled error"), footer);
+            let (id, status, content): (egui::Id, egui::Rect, egui::Vec2) = app
+                .editor_ctx
+                .data(|data| data.get_temp(egui::Id::new("text_status_scroll_probe")))
+                .unwrap();
+            assert!(
+                content.y > status.height(),
+                "long error must use bounded status scrolling"
+            );
+            compact_frame(
+                &mut app,
+                size,
+                0.001,
+                vec![
+                    egui::Event::PointerMoved(status.center()),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -8000.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            let end = compact_frame(&mut app, size, 0.5, vec![]);
+            let offset = egui::scroll_area::State::load(&app.editor_ctx, id)
+                .unwrap()
+                .offset
+                .y;
+            assert!(
+                offset >= content.y - status.height() - 1.0,
+                "status tail unreachable: {offset}/{content:?}/{status:?}"
+            );
+            assert!(has_text(&end, "END-OF-TEXT-ERROR"));
+            assert_eq!(text_controls_and_clip(&app, "scrolled error"), footer);
+            compact_frame(&mut app, size, 2.0, vec![]);
+            assert!(
+                commands.try_recv().is_err(),
+                "status changes never retry Search or Read"
+            );
+            // A previous status viewport can be scrolled far below its first
+            // line. Every new conclusion must be visible on its very first
+            // rendered frame, without mutating ScrollArea state in the test.
+            let retained_source = app.search_state.accepted.clone();
+            let results_id = recorded_results_scroll(&app);
+            let results_offset = egui::scroll_area::State::load(&app.editor_ctx, results_id)
+                .unwrap()
+                .offset;
+            compact_click(&mut app, size, "browse_query");
+            compact_frame(
+                &mut app,
+                size,
+                0.001,
+                modified_key(egui::Key::A, command_modifiers()),
+            );
+            let first_edit = compact_frame(
+                &mut app,
+                size,
+                0.001,
+                vec![egui::Event::Text("recovered".into())],
+            );
+            text_assert_first_status_headline(
+                &app,
+                &first_edit,
+                "Previous results are inactive",
+                "scrolled error → first edit",
+            );
+            assert_eq!(
+                text_controls_and_clip(&app, "scrolled error → first edit"),
+                footer
+            );
+            text_assert_status_during_smooth_tail(
+                &mut app,
+                size,
+                "Previous results are inactive",
+                "edit headline during old smooth tail",
+                footer,
+            );
+            assert_eq!(app.search_state.accepted, retained_source);
+            assert_eq!(recorded_results_scroll(&app), results_id);
+            assert_eq!(
+                egui::scroll_area::State::load(&app.editor_ctx, results_id)
+                    .unwrap()
+                    .offset,
+                results_offset,
+                "status reset must not reset retained result scrolling"
+            );
+            assert!(commands.try_recv().is_err(), "editing remains zero I/O");
+
+            text_scroll_status_to_tail(&mut app, size, "inactive before explicit submit");
+            compact_click(&mut app, size, "browse_query");
+            compact_frame(&mut app, size, 0.001, key(egui::Key::Enter));
+            let retired_search = commands.try_recv().expect("one explicit recovery Search");
+            assert!(
+                matches!(&retired_search.op, Operation::Search { query, limit: 500 } if query == "recovered")
+            );
+            assert!(commands.try_recv().is_err());
+            let first_searching = compact_frame(&mut app, size, 0.001, vec![]);
+            text_assert_first_status_headline(
+                &app,
+                &first_searching,
+                "Searching…",
+                "scrolled inactive → first pending",
+            );
+            assert_eq!(
+                text_controls_and_clip(&app, "scrolled inactive → first pending"),
+                footer
+            );
+            text_assert_status_during_smooth_tail(
+                &mut app,
+                size,
+                "Searching…",
+                "pending headline during old smooth tail",
+                footer,
+            );
+            assert_eq!(app.search_state.accepted, retained_source);
+            assert_eq!(recorded_results_scroll(&app), results_id);
+
+            text_scroll_status_to_tail(&mut app, size, "pending before retirement");
+            compact_click(&mut app, size, "browse_query");
+            compact_frame(
+                &mut app,
+                size,
+                0.001,
+                modified_key(egui::Key::A, command_modifiers()),
+            );
+            let mut submit_enabled = None;
+            let first_waiting = text_observed_frame(
+                &mut app,
+                size,
+                0.001,
+                vec![egui::Event::Text("retired replacement".into())],
+                |app| {
+                    submit_enabled = Some(recorded_response(app, "browse_submit").enabled());
+                },
+            );
+            text_assert_first_status_headline(
+                &app,
+                &first_waiting,
+                "Waiting for previous search to finish",
+                "scrolled pending → first retired wait",
+            );
+            assert_eq!(submit_enabled, Some(false));
+            assert_eq!(
+                text_controls_and_clip(&app, "scrolled pending → first retired wait"),
+                footer
+            );
+            text_assert_status_during_smooth_tail(
+                &mut app,
+                size,
+                "Waiting for previous search to finish",
+                "waiting headline during old smooth tail",
+                footer,
+            );
+            assert_eq!(app.search_state.accepted, retained_source);
+            assert!(
+                commands.try_recv().is_err(),
+                "retiring a physical request cannot submit another"
+            );
+            reply(
+                &mut app,
+                retired_search.id,
+                Ok(Payload::Matches {
+                    matches: vec![],
+                    truncated: false,
+                }),
+            );
+            compact_frame(&mut app, size, 0.001, vec![]);
+            compact_frame(&mut app, size, 0.001, vec![]);
+            assert_eq!(
+                app.search_state.accepted, retained_source,
+                "late retired reply cannot change accepted counts"
+            );
+            assert_eq!(app.search_results.len(), 24);
+            assert!(commands.try_recv().is_err());
+
+            compact_frame(&mut app, size, 0.001, key(egui::Key::Enter));
+            let recovered_search = commands
+                .try_recv()
+                .expect("one explicit Search after physical drain");
+            assert!(
+                matches!(&recovered_search.op, Operation::Search { query, limit: 500 } if query == "retired replacement")
+            );
+            assert!(commands.try_recv().is_err());
+            compact_frame(&mut app, size, 0.001, vec![]);
+            text_scroll_status_to_tail(&mut app, size, "pending before accepted replacement");
+            reply(
+                &mut app,
+                recovered_search.id,
+                Ok(Payload::Matches {
+                    matches: ["alpha/needle.rs", "beta/needle.rs"]
+                        .into_iter()
+                        .map(|path| SearchMatch {
+                            path: path.into(),
+                            line: 2,
+                            text: "retired replacement retired replacement".into(),
+                        })
+                        .collect(),
+                    truncated: true,
+                }),
+            );
+            compact_frame(&mut app, size, 0.001, vec![]);
+            assert_eq!(
+                app.search_state.accepted.as_ref().unwrap().request,
+                recovered_search.id
+            );
+            let first_recovered = compact_frame(&mut app, size, 0.001, vec![]);
+            text_assert_first_status_headline(
+                &app,
+                &first_recovered,
+                "2 matching lines observed in 2 files · incomplete",
+                "scrolled pending → first accepted replacement",
+            );
+            assert_eq!(
+                text_controls_and_clip(&app, "scrolled pending → first accepted replacement"),
+                footer
+            );
+            text_assert_status_during_smooth_tail(
+                &mut app,
+                size,
+                "2 matching lines observed in 2 files · incomplete",
+                "accepted headline during old smooth tail",
+                footer,
+            );
+            assert_eq!(app.search_results.len(), 2);
+            assert_ne!(app.search_state.accepted, retained_source);
+            assert!(
+                commands.try_recv().is_err(),
+                "status presentation changes never dispatch extra operations"
+            );
+        }
+    }
+}
+
+#[test]
+fn text_compact_unicode_originals_and_fallback_first_frames_preserve_exact_targets() {
+    for font in [13.0, 18.0] {
+        for success in [false, true] {
+            for after_presented in [false, true] {
+                let size = egui::vec2(780.0, 540.0);
+                let (mut app, commands) = fixture();
+                compact_font(&app, font);
+                let (fonts, deliver): (_, Box<dyn FnOnce()>) = if success {
+                    let (fonts, deliver) = system_fonts::SystemFonts::pending_success_for_test();
+                    (fonts, Box::new(deliver))
+                } else {
+                    let (fonts, deliver) = system_fonts::SystemFonts::pending_failure_for_test();
+                    (fonts, Box::new(deliver))
+                };
+                app.system_fonts = fonts;
+                let mut deliver = Some(deliver);
+                text_compact_enter(&mut app, size);
+                let footer = text_controls_and_clip(&app, "Unicode entry");
+                compact_edit(&mut app, size, "needle");
+                compact_frame(&mut app, size, 0.001, key(egui::Key::Enter));
+                let search = commands.try_recv().unwrap();
+                let sequence = "中文e\u{301}👍🏽👩‍👩‍👧‍👦";
+                let parent = format!("parent-{}", sequence.repeat(18));
+                let basename = format!("needle-{}.rs", sequence.repeat(18));
+                let path = format!("{parent}/{basename}");
+                let snippet = format!("needle {}", sequence.repeat(40));
+                text_legacy_reply(
+                    &mut app,
+                    &search,
+                    vec![SearchMatch {
+                        path: path.clone(),
+                        line: 12345,
+                        text: snippet.clone(),
+                    }],
+                    false,
+                );
+                compact_frame(&mut app, size, 0.001, vec![]);
+                assert_eq!(
+                    app.search_state.accepted.as_ref().unwrap().request,
+                    search.id
+                );
+                if !after_presented {
+                    deliver.take().unwrap()();
+                }
+                let first = compact_frame(&mut app, size, 0.001, vec![]);
+                assert_eq!(
+                    text_controls_and_clip(&app, "first Unicode accepted"),
+                    footer
+                );
+                let row_id = recorded_response(&app, "browse_row:0").id;
+                assert!(
+                    has_text(&first, &snippet),
+                    "full original snippet must reach the first layout"
+                );
+                if after_presented {
+                    deliver.take().unwrap()();
+                }
+                compact_frame(&mut app, size, 0.001, vec![]);
+                let installed = compact_frame(&mut app, size, 0.001, vec![]);
+                assert_eq!(app.system_fonts.probe_state_for_test(), "finished");
+                assert_eq!(text_controls_and_clip(&app, "installed fallback"), footer);
+                assert_eq!(recorded_response(&app, "browse_row:0").id, row_id);
+                assert_eq!(app.browse.paths(), [path.as_str()]);
+                assert_eq!(app.search_results[0].text, snippet);
+                assert_eq!(app.search_results[0].line, 12345);
+                let draws = text_painted_galleys(&installed);
+                for original in [&parent, &basename, &snippet] {
+                    let draw = draws
+                        .iter()
+                        .find(|(text, _, _, _)| text.as_bytes() == original.as_bytes())
+                        .unwrap_or_else(|| {
+                            panic!("native layout lost non-ASCII original {original}")
+                        });
+                    assert!(
+                        draw.1.height() > 0.0
+                            && draw.1.height() <= recorded_rect(&app, "browse_row:0").height()
+                    );
+                }
+                assert!(
+                    commands.try_recv().is_err(),
+                    "font arrival cannot select, Search or Read"
+                );
+                let pos = visible_center(&app, "browse_row:0");
+                let delay = f64::from(app.editor_ctx.style().interaction.tooltip_delay);
+                for offset in [8.0, 4.0, 0.0] {
+                    compact_frame(
+                        &mut app,
+                        size,
+                        0.016,
+                        vec![egui::Event::PointerMoved(pos - egui::vec2(offset, 0.0))],
+                    );
+                }
+                // The synthetic search/receipt journey takes only milliseconds.
+                // egui suppresses tooltips when its last movement was within
+                // 100 ms of a click; waiting without moving cannot change that
+                // relative ordering. A genuinely later movement clears it.
+                let (click_age, movement_age) = app.editor_ctx.input(|input| {
+                    (
+                        input.pointer.time_since_last_click(),
+                        input.pointer.time_since_last_movement(),
+                    )
+                });
+                eprintln!("TEXT_TOOLTIP_TIMING before_late_move font={font} success={success} after_presented={after_presented} since_click={click_age} since_move={movement_age} suppressed={}",
+                    click_age < movement_age + 0.1);
+                compact_frame(&mut app, size, 0.15, vec![]);
+                // Pointer::begin_pass records last_move_time only after its
+                // velocity history has at least three samples over >10 ms.
+                // The 150 ms wait flushes that history, so use a new monotonic
+                // four-sample approach instead of two out-and-back points.
+                for offset in [12.0, 8.0, 4.0, 0.0] {
+                    compact_frame(
+                        &mut app,
+                        size,
+                        0.016,
+                        vec![egui::Event::PointerMoved(pos - egui::vec2(offset, 0.0))],
+                    );
+                }
+                let (click_age, movement_age) = app.editor_ctx.input(|input| {
+                    (
+                        input.pointer.time_since_last_click(),
+                        input.pointer.time_since_last_movement(),
+                    )
+                });
+                assert!(
+                    click_age >= movement_age + 0.1,
+                    "late native pointer approach must satisfy egui's post-click tooltip rule: click={click_age}, move={movement_age}"
+                );
+                assert!(
+                    app.editor_ctx
+                        .input(|input| input.pointer.time_since_last_movement().is_finite()),
+                    "native tooltip approach must establish pointer movement timing"
+                );
+                compact_frame(&mut app, size, 1.0 + delay, vec![]);
+                let mut hover_flags = None;
+                let hovered = text_observed_frame(&mut app, size, 0.1, vec![], |app| {
+                    let response = recorded_response(app, "browse_row:0");
+                    hover_flags = Some((
+                        response.hovered(),
+                        response.contains_pointer(),
+                        response.enabled(),
+                        response.rect,
+                        app.editor_ctx
+                            .input(|input| input.pointer.time_since_last_movement()),
+                    ));
+                });
+                if !has_text(&hovered, &path) {
+                    eprintln!("TEXT_TOOLTIP font={font} success={success} after_presented={after_presented} flags={hover_flags:?} active={} path_bytes={} shapes={:?}",
+                        app.search_rows_active(), path.len(), text_painted_galleys(&hovered).iter()
+                            .map(|(text, rect, clip, _)| (text.chars().take(160).collect::<String>(), rect, clip)).collect::<Vec<_>>());
+                }
+                assert!(
+                    has_text(&hovered, &path),
+                    "hover must retain exact original action path: {hover_flags:?}"
+                );
+                assert!(
+                    has_text(&hovered, &snippet),
+                    "hover must retain unabridged historical snippet"
+                );
+                compact_frame(
+                    &mut app,
+                    size,
+                    0.001,
+                    vec![egui::Event::PointerMoved(egui::Pos2::ZERO)],
+                );
+                compact_settle(&mut app, size);
+                compact_frame(&mut app, size, 0.001, key(egui::Key::ArrowDown));
+                compact_frame(&mut app, size, 0.001, vec![]);
+                assert_eq!(
+                    focused(&app),
+                    Some(recorded_response(&app, "browse_row:0").id)
+                );
+                assert!(commands.try_recv().is_err());
+                compact_frame(&mut app, size, 0.001, key(egui::Key::Space));
+                let read = commands
+                    .try_recv()
+                    .expect("explicit preview of original Unicode path");
+                assert!(matches!(&read.op, Operation::Read { path: actual } if actual == &path));
+                assert!(commands.try_recv().is_err());
+                // The success fixture installs a bundled Latin face. This is
+                // first-install geometry/input evidence, never CJK glyph proof.
+            }
+        }
+    }
+}
+
+#[test]
+fn text_compact_filter_stacking_changes_at_the_measured_body_font_boundary() {
+    for font in [13.0, 18.0] {
+        let (mut app, commands) = fixture();
+        compact_font(&app, font);
+        let normal = egui::vec2(1178.0, 814.0);
+        text_compact_enter(&mut app, normal);
+        let mut style = (*app.editor_ctx.style()).clone();
+        style.spacing.button_padding = egui::vec2(6.0, 3.0);
+        let required = app.editor_ctx.fonts(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    "Directory  workspace/root    File masks  *.rs;*.toml".into(),
+                    egui::TextStyle::Body.resolve(&style),
+                    MUTED,
+                )
+                .size()
+                .x
+        }) + style.spacing.item_spacing.x * 6.0
+            + style.spacing.button_padding.x * 4.0;
+        assert!(
+            required < 860.0,
+            "fixture must cross the actual modal filter boundary"
+        );
+        for (delta, stacked) in [(-1.0, true), (1.0, false)] {
+            let size = egui::vec2(required + 64.0 + delta, 814.0);
+            compact_frame(&mut app, size, 0.001, vec![]);
+            compact_settle(&mut app, size);
+            text_controls_and_clip(&app, "measured filter boundary");
+            let scope = recorded_rect(&app, "browse_text_scope");
+            let masks = recorded_rect(&app, "browse_masks");
+            if stacked {
+                assert!(
+                    masks.top() >= scope.bottom(),
+                    "font={font}: below-boundary fields must stack: {scope:?}/{masks:?}"
+                );
+            } else {
+                assert!(
+                    (scope.top() - masks.top()).abs() <= 1.0,
+                    "font={font}: above-boundary fields must share a row: {scope:?}/{masks:?}"
+                );
+                assert!(scope.right() < masks.left());
+            }
+        }
+        assert!(
+            commands.try_recv().is_err(),
+            "resize and font measurement never Search or Read"
+        );
+    }
+}
+
+#[test]
+fn text_compact_text_tab_native_focus_emits_one_semantic_event() {
+    let size = egui::vec2(1178.0, 814.0);
+    let (mut app, commands) = fixture();
+    text_compact_enter(&mut app, size);
+    compact_settle(&mut app, size);
+    let tab = recorded_response(&app, "browse_text").id;
+    let mut events = Vec::new();
+    // Native Previous focus intentionally commits on the next frame so that
+    // gained_focus is reported correctly (egui Memory::interested_in_focus).
+    // Keep the real chain explicit instead of sending another Tab before the
+    // previous one commits: query → Close → Text.
+    for probe in ["browse_close", "browse_text"] {
+        let expected = recorded_response(&app, probe).id;
+        let output = compact_frame(
+            &mut app,
+            size,
+            0.01,
+            modified_key(
+                egui::Key::Tab,
+                egui::Modifiers {
+                    shift: true,
+                    ..egui::Modifiers::NONE
+                },
+            ),
+        );
+        eprintln!(
+            "TEXT_TAB_FOCUS_STEP target={probe} phase=key focused={:?} events={:?}",
+            focused(&app),
+            output.platform_output.events
+        );
+        let committed = compact_frame(&mut app, size, 0.001, vec![]);
+        eprintln!(
+            "TEXT_TAB_FOCUS_STEP target={probe} phase=commit focused={:?} events={:?}",
+            focused(&app),
+            committed.platform_output.events
+        );
+        assert_eq!(
+            focused(&app),
+            Some(expected),
+            "native reverse Tab must visit {probe}"
+        );
+        if probe == "browse_text" {
+            events.extend(output.platform_output.events);
+            events.extend(committed.platform_output.events);
+        }
+    }
+    assert_eq!(
+        focused(&app),
+        Some(tab),
+        "native reverse Tab must reach the real Text provider control"
+    );
+    let focus_labels = events
+        .iter()
+        .filter_map(|event| match event {
+            egui::output::OutputEvent::FocusGained(info)
+                if info
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.contains("Find in Files")) =>
+            {
+                assert!(info.enabled);
+                assert_eq!(info.typ, egui::WidgetType::Button);
+                info.label.as_deref()
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    eprintln!("TEXT_TAB_FOCUS_EVENTS {events:?}");
+    assert_eq!(
+        focus_labels,
+        ["Find in Files · Project Text"],
+        "one native focus action must emit one accurate semantic event"
+    );
+    assert!(commands.try_recv().is_err(), "focus is not Search or Read");
+}
+
+#[test]
+fn text_compact_text_tab_native_click_emits_one_semantic_event() {
+    let size = egui::vec2(1178.0, 814.0);
+    let (mut app, commands) = fixture();
+    text_compact_enter(&mut app, size);
+    compact_settle(&mut app, size);
+    let pos = visible_center(&app, "browse_text");
+    let id = recorded_response(&app, "browse_text").id;
+    compact_frame(&mut app, size, 0.01, vec![egui::Event::PointerMoved(pos)]);
+    compact_frame(&mut app, size, 0.01, pointer(pos, true));
+    assert!(recorded_response(&app, "browse_text").is_pointer_button_down_on());
+    let mut clicked = false;
+    let output = text_observed_frame(&mut app, size, 0.01, pointer(pos, false), |app| {
+        let response = recorded_response(app, "browse_text");
+        assert_eq!(response.id, id);
+        clicked = response.clicked_by(egui::PointerButton::Primary);
+    });
+    assert!(clicked, "native release must click the actual Text tab");
+    let click_labels = output
+        .platform_output
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            egui::output::OutputEvent::Clicked(info)
+                if info
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.contains("Find in Files")) =>
+            {
+                assert!(info.enabled);
+                assert_eq!(info.typ, egui::WidgetType::Button);
+                info.label.as_deref()
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    eprintln!("TEXT_TAB_CLICK_EVENTS {:?}", output.platform_output.events);
+    assert_eq!(
+        click_labels,
+        ["Find in Files · Project Text"],
+        "one native click must emit one accurate semantic event"
+    );
+    assert!(
+        commands.try_recv().is_err(),
+        "clicking the selected provider must not Search or Read"
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn text_compact_text_tab_capability_disabled_widget_info_matches_native_state() {
+    let size = egui::vec2(1178.0, 814.0);
+    let (mut app, commands) = fixture();
+    text_compact_enter(&mut app, size);
+    compact_settle(&mut app, size);
+    // egui stores registered WidgetInfo in its actual per-pass widget map when
+    // this debug inspection option is on. No replacement event is fabricated.
+    // This covers capability-disabled UI. An already-disabled ancestor with a
+    // true local flag is a separate case, checked statically via ui.is_enabled.
+    app.editor_ctx
+        .style_mut(|style| style.debug.show_interactive_widgets = true);
+    app.agent_info
+        .as_mut()
+        .unwrap()
+        .capabilities
+        .retain(|capability| capability != "search");
+    assert!(!app.backend_supports("search"));
+    assert!(!app.backend_scoped_search_supported());
+    let mut native_info = None;
+    text_observed_frame(&mut app, size, 0.001, vec![], |app| {
+        let response = recorded_response(app, "browse_text");
+        assert!(
+            !response.enabled(),
+            "missing search capability must disable the native Text tab"
+        );
+        let id = response.id;
+        native_info = app
+            .editor_ctx
+            .viewport(|viewport| viewport.this_pass.widgets.info(id).cloned());
+    });
+    let info = native_info.expect("egui must register the production Text-tab WidgetInfo");
+    eprintln!("TEXT_TAB_DISABLED_INFO {info:?}");
+    assert_eq!(info.label.as_deref(), Some("Find in Files · Project Text"));
+    assert_eq!(info.typ, egui::WidgetType::Button);
+    assert!(
+        !info.enabled,
+        "WidgetInfo must describe the actual capability-disabled native state"
+    );
+    let pos = visible_center(&app, "browse_text");
+    compact_frame(&mut app, size, 0.01, vec![egui::Event::PointerMoved(pos)]);
+    compact_frame(&mut app, size, 0.01, pointer(pos, true));
+    let mut clicked = false;
+    let output = text_observed_frame(&mut app, size, 0.01, pointer(pos, false), |app| {
+        let response = recorded_response(app, "browse_text");
+        assert!(!response.enabled());
+        clicked = response.clicked_by(egui::PointerButton::Primary);
+    });
+    assert!(!clicked, "disabled Text tab cannot receive a native click");
+    assert!(!output
+        .platform_output
+        .events
+        .iter()
+        .any(|event| matches!(event,
+        egui::output::OutputEvent::Clicked(info)
+            if info.label.as_deref().is_some_and(|label| label.contains("Find in Files")))));
+    assert!(commands.try_recv().is_err());
 }

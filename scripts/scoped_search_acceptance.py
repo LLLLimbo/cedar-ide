@@ -24,7 +24,7 @@ TEST_NAME = "scoped_search_process_tests::normal_agent_scoped_search_is_explicit
 PREFIX = "scoped_search_acceptance "
 COMPILE_TIMEOUT = 120
 RUNTIME_TIMEOUT = 420
-SOURCE_VERSION = "0.72.0"
+SOURCE_VERSION = "0.73.0"
 QUERY = "needle café 😀"
 CASES = [
     "trust_off_normal_agent", "legacy_search_compatibility", "explicit_directory_and_mask",

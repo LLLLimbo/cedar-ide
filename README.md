@@ -2,7 +2,9 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-当前 **0.72.0 Files 布局候选**将文件搜索整理为紧凑的模式、查询与目录行，结果使用全宽单行文件名和弱化父路径；显式 Preview 在下方显示，固定操作区不随结果到达移动。已有同 fixture 的限定 Linux 原生图审接受了这一 Files 视觉基线，0.72.0 本地完整 Rust/Python、严格 Clippy、CJK 与五项正常 agent 进程验证已通过；精确双平台 CI 和三包验收仍待完成，不能由本地结果替代。Project Text/Recent 布局未在本阶段重做，也不声明 IDEA 像素一致。见[0.72 阶段报告](docs/TEST_REPORT_PHASE72_FILES_LAYOUT.md)及[使用边界](docs/FIND_AND_RETURN.md#files-layout-072-candidate)。
+当前 **0.73.0 Project Text 布局候选**把项目文本搜索整理为紧凑的查询/筛选区、全宽分组结果、文件名/父路径层级和显式下置只读预览，固定操作区不随结果变化移动；计数是匹配行数而非词出现次数。限定 Linux 正常窗实图已确认开发候选的改善，但该次产物仍标为 0.72.0；最终 0.73.0 的单复数文案、版本传播与执行证明单独归属，不重标旧图为最终版本验收。Files/Recent、请求和输入状态机保持原有契约，不新增正则、Words 或 Replace，也不声明 IDEA 像素一致。见[0.73 阶段报告](docs/TEST_REPORT_PHASE73_TEXT_LAYOUT.md)及[使用边界](docs/FIND_AND_RETURN.md#project-text-layout-073-candidate)。
+
+历史 **0.72.0 Files 布局候选**将文件搜索整理为紧凑的模式、查询与目录行，结果使用全宽单行文件名和弱化父路径；显式 Preview 在下方显示，固定操作区不随结果到达移动。已有同 fixture 的限定 Linux 原生图审接受了这一 Files 视觉基线，0.72.0 本地完整 Rust/Python、严格 Clippy、CJK 与五项正常 agent 进程验证已通过；精确双平台 CI 和三包验收仍待完成，不能由本地结果替代。Project Text/Recent 布局未在本阶段重做，也不声明 IDEA 像素一致。见[0.72 阶段报告](docs/TEST_REPORT_PHASE72_FILES_LAYOUT.md)及[使用边界](docs/FIND_AND_RETURN.md#files-layout-072-candidate)。
 
 历史 **0.71.1 修复候选 2**保留 0.71 的主窗结构，修复编辑区旧背景拖动区域在错误栏出现后覆盖标签工具栏的问题，并让字体导出测试逐字节对照不可变 Git tag，而不是 Windows 的 CRLF 工作树。0.71 的[双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38507906311)已失败，尚无三包验收；候选 1 的 Linux CI 已通过，Windows 在许可证测试的短路径 oracle 处失败；候选 2 仅修该测试，新 Python 全检通过，其余同字节 Rust/进程证据明确复用，双平台 CI 和三包仍待验，见[候选 2 报告](docs/TEST_REPORT_PHASE711_CANDIDATE2.md)及[0.71.1 阶段报告](docs/TEST_REPORT_PHASE711_CI_REPAIR.md)。此前真实开发截图仅证明主窗结构改善；搜索对话框重排、完整 IDEA 一致性与最终修复后的 GUI 验证仍未完成。
 

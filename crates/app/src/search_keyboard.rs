@@ -521,18 +521,40 @@ impl CedarApp {
         scope_id: egui::Id,
         masks_id: egui::Id,
     ) -> (egui::Response, egui::Response) {
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let required = ui.fonts(|fonts| {
-            fonts
-                .layout_no_wrap(
-                    "Directory  workspace/root    File masks  *.rs;*.toml".into(),
-                    font,
-                    MUTED,
-                )
-                .size()
-                .x
-        }) + ui.spacing().item_spacing.x * 6.0
-            + ui.spacing().button_padding.x * 4.0;
+        let responses = self.search_filter_fields(ui, scope_id, masks_id, false);
+        ui.label(
+            RichText::new(format!(
+                "Excluded directories: {}",
+                cedar_protocol::FILE_DISCOVERY_EXCLUDED_DIRECTORIES.join(", ")
+            ))
+            .small()
+            .color(MUTED),
+        );
+        responses
+    }
+
+    pub(super) fn search_compact_filter_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        scope_id: egui::Id,
+        masks_id: egui::Id,
+    ) -> (egui::Response, egui::Response) {
+        self.search_filter_fields(ui, scope_id, masks_id, true)
+    }
+
+    fn search_filter_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        scope_id: egui::Id,
+        masks_id: egui::Id,
+        compact: bool,
+    ) -> (egui::Response, egui::Response) {
+        let required = filter_controls_width(ui);
+        let scope_hint = if compact {
+            "Whole workspace"
+        } else {
+            "Exact relative directory; blank = root"
+        };
         let field = |ui: &mut egui::Ui, label: &str, value: &mut String, id, hint: &str| {
             ui.horizontal(|ui| {
                 ui.label(label);
@@ -552,7 +574,7 @@ impl CedarApp {
                     "Directory",
                     &mut self.search_scope,
                     scope_id,
-                    "Exact relative directory; blank = root",
+                    scope_hint,
                 );
                 let masks = field(
                     &mut columns[1],
@@ -569,7 +591,7 @@ impl CedarApp {
                 "Directory",
                 &mut self.search_scope,
                 scope_id,
-                "Exact relative directory; blank = root",
+                scope_hint,
             );
             let masks = field(
                 ui,
@@ -580,16 +602,8 @@ impl CedarApp {
             );
             (scope, masks)
         };
-        ui.label(
-            RichText::new(format!(
-                "Excluded directories: {}",
-                cedar_protocol::FILE_DISCOVERY_EXCLUDED_DIRECTORIES.join(", ")
-            ))
-            .small()
-            .color(MUTED),
-        );
         (
-            responses.0.on_hover_text("Exact workspace-relative directory. Blank searches the workspace root. The path is not trimmed or normalized."),
+            responses.0.on_hover_text(if compact { format!("Exact workspace-relative directory. Blank searches the workspace root. The path is not trimmed or normalized. Excluded directories: {}", cedar_protocol::FILE_DISCOVERY_EXCLUDED_DIRECTORIES.join(", ")) } else { "Exact workspace-relative directory. Blank searches the workspace root. The path is not trimmed or normalized.".to_owned() }),
             responses.1.on_hover_text("Whole filename masks, case-sensitive. Separate alternatives with semicolons. * matches zero or more characters; ? matches one Unicode character. Blank includes all filenames."),
         )
     }
@@ -1663,4 +1677,21 @@ impl CedarApp {
         self.browse_search_snapshot_current(hit)
             .then(|| self.search_results[hit.index].text.as_str())
     }
+}
+
+// Shared pure measurement: the compact modal reserves exactly the same one- or
+// two-row field layout as the bottom Find renderer, without a second UI pass.
+pub(super) fn filter_controls_width(ui: &egui::Ui) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    ui.fonts(|fonts| {
+        fonts
+            .layout_no_wrap(
+                "Directory  workspace/root    File masks  *.rs;*.toml".into(),
+                font,
+                MUTED,
+            )
+            .size()
+            .x
+    }) + ui.spacing().item_spacing.x * 6.0
+        + ui.spacing().button_padding.x * 4.0
 }

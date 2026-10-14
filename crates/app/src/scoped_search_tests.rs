@@ -320,6 +320,208 @@ pub(super) fn has_text(output: &egui::FullOutput, expected: &str) -> bool {
     }
     output.shapes.iter().any(|s| contains(&s.shape, expected))
 }
+// Status details are reachable through the real bounded native ScrollArea.
+// Do not call has_text on clipped-away galleys or remove the old exact counters.
+fn browse_status_scroll(app: &mut CedarApp, size: egui::Vec2, to_end: bool) -> egui::FullOutput {
+    let (id, rect, content): (egui::Id, egui::Rect, egui::Vec2) = app
+        .editor_ctx
+        .data(|data| data.get_temp(egui::Id::new("text_status_scroll_probe")))
+        .unwrap();
+    frame_at(
+        app,
+        size,
+        vec![
+            egui::Event::PointerMoved(rect.center()),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, if to_end { -8000.0 } else { 8000.0 }),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    for _ in 0..3 {
+        frame_at(app, size, vec![]);
+    }
+    let output = frame_at(app, size, vec![]);
+    let offset = egui::scroll_area::State::load(&app.editor_ctx, id)
+        .unwrap()
+        .offset
+        .y;
+    let expected = if to_end {
+        (content.y - rect.height()).max(0.0)
+    } else {
+        0.0
+    };
+    assert!(
+        (offset - expected).abs() <= 1.0,
+        "status details scroll must reach requested endpoint: {offset} vs {expected}"
+    );
+    output
+}
+
+// A one-Body-line plus 4-point-slack details viewport cannot show both the scan
+// row and a later incomplete warning at once. The slack prevents fractional
+// wheel offsets from clipping either edge of a complete Body row. Prove every
+// exact field is fully readable during
+// real scrolling, rather than accepting a clipped galley or requiring the tail
+// frame to contain all rows. One-point wheel steps cannot skip a complete row.
+fn browse_assert_status_fields_reachable(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    expected: &[&str],
+    forbidden: &[&str],
+) {
+    fn full_row(
+        shape: &egui::epaint::Shape,
+        clip: egui::Rect,
+        viewport: egui::Rect,
+        expected: &str,
+    ) -> Option<egui::Rect> {
+        match shape {
+            egui::epaint::Shape::Text(draw) => draw.galley.rows.iter().find_map(|row| {
+                let rect = row.rect.translate(draw.pos.to_vec2());
+                (row.text().contains(expected)
+                    && clip.contains_rect(rect)
+                    && viewport.contains_rect(rect))
+                .then_some(rect)
+            }),
+            egui::epaint::Shape::Vec(shapes) => shapes
+                .iter()
+                .find_map(|shape| full_row(shape, clip, viewport, expected)),
+            _ => None,
+        }
+    }
+    fn log_tail_rows(
+        shape: &egui::epaint::Shape,
+        clip: egui::Rect,
+        viewport: egui::Rect,
+        expected: &[&str],
+        following_frame: bool,
+        offset: f32,
+    ) {
+        match shape {
+            egui::epaint::Shape::Text(draw)
+                if expected
+                    .iter()
+                    .any(|field| draw.galley.text().contains(field)) =>
+            {
+                for row in &draw.galley.rows {
+                    let rect = row.rect.translate(draw.pos.to_vec2());
+                    eprintln!("SCOPED_STATUS_ROW_PAINT following_frame={following_frame} stored_offset={offset} text={:?} row={rect:?} clip={clip:?} viewport={viewport:?} full={}", row.text(), clip.contains_rect(rect) && viewport.contains_rect(rect));
+                }
+            }
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    log_tail_rows(shape, clip, viewport, expected, following_frame, offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut output = browse_status_scroll(app, size, false);
+    let (id, viewport, content): (egui::Id, egui::Rect, egui::Vec2) = app
+        .editor_ctx
+        .data(|data| data.get_temp(egui::Id::new("text_status_scroll_probe")))
+        .unwrap();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+    assert!(screen.contains_rect(viewport));
+    let tail = (content.y - viewport.height()).max(0.0);
+    let mut reached = vec![false; expected.len()];
+    let mut tail_repainted = false;
+    // Native smoothing can lag the wheel by a few frames. The bound is derived
+    // from the actual content extent, not a timeout or direct ScrollArea write.
+    for step in 0..=(tail.ceil() as usize + 20) {
+        let offset = egui::scroll_area::State::load(&app.editor_ctx, id)
+            .unwrap()
+            .offset
+            .y;
+        if reached.iter().any(|reached| !reached) {
+            for shape in &output.shapes {
+                log_tail_rows(
+                    &shape.shape,
+                    shape.clip_rect,
+                    viewport,
+                    expected,
+                    step > 0,
+                    offset,
+                );
+            }
+        }
+        for field in forbidden {
+            assert!(
+                !has_text(&output, field),
+                "unexpected status field {field:?} at offset {offset}"
+            );
+        }
+        for (index, field) in expected.iter().enumerate() {
+            if reached[index] {
+                continue;
+            }
+            if let Some((rect, clip)) = output.shapes.iter().find_map(|shape| {
+                full_row(&shape.shape, shape.clip_rect, viewport, field)
+                    .map(|rect| (rect, shape.clip_rect))
+            }) {
+                reached[index] = true;
+                eprintln!("SCOPED_STATUS_FIELD field={field:?} window={size:?} step={step} offset={offset} row={rect:?} clip={clip:?} viewport={viewport:?}");
+            }
+        }
+        if step > 0 && (offset - tail).abs() <= 0.01 {
+            for shape in &output.shapes {
+                log_tail_rows(
+                    &shape.shape,
+                    shape.clip_rect,
+                    viewport,
+                    expected,
+                    tail_repainted,
+                    offset,
+                );
+            }
+            if tail_repainted {
+                break;
+            }
+            // ScrollArea handles wheel input in end(), after laying out and
+            // painting this frame's children. Its stored offset can already be
+            // at the tail while these shapes still use the previous offset.
+            // Observe the one following native frame, without another wheel.
+            output = frame_at(app, size, vec![]);
+            tail_repainted = true;
+            continue;
+        }
+        frame_at(
+            app,
+            size,
+            vec![
+                egui::Event::PointerMoved(viewport.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -1.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        // Observe the user's stop after each small wheel action, not only at
+        // the tail. end() has now committed this action's scroll position.
+        output = frame_at(app, size, vec![]);
+    }
+    let offset = egui::scroll_area::State::load(&app.editor_ctx, id)
+        .unwrap()
+        .offset
+        .y;
+    assert!(
+        (offset - tail).abs() <= 0.01,
+        "real details wheel must reach the tail: {offset} vs {tail}"
+    );
+    let missing: Vec<_> = expected
+        .iter()
+        .zip(reached)
+        .filter_map(|(field, reached)| (!reached).then_some(*field))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "status fields never fully painted in one Body row: {missing:?}; window={size:?}, viewport={viewport:?}, content={content:?}"
+    );
+}
+
 fn selection(app: &CedarApp) -> SelectionKey {
     let value = egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 1_u64)))
         .unwrap()
@@ -956,10 +1158,16 @@ fn scoped_find_shared_controls_have_visible_native_geometry_at_both_font_sizes()
                 ] {
                     visible(&app, probe, true, "accepted controls");
                 }
-                let output = frame_at(&mut app, size, vec![]);
+                let output = match surface {
+                    Surface::Browse => browse_status_scroll(&mut app, size, true),
+                    Surface::Bottom => frame_at(&mut app, size, vec![]),
+                };
                 assert!(
                     has_text(&output, "4 entries examined") && has_text(&output, "128 bytes read")
                 );
+                if matches!(surface, Surface::Browse) {
+                    browse_status_scroll(&mut app, size, false);
+                }
                 visible(&app, &surface.group(0), true, "accepted group");
                 visible(&app, &surface.row(0), true, "accepted row");
                 recorded_response(&app, &surface.row(0)).request_focus();
@@ -981,7 +1189,43 @@ fn scoped_find_shared_controls_have_visible_native_geometry_at_both_font_sizes()
                     },
                     Some(DRAFT)
                 );
-                visible(&app, pane, true, "opened preview");
+                if matches!(surface, Surface::Browse) {
+                    let (_, viewport): (egui::Id, egui::Rect) = app
+                        .editor_ctx
+                        .data(|data| {
+                            data.get_temp(egui::Id::new(("project_text_context_scroll", false)))
+                        })
+                        .expect("production Text preview viewport");
+                    assert!(
+                        viewport.is_finite()
+                            && viewport.is_positive()
+                            && screen.contains_rect(viewport)
+                            && recorded_clip(&app, pane).contains_rect(viewport)
+                    );
+                    assert!(recorded_rect(&app, pane).intersects(viewport));
+                    let code_font = egui::TextStyle::Monospace.resolve(&app.editor_ctx.style());
+                    let (line_height, marker_width) = app.editor_ctx.fonts(|fonts| {
+                        let line = fonts.layout_no_wrap(
+                            "▶ 2 | needle second".into(),
+                            code_font.clone(),
+                            MUTED,
+                        );
+                        let marker = fonts.layout_no_wrap("▶".into(), code_font, MUTED);
+                        (line.size().y, marker.size().x)
+                    });
+                    assert!(viewport.height() >= 3.0 * line_height,
+                        "Browse font={font}, size={size:?}: three complete preview lines: {viewport:?}/{line_height}");
+                    let target = recorded_rect(&app, "project_text_context_target");
+                    assert!(
+                        viewport.contains_rect(egui::Rect::from_min_max(
+                            target.min,
+                            egui::pos2(target.left() + marker_width, target.bottom())
+                        )),
+                        "Browse font={font}, size={size:?}: complete historical target marker"
+                    );
+                } else {
+                    visible(&app, pane, true, "opened preview");
+                }
                 if matches!(surface, Surface::Browse) {
                     for probe in ["browse_preview", "browse_open", "browse_close"] {
                         visible(&app, probe, true, "preview action targets");
@@ -1088,7 +1332,8 @@ fn scoped_find_shared_controls_have_visible_native_geometry_at_both_font_sizes()
 
 #[test]
 fn scoped_find_preview_budget_keeps_controls_and_long_results_reachable() {
-    // The modal's 760-point body breakpoint lies at an 824-point screen width.
+    // Keep the former breakpoint neighbors as resize pressure cases.
+    // Text now uses the same vertical results/preview order at both widths.
     for width in [823.0, 825.0] {
         for height in [540.0, 900.0] {
             for font in [13.0, 18.0] {
@@ -1204,10 +1449,26 @@ fn scoped_find_preview_budget_keeps_controls_and_long_results_reachable() {
                             assert!(screen.contains_rect(results) && results.is_positive());
                             let row_height =
                                 recorded_rect(&app, &format!("browse_row:{index}")).height();
+                            let group_height = recorded_rect(&app, "browse_group:0").height();
+                            let spacing = app.editor_ctx.style().spacing.item_spacing.y;
                             assert!(
-                                results.height() >= row_height,
-                                "results must retain a usable native row"
+                                results.height() >= group_height + 2.0 * row_height + 2.0 * spacing,
+                                "results must retain one complete group and two complete hits: {results:?}"
                             );
+                            let code_font =
+                                egui::TextStyle::Monospace.resolve(&app.editor_ctx.style());
+                            let code_height = app.editor_ctx.fonts(|fonts| {
+                                fonts
+                                    .layout_no_wrap(
+                                        "▶ 41 | needle line 41".into(),
+                                        code_font,
+                                        MUTED,
+                                    )
+                                    .size()
+                                    .y
+                            });
+                            assert!(viewport.height() >= 3.0 * code_height,
+                                "preview must retain three complete measured code lines: {viewport:?}, line={code_height}");
                             assert!(
                                 content_size.y > results.height(),
                                 "long results must really scroll"
@@ -1373,11 +1634,34 @@ fn scoped_find_incomplete_empty_is_reported_separately_from_complete_no_match() 
                 }),
             );
             settle(&mut app);
-            let output = frame(&mut app, vec![]);
-            assert!(has_text(&output, "7 entries examined"));
-            assert!(has_text(&output, "1024 bytes read"));
+            match surface {
+                Surface::Browse => {
+                    let mut fields = vec!["7 entries examined", "1024 bytes read"];
+                    if incomplete {
+                        fields.extend([
+                            "Incomplete: read byte limit",
+                            "Search incomplete; more matching lines may exist.",
+                        ]);
+                    }
+                    browse_assert_status_fields_reachable(
+                        &mut app,
+                        SIZE,
+                        &fields,
+                        if incomplete {
+                            &[]
+                        } else {
+                            &["read byte limit", "Search incomplete;"]
+                        },
+                    );
+                }
+                Surface::Bottom => {
+                    let output = frame(&mut app, vec![]);
+                    assert!(has_text(&output, "7 entries examined"));
+                    assert!(has_text(&output, "1024 bytes read"));
+                    assert_eq!(has_text(&output, "read byte limit"), incomplete);
+                }
+            }
             assert_eq!(app.search_truncated, incomplete);
-            assert_eq!(has_text(&output, "read byte limit"), incomplete);
             assert!(app.search_results.is_empty());
             assert!(commands.try_recv().is_err());
         }
@@ -1455,10 +1739,14 @@ fn scoped_find_long_valid_scope_keeps_historical_summary_and_actions_visible() {
                     &specification,
                     "{surface:?}, font={font}: rendered summary changed the exact submitted tuple"
                 );
-                let small_font = egui::TextStyle::Small.resolve(&app.editor_ctx.style());
+                let history_font = match surface {
+                    Surface::Browse => egui::TextStyle::Body,
+                    Surface::Bottom => egui::TextStyle::Small,
+                }
+                .resolve(&app.editor_ctx.style());
                 let single_line = app.editor_ctx.fonts(|fonts| {
                     fonts
-                        .layout_no_wrap("Historical results".into(), small_font, MUTED)
+                        .layout_no_wrap("Historical results".into(), history_font, MUTED)
                         .size()
                         .y
                 });
@@ -1490,5 +1778,269 @@ fn scoped_find_long_valid_scope_keeps_historical_summary_and_actions_visible() {
                 assert!(commands.try_recv().is_err());
             }
         }
+    }
+}
+
+#[test]
+fn scoped_text_count_uses_accepted_line_indexes_and_exact_path_groups() {
+    let (mut app, commands) = fixture();
+    enter(&mut app, Surface::Browse);
+    let command = scoped(&mut app, &commands, Surface::Browse);
+    let specification = request("needle", "src", &["*.rs"]);
+    // Two literal occurrences in a snippet are still one accepted matching line.
+    // Scoped wire rows must be strictly ordered by path/line. Distinct indexes
+    // retain their identities, and same-basename files are distinct path groups.
+    // Identical legacy-row indexes remain covered by the retained Browse tests.
+    let matches = vec![
+        SearchMatch {
+            path: "src/one/same.rs".into(),
+            line: 2,
+            text: "needle needle".into(),
+        },
+        SearchMatch {
+            path: "src/one/same.rs".into(),
+            line: 3,
+            text: "needle needle".into(),
+        },
+        SearchMatch {
+            path: "src/two/same.rs".into(),
+            line: 1000,
+            text: "needle".into(),
+        },
+    ];
+    reply(
+        &mut app,
+        command.id,
+        Ok(payload(specification.clone(), matches)),
+    );
+    frame(&mut app, vec![]);
+    assert_eq!(
+        app.search_state.accepted.as_ref().unwrap().request,
+        command.id
+    );
+    let first = frame(&mut app, vec![]);
+    assert!(has_text(&first, "3 matching lines in 2 files"));
+    let column = |index: usize, text: &str| {
+        let row = recorded_rect(&app, &format!("browse_row:{index}"));
+        first
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(draw)
+                    if draw.galley.text() == text
+                        && (draw.pos.y + draw.galley.size().y / 2.0 - row.center().y).abs()
+                            <= 1.0 =>
+                {
+                    Some(egui::Rect::from_min_size(draw.pos, draw.galley.size()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing native painted column {index}/{text}"))
+    };
+    assert!(
+        (column(0, "2").right() - column(2, "1000").right()).abs() <= 1.0,
+        "accepted-batch line-number column must remain right-aligned"
+    );
+    assert!(
+        (column(0, "needle needle").left() - column(2, "needle").left()).abs() <= 1.0,
+        "snippet start must not shift with each row's number of digits"
+    );
+    settle(&mut app);
+    assert_ne!(
+        recorded_response(&app, "browse_row:0").id,
+        recorded_response(&app, "browse_row:1").id
+    );
+    assert_ne!(
+        recorded_response(&app, "browse_group:0").id,
+        recorded_response(&app, "browse_group:2").id
+    );
+    assert_eq!(app.search_state.visible_indices(), vec![0, 1, 2]);
+    click(&mut app, "browse_group:0");
+    let collapsed = frame(&mut app, vec![]);
+    assert_eq!(app.search_state.visible_indices(), vec![2]);
+    assert!(
+        has_text(&collapsed, "3 matching lines in 2 files"),
+        "collapse cannot reduce accepted totals"
+    );
+    assert_eq!(app.search_results.len(), 3);
+    assert_eq!(
+        app.search_state
+            .accepted
+            .as_ref()
+            .unwrap()
+            .specification
+            .request,
+        specification
+    );
+    click(&mut app, "browse_group:0");
+    settle(&mut app);
+    assert_eq!(app.search_state.visible_indices(), vec![0, 1, 2]);
+    assert!(has_text(
+        &frame(&mut app, vec![]),
+        "3 matching lines in 2 files"
+    ));
+    assert!(
+        commands.try_recv().is_err(),
+        "group presentation does not Search or Read"
+    );
+}
+
+#[test]
+fn scoped_text_count_distinguishes_unsubmitted_complete_empty_and_incomplete() {
+    for empty in [false, true] {
+        for incomplete in [false, true] {
+            let (mut app, commands) = fixture();
+            enter(&mut app, Surface::Browse);
+            assert!(!has_text(&frame(&mut app, vec![]), "0 matching lines"));
+            let command = scoped(&mut app, &commands, Surface::Browse);
+            let pending = frame(&mut app, vec![]);
+            assert!(has_text(&pending, "Searching"));
+            assert!(!has_text(&pending, "No matching lines"));
+            let matches = if empty { vec![] } else { rows() };
+            let count = matches.len();
+            reply(
+                &mut app,
+                command.id,
+                Ok(Payload::ScopedMatches {
+                    result: ScopedSearchResult {
+                        request: request("needle", "src", &["*.rs"]),
+                        matches,
+                        incomplete,
+                        reasons: if incomplete {
+                            vec![cedar_protocol::ScopedSearchIncompleteReason::ReadByteLimit]
+                        } else {
+                            vec![]
+                        },
+                        examined_entries: 37,
+                        read_bytes: 8192,
+                    },
+                }),
+            );
+            frame(&mut app, vec![]);
+            assert_eq!(
+                app.search_state.accepted.as_ref().unwrap().request,
+                command.id
+            );
+            let first = frame(&mut app, vec![]);
+            let expected = if incomplete {
+                format!(
+                    "{count} matching lines observed in {} files · incomplete",
+                    if empty { 0 } else { 2 }
+                )
+            } else {
+                format!(
+                    "{count} matching lines in {} files",
+                    if empty { 0 } else { 2 }
+                )
+            };
+            assert!(
+                has_text(&first, &expected),
+                "first accepted count {expected}"
+            );
+            settle(&mut app);
+            let settled = frame(&mut app, vec![]);
+            assert!(has_text(&settled, &expected));
+            let mut fields = vec!["37 entries examined", "8192 bytes read"];
+            if incomplete {
+                fields.extend([
+                    "Incomplete: read byte limit",
+                    "Search incomplete; more matching lines may exist.",
+                ]);
+            }
+            for (size, font) in [
+                (SIZE, 13.0),
+                (egui::vec2(780.0, 540.0), 13.0),
+                (egui::vec2(780.0, 540.0), 18.0),
+            ] {
+                app.editor_ctx.style_mut(|style| {
+                    for kind in [egui::TextStyle::Body, egui::TextStyle::Button] {
+                        style.text_styles.insert(kind, FontId::proportional(font));
+                    }
+                    style
+                        .text_styles
+                        .insert(egui::TextStyle::Monospace, FontId::monospace(font + 1.0));
+                });
+                for _ in 0..4 {
+                    frame_at(&mut app, size, vec![]);
+                }
+                browse_assert_status_fields_reachable(
+                    &mut app,
+                    size,
+                    &fields,
+                    if incomplete {
+                        &[]
+                    } else {
+                        &["read byte limit", "Search incomplete;"]
+                    },
+                );
+                assert_eq!(app.search_truncated, incomplete);
+            }
+            if empty {
+                assert_eq!(
+                    has_text(&settled, "No matching lines in the searched scope."),
+                    !incomplete,
+                    "only a completed empty scan may claim no matching lines"
+                );
+            }
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn scoped_text_retired_flight_keeps_previous_count_without_searching_new_tuple() {
+    for failed in [false, true] {
+        let (mut app, commands) = fixture();
+        enter(&mut app, Surface::Browse);
+        accepted(&mut app, &commands, Surface::Browse);
+        let accepted = app.search_state.accepted.clone();
+        replace(&mut app, "browse_query", "pending tuple");
+        let pending = submit(&mut app, &commands, Surface::Browse);
+        assert!(
+            matches!(&pending.op, Operation::SearchIn { request } if request.query == "pending tuple")
+        );
+        replace(&mut app, "browse_query", "edited newer tuple");
+        assert!(app.search_busy());
+        assert!(app.search_state.pending.is_none());
+        let waiting = frame(&mut app, vec![]);
+        assert!(has_text(&waiting, "Waiting for previous search to finish"));
+        assert!(!has_text(&waiting, "Searching…"));
+        assert!(has_text(&waiting, "3 matching lines in 2 files"));
+        assert!(has_text(&waiting, "Historical results for \"needle\""));
+        assert!(!has_text(
+            &waiting,
+            "Historical results for \"edited newer tuple\""
+        ));
+        assert!(!recorded_response(&app, "browse_submit").enabled());
+        assert!(!recorded_response(&app, "browse_row:0").enabled());
+        assert_eq!(app.search_state.accepted, accepted);
+        reply(
+            &mut app,
+            pending.id,
+            if failed {
+                Err("retired tuple failed".into())
+            } else {
+                Ok(payload(request("pending tuple", "src", &["*.rs"]), vec![]))
+            },
+        );
+        let retired = frame(&mut app, vec![]);
+        assert!(has_text(&retired, "3 matching lines in 2 files"));
+        assert!(!has_text(&retired, "0 matching lines"));
+        assert!(!has_text(&retired, "retired tuple failed"));
+        assert_eq!(app.search_state.accepted, accepted);
+        assert!(!app.search_rows_active());
+        replace(&mut app, "browse_query", "needle");
+        assert!(
+            !app.search_rows_active(),
+            "editing back cannot revive accepted authority"
+        );
+        assert!(has_text(
+            &frame(&mut app, vec![]),
+            "3 matching lines in 2 files"
+        ));
+        assert!(
+            commands.try_recv().is_err(),
+            "retired flight does not schedule a replacement"
+        );
     }
 }
