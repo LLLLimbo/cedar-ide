@@ -1,4 +1,26 @@
-# Recent Files — 0.64 bounded functional acceptance
+# Recent Files — 0.74 layout candidate
+
+The 0.74 candidate presents a compact filename, muted parent and separate Open/Closed
+badge on each row, with a fixed selected-path band and action footer. The primary
+action reserves the longest Open closed file label. Empty history and a local
+filter with no matches have distinct messages. No search provider or preview is
+added. Opening the chooser clears the query and its native Undo and selects the
+most recent other file; closing/reopening resets only this chooser's native
+scroll state. A one-shot keyboard reveal respects later wheel movement.
+
+Rows and the selected-path band may elide long text; their original exact strings
+and identities are retained. Noninteractive tooltips wrap common paths, never
+acquire pointer/focus authority, and remain screen-clipped. A 4096-byte path can
+exceed the physical screen height, so its tooltip tail is not guaranteed visible.
+The production base-font tests do not prove arbitrary CJK glyph coverage.
+
+The still-0.73.0 development candidate passed 381 focused checks with 1 ignored
+process test and a limited single Linux normal-window native comparison with
+normal rc0 and complete postflight. The source report `docs/TEST_REPORT_PHASE74_RECENT_LAYOUT.md`
+separates that evidence from the final 0.74.0 full validation and public gates.
+The original functional acceptance and its timing failure remain below.
+
+## Historical 0.64 bounded functional acceptance
 
 **0.64.0 introduced Recent Files with bounded functional acceptance.** Exact CI and
 package checks passed. The bounded Linux native run passed essential functional

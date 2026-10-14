@@ -4,7 +4,12 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-The **0.73.0 Project Text layout candidate** changes the Text presentation described
+The **0.74.0 Recent Files layout candidate** is a separate connection-local
+chooser, described in [Recent Files](RECENT_FILES.md). Its filename/parent/status
+rows and fixed footer do not add search, preview or a new provider. Recent reopens
+with an empty filter and its Undo cleared, unlike the retained Project Text query.
+Single/double/triple row clicks only select; Enter/Open performs ordinary Open.
+The earlier **0.73.0 Project Text layout candidate** changes the Text presentation described
 [below](#project-text-layout-073-candidate). The earlier Files layout and retained
 behavioral contracts remain separate from version-specific validation.
 

@@ -1,5 +1,5 @@
 //! Connection-local, bounded path history. Never retains draft text or locations.
-use crate::{browse, navigation, CedarApp, WorkspaceKey, MUTED};
+use crate::{browse, chrome, navigation, CedarApp, WorkspaceKey};
 use eframe::egui;
 use std::{collections::HashSet, sync::Arc};
 
@@ -7,6 +7,16 @@ const LIMIT: usize = 64;
 const PATH_BYTES: usize = 256 * 1024;
 const QUERY_CHARS: usize = 4096;
 const QUERY: &str = "recent_query";
+const PRESENTATION: &str = "recent_presentation";
+
+// One bounded rendering record, never an input/action authorization. The view
+// token resets a fixed ScrollArea; the row token survives discarded passes only
+// until its one visible reveal. No Response, Context, or file contents are kept.
+#[derive(Clone, Default)]
+struct Presentation {
+    view: Option<egui::Id>,
+    reveal: Option<egui::Id>,
+}
 
 #[derive(Clone, PartialEq, Eq)]
 struct Owner {
@@ -255,6 +265,8 @@ impl CedarApp {
         self.dismiss_navigation();
     }
     pub(super) fn recent_retire(&mut self) {
+        self.editor_ctx
+            .data_mut(|data| data.remove::<Presentation>(egui::Id::new(PRESENTATION)));
         egui::text_edit::TextEditState::default().store(&self.editor_ctx, egui::Id::new(QUERY));
         self.recent_files.view = None;
         self.recent_files.input.presented.clear();
@@ -555,6 +567,9 @@ impl CedarApp {
         let mut open = None;
         let mut clear = false;
         let mut close = false;
+        // A reveal belongs only to this owned selection gesture, never to an
+        // idle repaint. It leaves focus in the filter and respects later wheel input.
+        let mut reveal = false;
         if let Some((_, target, _, key)) = key {
             if key == egui::Key::Escape {
                 close = true;
@@ -580,6 +595,7 @@ impl CedarApp {
                     };
                     view.selected = Some(rows[index].path.clone());
                     view.focus = true;
+                    reveal = true;
                 }
             } else {
                 match target {
@@ -597,42 +613,155 @@ impl CedarApp {
             }
         }
         let modal = egui::Modal::new(egui::Id::new("navigation_modal")).show(ctx, |ui| {
-            ui.set_width((ctx.screen_rect().width()-64.0).clamp(240.0,560.0));
-            ui.heading("Recent files");
+            let width = (ctx.screen_rect().width() - 64.0).clamp(1.0, 640.0);
+            ui.set_width(width);
+            let top = ui.next_widget_position();
+            let gap = 4.0;
+            let line = recent_text_size(ui, "Ag", egui::TextStyle::Body).y;
+            let button_line = recent_text_size(ui, "Ag", egui::TextStyle::Button).y;
+            let row_height = (button_line + 8.0).max(chrome::ROW_HEIGHT);
+            let title_height = (line + 4.0).max(24.0);
+            let field_height = (line + 2.0 * ui.spacing().button_padding.y)
+                .max(ui.spacing().interact_size.y);
+            let status_height = 2.0 * line + gap;
+            let path_height = line + 6.0;
+            let action_height = (button_line + 10.0).max(30.0);
+            let fixed_height = title_height + field_height + status_height
+                + path_height + action_height + 5.0 * gap;
+            let margin = egui::Frame::popup(ui.style()).total_margin().sum().y;
+            let height = (fixed_height + 12.0 * row_height)
+                .min((ctx.screen_rect().height() - 64.0 - margin).max(1.0));
+            let surface = egui::Rect::from_min_size(top, egui::vec2(width, height));
+            ui.set_min_size(surface.size());
+            let band = |y, h| egui::Rect::from_min_size(egui::pos2(top.x, y), egui::vec2(width, h));
+            let title_rect = band(top.y, title_height);
+            let connection_width = recent_text_size(ui, "This connection only", egui::TextStyle::Body).x;
+            let connection_rect = egui::Rect::from_min_max(
+                egui::pos2((title_rect.right() - connection_width).max(title_rect.left()), title_rect.top()),
+                title_rect.max,
+            );
+            recent_label(ui, egui::Rect::from_min_max(title_rect.min, egui::pos2((connection_rect.left() - 12.0).max(title_rect.left()), title_rect.bottom())),
+                egui::Label::new(egui::RichText::new("Recent files").strong()).truncate());
+            let connection = recent_label(ui, connection_rect,
+                egui::Label::new(egui::RichText::new("This connection only").color(chrome::MUTED)).truncate());
+            recent_hover(ui, &connection, "Up to 64 recent paths in this connection. Closing a tab keeps its path here; disconnecting clears the list.");
             let id = egui::Id::new(QUERY);
             if view.focus && !ui.is_sizing_pass() { ui.memory_mut(|memory| memory.request_focus(id)); view.focus = false; }
-            let query = ui.add(egui::TextEdit::singleline(&mut view.query).id(id).char_limit(QUERY_CHARS).desired_width(f32::INFINITY).hint_text("Filter recent paths"));
+            let query_rect = band(title_rect.bottom() + gap, field_height);
+            let query = ui.put(query_rect, egui::TextEdit::singleline(&mut view.query).id(id).char_limit(QUERY_CHARS).desired_width(f32::INFINITY).hint_text("Filter recent paths"));
+            recent_hover(ui, &query, "Local path filter; no files are searched.");
             #[cfg(test)] crate::workspace_access_tests::record(ui, "recent_query", &query);
             self.recent_response(ui, view.epoch, Target::Query, &query);
-            if query.changed() { self.recent_files.input.press = None; self.recent_files.input.click = None; open = None; view.selected = view.rows.iter().find(|row| matches_query(&row.path,&view.query)).map(|row| row.path.clone()); }
-            egui::ScrollArea::vertical().id_salt("recent_rows").max_height((ctx.screen_rect().height()-310.0).clamp(75.0,280.0)).show(ui, |ui| {
-                let mut count = 0;
+            if query.changed() { self.recent_files.input.press = None; self.recent_files.input.click = None; open = None; view.selected = view.rows.iter().find(|row| matches_query(&row.path,&view.query)).map(|row| row.path.clone()); reveal = true; }
+            let presentation_key = egui::Id::new(PRESENTATION);
+            let view_id = egui::Id::new(("recent_view", view.owner.generation, view.navigation, view.epoch));
+            let selected_id = view.rows.iter().find(|row| Some(&row.path) == view.selected.as_ref())
+                .map(|row| egui::Id::new(("recent_row", view.navigation, view.epoch, &row.path, row.document)));
+            let mut presentation = ctx.data(|data| data.get_temp::<Presentation>(presentation_key)).unwrap_or_default();
+            let reset_scroll = presentation.view != Some(view_id);
+            if reset_scroll { presentation = Presentation { view: Some(view_id), reveal: None }; }
+            if reveal { presentation.reveal = selected_id; }
+            else if presentation.reveal != selected_id || ui.input(|input| input.raw_scroll_delta != egui::Vec2::ZERO || input.pointer.any_pressed()) {
+                presentation.reveal = None;
+            }
+            let visible_pass = !ui.is_sizing_pass() && ui.is_visible() && !ctx.will_discard()
+                && !ctx.output(|output| output.requested_discard());
+            let mut revealed = false;
+            let count = view.rows.iter().filter(|row| matches_query(&row.path, &view.query)).count();
+            let status_rect = band(query_rect.bottom() + gap, status_height);
+            let headline_rect = band(status_rect.top(), line);
+            let headline = if view.message.is_some() {
+                "Selection is out of date".to_owned()
+            } else {
+                recent_count(count, view.rows.len(), view.query.is_empty())
+            };
+            let headline_response = recent_label(ui, headline_rect,
+                egui::Label::new(egui::RichText::new(&headline).color(if view.message.is_some() { crate::AMBER } else { chrome::MUTED })).truncate());
+            recent_hover(ui, &headline_response, &headline);
+            let details_rect = egui::Rect::from_min_max(egui::pos2(top.x, headline_rect.bottom()), status_rect.max);
+            let mut details_ui = ui.new_child(egui::UiBuilder::new().id_salt("recent_status").max_rect(details_rect));
+            details_ui.set_clip_rect(ui.clip_rect().intersect(details_rect));
+            details_ui.spacing_mut().scroll.dormant_handle_opacity = 0.65;
+            let status = egui::ScrollArea::vertical().id_salt(("recent_status_scroll", view.message))
+                .animated(false).auto_shrink([false, false]).min_scrolled_height(0.0)
+                .max_height(details_rect.height()).show(&mut details_ui, |ui| {
+                    ui.add_space(gap / 2.0);
+                    ui.label(egui::RichText::new(view.message.unwrap_or("Local path filter · Up to 64 paths"))
+                        .color(if view.message.is_some() { crate::AMBER } else { chrome::MUTED }));
+                });
+            let footer = band(surface.bottom() - action_height, action_height);
+            let path_rect = band(footer.top() - gap - path_height, path_height);
+            let rows_rect = egui::Rect::from_min_max(egui::pos2(top.x, status_rect.bottom() + gap),
+                egui::pos2(surface.right(), (path_rect.top() - gap).max(status_rect.bottom() + gap)));
+            let mut rows_ui = ui.new_child(egui::UiBuilder::new().id_salt("recent_rows_panel").max_rect(rows_rect));
+            rows_ui.set_clip_rect(ui.clip_rect().intersect(rows_rect));
+            rows_ui.spacing_mut().item_spacing.y = 0.0;
+            // Keep one persistent ScrollArea ID. A fresh chooser resets it;
+            // unique per-view salts would accumulate native scroll states.
+            if reset_scroll {
+                // Reset native inertia and pending targets as well as offset.
+                // Changing only offset lets an interrupted drag move a new view.
+                egui::scroll_area::State::default().store(ctx, rows_ui.make_persistent_id(egui::Id::new("recent_rows")));
+            }
+            let rows_scroll = egui::ScrollArea::vertical().id_salt("recent_rows").animated(false)
+                .auto_shrink([false, false]).min_scrolled_height(0.0).max_height(rows_rect.height());
+            let rows_scroll = rows_scroll.show(&mut rows_ui, |ui| {
                 for row in view.rows.iter().filter(|row| matches_query(&row.path,&view.query)) {
-                    count += 1;
                     let current = self.recent_row_current(row);
-                    let label = format!("{}  ·  {}", row.path, if row.document.is_some() { "Open" } else { "Closed" });
                     let id = egui::Id::new(("recent_row",view.navigation,view.epoch,&row.path,row.document));
-                    let response = ui.add_enabled_ui(current, |ui| navigation::candidate_row(ui,id,Some(&row.path)==view.selected.as_ref(),&label,true)).inner;
+                    let selected = Some(&row.path) == view.selected.as_ref();
+                    let response = ui.add_enabled_ui(current, |ui| recent_row(ui,id,selected,&row.path,row.document.is_some())).inner;
                     #[cfg(test)] crate::workspace_access_tests::record(ui,&format!("recent_row:{}",row.path),&response);
                     if self.recent_response(ui,view.epoch,Target::Row(row.clone()),&response) { view.selected=Some(row.path.clone()); view.focus=true; }
+                    if presentation.reveal == Some(id) && selected && visible_pass {
+                        response.scroll_to_me(None);
+                        revealed = true;
+                    }
                 }
-                if count == 0 { ui.label("No recent files match."); }
             });
-            ui.horizontal(|ui| {
-                let row = view.rows.iter().find(|row| Some(&row.path)==view.selected.as_ref() && matches_query(&row.path,&view.query)).cloned();
+            if revealed { presentation.reveal = None; }
+            ctx.data_mut(|data| data.insert_temp(presentation_key, presentation));
+            let row = view.rows.iter().find(|row| Some(&row.path)==view.selected.as_ref() && matches_query(&row.path,&view.query)).cloned();
+            let path = row.as_ref().map(|row| row.path.as_ref()).unwrap_or(if view.rows.is_empty() {
+                "Files you open appear here"
+            } else { "No matching path selected" });
+            let path_response = recent_label(ui, path_rect, egui::Label::new(egui::RichText::new(path).color(chrome::MUTED)).truncate());
+            recent_hover(ui, &path_response, path);
+            ui.painter().hline(surface.x_range(), path_rect.top() - gap / 2.0, egui::Stroke::new(1.0_f32, chrome::BORDER));
+            let open_width = recent_text_size(ui, "Open closed file", egui::TextStyle::Button).x + 16.0;
+            let clear_width = recent_text_size(ui, "Clear recent", egui::TextStyle::Button).x + 16.0;
+            let close_width = recent_text_size(ui, "Close", egui::TextStyle::Button).x + 16.0;
+            let open_rect = egui::Rect::from_min_size(footer.min, egui::vec2(open_width, action_height));
+            let clear_rect = egui::Rect::from_min_size(egui::pos2(open_rect.right() + gap, footer.top()), egui::vec2(clear_width, action_height));
+            let close_rect = egui::Rect::from_min_size(egui::pos2(clear_rect.right() + gap, footer.top()), egui::vec2(close_width, action_height));
+            {
                 let label = if row.as_ref().is_some_and(|row| row.document.is_none()) { "Open closed file" } else { "Open" };
-                let response = ui.add_enabled(row.as_ref().is_some_and(|row|self.recent_row_current(row)),egui::Button::new(label));
+                let response = recent_button(ui, open_rect, label, row.as_ref().is_some_and(|row|self.recent_row_current(row)));
+                recent_hover(ui, &response, "Open the selected path. Closed files use ordinary Open position; no closed caret is remembered.");
                 #[cfg(test)] crate::workspace_access_tests::record(ui,"recent_open",&response);
                 if let Some(row) = row { if self.recent_response(ui,view.epoch,Target::Open(row.clone()),&response) { open=Some(row); } }
-                let response = ui.add_enabled(!self.recent_files.paths.is_empty(),egui::Button::new("Clear recent"));
+                let response = recent_button(ui, clear_rect, "Clear recent", !self.recent_files.paths.is_empty());
+                recent_hover(ui, &response, "Clears this connection’s recent list; keeps files and open tabs.");
                 #[cfg(test)] crate::workspace_access_tests::record(ui,"recent_clear",&response);
                 clear |= self.recent_response(ui,view.epoch,Target::Clear,&response);
-                let response = ui.button("Close");
+                let response = recent_button(ui, close_rect, "Close", true);
                 #[cfg(test)] crate::workspace_access_tests::record(ui,"recent_close",&response);
                 close |= self.recent_response(ui,view.epoch,Target::Close,&response);
-            });
-            ui.label(egui::RichText::new("This connection only · up to 64 paths · closing a tab keeps its path here. Clear or disconnect removes the list. Closed files use the ordinary Open position; no caret is remembered.").small().color(MUTED));
-            if let Some(message)=view.message {ui.label(message);}
+            }
+            let hint = "Enter to open · Esc to close";
+            let hint_width = (footer.right() - close_rect.right() - 12.0).max(0.0);
+            if recent_text_size(ui, hint, egui::TextStyle::Body).x <= hint_width {
+                recent_label(ui, egui::Rect::from_min_max(egui::pos2(close_rect.right() + 12.0, footer.top()), footer.max),
+                    egui::Label::new(egui::RichText::new(hint).color(chrome::MUTED)));
+            }
+            #[cfg(test)] {
+                let geometry = tests::Geometry { surface, rows: rows_rect, status: status_rect, headline: headline_rect,
+                    details: status.inner_rect, path: path_rect, rows_id: rows_scroll.id, status_id: status.id,
+                    rows_content: rows_scroll.content_size, status_content: status.content_size,
+                    visible: !ui.is_sizing_pass() && ui.is_visible(), row_height };
+                ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("recent_geometry"), geometry));
+            }
+            #[cfg(not(test))] let _ = (status, rows_scroll);
         });
         close |= modal.backdrop_response.clicked();
         navigation::discard_keyboard(ctx);
@@ -653,5 +782,261 @@ impl CedarApp {
         }
     }
 }
+
+fn recent_text_size(ui: &egui::Ui, text: &str, style: egui::TextStyle) -> egui::Vec2 {
+    egui::WidgetText::from(text)
+        .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style)
+        .size()
+}
+
+fn recent_count(count: usize, total: usize, unfiltered: bool) -> String {
+    if total == 0 {
+        "No recent files in this connection".into()
+    } else if count == 0 {
+        "No recent files match this filter".into()
+    } else if unfiltered {
+        format!(
+            "{count} recent {}",
+            if count == 1 { "file" } else { "files" }
+        )
+    } else {
+        format!(
+            "{count} of {total} recent {}",
+            if total == 1 { "file" } else { "files" }
+        )
+    }
+}
+
+fn recent_label(ui: &mut egui::Ui, rect: egui::Rect, label: egui::Label) -> egui::Response {
+    // A left-origin child also keeps the painted galley left aligned. Ui::put
+    // would center the Label widget inside a reserved full-width band.
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child.set_clip_rect(ui.clip_rect().intersect(rect));
+    let (pos, galley, response) = label.selectable(false).layout_in_ui(&mut child);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, child.is_enabled(), galley.text())
+    });
+    child
+        .painter()
+        .galley(pos, galley, child.visuals().text_color());
+    response
+}
+
+fn recent_button(ui: &mut egui::Ui, rect: egui::Rect, text: &str, enabled: bool) -> egui::Response {
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    child.set_clip_rect(ui.clip_rect().intersect(rect));
+    child.add_enabled(enabled, egui::Button::new(text).min_size(rect.size()))
+}
+
+fn recent_row(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    selected: bool,
+    path: &str,
+    open: bool,
+) -> egui::Response {
+    let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let width = ui.available_width();
+    let padding = 6.0;
+    let icon_width = 20.0;
+    let status = if open { "Open" } else { "Closed" };
+    let badge_width = recent_text_size(ui, "Closed", egui::TextStyle::Button).x + 12.0;
+    let text_width = (width - 2.0 * padding - icon_width - badge_width - 12.0).max(0.0);
+    let name_width = if parent.is_empty() {
+        text_width
+    } else {
+        (text_width * 0.6).min(recent_text_size(ui, name, egui::TextStyle::Button).x)
+    };
+    let galley = |text: &str, width: f32, color| {
+        // Native one-line elision retains the original Unicode layout string.
+        // Painted text never supplies a Row identity or an ordinary Open path.
+        egui::WidgetText::from(egui::RichText::new(text).color(color)).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            width.max(0.0),
+            egui::TextStyle::Button,
+        )
+    };
+    let name = galley(name, name_width, chrome::TEXT);
+    let parent = galley(
+        parent,
+        (text_width - name.size().x - 12.0).max(0.0),
+        chrome::MUTED,
+    );
+    let badge = galley(status, badge_width - 12.0, chrome::MUTED);
+    let height =
+        (name.size().y.max(parent.size().y).max(badge.size().y) + 8.0).max(chrome::ROW_HEIGHT);
+    let (_, rect) = ui.allocate_space(egui::vec2(width, height));
+    let response = ui.interact(rect, id, egui::Sense::click());
+    let accessible = format!("{path} · {status}");
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            &accessible,
+        )
+    });
+    if ui.is_rect_visible(rect) {
+        ui.painter().rect(
+            rect,
+            3.0,
+            if selected {
+                chrome::SELECTED
+            } else if response.hovered() {
+                chrome::HOVER
+            } else {
+                egui::Color32::TRANSPARENT
+            },
+            if response.has_focus() {
+                egui::Stroke::new(1.0_f32, chrome::FOCUS)
+            } else {
+                egui::Stroke::NONE
+            },
+            egui::StrokeKind::Inside,
+        );
+        chrome::paint_icon(
+            ui,
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + padding + 8.0, rect.center().y),
+                egui::vec2(16.0, 16.0),
+            ),
+            chrome::file_icon(path, false),
+            chrome::MUTED,
+        );
+        let x = rect.left() + padding + icon_width;
+        ui.painter().galley(
+            egui::pos2(x, rect.center().y - name.size().y / 2.0),
+            name.clone(),
+            chrome::TEXT,
+        );
+        ui.painter().galley(
+            egui::pos2(
+                x + name.size().x + 12.0,
+                rect.center().y - parent.size().y / 2.0,
+            ),
+            parent,
+            chrome::MUTED,
+        );
+        let badge_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                rect.right() - padding - badge_width,
+                rect.center().y - (badge.size().y + 2.0) / 2.0,
+            ),
+            egui::vec2(badge_width, badge.size().y + 2.0),
+        );
+        ui.painter().rect_stroke(
+            badge_rect,
+            3.0,
+            egui::Stroke::new(1.0_f32, chrome::BORDER),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().galley(
+            badge_rect.center() - badge.size() / 2.0,
+            badge,
+            chrome::MUTED,
+        );
+    }
+    let explanation = if !ui.is_enabled() {
+        "This file changed since it was shown. Reopen Recent files to choose it again."
+    } else if open {
+        "Already open; opening reuses this tab."
+    } else {
+        "Closed; ordinary Open position is used. No closed caret is remembered."
+    };
+    recent_hover(ui, &response, &format!("{accessible}\n{explanation}"));
+    response
+}
+
+fn recent_hover(ui: &egui::Ui, response: &egui::Response, text: &str) {
+    let hovered = if response.enabled() {
+        response.hovered()
+    } else {
+        response.contains_pointer()
+    };
+    let visible = response.rect.intersect(ui.clip_rect());
+    if !hovered
+        || ui.is_sizing_pass()
+        || !ui.input(|input| {
+            input
+                .pointer
+                .hover_pos()
+                .is_some_and(|pos| visible.contains(pos))
+        })
+    {
+        return;
+    }
+    let (idle, down, still, clicked_since_move) = ui.input(|input| {
+        (
+            input
+                .pointer
+                .time_since_last_movement()
+                .min(input.pointer.time_since_last_click())
+                .min(input.time_since_last_scroll()),
+            input.pointer.any_down(),
+            input.pointer.is_still() && input.smooth_scroll_delta == egui::Vec2::ZERO,
+            input.pointer.time_since_last_click() < input.pointer.time_since_last_movement() + 0.1,
+        )
+    });
+    if down || clicked_since_move {
+        return;
+    }
+    if !still {
+        // Keep the native velocity filter progressing even in an otherwise
+        // idle GUI; the next stationary pass can start the hover delay.
+        ui.ctx().request_repaint();
+        return;
+    }
+    let wait = ui.style().interaction.tooltip_delay - idle;
+    if wait > 0.0 {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f32(wait));
+        return;
+    }
+    let screen = ui.ctx().screen_rect().shrink(8.0);
+    let frame = egui::Frame::popup(ui.style());
+    let margin = frame.total_margin().sum();
+    let width = (screen.width() - margin.x).clamp(1.0, 480.0);
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Wrap),
+        width,
+        egui::TextStyle::Body,
+    );
+    let size = egui::vec2(width, galley.size().y) + margin;
+    let below = response.rect.bottom() + 4.0;
+    let above = response.rect.top() - 4.0 - size.y;
+    let y = if below + size.y <= screen.bottom() {
+        below
+    } else if above >= screen.top() {
+        above
+    } else {
+        below.clamp(screen.top(), (screen.bottom() - size.y).max(screen.top()))
+    };
+    let x = response
+        .rect
+        .left()
+        .clamp(screen.left(), (screen.right() - size.x).max(screen.left()));
+    // Pure presentation: paint the measured galley once, with no Area, Ui,
+    // Response, or hit-test layer. Native tooltip Area sizing starts with a
+    // 400-point estimate and can leave an invisible hit rectangle over a row.
+    // A paint-only tooltip cannot acquire focus or swallow a native press.
+    let bounds = egui::Rect::from_min_size(egui::pos2(x, y), size);
+    let content = bounds - frame.total_margin();
+    let painter = ui
+        .ctx()
+        .layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip,
+            response.id.with("recent_tooltip"),
+        ))
+        .with_clip_rect(screen);
+    painter.add(frame.paint(content));
+    painter.galley(content.min, galley, ui.visuals().text_color());
+}
+
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,22 @@
-# Verification checkpoint — 0.73.0 Project Text layout candidate
+# Verification checkpoint — 0.74.0 Recent Files layout candidate
 
-## Current 0.73.0 Project Text layout candidate
+## Current 0.74.0 Recent Files layout candidate
+
+The [phase 74 report](TEST_REPORT_PHASE74_RECENT_LAYOUT.md) records the compact
+Recent chooser, exact path/row identities, fixed action/footer geometry, pure-paint
+tooltip and bounded presentation-only reveal/scroll corrections. Its still-0.73.0
+development candidate passed 381 focused tests with 1 existing ignored process test,
+formatting and strict app Clippy; independent limited-stage review passed.
+A single cloud Linux 1178x814 run produced 20 original JPEGs, normal rc0 and
+303.617 seconds Connected with complete postflight. Initial permission-description
+preflight failure, its standalone erratum, and the later unique successful launch
+remain separately recorded. These are not final 0.74.0 binary/native acceptance.
+Final-version aggregate, Python, strict workspace Clippy, release and five canonical
+driver results require fresh external source-bound receipts. This source report is
+sealed before those gates and does not pre-fill their outcome. Public CI/package
+acceptance and any later final-pair native check remain distinct.
+
+## Prior 0.73.0 Project Text layout candidate
 
 The [phase 73 report](TEST_REPORT_PHASE73_TEXT_LAYOUT.md) records the Text-only
 presentation scope, fixed status/footer and bottom read-only preview, exact

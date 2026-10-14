@@ -2,7 +2,9 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-当前 **0.73.0 Project Text 布局候选**把项目文本搜索整理为紧凑的查询/筛选区、全宽分组结果、文件名/父路径层级和显式下置只读预览，固定操作区不随结果变化移动；计数是匹配行数而非词出现次数。限定 Linux 正常窗实图已确认开发候选的改善，但该次产物仍标为 0.72.0；最终 0.73.0 的单复数文案、版本传播与执行证明单独归属，不重标旧图为最终版本验收。Files/Recent、请求和输入状态机保持原有契约，不新增正则、Words 或 Replace，也不声明 IDEA 像素一致。见[0.73 阶段报告](docs/TEST_REPORT_PHASE73_TEXT_LAYOUT.md)及[使用边界](docs/FIND_AND_RETURN.md#project-text-layout-073-candidate)。
+当前 **0.74.0 Recent Files 布局候选**使用紧凑的文件名/弱父路径层级与独立 Open/Closed 标记，固定弹窗高度、选中路径带和底栏，并为 Open closed file 预留动作宽度。本地 filter、打开时清 query/Undo、默认最近另一文件、单击仅选择以及显式普通 Open 保持原合同；没有 preview、edited-only 或跨连接持久化。仍标为 0.73.0 的开发候选已通过 381 项 focused 检查（1 项忽略）及限定 Linux 正常窗原图比较，单次运行正常 rc0、Connected 303.617 秒，完整 postflight 通过。最终 0.74.0 的完整验证、精确发布产物和 CI 单独归属，不能重标这些开发图；真实 CJK 样例可读也不代表任意路径字形或 4 KiB tooltip 全部可见。见[0.74 阶段报告](docs/TEST_REPORT_PHASE74_RECENT_LAYOUT.md)和[Recent 使用边界](docs/RECENT_FILES.md)。
+
+历史 **0.73.0 Project Text 布局候选**把项目文本搜索整理为紧凑的查询/筛选区、全宽分组结果、文件名/父路径层级和显式下置只读预览，固定操作区不随结果变化移动；计数是匹配行数而非词出现次数。限定 Linux 正常窗实图已确认开发候选的改善，但该次产物仍标为 0.72.0；最终 0.73.0 的单复数文案、版本传播与执行证明单独归属，不重标旧图为最终版本验收。Files/Recent、请求和输入状态机保持原有契约，不新增正则、Words 或 Replace，也不声明 IDEA 像素一致。见[0.73 阶段报告](docs/TEST_REPORT_PHASE73_TEXT_LAYOUT.md)及[使用边界](docs/FIND_AND_RETURN.md#project-text-layout-073-candidate)。
 
 历史 **0.72.0 Files 布局候选**将文件搜索整理为紧凑的模式、查询与目录行，结果使用全宽单行文件名和弱化父路径；显式 Preview 在下方显示，固定操作区不随结果到达移动。已有同 fixture 的限定 Linux 原生图审接受了这一 Files 视觉基线，0.72.0 本地完整 Rust/Python、严格 Clippy、CJK 与五项正常 agent 进程验证已通过；精确双平台 CI 和三包验收仍待完成，不能由本地结果替代。Project Text/Recent 布局未在本阶段重做，也不声明 IDEA 像素一致。见[0.72 阶段报告](docs/TEST_REPORT_PHASE72_FILES_LAYOUT.md)及[使用边界](docs/FIND_AND_RETURN.md#files-layout-072-candidate)。
 
