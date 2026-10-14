@@ -12,6 +12,8 @@ const REPORT: &str = r#"<testsuite name="Example" tests="4" failures="1" errors=
 
 fn app() -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
+    // Match production startup while retaining the real asynchronous fallback.
+    app.editor_ctx.set_fonts(crate::system_fonts::base_fonts());
     let form = ConnectForm {
         local_root: "/workspace".into(),
         allow_run: false,

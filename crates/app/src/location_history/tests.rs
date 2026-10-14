@@ -105,7 +105,32 @@ fn step(app: &mut CedarApp, direction: Direction) -> bool {
     });
     success
 }
-fn label(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+fn painted_texts(output: &egui::FullOutput) -> Vec<String> {
+    fn collect(shape: &egui::epaint::Shape, texts: &mut Vec<String>) {
+        match shape {
+            egui::epaint::Shape::Text(text) => texts.push(text.galley.job.text.clone()),
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, texts);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut texts = Vec::new();
+    for shape in &output.shapes {
+        collect(&shape.shape, &mut texts);
+    }
+    texts
+}
+
+fn label(
+    app: &CedarApp,
+    output: &egui::FullOutput,
+    label: &str,
+    size: egui::Vec2,
+    sidebar_width: f32,
+) -> egui::Pos2 {
     fn find(shape: &egui::epaint::Shape, label: &str) -> Option<egui::Pos2> {
         match shape {
             egui::epaint::Shape::Text(text) if text.galley.job.text == label => {
@@ -119,7 +144,211 @@ fn label(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
         .shapes
         .iter()
         .find_map(|shape| find(&shape.shape, label))
-        .unwrap()
+        .unwrap_or_else(|| {
+            panic!(
+                "missing exact label {label:?} at size={size:?}, sidebar_width={sidebar_width}; painted_texts={:?}; {}",
+                painted_texts(output),
+                compact_history_context(app)
+            )
+        })
+}
+
+const COMPACT_HISTORY_TRACE: &str = "compact_history_trace";
+const COMPACT_HISTORY_SIZES: [(egui::Vec2, f32); 3] = [
+    (egui::vec2(780.0, 540.0), 180.0),
+    (egui::vec2(780.0, 540.0), 246.0),
+    (egui::vec2(1000.0, 700.0), 460.0),
+];
+
+#[test]
+fn compact_editor_scroll_probe_releases_its_context() {
+    let (size, width) = COMPACT_HISTORY_SIZES[0];
+    let mut app = compact_history_app(size, width);
+    let (fonts, deliver) = crate::system_fonts::SystemFonts::pending_failure_for_test();
+    app.system_fonts = fonts;
+    deliver();
+    // Exercise real response capture without a host font worker retaining ctx.
+    compact_history_frame(&mut app, size, vec![]);
+    compact_history_frame(&mut app, size, vec![]);
+    assert!(editor_scroll_probe(&app).5.is_some());
+    let witness = std::sync::Arc::new(());
+    app.editor_ctx.data_mut(|data| {
+        data.insert_temp(egui::Id::new("context_drop_witness"), witness.clone());
+    });
+    assert_eq!(std::sync::Arc::strong_count(&witness), 2);
+    drop(app);
+    assert_eq!(
+        std::sync::Arc::strong_count(&witness),
+        1,
+        "the test probe must not keep the editor Context alive after the app drops"
+    );
+}
+
+type EditorScrollProbe = (
+    egui::Id,
+    egui::Rect,
+    egui::Vec2,
+    egui::Vec2,
+    egui::Rect,
+    Option<crate::EditorScrollResponseSnapshot>,
+    Option<crate::EditorScrollResponseSnapshot>,
+);
+
+fn editor_scroll_probe(app: &CedarApp) -> EditorScrollProbe {
+    app.editor_ctx.data(|data| {
+        data.get_temp::<EditorScrollProbe>(egui::Id::new("compact_history_editor_scroll"))
+            .expect("the production editor ScrollArea must be rendered")
+    })
+}
+
+fn compact_history_context(app: &CedarApp) -> String {
+    let frames = app.editor_ctx.data(|data| {
+        data.get_temp::<Vec<String>>(egui::Id::new(COMPACT_HISTORY_TRACE))
+            .unwrap_or_default()
+    });
+    format!("recent production frames: {}", frames.join("\n"))
+}
+
+fn compact_history_frame(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    let ctx = app.editor_ctx.clone();
+    let mut native = eframe::Frame::_new_kittest();
+    let mut input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        events,
+        ..Default::default()
+    };
+    let original_events = input.events.clone();
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let retained_events = input.events.clone();
+    ctx.run(input, |ctx| {
+        eframe::App::update(app, ctx, &mut native);
+        let overflow = crate::workspace_access_tests::recorded_response(app, "editor_overflow");
+        let scroll = editor_scroll_probe(app);
+        let clicked = ctx.interaction_snapshot(|snapshot| snapshot.clicked);
+        let trace = format!(
+            "pass={}, size={size:?}, fonts={}, error={:?}, overflow={:?}/{:?}, \
+             clicked={clicked:?}, drag={:?}, native={original_events:?}, retained={retained_events:?}",
+            ctx.cumulative_pass_nr(),
+            app.system_fonts.probe_state_for_test(),
+            app.error,
+            overflow.id,
+            overflow.interact_rect,
+            scroll.5.as_ref().map(|response| (response.id, response.interact_rect, response.dragged))
+        );
+        ctx.data_mut(|data| {
+            let frames = data.get_temp_mut_or_default::<Vec<String>>(egui::Id::new(COMPACT_HISTORY_TRACE));
+            if frames.len() == 24 {
+                frames.remove(0);
+            }
+            frames.push(trace);
+        });
+    })
+}
+
+fn compact_history_app(size: egui::Vec2, sidebar_width: f32) -> CedarApp {
+    let mut app = app();
+    let form = crate::ConnectForm {
+        local_root: "/workspace".into(),
+        ..Default::default()
+    };
+    app.workspace_key = Some(form.key());
+    app.active_form = Some(form);
+    app.root = "/workspace".into();
+    app.editor_ctx.style_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(9.0, 8.0);
+        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
+    });
+    app.editor_ctx.data_mut(|data| {
+        data.insert_persisted(
+            egui::Id::new("explorer"),
+            egui::containers::panel::PanelState {
+                rect: egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(sidebar_width, size.y),
+                ),
+            },
+        );
+    });
+    app.activate_history_tab(2);
+    app
+}
+
+fn compact_visible(app: &CedarApp, size: egui::Vec2, name: &str) -> egui::Rect {
+    let rect = crate::workspace_access_tests::recorded_rect(app, name);
+    let clip = crate::workspace_access_tests::recorded_clip(app, name);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+    assert!(
+        rect.is_positive() && screen.contains_rect(rect) && clip.contains_rect(rect),
+        "{name} outside/clipped at {size:?}: rect={rect:?}, clip={clip:?}; {}",
+        compact_history_context(app)
+    );
+    rect
+}
+
+fn compact_pointer(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+fn compact_click(app: &mut CedarApp, size: egui::Vec2, name: &str) -> egui::FullOutput {
+    let at = compact_visible(app, size, name).center();
+    compact_history_frame(
+        app,
+        size,
+        vec![
+            egui::Event::PointerMoved(at),
+            compact_pointer(at, true),
+            compact_pointer(at, false),
+        ],
+    )
+}
+
+fn compact_assert_menu(
+    app: &CedarApp,
+    output: &egui::FullOutput,
+    size: egui::Vec2,
+    sidebar_width: f32,
+) {
+    for (text, widget) in [
+        ("Copy draft", "editor_copy_draft"),
+        ("Compare with disk", "editor_compare_with_disk"),
+    ] {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        assert!(
+            screen.contains(label(app, output, text, size, sidebar_width)),
+            "{text} outside {size:?}"
+        );
+        compact_visible(app, size, widget);
+    }
+}
+
+fn compact_assert_scroll_lane(app: &CedarApp) {
+    let (_, _, _, _, lane, drag, _) = editor_scroll_probe(app);
+    if let Some(drag) = drag {
+        assert!(
+            lane.contains_rect(drag.interact_rect),
+            "background drag escaped current editor lane: {:?} / {lane:?}; {}",
+            drag.interact_rect,
+            compact_history_context(app)
+        );
+        let toolbar = crate::workspace_access_tests::recorded_rect(app, "editor_overflow");
+        assert!(
+            !drag.interact_rect.intersects(toolbar),
+            "background drag covers editor toolbar; {}",
+            compact_history_context(app)
+        );
+    }
 }
 
 fn one_buffer_abc_history() -> (CedarApp, [Location; 3]) {
@@ -1422,49 +1651,59 @@ fn traversal_preserves_the_complete_sixteen_state_undo_redo_timeline() {
 
 #[test]
 fn compact_editor_history_controls_tabs_copy_compare_and_find_remain_visible() {
-    for (size, sidebar_width) in [
-        (egui::vec2(780.0, 540.0), 180.0),
-        (egui::vec2(780.0, 540.0), 246.0),
-        (egui::vec2(1000.0, 700.0), 460.0),
-    ] {
-        let mut app = app();
-        let form = crate::ConnectForm {
-            local_root: "/workspace".into(),
-            ..Default::default()
-        };
-        app.workspace_key = Some(form.key());
-        app.active_form = Some(form);
-        app.root = "/workspace".into();
-        app.editor_ctx.style_mut(|style| {
-            style.spacing.item_spacing = egui::vec2(9.0, 8.0);
-            style.spacing.button_padding = egui::vec2(10.0, 6.0);
-            style
-                .text_styles
-                .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
+    compact_editor_history_layout_case(None);
+}
+
+#[test]
+fn compact_editor_history_missing_font_on_first_frame() {
+    compact_editor_history_layout_case(Some(1));
+}
+
+#[test]
+fn compact_editor_history_missing_font_on_second_frame() {
+    compact_editor_history_layout_case(Some(2));
+}
+
+#[test]
+fn compact_editor_history_missing_font_on_click_frame() {
+    compact_editor_history_layout_case(Some(3));
+}
+
+#[test]
+fn compact_editor_history_missing_font_on_menu_inspection_frame() {
+    compact_editor_history_layout_case(Some(4));
+}
+
+#[test]
+fn compact_editor_history_missing_font_on_escape_frame() {
+    compact_editor_history_layout_case(Some(5));
+}
+
+#[test]
+fn compact_editor_history_missing_font_on_find_frame() {
+    compact_editor_history_layout_case(Some(6));
+}
+
+fn compact_editor_history_layout_case(failure_frame: Option<usize>) {
+    for (size, sidebar_width) in COMPACT_HISTORY_SIZES {
+        let mut app = compact_history_app(size, sidebar_width);
+        let mut deliver_failure = failure_frame.map(|_| {
+            let (fonts, deliver) = crate::system_fonts::SystemFonts::pending_failure_for_test();
+            app.system_fonts = fonts;
+            deliver
         });
-        app.editor_ctx.data_mut(|data| {
-            data.insert_persisted(
-                egui::Id::new("explorer"),
-                egui::containers::panel::PanelState {
-                    rect: egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(sidebar_width, size.y),
-                    ),
-                },
-            )
-        });
-        app.activate_history_tab(2);
-        let ctx = app.editor_ctx.clone();
-        let mut native = eframe::Frame::_new_kittest();
+        let mut frame_number = 0;
         let mut render = |app: &mut CedarApp, events| {
-            let mut input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                events,
-                ..Default::default()
-            };
-            eframe::App::raw_input_hook(app, &ctx, &mut input);
-            ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native))
+            frame_number += 1;
+            if failure_frame == Some(frame_number) {
+                deliver_failure
+                    .take()
+                    .expect("deliver the controlled font result exactly once")();
+            }
+            compact_history_frame(app, size, events)
         };
+        // Preserve the original two-frame boundary and atomic native click.
+        // In particular, the second-frame error must pass without settling.
         render(&mut app, vec![]);
         render(&mut app, vec![]);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
@@ -1476,49 +1715,538 @@ fn compact_editor_history_controls_tabs_copy_compare_and_find_remain_visible() {
             "editor_tab:3",
             "editor_overflow",
         ] {
-            let rect = crate::workspace_access_tests::recorded_rect(&app, name);
-            assert!(screen.contains_rect(rect), "{name} outside {size:?}");
-            assert!(
-                crate::workspace_access_tests::recorded_clip(&app, name).contains_rect(rect),
-                "{name} clipped at {size:?}"
-            );
+            compact_visible(&app, size, name);
         }
         let back = crate::workspace_access_tests::recorded_response(&app, "Back");
         let forward = crate::workspace_access_tests::recorded_response(&app, "Forward");
         assert!(back.rect.right() < forward.rect.left());
         assert!(screen.contains_rect(back.rect) && screen.contains_rect(forward.rect));
-        let at = crate::workspace_access_tests::recorded_rect(&app, "editor_overflow").center();
+        compact_assert_scroll_lane(&app);
+        let at = compact_visible(&app, size, "editor_overflow").center();
         render(
             &mut app,
             vec![
                 egui::Event::PointerMoved(at),
-                egui::Event::PointerButton {
-                    pos: at,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: egui::Modifiers::NONE,
-                },
-                egui::Event::PointerButton {
-                    pos: at,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
+                compact_pointer(at, true),
+                compact_pointer(at, false),
+            ],
+        );
+        let output = render(&mut app, vec![]);
+        compact_assert_menu(&app, &output, size, sidebar_width);
+        render(&mut app, key(egui::Key::Escape, egui::Modifiers::NONE));
+        app.find_open = true;
+        let output = render(&mut app, vec![]);
+        assert!(screen.contains(label(&app, &output, "FIND", size, sidebar_width)));
+        compact_visible(&app, size, "find_label");
+        let editor = crate::workspace_access_tests::recorded_response(&app, "editor");
+        assert!(editor.rect.min.y < screen.max.y - 29.0);
+
+        // Also exercise native Find close/open and error disappearance. These
+        // run after the unchanged regression boundary above, never as warmup.
+        compact_click(&mut app, size, "find_close");
+        assert!(!app.find_open);
+        // Close requests deferred editor focus. Establish it explicitly with
+        // native input before the next shortcut, rather than bypassing the
+        // existing restore-focus fence or claiming immediate automatic focus.
+        compact_focus_editor(&mut app, size);
+        let output =
+            compact_history_frame(&mut app, size, key(egui::Key::F, egui::Modifiers::COMMAND));
+        assert!(app.find_open);
+        assert!(screen.contains(label(&app, &output, "FIND", size, sidebar_width)));
+        compact_click(&mut app, size, "find_close");
+        assert!(!app.find_open);
+        compact_assert_scroll_lane(&app);
+        if failure_frame.is_some() {
+            assert!(
+                app.error.is_some(),
+                "the real font error must remain visible until dismissed"
+            );
+            compact_visible(&app, size, "error_status");
+            let before = compact_visible(&app, size, "editor_overflow");
+            compact_click(&mut app, size, "error_dismiss");
+            assert!(app.error.is_none());
+            compact_history_frame(&mut app, size, vec![]);
+            let after = compact_visible(&app, size, "editor_overflow");
+            assert!(
+                after.top() < before.top(),
+                "dismiss must move the real toolbar upward"
+            );
+            // The first completed frame without the banner supplies the new
+            // target; do not add a convergence frame before clicking it.
+            compact_click(&mut app, size, "editor_overflow");
+            let output = compact_history_frame(&mut app, size, vec![]);
+            compact_assert_menu(&app, &output, size, sidebar_width);
+        }
+        assert!(app
+            .documents
+            .iter()
+            .all(|doc| doc.text == "a😀b\nsecond\n終わり" && doc.saved_text == doc.text));
+    }
+}
+
+#[test]
+fn compact_editor_error_first_frame_and_dismiss_are_visible_at_both_fonts() {
+    for (size, sidebar_width) in COMPACT_HISTORY_SIZES {
+        for font in [13.0, 18.0] {
+            let mut app = compact_history_app(size, sidebar_width);
+            app.editor_ctx.style_mut(|style| {
+                for text_style in [egui::TextStyle::Body, egui::TextStyle::Button] {
+                    style
+                        .text_styles
+                        .insert(text_style, egui::FontId::proportional(font));
+                }
+            });
+            let (fonts, deliver_failure) =
+                crate::system_fonts::SystemFonts::pending_failure_for_test();
+            app.system_fonts = fonts;
+            compact_history_frame(&mut app, size, vec![]);
+            let before = compact_visible(&app, size, "editor_overflow");
+            deliver_failure();
+            let first_output = compact_history_frame(&mut app, size, vec![]);
+            let error = app
+                .error
+                .as_ref()
+                .expect("the controlled receiver must show the real font error");
+            assert!(painted_texts(&first_output)
+                .iter()
+                .any(|text| text == error));
+            // These are the FIRST error-frame rectangles. No convergence or
+            // wider viewport is allowed to rescue clipped notification text.
+            let first = (
+                compact_visible(&app, size, "error_status"),
+                compact_visible(&app, size, "error_dismiss"),
+                compact_visible(&app, size, "editor_overflow"),
+            );
+            assert!(first.2.top() > before.top());
+            compact_assert_scroll_lane(&app);
+            compact_history_frame(&mut app, size, vec![]);
+            let second = (
+                compact_visible(&app, size, "error_status"),
+                compact_visible(&app, size, "error_dismiss"),
+                compact_visible(&app, size, "editor_overflow"),
+            );
+            assert_eq!(
+                first,
+                second,
+                "error geometry drifted after first paint at font={font}, size={size:?}; {}",
+                compact_history_context(&app)
+            );
+            compact_click(&mut app, size, "error_dismiss");
+            assert!(
+                app.error.is_none(),
+                "native Dismiss must remove the real error"
+            );
+            compact_history_frame(&mut app, size, vec![]);
+            let disappeared = compact_visible(&app, size, "editor_overflow");
+            assert_eq!(
+                disappeared, before,
+                "first frame without error must restore the toolbar"
+            );
+            compact_history_frame(&mut app, size, vec![]);
+            assert_eq!(
+                compact_visible(&app, size, "editor_overflow"),
+                disappeared,
+                "toolbar drifted after error disappearance"
+            );
+            assert!(app
+                .documents
+                .iter()
+                .all(|doc| doc.text == "a😀b\nsecond\n終わり" && doc.saved_text == doc.text));
+        }
+    }
+}
+
+#[test]
+fn compact_editor_error_single_line_dismiss_wrap_boundary_is_visible_on_first_frame() {
+    const ERROR: &str = "Notification layout boundary";
+
+    fn notification_frame(
+        app: &mut CedarApp,
+        size: egui::Vec2,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let ctx = app.editor_ctx.clone();
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(app, &ctx, &mut input);
+        ctx.run(input, |ctx| {
+            crate::workspace_access_tests::begin(ctx);
+            app.notifications(ctx);
+        })
+    }
+
+    for font in [13.0, 18.0] {
+        // A separate font-only context locates the two sides of the native
+        // wrap boundary. It never renders or warms the tested error panel.
+        let measure = egui::Context::default();
+        measure.set_fonts(crate::system_fonts::base_fonts());
+        measure.style_mut(|style| {
+            for text_style in [egui::TextStyle::Body, egui::TextStyle::Button] {
+                style
+                    .text_styles
+                    .insert(text_style, egui::FontId::proportional(font));
+            }
+        });
+        let mut threshold = 0.0;
+        let mut single_row_height = 0.0;
+        let _ = measure.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1.0, 1.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                let style = ctx.style();
+                ctx.fonts(|fonts| {
+                    let body = egui::TextStyle::Body.resolve(&style);
+                    let label =
+                        fonts.layout_no_wrap(ERROR.into(), body.clone(), egui::Color32::RED);
+                    let dismiss =
+                        fonts.layout_no_wrap("Dismiss".into(), body, egui::Color32::WHITE);
+                    single_row_height = label.size().y.max(style.spacing.interact_size.y);
+                    threshold = 20.0
+                        + label.size().x
+                        + style.spacing.item_spacing.x
+                        + dismiss.size().x
+                        + if style.visuals.button_frame {
+                            2.0 * style.spacing.button_padding.x
+                        } else {
+                            0.0
+                        };
+                });
+            },
+        );
+        for (width_delta, wraps) in [(-2.0, true), (2.0, false)] {
+            let mut app = app();
+            app.editor_ctx.set_style((*measure.style()).clone());
+            app.error = Some(ERROR.into());
+            let size = egui::vec2(threshold + width_delta, 240.0);
+            let output = notification_frame(&mut app, size, vec![]);
+            assert!(painted_texts(&output).iter().any(|text| text == ERROR));
+            let first = (
+                compact_visible(&app, size, "error_status"),
+                compact_visible(&app, size, "error_dismiss"),
+            );
+            assert!(
+                (first.0.height() - single_row_height).abs() < 1.0,
+                "boundary fixture must keep the message on one row: font={font}, rect={:?}",
+                first.0
+            );
+            assert_eq!(
+                first.1.top() >= first.0.bottom(),
+                wraps,
+                "wrong side of Dismiss wrap boundary: font={font}, size={size:?}, rects={first:?}"
+            );
+            notification_frame(&mut app, size, vec![]);
+            assert_eq!(
+                first,
+                (
+                    compact_visible(&app, size, "error_status"),
+                    compact_visible(&app, size, "error_dismiss"),
+                ),
+                "first-paint boundary geometry must not drift: font={font}, size={size:?}"
+            );
+            let at = first.1.center();
+            notification_frame(
+                &mut app,
+                size,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    compact_pointer(at, true),
+                    compact_pointer(at, false),
+                ],
+            );
+            assert!(
+                app.error.is_none(),
+                "the real Dismiss must remain clickable"
+            );
+        }
+    }
+}
+
+fn compact_visible_editor(app: &CedarApp, size: egui::Vec2) -> egui::Rect {
+    let rect = crate::workspace_access_tests::recorded_rect(app, "editor")
+        .intersect(crate::workspace_access_tests::recorded_clip(app, "editor"))
+        .intersect(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+    assert!(rect.is_positive(), "editor has no visible native target");
+    rect
+}
+
+fn compact_focus_editor(app: &mut CedarApp, size: egui::Vec2) {
+    let at = compact_visible_editor(app, size).left_top() + egui::vec2(18.0, 8.0);
+    compact_history_frame(
+        app,
+        size,
+        vec![
+            egui::Event::PointerMoved(at),
+            compact_pointer(at, true),
+            compact_pointer(at, false),
+        ],
+    );
+    let editor = crate::workspace_access_tests::recorded_response(app, "editor").id;
+    assert!(
+        app.editor_ctx.memory(|memory| memory.has_focus(editor)),
+        "native editor click must own focus; {}",
+        compact_history_context(app)
+    );
+}
+
+fn compact_go_to_line(app: &mut CedarApp, size: egui::Vec2, line: usize) {
+    compact_history_frame(app, size, key(egui::Key::G, egui::Modifiers::COMMAND));
+    compact_history_frame(app, size, vec![]);
+    assert!(app.navigation.dialog_open());
+    compact_history_frame(app, size, key(egui::Key::A, egui::Modifiers::COMMAND));
+    compact_history_frame(app, size, vec![egui::Event::Text(line.to_string())]);
+    compact_history_frame(app, size, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert!(!app.navigation.dialog_open());
+    // Enter queues the line jump, but closing the dialog deliberately keeps
+    // the editor blocked until egui releases its previous modal layer. Wait
+    // for that actual navigation transaction, not a guessed cursor delay.
+    for _ in 0..4 {
+        if app.active().unwrap().jump_to.is_none()
+            && app.location_history.pending.is_none()
+            && !app.navigation.blocks_editor()
+            && !app.navigation.restore_focus
+        {
+            break;
+        }
+        compact_history_frame(app, size, vec![]);
+    }
+    assert!(
+        app.active().unwrap().jump_to.is_none()
+            && app.location_history.pending.is_none()
+            && !app.navigation.blocks_editor()
+            && !app.navigation.restore_focus,
+        "native Go-to did not finish after modal release; {}",
+        compact_history_context(app)
+    );
+    assert_eq!(app.active().unwrap().cursor.0, line);
+}
+
+fn compact_caret_visible(app: &mut CedarApp, size: egui::Vec2) {
+    // Wait only for egui's own scroll animation to put the real caret inside
+    // its current viewport; never enlarge the window or alter the offset.
+    for _ in 0..60 {
+        compact_history_frame(app, size, vec![]);
+        let caret = app.editor_ctx.data(|data| {
+            data.get_temp::<egui::Rect>(egui::Id::new("compact_history_editor_caret"))
+                .expect("production TextEdit must report its caret")
+        });
+        if editor_scroll_probe(app).1.contains_rect(caret) {
+            return;
+        }
+    }
+    panic!(
+        "native navigation did not reveal the caret; {}",
+        compact_history_context(app)
+    );
+}
+
+#[test]
+fn compact_editor_scroll_selection_and_undo_survive_banner_and_find_transitions() {
+    for (size, sidebar_width) in COMPACT_HISTORY_SIZES {
+        let mut app = compact_history_app(size, sidebar_width);
+        let (fonts, deliver_failure) = crate::system_fonts::SystemFonts::pending_failure_for_test();
+        app.system_fonts = fonts;
+        compact_history_frame(&mut app, size, vec![]);
+        deliver_failure();
+        compact_history_frame(&mut app, size, vec![]);
+        assert!(app.error.is_some());
+        compact_visible(&app, size, "error_status");
+        compact_assert_scroll_lane(&app);
+        compact_focus_editor(&mut app, size);
+        let saved = app.active().unwrap().saved_text.clone();
+        let revision = app.active().unwrap().revision.clone();
+        let draft = (0..180)
+            .map(|line| format!("line {line:03} a😀b second 終わり\n"))
+            .collect::<String>();
+        compact_history_frame(&mut app, size, key(egui::Key::A, egui::Modifiers::COMMAND));
+        compact_history_frame(&mut app, size, vec![egui::Event::Text(draft.clone())]);
+        assert_eq!(app.active().unwrap().text, draft);
+        compact_go_to_line(&mut app, size, 1);
+        compact_caret_visible(&mut app, size);
+        let history = signature(&app.location_history.back);
+
+        // Native TextEdit capture must continue when the pointer leaves the
+        // clipped editor viewport; clipping a background must not clip capture.
+        let visible = compact_visible_editor(&app, size);
+        let start = visible.left_top() + egui::vec2(18.0, 8.0);
+        let inside = start + egui::vec2(90.0, 24.0);
+        compact_history_frame(
+            &mut app,
+            size,
+            vec![
+                egui::Event::PointerMoved(start),
+                compact_pointer(start, true),
+            ],
+        );
+        compact_history_frame(&mut app, size, vec![egui::Event::PointerMoved(inside)]);
+        let inside_selection = selection(&app, 2);
+        assert_ne!(
+            inside_selection.primary.index,
+            inside_selection.secondary.index
+        );
+        let outside = egui::pos2(inside.x, visible.bottom() + 12.0);
+        compact_history_frame(&mut app, size, vec![egui::Event::PointerMoved(outside)]);
+        let outside_selection = selection(&app, 2);
+        assert!(
+            outside_selection.primary.index > inside_selection.primary.index,
+            "TextEdit lost native selection capture outside its clip; {}",
+            compact_history_context(&app)
+        );
+        compact_history_frame(&mut app, size, vec![compact_pointer(outside, false)]);
+        let selected = selection(&app, 2);
+
+        let before_wheel = editor_scroll_probe(&app).2.y;
+        let at = compact_visible_editor(&app, size).center();
+        compact_history_frame(
+            &mut app,
+            size,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -120.0),
                     modifiers: egui::Modifiers::NONE,
                 },
             ],
         );
-        let output = render(&mut app, vec![]);
-        for name in ["Copy draft", "Compare with disk"] {
-            assert!(
-                screen.contains(label(&output, name)),
-                "{name} outside {size:?}"
-            );
-        }
-        render(&mut app, key(egui::Key::Escape, egui::Modifiers::NONE));
-        app.find_open = true;
-        let output = render(&mut app, vec![]);
-        assert!(screen.contains(label(&output, "FIND")));
-        let editor = crate::workspace_access_tests::recorded_response(&app, "editor");
-        assert!(editor.rect.min.y < screen.max.y - 29.0);
+        assert!(
+            editor_scroll_probe(&app).2.y > before_wheel,
+            "native wheel must still scroll the editor; {}",
+            compact_history_context(&app)
+        );
+        assert!(same_selection(selection(&app, 2), selected));
+
+        // Use the production ScrollArea's actual vertical scrollbar response.
+        let probe = editor_scroll_probe(&app);
+        let bar = probe
+            .6
+            .expect("long draft must render a vertical scrollbar");
+        assert_eq!(bar.id, probe.0.with(1usize));
+        assert!(bar.interact_rect.is_positive() && probe.4.contains_rect(bar.interact_rect));
+        let at = egui::pos2(
+            bar.interact_rect.center().x,
+            bar.interact_rect.top() + bar.interact_rect.height() * 0.35,
+        );
+        let before_bar = probe.2.y;
+        compact_history_frame(
+            &mut app,
+            size,
+            vec![egui::Event::PointerMoved(at), compact_pointer(at, true)],
+        );
+        compact_history_frame(&mut app, size, vec![compact_pointer(at, false)]);
+        assert!(
+            (editor_scroll_probe(&app).2.y - before_bar).abs() > 1.0,
+            "native scrollbar must change scroll offset; {}",
+            compact_history_context(&app)
+        );
+        assert!(same_selection(selection(&app, 2), selected));
+
+        // The fix must preserve background drag-to-scroll in the current lane.
+        // The gutter is outside TextEdit, so this gesture belongs to ScrollArea.
+        let probe = editor_scroll_probe(&app);
+        let drag = probe
+            .5
+            .expect("Find closed must retain editor background dragging");
+        assert!(drag.senses_drag);
+        compact_assert_scroll_lane(&app);
+        let start = egui::pos2(probe.1.left() + 2.0, probe.1.center().y);
+        let end = start - egui::vec2(0.0, 55.0);
+        let before_drag = probe.2.y;
+        compact_history_frame(
+            &mut app,
+            size,
+            vec![
+                egui::Event::PointerMoved(start),
+                compact_pointer(start, true),
+            ],
+        );
+        compact_history_frame(&mut app, size, vec![egui::Event::PointerMoved(end)]);
+        assert!(
+            editor_scroll_probe(&app)
+                .5
+                .as_ref()
+                .is_some_and(|response| response.dragged),
+            "the real background response must own the drag; {}",
+            compact_history_context(&app)
+        );
+        assert!(
+            editor_scroll_probe(&app).2.y > before_drag,
+            "background dragging must still pan content; {}",
+            compact_history_context(&app)
+        );
+        compact_history_frame(&mut app, size, vec![compact_pointer(end, false)]);
+        assert!(same_selection(selection(&app, 2), selected));
+        assert_eq!(signature(&app.location_history.back), history);
+
+        compact_history_frame(&mut app, size, key(egui::Key::F, egui::Modifiers::COMMAND));
+        assert!(app.find_open);
+        compact_visible(&app, size, "find_label");
+        assert!(
+            editor_scroll_probe(&app).5.is_none(),
+            "Find keeps its existing background-drag exclusion"
+        );
+        compact_click(&mut app, size, "find_close");
+        assert!(!app.find_open);
+        compact_history_frame(&mut app, size, vec![]);
+        assert!(editor_scroll_probe(&app).5.is_some());
+        compact_assert_scroll_lane(&app);
+        compact_click(&mut app, size, "error_dismiss");
+        assert!(app.error.is_none());
+        compact_history_frame(&mut app, size, vec![]);
+        compact_click(&mut app, size, "editor_overflow");
+        let output = compact_history_frame(&mut app, size, vec![]);
+        compact_assert_menu(&app, &output, size, sidebar_width);
+        compact_history_frame(
+            &mut app,
+            size,
+            key(egui::Key::Escape, egui::Modifiers::NONE),
+        );
+        assert_eq!(app.active().unwrap().text, draft);
+        assert_eq!(app.active().unwrap().saved_text, saved);
+        assert_eq!(app.active().unwrap().revision, revision);
+
+        // Real Go-to and Back/Forward must still scroll a distant caret into
+        // view after the lane has expanded, without a pixel-exact offset claim.
+        compact_focus_editor(&mut app, size);
+        compact_go_to_line(&mut app, size, 1);
+        compact_caret_visible(&mut app, size);
+        compact_go_to_line(&mut app, size, 160);
+        compact_caret_visible(&mut app, size);
+        compact_click(&mut app, size, "Back");
+        assert_eq!(app.active().unwrap().cursor.0, 1);
+        compact_caret_visible(&mut app, size);
+        compact_click(&mut app, size, "Forward");
+        assert_eq!(app.active().unwrap().cursor.0, 160);
+        compact_caret_visible(&mut app, size);
+
+        compact_history_frame(&mut app, size, key(egui::Key::Z, egui::Modifiers::COMMAND));
+        assert_eq!(
+            app.active().unwrap().text,
+            saved,
+            "scroll/selection/Find/history must preserve native Undo"
+        );
+        compact_history_frame(
+            &mut app,
+            size,
+            key(
+                egui::Key::Z,
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            ),
+        );
+        assert_eq!(
+            app.active().unwrap().text,
+            draft,
+            "native Redo must restore the unsaved draft"
+        );
+        assert_eq!(app.active().unwrap().saved_text, saved);
+        assert_eq!(app.active().unwrap().revision, revision);
     }
 }
 

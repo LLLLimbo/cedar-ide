@@ -391,6 +391,30 @@ struct IslandMenus {
     viewport: egui::ViewportId,
     roots: Vec<(egui::Id, egui::Id)>,
 }
+
+// A Response owns a strong Context reference. Never put one inside that same
+// Context's temporary data: the resulting cycle retains every test UI/font atlas.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+struct EditorScrollResponseSnapshot {
+    id: egui::Id,
+    interact_rect: egui::Rect,
+    senses_drag: bool,
+    dragged: bool,
+}
+
+#[cfg(test)]
+impl EditorScrollResponseSnapshot {
+    fn capture(response: egui::Response) -> Self {
+        Self {
+            id: response.id,
+            interact_rect: response.interact_rect,
+            senses_drag: response.sense.senses_drag(),
+            dragged: response.dragged(),
+        }
+    }
+}
+
 fn register_island_menu(ui: &egui::Ui, root: egui::Id) {
     let ctx = ui.ctx();
     let pass = ctx.cumulative_pass_nr();
@@ -2665,7 +2689,47 @@ impl CedarApp {
                 });
         }
         if let Some(error) = self.error.clone() {
+            // TopBottomPanel otherwise clips its first paint to a one-row
+            // default before learning the wrapped label's actual height.
+            // Measure the existing horizontal-wrapped label and small Dismiss
+            // button without allocating another UI or changing their IDs.
+            let style = ctx.style();
+            let available_width = (ctx.available_rect().width() - 20.0).max(1.0);
+            let height = ctx.fonts(|fonts| {
+                let mut job = egui::WidgetText::from(error.clone()).into_layout_job(
+                    &style,
+                    egui::FontSelection::Default,
+                    egui::Align::Center,
+                );
+                job.wrap.max_width = available_width;
+                job.first_row_min_height = style.spacing.interact_size.y;
+                let label = fonts.layout_job(job);
+                let dismiss = fonts.layout_no_wrap(
+                    "Dismiss".into(),
+                    egui::TextStyle::Body.resolve(&style),
+                    TEXT,
+                );
+                let button_width = dismiss.size().x
+                    + if style.visuals.button_frame {
+                        2.0 * style.spacing.button_padding.x
+                    } else {
+                        0.0
+                    };
+                let content_height = label.rows.last().map_or(label.size().y, |last| {
+                    if last.rect.right() + style.spacing.item_spacing.x + button_width
+                        > available_width
+                    {
+                        label.size().y
+                            + style.spacing.item_spacing.y
+                            + dismiss.size().y.max(last.rect.height())
+                    } else {
+                        label.size().y.max(last.rect.top() + dismiss.size().y)
+                    }
+                });
+                (20.0 + content_height.max(style.spacing.interact_size.y)).ceil()
+            });
             egui::TopBottomPanel::top("error")
+                .min_height(height)
                 .frame(
                     egui::Frame::new()
                         .fill(Color32::from_rgb(55, 32, 39))
@@ -2678,7 +2742,10 @@ impl CedarApp {
                         workspace_access_tests::record(ui, "error_status", &message);
                         #[cfg(not(test))]
                         let _ = message;
-                        if ui.small_button("Dismiss").clicked() {
+                        let dismiss = ui.small_button("Dismiss");
+                        #[cfg(test)]
+                        workspace_access_tests::record(ui, "error_dismiss", &dismiss);
+                        if dismiss.clicked() {
                             self.error = None;
                         }
                     });
@@ -2726,6 +2793,8 @@ impl CedarApp {
                         // The paint clip includes a margin outside the real viewport.
                         // Capture the viewport origin before content changes min_rect.
                         let actual_viewport = viewport.translate(ui.min_rect().min.to_vec2());
+                        #[cfg(test)]
+                        sidebar_layout_tests::record_scroll_start(ctx, true, viewport.min.to_vec2());
                         // Bound the content before creating the horizontal child: its
                         // initial minimum width otherwise retains the rounded-up edge.
                         let content_right = (actual_viewport.right() * 8.0).floor() / 8.0;
@@ -2837,6 +2906,8 @@ impl CedarApp {
                             .min_scrolled_height(explorer_min_height).max_height(explorer_height)
                             .auto_shrink([false, false]).animated(false).show_viewport(ui, |ui, viewport| {
                                 let actual_viewport = viewport.translate(ui.min_rect().min.to_vec2());
+                                #[cfg(test)]
+                                sidebar_layout_tests::record_scroll_start(ctx, false, viewport.min.to_vec2());
                                 ui.spacing_mut().item_spacing.y = 0.0;
                                 if self.explorer.mode == explorer_tree::Mode::Flat && self.entries.is_empty() { ui.label(RichText::new(if !self.ready() { "Connect a workspace to browse files" } else if self.explorer_scope_loaded() { "This directory is empty" } else { "Directory not loaded. Refresh explicitly to load it" }).small().color(MUTED)); }
                                 for (index, (entry, galley)) in display_entries.iter().zip(&file_galleys).enumerate() {
@@ -3199,7 +3270,11 @@ impl CedarApp {
             return;
         }
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("FIND").small().color(MUTED));
+            let label = ui.label(RichText::new("FIND").small().color(MUTED));
+            #[cfg(test)]
+            workspace_access_tests::record(ui, "find_label", &label);
+            #[cfg(not(test))]
+            let _ = label;
             let input_id = egui::Id::new(replace::FIND_INPUT);
             if self.find_focus && !self.navigation.blocks_editor() && ui.is_enabled() {
                 ui.ctx().memory_mut(|memory| memory.request_focus(input_id));
@@ -3382,15 +3457,19 @@ impl CedarApp {
             );
             let menu = chrome::menu_button(ui, "", |ui| {
                 if let Some(doc) = self.active() {
-                    if ui.button("Copy draft").clicked() {
+                    let copy = ui.button("Copy draft");
+                    #[cfg(test)]
+                    workspace_access_tests::record(ui, "editor_copy_draft", &copy);
+                    if copy.clicked() {
                         ui.ctx().copy_text(doc.text.clone());
                         ui.close_menu();
                     }
-                    if ui
+                    let compare_action = ui
                         .add_enabled(can_compare, egui::Button::new("Compare with disk"))
-                        .on_hover_text("Read the current file without changing your draft")
-                        .clicked()
-                    {
+                        .on_hover_text("Read the current file without changing your draft");
+                    #[cfg(test)]
+                    workspace_access_tests::record(ui, "editor_compare_with_disk", &compare_action);
+                    if compare_action.clicked() {
                         compare = true;
                         ui.close_menu();
                     }
@@ -3585,7 +3664,13 @@ impl CedarApp {
                 .map(|line| format!("{line:>width$}", width = count.to_string().len().max(3)))
                 .collect::<Vec<_>>()
                 .join("\n");
-            egui::ScrollArea::both()
+            // The background drag surface is registered from the previous
+            // viewport. Confine it to today's editor lane before registration,
+            // so a newly arrived banner cannot leave it over the tab toolbar.
+            // Keep the same UI/scroll IDs and native wheel, bar and drag state.
+            let editor_clip = ui.clip_rect();
+            ui.set_clip_rect(editor_clip.intersect(ui.available_rect_before_wrap()));
+            let editor_scroll = egui::ScrollArea::both()
                 .id_salt(("editor_scroll", doc.id))
                 // egui's background drag surface uses last frame's rect. The
                 // expanding Find preview must not be covered by that old rect.
@@ -3655,6 +3740,19 @@ impl CedarApp {
                             .record(workspace_access::Target::Editor(doc.id), &output.response);
                         #[cfg(test)]
                         workspace_access_tests::record(ui, "editor", &output.response);
+                        #[cfg(test)]
+                        if let Some(range) = output.cursor_range {
+                            let caret = output
+                                .galley
+                                .pos_from_ccursor(range.primary.ccursor)
+                                .translate(output.galley_pos.to_vec2());
+                            ui.ctx().data_mut(|data| {
+                                data.insert_temp(
+                                    egui::Id::new("compact_history_editor_caret"),
+                                    caret,
+                                );
+                            });
+                        }
                         if let Some(index) = scroll_to {
                             let cursor_rect = output
                                 .galley
@@ -3677,6 +3775,29 @@ impl CedarApp {
                         }
                     });
                 });
+            #[cfg(test)]
+            {
+                let probe = (
+                    editor_scroll.id,
+                    editor_scroll.inner_rect,
+                    editor_scroll.state.offset,
+                    editor_scroll.content_size,
+                    ui.clip_rect(),
+                    (!find_open)
+                        .then(|| ui.ctx().read_response(editor_scroll.id.with("area")))
+                        .flatten()
+                        .map(EditorScrollResponseSnapshot::capture),
+                    ui.ctx()
+                        .read_response(editor_scroll.id.with(1usize))
+                        .map(EditorScrollResponseSnapshot::capture),
+                );
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(egui::Id::new("compact_history_editor_scroll"), probe);
+                });
+            }
+            #[cfg(not(test))]
+            let _ = editor_scroll;
+            ui.set_clip_rect(editor_clip);
             if let Some(destination) = history_destination {
                 self.history_commit_destination(history_completion.take(), destination);
             }

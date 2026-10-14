@@ -36,6 +36,8 @@ fn query_focus(app: &CedarApp) {
 }
 fn app(text: &str) -> (CedarApp, Receiver<WorkerCommand>) {
     let mut app = CedarApp::empty();
+    // Match production startup while retaining the real asynchronous fallback.
+    app.editor_ctx.set_fonts(crate::system_fonts::base_fonts());
     app.open_form = false;
     app.documents
         .push(Document::new(1, "main.rs".into(), text.into(), "r0".into()));

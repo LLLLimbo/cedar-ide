@@ -77,6 +77,14 @@ fn focused(app: &CedarApp) -> Option<egui::Id> {
 }
 
 fn frame(app: &mut CedarApp, size: [f32; 2], events: Vec<egui::Event>) {
+    let _ = frame_repaint(app, size, events);
+}
+
+fn frame_repaint(
+    app: &mut CedarApp,
+    size: [f32; 2],
+    events: Vec<egui::Event>,
+) -> std::time::Duration {
     let ctx = app.editor_ctx.clone();
     let mut native = eframe::Frame::_new_kittest();
     let mut input = egui::RawInput {
@@ -85,7 +93,8 @@ fn frame(app: &mut CedarApp, size: [f32; 2], events: Vec<egui::Event>) {
         ..Default::default()
     };
     eframe::App::raw_input_hook(app, &ctx, &mut input);
-    let _ = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native));
+    let output = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native));
+    output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
 }
 
 fn settle(app: &mut CedarApp, size: [f32; 2]) {
@@ -134,6 +143,8 @@ fn focus(app: &mut CedarApp, id: egui::Id) {
 
 fn app(tool: Tool) -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
+    // Match production startup while retaining the real asynchronous fallback.
+    app.editor_ctx.set_fonts(crate::system_fonts::base_fonts());
     let form = ConnectForm {
         local_root: "/workspace".into(),
         allow_run: false,
@@ -933,9 +944,74 @@ fn find_entry_and_toggle_choose_only_current_visible_selected_hit_else_query() {
     }
 }
 
+#[derive(Clone)]
+struct ProjectRevealFrame {
+    row: Widget,
+    viewport: egui::Rect,
+    offset_before: egui::Vec2,
+    offset: egui::Vec2,
+    outer_before: egui::Vec2,
+    outer_offset: egui::Vec2,
+    focused: bool,
+    repaint_after: std::time::Duration,
+}
+
+fn project_reveal_frame(app: &CedarApp, repaint_after: std::time::Duration) -> ProjectRevealFrame {
+    let (viewport, offset_before, offset, outer_before, outer_offset) =
+        sidebar_layout_tests::explorer_geometry(app);
+    let row = widget(app, "zz-selected.txt");
+    ProjectRevealFrame {
+        focused: focused(app) == Some(row.id),
+        row,
+        viewport,
+        offset_before,
+        offset,
+        outer_before,
+        outer_offset,
+        repaint_after,
+    }
+}
+
+// ScrollArea commits scroll_to_me at the end of layout, after the current row
+// was painted. Admit exactly the repaint it requested only when a changed
+// viewport and the already committed offset explain the entire clipping.
+fn project_reveal_repaint_pending(before: &ProjectRevealFrame, after: &ProjectRevealFrame) -> bool {
+    before.row.clip.contains_rect(before.row.rect)
+        && !after.row.clip.contains_rect(after.row.rect)
+        && before.row.id == after.row.id
+        && before.focused
+        && after.focused
+        && before.viewport != after.viewport
+        && after.offset_before != after.offset
+        && before.offset == after.offset_before
+        && after.outer_before == after.outer_offset
+        && before.outer_offset == after.outer_offset
+        && after.repaint_after.is_zero()
+        && after
+            .row
+            .clip
+            .contains_rect(after.row.rect.translate(after.offset_before - after.offset))
+}
+
 #[test]
 fn project_selected_flat_row_is_revealed_without_hiding_find_or_loading() {
+    project_selected_flat_row_case(None);
+}
+
+#[test]
+fn project_selected_flat_row_font_arrival_uses_only_a_committed_repaint() {
+    for arrival in 1..=9 {
+        assert_eq!(project_selected_flat_row_case(Some(arrival)), arrival == 9);
+    }
+}
+
+fn project_selected_flat_row_case(arrival: Option<usize>) -> bool {
     let (mut app, commands) = app(Tool::Search);
+    let mut deliver = arrival.map(|_| {
+        let (fonts, deliver) = system_fonts::SystemFonts::pending_failure_for_test();
+        app.system_fonts = fonts;
+        deliver
+    });
     app.documents[0].path = "zz-selected.txt".into();
     let mut entries = project_rows(32);
     entries.push(Entry {
@@ -944,22 +1020,99 @@ fn project_selected_flat_row_is_revealed_without_hiding_find_or_loading() {
         is_dir: false,
     });
     load_project(&mut app, &commands, entries);
-    settle(&mut app, SIZE);
-    let selected = widget(&app, "zz-selected.txt");
-    assert!(
-        !selected.rect.intersect(selected.clip).is_positive(),
-        "fixture must clip selected row"
-    );
-    explorer(&mut app, SIZE);
-    assert!(app.tools_open && app.tool == Tool::Search);
-    assert_eq!(focused(&app), Some(widget(&app, "zz-selected.txt").id));
-    settle(&mut app, SIZE);
+    let mut before = None;
+    let mut after = None;
+    let mut trace = Vec::new();
+    for step in 1..=9 {
+        if arrival == Some(step) {
+            deliver.take().unwrap()();
+        }
+        let events = if step == 5 {
+            key(
+                egui::Key::E,
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            )
+        } else {
+            vec![]
+        };
+        let repaint = frame_repaint(&mut app, SIZE, events);
+        let current = project_reveal_frame(&app, repaint);
+        let coordinates = |rect: egui::Rect| [rect.left(), rect.top(), rect.right(), rect.bottom()];
+        trace.push(format!(
+            "frame={step} pass={} time={} row={:?} clip={:?} viewport={:?} offset={:?} outer={:?} repaint={repaint:?} font={} error={:?}",
+            app.editor_ctx.cumulative_pass_nr(), app.editor_ctx.input(|input| input.time),
+            coordinates(current.row.rect), coordinates(current.row.clip), coordinates(current.viewport),
+            current.offset, current.outer_offset, app.system_fonts.probe_state_for_test(), app.error,
+        ));
+        if step == 4 {
+            assert!(
+                !current.row.rect.intersect(current.row.clip).is_positive(),
+                "fixture must clip selected row"
+            );
+        }
+        if step == 5 {
+            assert!(app.tools_open && app.tool == Tool::Search);
+            assert_eq!(focused(&app), Some(current.row.id));
+        }
+        before = after;
+        after = Some(current);
+    }
+    let before = before.unwrap();
+    let after = after.unwrap();
+    let requested_repaint = project_reveal_repaint_pending(&before, &after);
+    if requested_repaint {
+        // A missing native repaint must never be hidden by an active test pump.
+        let mut no_repaint = after.clone();
+        no_repaint.repaint_after = std::time::Duration::MAX;
+        assert!(!project_reveal_repaint_pending(&before, &no_repaint));
+        let repaint = frame_repaint(&mut app, SIZE, vec![]);
+        let next = project_reveal_frame(&app, repaint);
+        assert_eq!(
+            next.offset_before, after.offset,
+            "repaint must use the committed offset"
+        );
+        assert_eq!(next.row.id, after.row.id);
+        assert!(next.focused);
+    }
     let selected = widget(&app, "zz-selected.txt");
     assert!(
         selected.clip.contains_rect(selected.rect),
-        "selected Project row must be revealed"
+        "selected Project row must be revealed; arrival={arrival:?}, committed_repaint={requested_repaint}; {}",
+        trace.join("\n")
     );
+    assert!(app.tools_open && app.tool == Tool::Search);
+    assert_eq!(focused(&app), Some(selected.id));
     assert_eq!(app.documents[0].text, "saved 雪");
+    assert!(commands.try_recv().is_err());
+    requested_repaint
+}
+
+#[test]
+fn project_reveal_observer_rejects_a_persistently_clipped_row() {
+    let (mut app, commands) = app(Tool::Search);
+    let (fonts, deliver) = system_fonts::SystemFonts::pending_failure_for_test();
+    app.system_fonts = fonts;
+    app.documents[0].path = "zz-selected.txt".into();
+    let mut entries = project_rows(32);
+    entries.push(Entry {
+        name: "zz-selected.txt".into(),
+        path: "zz-selected.txt".into(),
+        is_dir: false,
+    });
+    load_project(&mut app, &commands, entries);
+    for _ in 0..8 {
+        frame(&mut app, SIZE, vec![]);
+    }
+    let before = project_reveal_frame(&app, std::time::Duration::ZERO);
+    deliver();
+    let repaint = frame_repaint(&mut app, SIZE, vec![]);
+    let after = project_reveal_frame(&app, repaint);
+    assert_ne!(before.viewport, after.viewport);
+    assert!(!after.row.clip.contains_rect(after.row.rect));
+    assert!(!project_reveal_repaint_pending(&before, &after));
+    frame(&mut app, SIZE, vec![]);
+    let row = widget(&app, "zz-selected.txt");
+    assert!(!row.clip.contains_rect(row.rect));
     assert!(commands.try_recv().is_err());
 }
 

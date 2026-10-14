@@ -59,6 +59,57 @@ impl Default for SystemFonts {
     }
 }
 impl SystemFonts {
+    #[cfg(test)]
+    pub(super) fn probe_state_for_test(&self) -> &'static str {
+        match self.status {
+            Status::Unchecked => "unchecked",
+            Status::Loading(_) => "loading",
+            Status::Finished => "finished",
+        }
+    }
+
+    /// Exercise the production result receiver at a chosen UI frame boundary.
+    /// Keeping the sender alive prevents a host font scan or an early disconnect.
+    #[cfg(test)]
+    pub(super) fn pending_failure_for_test() -> (Self, impl FnOnce()) {
+        let (tx, rx) = mpsc::channel();
+        let deliver = move || {
+            assert!(
+                tx.send(Err("No supported installed CJK font was found within the 32 MiB limit. Chinese text is retained, but some characters may appear as boxes. Install a system CJK font and restart Cedar; no fonts were downloaded".into())).is_ok(),
+                "the controlled font probe must still have its receiver"
+            );
+        };
+        (
+            Self {
+                status: Status::Loading(rx),
+            },
+            deliver,
+        )
+    }
+
+    /// A valid bundled font exercises successful receiver/install timing without
+    /// depending on OS fonts. This is a Latin-metrics test, not CJK glyph proof.
+    #[cfg(test)]
+    pub(super) fn pending_success_for_test() -> (Self, impl FnOnce()) {
+        let (tx, rx) = mpsc::channel();
+        let deliver = move || {
+            assert!(tx
+                .send(Ok(LoadedFont {
+                    bytes: CODE_FONT.to_vec(),
+                    index: 0,
+                    family: "Test fallback".into(),
+                    path: "test-fixture.ttf".into(),
+                }))
+                .is_ok());
+        };
+        (
+            Self {
+                status: Status::Loading(rx),
+            },
+            deliver,
+        )
+    }
+
     pub fn needs_probe(&self) -> bool {
         matches!(self.status, Status::Unchecked)
     }

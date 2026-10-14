@@ -2,6 +2,7 @@
 """Regression checks for clean export and recovery from an existing public tree."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -19,12 +20,25 @@ FONT_HASHES = {
 FOOTER = 'Public source history and omitted machine-specific evidence are described in [PUBLICATION.md](PUBLICATION.md).'
 
 
+def git_environment():
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.upper().startswith('GIT_')}
+    environment['GIT_CONFIG_NOSYSTEM'] = '1'
+    environment['GIT_CONFIG_GLOBAL'] = os.devnull
+    return environment
+
+
 def git(root, *arguments):
-    return subprocess.check_output(['git', '-C', str(root), *arguments], stderr=subprocess.DEVNULL)
+    return subprocess.check_output(['git', '-C', str(root), *arguments],
+                                   stderr=subprocess.DEVNULL, env=git_environment(), timeout=10)
+
+
+def tagged_blob(root, path):
+    return git(root, 'cat-file', 'blob', 'refs/tags/test-stage:' + Path(path).as_posix())
 
 
 class PublicExportTests(unittest.TestCase):
-    def fixture(self, root, published, fonts=False, mutate=None):
+    def fixture(self, root, published, fonts=False, mutate=None, crlf_checkout=False):
         (root / 'scripts').mkdir(parents=True)
         shutil.copyfile(EXPORTER, root / 'scripts/export_public_checkpoints.py')
         (root / 'docs').mkdir()
@@ -38,24 +52,71 @@ class PublicExportTests(unittest.TestCase):
             shutil.copytree(FONT_SOURCE, root / FONT_ROOT)
             shutil.copyfile(EXPORTER.parent.parent / 'THIRD_PARTY_NOTICES.md',
                             root / 'THIRD_PARTY_NOTICES.md')
+        if crlf_checkout:
+            (root / 'checkout-control.txt').write_bytes(b'first\nsecond\n')
         if mutate:
             mutate(root)
         git(root, 'init', '-q')
+        # Keep clean/smudge behavior deterministic, including on Linux hosts.
+        git(root, 'config', 'core.autocrlf', 'true')
+        git(root, 'config', 'core.safecrlf', 'false')
         git(root, 'add', '.')
         git(root, '-c', 'user.name=Export test', '-c', 'user.email=test@localhost',
             'commit', '-qm', 'Synthetic export fixture')
         git(root, 'tag', 'test-stage')
+        if crlf_checkout:
+            self.assert_crlf_checkout(root)
+
+    def assert_crlf_checkout(self, source):
+        text_paths = [FONT_ROOT / name for name in
+                      ('Inter-LICENSE.txt', 'JetBrainsMono-OFL.txt', 'README.md', 'manifest.json')]
+        text_paths += [Path('THIRD_PARTY_NOTICES.md'), Path('checkout-control.txt')]
+        # Removing tracked files forces Git to perform a real checkout conversion.
+        for path in text_paths:
+            (source / path).unlink()
+        git(source, 'checkout-index', '--all')
+        for path in text_paths:
+            data = tagged_blob(source, path)
+            self.assertIn(b'\n', data, str(path))
+            self.assertNotIn(b'\r\n', data, str(path))
+            checkout = (source / path).read_bytes()
+            self.assertEqual(checkout, data.replace(b'\n', b'\r\n'), str(path))
+            self.assertNotEqual(checkout, data, str(path))
+        self.assertEqual((source / 'checkout-control.txt').read_bytes(), b'first\r\nsecond\r\n')
+        for name, sha256 in FONT_HASHES.items():
+            data = (source / FONT_ROOT / name).read_bytes()
+            self.assertEqual(data, tagged_blob(source, FONT_ROOT / name))
+            self.assertEqual(hashlib.sha256(data).hexdigest(), sha256)
+
+    def assert_font_export(self, source, stage):
+        exported = Path(stage['directory'])
+        files = {item['path']: item for item in stage['files']}
+        paths = [FONT_ROOT / original.name for original in sorted(FONT_SOURCE.iterdir())]
+        paths.append(Path('THIRD_PARTY_NOTICES.md'))
+        for relative in paths:
+            path = relative.as_posix()
+            # The immutable tagged blob is the byte oracle, never the checkout.
+            data = tagged_blob(source, path)
+            self.assertEqual((exported / path).read_bytes(), data, path)
+            self.assertEqual(files[path]['bytes'], len(data), path)
+            self.assertEqual(files[path]['sha256'], hashlib.sha256(data).hexdigest(), path)
+            if relative.name in FONT_HASHES:
+                self.assertEqual(files[path]['sha256'], FONT_HASHES[relative.name])
+                self.assertEqual(files[path]['encoding'], 'base64')
+            else:
+                self.assertNotIn('encoding', files[path])
 
     def run_export(self, source, destination, check=True):
         return subprocess.run([sys.executable, str(source / 'scripts/export_public_checkpoints.py'),
                                '--destination', str(destination), '--tags', 'test-stage'],
-                              check=check, capture_output=True, text=True, timeout=30)
+                              check=check, capture_output=True, text=True, timeout=30,
+                              env=git_environment())
 
-    def check_export(self, published, fonts=False):
+    def check_export(self, published, fonts=False, crlf_checkout=False):
         with tempfile.TemporaryDirectory(prefix='cedar-export-test-') as directory:
             base = Path(directory)
             source = base / 'source'
-            self.fixture(source, published, fonts=fonts)
+            self.fixture(source, published, fonts=fonts, crlf_checkout=crlf_checkout)
             destination = base / 'export'
             self.run_export(source, destination)
             stage = json.loads((destination / 'publish-manifest.json').read_text())['stages'][0]
@@ -70,20 +131,7 @@ class PublicExportTests(unittest.TestCase):
             self.assertEqual(report.count('> Public-source note:'), 1)
             self.assertIn('(../PUBLICATION.md#verification-evidence)', report)
             if fonts:
-                files = {item['path']: item for item in stage['files']}
-                for original in sorted(FONT_SOURCE.iterdir()):
-                    path = (FONT_ROOT / original.name).as_posix()
-                    data = original.read_bytes()
-                    self.assertEqual((exported / path).read_bytes(), data)
-                    self.assertEqual(files[path]['bytes'], len(data))
-                    self.assertEqual(files[path]['sha256'], hashlib.sha256(data).hexdigest())
-                    if original.name in FONT_HASHES:
-                        self.assertEqual(files[path]['sha256'], FONT_HASHES[original.name])
-                        self.assertEqual(files[path]['encoding'], 'base64')
-                    else:
-                        self.assertNotIn('encoding', files[path])
-                self.assertEqual((exported / 'THIRD_PARTY_NOTICES.md').read_bytes(),
-                                 (source / 'THIRD_PARTY_NOTICES.md').read_bytes())
+                self.assert_font_export(source, stage)
             git(exported, 'init', '-q')
             git(exported, 'add', '.')
             self.assertEqual(git(exported, 'write-tree').decode().strip(), stage['expected_tree_sha'])
@@ -98,6 +146,35 @@ class PublicExportTests(unittest.TestCase):
         for published in (False, True):
             with self.subTest(published=published):
                 self.check_export(published, fonts=True)
+
+    def test_autocrlf_checkout_exports_exact_tagged_fonts_and_notices(self):
+        for published in (False, True):
+            with self.subTest(published=published):
+                self.check_export(published, fonts=True, crlf_checkout=True)
+
+    def test_crlf_license_blobs_are_rejected_without_normalizing(self):
+        for name in ('Inter-LICENSE.txt', 'JetBrainsMono-OFL.txt'):
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory(prefix='cedar-export-crlf-license-') as directory:
+                    base = Path(directory)
+                    source = base / 'source'
+                    path = FONT_ROOT / name
+                    # Deliberately create wrong license bytes, even if the host checkout is CRLF.
+                    data = (FONT_SOURCE / name).read_text(encoding='utf-8').replace('\n', '\r\n').encode('utf-8')
+
+                    def mutate(root):
+                        (root / path).write_bytes(data)
+                        # Preserve this corruption in the tag despite core.autocrlf=true.
+                        (root / '.gitattributes').write_bytes((path.as_posix() + ' -text\n').encode())
+
+                    self.fixture(source, False, fonts=True, mutate=mutate)
+                    self.assertIn(b'\r\n', tagged_blob(source, path))
+                    self.assertEqual(tagged_blob(source, path), data)
+                    destination = base / 'export'
+                    result = self.run_export(source, destination, check=False)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn('unapproved font license in ' + name, result.stderr)
+                    self.assertFalse((destination / 'publish-manifest.json').exists())
 
     def assert_rejected(self, mutate, message, fonts=True):
         with tempfile.TemporaryDirectory(prefix='cedar-export-reject-') as directory:
@@ -203,15 +280,14 @@ class PublicExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='cedar-export-tagged-fonts-') as directory:
             base = Path(directory)
             source = base / 'source'
-            self.fixture(source, False, fonts=True)
+            self.fixture(source, False, fonts=True, crlf_checkout=True)
             for original in FONT_SOURCE.iterdir():
                 (source / FONT_ROOT / original.name).write_bytes(b'uncommitted corruption')
             (source / 'THIRD_PARTY_NOTICES.md').write_text('uncommitted corruption')
             destination = base / 'export'
             self.run_export(source, destination)
-            for original in FONT_SOURCE.iterdir():
-                self.assertEqual((destination / 'test-stage' / FONT_ROOT / original.name).read_bytes(),
-                                 original.read_bytes())
+            stage = json.loads((destination / 'publish-manifest.json').read_text())['stages'][0]
+            self.assert_font_export(source, stage)
 
 
 if __name__ == '__main__':

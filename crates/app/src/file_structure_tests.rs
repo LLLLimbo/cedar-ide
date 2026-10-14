@@ -36,6 +36,9 @@ fn symbols() -> Value {
 }
 fn app() -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
+    // Production new() installs these before its first native frame. A late
+    // fallback must not change this fixture from egui's default Latin faces.
+    app.editor_ctx.set_fonts(crate::system_fonts::base_fonts());
     app.state = crate::ConnectionState::Ready;
     app.active_form = Some(crate::ConnectForm {
         allow_run: true,
@@ -771,8 +774,23 @@ fn file_structure_menu_first_frame_enter_cannot_activate_an_unpresented_row() {
 
 #[test]
 fn file_structure_menu_full_scroll_list_has_stable_narrow_and_ordinary_geometry() {
+    file_structure_full_list_geometry(None);
+}
+
+#[test]
+fn file_structure_menu_late_fallback_preserves_full_list_geometry() {
+    file_structure_full_list_geometry(Some(false));
+    file_structure_full_list_geometry(Some(true));
+}
+
+fn file_structure_full_list_geometry(after_presented: Option<bool>) {
     for size in [egui::vec2(480.0, 540.0), egui::vec2(1100.0, 850.0)] {
         let (mut app, rx) = app();
+        let mut deliver = after_presented.map(|_| {
+            let (fonts, deliver) = crate::system_fonts::SystemFonts::pending_success_for_test();
+            app.system_fonts = fonts;
+            deliver
+        });
         let source_range = range_json(range(SOURCE, "same", false));
         seed(
             &mut app,
@@ -801,6 +819,9 @@ fn file_structure_menu_full_scroll_list_has_stable_narrow_and_ordinary_geometry(
         frame_sized(&mut app, pointer(item, true), size);
         frame_sized(&mut app, pointer(item, false), size);
         assert!(app.language.features.file_structure.menu.is_some());
+        if after_presented == Some(false) {
+            deliver.take().unwrap()();
+        }
         frame_sized(&mut app, vec![egui::Event::Text("symbol".into())], size);
         assert_eq!(app.file_structure_query(), Some("symbol"));
         assert_eq!(app.file_structure_rows().len(), 60);
@@ -809,12 +830,27 @@ fn file_structure_menu_full_scroll_list_has_stable_narrow_and_ordinary_geometry(
         let first = egui::AreaState::load(&app.editor_ctx, egui::Id::new(MODAL))
             .unwrap()
             .rect();
+        if after_presented == Some(true) {
+            deliver.take().unwrap()();
+        }
         frame_sized(&mut app, vec![], size);
         let next = egui::AreaState::load(&app.editor_ctx, egui::Id::new(MODAL))
             .unwrap()
             .rect();
         assert_eq!(first, next, "viewport {size:?}");
         assert!((first.center() - egui::Pos2::new(size.x / 2.0, size.y / 2.0)).length() <= 1.0);
+        if after_presented.is_some() {
+            // set_fonts is applied at the next pass boundary; also inspect that
+            // real pass instead of ending while the new fallback is pending.
+            assert_eq!(app.system_fonts.probe_state_for_test(), "finished");
+            frame_sized(&mut app, vec![], size);
+            let installed = egui::AreaState::load(&app.editor_ctx, egui::Id::new(MODAL))
+                .unwrap()
+                .rect();
+            assert_eq!(first, installed, "installed fallback viewport {size:?}");
+            assert_eq!(app.file_structure_query(), Some("symbol"));
+            assert_eq!(app.file_structure_rows().len(), 60);
+        }
         assert!(rx.try_recv().is_err());
     }
 }

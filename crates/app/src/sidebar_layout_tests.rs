@@ -222,6 +222,8 @@ struct Snapshot {
     widgets: HashMap<String, Widget>,
     outer: Option<Scroll>,
     explorer: Option<Scroll>,
+    outer_before: Option<egui::Vec2>,
+    explorer_before: Option<egui::Vec2>,
     reveals: HashMap<egui::Id, RevealDiagnostic>,
 }
 
@@ -242,6 +244,17 @@ pub(super) fn record(ui: &egui::Ui, label: &str, response: &egui::Response) {
             );
     });
 }
+pub(super) fn record_scroll_start(ctx: &egui::Context, outer: bool, offset: egui::Vec2) {
+    ctx.data_mut(|data| {
+        let snapshot = data.get_temp_mut_or_default::<Snapshot>(egui::Id::new(PROBE));
+        if outer {
+            snapshot.outer_before = Some(offset);
+        } else {
+            snapshot.explorer_before = Some(offset);
+        }
+    });
+}
+
 pub(super) fn record_scroll<R>(
     ctx: &egui::Context,
     outer: bool,
@@ -262,6 +275,20 @@ pub(super) fn record_scroll<R>(
         }
     });
 }
+pub(super) fn explorer_geometry(
+    app: &CedarApp,
+) -> (egui::Rect, egui::Vec2, egui::Vec2, egui::Vec2, egui::Vec2) {
+    let snapshot = snapshot(app);
+    let inner = snapshot.explorer.unwrap();
+    (
+        inner.rect,
+        snapshot.explorer_before.unwrap(),
+        inner.offset,
+        snapshot.outer_before.unwrap(),
+        snapshot.outer.unwrap().offset,
+    )
+}
+
 fn snapshot(app: &CedarApp) -> Snapshot {
     app.editor_ctx
         .data(|data| data.get_temp::<Snapshot>(egui::Id::new(PROBE)).unwrap())

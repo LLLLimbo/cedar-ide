@@ -1,6 +1,20 @@
-# Verification checkpoint — 0.71.0 main-window visual reconstruction candidate
+# Verification checkpoint — 0.71.1 narrow CI repair candidate
 
-## Current 0.71.0 main-window candidate
+## Current 0.71.1 narrow CI repair candidate
+
+Exact-source 0.71.0 [CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38507906311)
+failed Windows export-byte tests and one Linux compact-editor layout test;
+no packages were produced and the JDT-dependent job was skipped. The
+[0.71.1 repair report](TEST_REPORT_PHASE711_CI_REPAIR.md) records the exact
+failures, deterministic reproductions and narrow production changes. Final
+local Rust passed **2,235/0/71 across 50 suites** with default test parallelism;
+strict Clippy and formatting passed. Python ran **820 tests: 810 passed and ten
+skipped**, with zero failed suites. A final-source real CJK opt-in and all four
+freshly pinned current-artifact process proofs passed. Dual-platform CI/package
+acceptance and new native GUI coverage remain pending. No retry of the failed
+source is counted as acceptance.
+
+## Prior 0.71.0 main-window candidate
 
 The main-window structure has an actual native visual baseline, with explicit
 limitations and final-source regression work described in the

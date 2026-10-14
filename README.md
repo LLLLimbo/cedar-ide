@@ -2,7 +2,7 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-当前 **0.71.0 主窗视觉重构候选**将 Workspace/Tools、Project、标签与状态栏整理为统一的深色分区布局，嵌入经许可核验的 Inter / JetBrains Mono，并保留原生编辑器、后端与输入安全边界。真实开发候选截图已验证主窗结构改善；这不代表 IntelliJ IDEA 全界面或像素一致。搜索对话框仍属下一阶段，菜单 Esc 后尚不自动返回先前编辑器焦点。本地完整 Rust 2,222/0/71、Python 818 项与四项进程证明已通过；精确源码 CI、三种包与最终发布验收仍在进行，见[0.71 阶段报告](docs/TEST_REPORT_PHASE71_ISLANDS_SHELL.md)。
+当前 **0.71.1 窄范围 CI 修复候选**保留 0.71 的主窗结构，修复编辑区旧背景拖动区域在错误栏出现后覆盖标签工具栏的问题，并让字体导出测试逐字节对照不可变 Git tag，而不是 Windows 的 CRLF 工作树。0.71 的[双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38507906311)已失败，尚无三包验收；本候选本地完整回归与四项同源进程证明已通过，双平台 CI 和三包仍待验，见[0.71.1 阶段报告](docs/TEST_REPORT_PHASE711_CI_REPAIR.md)。此前真实开发截图仅证明主窗结构改善；搜索对话框重排、完整 IDEA 一致性与最终修复后的 GUI 验证仍未完成。
 
 此前 **0.70.1 Project 状态文案修正候选**仅把成功提示改为 `Selection completed: /目标路径`，明确记录已完成的历史动作。切换 Recent、标签或 Back 后仍保留该路径，不暗示正在跟随当前文件；长路径只在这条成功状态中单行截断，悬停显示完整文字。定位、请求、输入、焦点和导航生命周期均未改变，也未新增功能。详见[0.70.1 报告](docs/TEST_REPORT_PHASE701_PROJECT_STATUS.md)。其[精确源码 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38494545055)四项作业和三种包已通过；原生回归为优先处理主窗视觉而暂停，不单独提升原生验收基线。
 

@@ -2,6 +2,15 @@
 
 > Public-source note: raw development screenshots, logs and process receipts remain outside this source export. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
+## Subsequent CI failure
+
+The exact public 0.71.0 commit `a78af4a72c324e4e8e8540503b1073f71ce7aeff`
+failed [CI run 38507906311](https://github.com/LLLLimbo/cedar-ide/actions/runs/38507906311):
+Windows export tests had three byte-oracle failures and Linux had one compact
+editor menu visibility failure. There were no package artifacts; the dependent
+JDT job was skipped. Local results below remain historical evidence, not release
+acceptance. See the separate [0.71.1 repair report](TEST_REPORT_PHASE711_CI_REPAIR.md).
+
 ## Scope and acceptance boundary
 
 This phase rebuilds Cedar's main-window presentation, not its editor engine or
