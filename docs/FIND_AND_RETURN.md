@@ -4,7 +4,11 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-The latest accepted bounded baseline is **0.69.0 Files search-as-you-type**;
+The **0.72.0 Files layout candidate** changes only the Files presentation described
+[below](#files-layout-072-candidate); its version-specific gates are separate from
+the retained behavioral baseline.
+
+The accepted search-as-you-type behavioral baseline is **0.69.0**;
 its complete [offline interaction contract](#files-search-as-you-type-069-bounded-acceptance)
 is below. **0.70 stale-navigation hardening is a candidate and is not accepted**;
 its [separate contract](#stale-navigation-isolation-070-candidate) does not inherit
@@ -36,6 +40,36 @@ symbols, real-JDT popup behavior and native Ctrl+F12 remain unmeasured. The
 0.67.0 native shortcut-entry failure and independent raw-hook observation are
 preserved in the
 [phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
+
+## Files layout (0.72 candidate)
+
+Files has compact real Files/Project Text mode controls, a short workspace name
+with its full path on hover, a full-width query beside Find, and one Directory
+scope line when discovery is supported. A short source/status line retains
+unsupported, changed, incomplete, and error information; long explanations stay
+available through hover or bounded scrolling rather than changing search scope.
+
+Without preview, results fill the available width in one column. Basenames are
+primary and parent paths are muted, with file icons and the existing loaded-file
+status. Original full labels and action identities are retained. Non-ASCII text
+is handed intact to native single-line elision; it may hide a long suffix and is
+not a guarantee of complete grapheme-boundary rendering. Hover shows the original
+full label; no displayed abbreviation is used as a request path.
+
+Preview remains explicit: select a result and use Preview or Space. Its read-only
+content appears below the results. Hide preview or Escape returns to results;
+hiding retires the view's intent without falsely completing a physical Read.
+Preview/Open/Close placement is bounded by viewport and font metrics, not by the
+number or timing of returned results. Automatic search does not start a Read.
+Project Text's existing explicit search and continuous-preview behavior, Recent,
+keyboard ownership, IME handling, dirty buffers, Undo, and exact return are unchanged.
+
+The supported native minimum remains 780x540. Deterministic production-frame
+checks also exercise 700x480 resilience at 13 and 18 points; these are not native
+window proofs. The bounded Linux native pair used one 1178x814 viewport and the
+same three-result fixture as its earlier baseline. See the
+[phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE72_FILES_LAYOUT.md) for source/artifact attribution,
+failed evidence and the remaining platform/preview/font limits.
 
 <a id="files-search-as-you-type-069-candidate"></a>
 

@@ -2425,7 +2425,11 @@ fn browse_project_files_narrow_scoped_incomplete_results_keep_last_row_and_previ
         screen.contains_rect(content),
         "preview {content:?} is outside {screen:?}"
     );
-    assert!(recorded_clip(&app, "browse_preview_content").contains_rect(content));
+    assert!(
+        recorded_clip(&app, "browse_preview_content").contains_rect(content),
+        "preview content {content:?} clip {:?}",
+        recorded_clip(&app, "browse_preview_content")
+    );
     frame_at_size(&mut app, size, key(egui::Key::Escape));
     assert_eq!(focused(&app), Some(recorded_response(&app, &probe).id));
     assert!(commands.try_recv().is_err());
@@ -7022,4 +7026,552 @@ fn stale_open_newest_same_path_pending_replacement_uses_its_line_or_none() {
             "latest line intent {latest_line:?} must match an independent fresh Open"
         );
     }
+}
+
+pub(super) fn record_files_status_scroll(
+    ctx: &egui::Context,
+    id: egui::Id,
+    rect: egui::Rect,
+    content: egui::Vec2,
+) {
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new("files_status_scroll_probe"),
+            (id, rect, content),
+        )
+    });
+}
+
+// The compact layout needs an explicit clock and viewport: the general helpers
+// advance 100 ms and some restore SIZE, which could silently expire debounce.
+fn compact_frame(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    dt: f64,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    let ctx = app.editor_ctx.clone();
+    let mut input = egui::RawInput {
+        time: Some(ctx.input(|input| input.time) + dt),
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let mut native = eframe::Frame::_new_kittest();
+    ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native))
+}
+fn compact_settle(app: &mut CedarApp, size: egui::Vec2) {
+    for _ in 0..3 {
+        compact_frame(app, size, 0.001, vec![]);
+    }
+}
+fn compact_click(app: &mut CedarApp, size: egui::Vec2, probe: &str) {
+    let pos = visible_center(app, probe);
+    let rect = recorded_rect(app, probe);
+    let id = recorded_response(app, probe).id;
+    compact_frame(app, size, 0.001, vec![egui::Event::PointerMoved(pos)]);
+    assert_eq!(recorded_rect(app, probe), rect);
+    assert_eq!(recorded_response(app, probe).id, id);
+    compact_frame(app, size, 0.001, pointer(pos, true));
+    assert!(
+        recorded_response(app, probe).is_pointer_button_down_on(),
+        "{probe}"
+    );
+    compact_frame(app, size, 0.001, pointer(pos, false));
+}
+fn compact_enter(app: &mut CedarApp, size: egui::Vec2) {
+    compact_frame(
+        app,
+        size,
+        0.001,
+        modified_key(
+            egui::Key::N,
+            egui::Modifiers {
+                shift: true,
+                ..command_modifiers()
+            },
+        ),
+    );
+    // egui Area deliberately performs one invisible sizing frame on first
+    // entry. Check the first actually visible frame, not that hidden estimate.
+    if !app
+        .editor_ctx
+        .data(|data| data.get_temp::<bool>(egui::Id::new("files_surface_visible_probe")))
+        .unwrap()
+    {
+        compact_frame(app, size, 0.001, vec![]);
+    }
+    assert!(app
+        .editor_ctx
+        .data(|data| data.get_temp::<bool>(egui::Id::new("files_surface_visible_probe")))
+        .unwrap());
+    let first_footer = compact_footer(app);
+    compact_settle(app, size);
+    assert_eq!(compact_footer(app), first_footer, "initial frame geometry");
+    assert_eq!(
+        focused(app),
+        Some(recorded_response(app, "browse_query").id)
+    );
+}
+fn compact_edit(app: &mut CedarApp, size: egui::Vec2, text: &str) {
+    compact_click(app, size, "browse_query");
+    compact_frame(
+        app,
+        size,
+        0.001,
+        modified_key(egui::Key::A, command_modifiers()),
+    );
+    compact_frame(app, size, 0.001, vec![egui::Event::Text(text.into())]);
+}
+fn compact_footer(app: &CedarApp) -> [egui::Rect; 3] {
+    ["browse_preview", "browse_open", "browse_close"].map(|probe| {
+        let rect = recorded_rect(app, probe);
+        assert!(
+            app.editor_ctx.screen_rect().contains_rect(rect),
+            "{probe}: {rect:?}"
+        );
+        assert!(
+            recorded_clip(app, probe).contains_rect(rect),
+            "{probe}: clip {:?}, rect {rect:?}",
+            recorded_clip(app, probe)
+        );
+        rect
+    })
+}
+fn compact_font(app: &CedarApp, size: f32) {
+    app.editor_ctx.style_mut(|style| {
+        for text in [egui::TextStyle::Body, egui::TextStyle::Button] {
+            style.text_styles.insert(text, FontId::proportional(size));
+        }
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, FontId::monospace(size + 1.0));
+    });
+}
+
+#[test]
+fn files_compact_footer_stays_fixed_across_wait_results_error_and_preview() {
+    for size in [
+        egui::vec2(1178.0, 814.0),
+        egui::vec2(780.0, 540.0),
+        egui::vec2(700.0, 480.0),
+    ] {
+        for font in [13.0, 18.0] {
+            let (mut app, commands) = discovery_fixture();
+            compact_font(&app, font);
+            compact_enter(&mut app, size);
+            let footer = compact_footer(&app);
+            if size.y >= 700.0 && font == 13.0 {
+                let content_height = footer[0].bottom() - footer[2].top();
+                assert!(
+                    (500.0..=520.0).contains(&content_height),
+                    "normal content height {content_height}"
+                );
+            }
+            let minimum_rows = if size.y >= 700.0 {
+                12
+            } else if size.y >= 540.0 {
+                8
+            } else {
+                6
+            };
+            compact_edit(&mut app, size, "needle");
+            assert_eq!(compact_footer(&app), footer, "wait {size:?}/{font}");
+            assert!(commands.try_recv().is_err());
+            compact_frame(&mut app, size, 0.250, vec![]);
+            let request = expect_discovery(&commands, "needle", "");
+            let pending = compact_frame(&mut app, size, 0.001, vec![]);
+            assert_eq!(compact_footer(&app), footer, "pending");
+            assert!(has_text(&pending, "Finding project files"));
+            assert!(!has_text(&pending, "Submit a query"));
+            assert!(!has_text(&pending, "No open or loaded files"));
+            let paths: Vec<_> = (0..24)
+                .map(|i| format!("directory-{i:02}/needle.rs"))
+                .collect();
+            let refs: Vec<_> = paths.iter().map(String::as_str).collect();
+            reply(
+                &mut app,
+                request.id,
+                Ok(discovery_result("needle", "", &refs, vec![])),
+            );
+            compact_frame(&mut app, size, 0.001, vec![]);
+            assert_eq!(compact_footer(&app), footer, "first result frame");
+            compact_settle(&mut app, size);
+            assert_eq!(compact_footer(&app), footer, "settled results");
+            let (_, results, _) = recorded_results_geometry(&app, false);
+            let first = recorded_rect(&app, "browse_row:0");
+            let fully_visible = (0..24)
+                .filter(|i| {
+                    let probe = format!("browse_row:{i}");
+                    recorded_clip(&app, &probe).contains_rect(recorded_rect(&app, &probe))
+                })
+                .count();
+            assert!(
+                fully_visible >= minimum_rows,
+                "fully visible rows: {fully_visible} at {size:?}/{font}"
+            );
+            assert!(
+                results.height() >= minimum_rows as f32 * first.height(),
+                "no-preview rows {size:?}/{font}: {results:?} / {first:?}"
+            );
+            compact_click(&mut app, size, "browse_preview");
+            let read = commands.try_recv().unwrap();
+            assert!(matches!(&read.op, Operation::Read { path } if path == &paths[0]));
+            compact_settle(&mut app, size);
+            assert_eq!(compact_footer(&app), footer, "preview requested");
+            reply(
+                &mut app,
+                read.id,
+                Ok(file(&paths[0], "one\ntwo\nthree\nfour\nfive\nsix\n")),
+            );
+            compact_settle(&mut app, size);
+            assert_eq!(compact_footer(&app), footer, "preview loaded");
+            let output = compact_frame(&mut app, size, 0.001, vec![]);
+            let mut found_title = false;
+            let mut found_source = false;
+            for shape in &output.shapes {
+                if let egui::epaint::Shape::Text(draw) = &shape.shape {
+                    let text = draw.galley.text();
+                    if text.starts_with("Disk · read-only")
+                        || text.starts_with("Project files · 24 results")
+                    {
+                        assert!(
+                            draw.galley.job.sections.iter().all(|section| section
+                                .format
+                                .font_id
+                                .size
+                                >= font),
+                            "small status/header text: {text}"
+                        );
+                        if text.starts_with("Disk · read-only") {
+                            found_title = true;
+                            assert!(
+                                (draw.pos.x - first.left()).abs() <= 1.0,
+                                "preview header must be left-aligned: {} vs {}",
+                                draw.pos.x,
+                                first.left()
+                            );
+                        } else {
+                            found_source = true;
+                        }
+                    }
+                }
+            }
+            assert!(
+                found_title && found_source,
+                "visible readable title and source"
+            );
+            let (_, results, _) = recorded_results_geometry(&app, false);
+            let (_, preview): (egui::Id, egui::Rect) = app
+                .editor_ctx
+                .data(|data| data.get_temp(egui::Id::new(("project_text_context_scroll", false))))
+                .unwrap();
+            assert!(
+                results.height() >= 3.0 * first.height(),
+                "results {size:?}/{font}: {results:?}"
+            );
+            assert!(
+                preview.height()
+                    >= 3.0
+                        * app
+                            .editor_ctx
+                            .fonts(|fonts| fonts.row_height(&FontId::monospace(font + 1.0))),
+                "preview {size:?}/{font}: {preview:?}"
+            );
+            if size.y >= 700.0 && font == 13.0 {
+                let preview_total = footer[0].top() - 4.0 - results.bottom();
+                assert!(
+                    (150.0..=180.0).contains(&preview_total),
+                    "normal preview total {preview_total}"
+                );
+            }
+            assert!(results.bottom() <= preview.top());
+            assert!(preview.bottom() <= footer[0].top());
+            compact_click(&mut app, size, "browse_hide_preview");
+            compact_settle(&mut app, size);
+            assert!(!app.browse.preview_visible());
+            assert_eq!(compact_footer(&app), footer, "hidden");
+            assert!(commands.try_recv().is_err());
+            compact_edit(&mut app, size, "failure");
+            compact_frame(&mut app, size, 0.250, vec![]);
+            let request = expect_discovery(&commands, "failure", "");
+            reply(
+                &mut app,
+                request.id,
+                Err(format!(
+                    "Permission denied: {}",
+                    "long directory / ".repeat(50)
+                )),
+            );
+            compact_settle(&mut app, size);
+            assert_eq!(compact_footer(&app), footer, "long error");
+            let (status_id, status_rect, content): (egui::Id, egui::Rect, egui::Vec2) = app
+                .editor_ctx
+                .data(|data| data.get_temp(egui::Id::new("files_status_scroll_probe")))
+                .unwrap();
+            assert!(content.y > status_rect.height());
+            compact_frame(
+                &mut app,
+                size,
+                0.001,
+                vec![
+                    egui::Event::PointerMoved(status_rect.center()),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -4000.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            compact_frame(&mut app, size, 0.5, vec![]);
+            let offset = egui::scroll_area::State::load(&app.editor_ctx, status_id)
+                .unwrap()
+                .offset
+                .y;
+            assert!(offset >= content.y - status_rect.height() - 1.0, "long status end unreachable: offset {offset}, content {content:?}, rect {status_rect:?}");
+            assert_eq!(compact_footer(&app), footer, "scrolled error");
+            compact_frame(&mut app, size, 2.0, vec![]);
+            assert!(commands.try_recv().is_err(), "no automatic retry");
+        }
+    }
+}
+
+#[test]
+fn files_compact_long_unicode_rows_keep_full_width_and_original_identity() {
+    for font in [13.0, 18.0] {
+        let size = egui::vec2(780.0, 540.0);
+        let (mut app, commands) = discovery_fixture();
+        compact_font(&app, font);
+        compact_enter(&mut app, size);
+        compact_edit(&mut app, size, "needle");
+        compact_frame(&mut app, size, 0.250, vec![]);
+        let request = expect_discovery(&commands, "needle", "");
+        let long = format!(
+            "{}/nearest-parent/needle-中文-😀-e\u{301}-{}.rs",
+            "very-long-parent-directory/"
+                .repeat(16)
+                .trim_end_matches('/'),
+            "long-name-".repeat(30)
+        );
+        let paths = ["a/needle.rs", "b/needle.rs", long.as_str()];
+        reply(
+            &mut app,
+            request.id,
+            Ok(discovery_result("needle", "", &paths, vec![])),
+        );
+        compact_settle(&mut app, size);
+        assert_eq!(app.browse.paths(), paths);
+        let footer = compact_footer(&app);
+        let rows = [0, 1, 2].map(|i| recorded_rect(&app, &format!("browse_row:{i}")));
+        let (_, area, _) = recorded_results_geometry(&app, false);
+        for rect in rows {
+            assert!(
+                (rect.width() - area.width()).abs() < 2.0,
+                "full width: {rect:?} vs {area:?}"
+            );
+            assert!(
+                (rect.height() - rows[0].height()).abs() < 2.0,
+                "single row: {rect:?} vs {:?}",
+                rows[0]
+            );
+            assert!(recorded_clip(&app, "browse_row:2").contains_rect(rect));
+        }
+        let point = egui::pos2(rows[2].right() - 5.0, rows[2].center().y);
+        compact_frame(
+            &mut app,
+            size,
+            0.001,
+            vec![egui::Event::PointerMoved(point)],
+        );
+        compact_frame(&mut app, size, 0.001, pointer(point, true));
+        compact_frame(&mut app, size, 0.001, pointer(point, false));
+        assert_eq!(app.browse.selected_index(), Some(2));
+        assert_eq!(compact_footer(&app), footer);
+        assert!(commands.try_recv().is_err(), "selection is not a Read");
+        compact_frame(&mut app, size, 0.001, key(egui::Key::Space));
+        let read = commands.try_recv().unwrap();
+        assert!(matches!(&read.op, Operation::Read { path } if path == &long));
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn files_forced_width_unicode_elision_retains_original_layout_and_action_text() {
+    // Test input preservation, not a grapheme guarantee in the renderer. In
+    // particular these sequences must not be scalar-sliced before layout.
+    for sequence in ["e\u{301}", "👍🏽", "👩‍👩‍👧‍👦"] {
+        for font in [13.0, 18.0] {
+            let size = egui::vec2(780.0, 540.0);
+            let (mut app, commands) = discovery_fixture();
+            compact_font(&app, font);
+            compact_enter(&mut app, size);
+            compact_edit(&mut app, size, "needle");
+            compact_frame(&mut app, size, 0.250, vec![]);
+            let request = expect_discovery(&commands, "needle", "");
+            let parent = format!("parent-{}", sequence.repeat(48));
+            let name = format!("needle-{}.rs", sequence.repeat(48));
+            let path = format!("{parent}/{name}");
+            reply(
+                &mut app,
+                request.id,
+                Ok(discovery_result("needle", "", &[&path], vec![])),
+            );
+            compact_settle(&mut app, size);
+            let output = compact_frame(&mut app, size, 0.001, vec![]);
+            for original in [&parent, &name] {
+                let draw = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::epaint::Shape::Text(draw)
+                            if draw.galley.job.text.as_bytes() == original.as_bytes() =>
+                        {
+                            Some(draw)
+                        }
+                        _ => None,
+                    })
+                    .expect("full non-ASCII original must reach layout byte-for-byte");
+                assert!(draw.galley.elided, "fixture must force elision");
+                assert_eq!(draw.galley.rows.len(), 1);
+            }
+            assert_eq!(app.browse.paths(), [path.as_str()]);
+            let pos = visible_center(&app, "browse_row:0");
+            let delay = f64::from(app.editor_ctx.style().interaction.tooltip_delay);
+            // A real pointer approach needs multiple timed samples. A lone
+            // jump after a long idle never gives egui's velocity filter a move
+            // time, so it intentionally keeps post-click tooltips suppressed.
+            for offset in [8.0, 4.0, 0.0] {
+                compact_frame(
+                    &mut app,
+                    size,
+                    0.016,
+                    vec![egui::Event::PointerMoved(pos - egui::vec2(offset, 0.0))],
+                );
+            }
+            assert!(app
+                .editor_ctx
+                .input(|i| i.pointer.time_since_last_movement().is_finite()));
+            compact_frame(&mut app, size, 1.0 + delay, vec![]);
+            let hovered = compact_frame(&mut app, size, 0.1, vec![]);
+            assert!(has_text(&hovered, &path), "full original hover text");
+            // Dismiss the large tooltip, then use the real query-to-row
+            // keyboard route. Accessibility receives the same complete label
+            // in files_result_row; this guarded route need not emit an event.
+            compact_frame(
+                &mut app,
+                size,
+                0.001,
+                vec![egui::Event::PointerMoved(egui::Pos2::ZERO)],
+            );
+            compact_settle(&mut app, size);
+            compact_frame(&mut app, size, 0.001, key(egui::Key::ArrowDown));
+            compact_frame(&mut app, size, 0.001, vec![]);
+            assert_eq!(
+                focused(&app),
+                Some(recorded_response(&app, "browse_row:0").id)
+            );
+            assert!(commands.try_recv().is_err(), "selection is not a Read");
+            compact_frame(&mut app, size, 0.001, key(egui::Key::Space));
+            let read = commands.try_recv().unwrap();
+            assert!(matches!(&read.op, Operation::Read { path: actual } if actual == &path));
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn files_hide_preview_keeps_physical_read_until_reply_and_rejects_late_bytes() {
+    for fail in [false, true] {
+        let (mut app, commands) = fixture();
+        let departure = selection_signature(selection(&app));
+        let undo = undo_texts(&app);
+        enter(&mut app, false);
+        query(&mut app, ".txt");
+        frame(&mut app, key(egui::Key::Enter));
+        settle(&mut app);
+        click(&mut app, "browse_row:1");
+        click(&mut app, "browse_preview");
+        let first = commands.try_recv().unwrap();
+        assert!(matches!(&first.op, Operation::Read { path } if path == "a.txt"));
+        settle(&mut app);
+        click(&mut app, "browse_hide_preview");
+        settle(&mut app);
+        assert!(!app.browse.preview_visible());
+        assert!(app.browse.busy());
+        assert_eq!(
+            focused(&app),
+            Some(recorded_response(&app, "browse_row:1").id)
+        );
+        assert!(commands.try_recv().is_err());
+        click(&mut app, "browse_row:2");
+        frame(&mut app, key(egui::Key::Space));
+        assert!(commands.try_recv().is_err());
+        reply(
+            &mut app,
+            first.id,
+            if fail {
+                Err("stale preview failure".into())
+            } else {
+                Ok(file("a.txt", "stale bytes"))
+            },
+        );
+        settle(&mut app);
+        let replacement = commands.try_recv().unwrap();
+        assert!(matches!(&replacement.op, Operation::Read { path } if path == "b.txt"));
+        assert_eq!(app.browse.preview_text(), None);
+        assert_ne!(app.browse.preview_message(), Some("stale preview failure"));
+        assert_draft(&app, departure, &undo);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn files_compact_native_reverse_tab_hides_preview_and_restores_dirty_result() {
+    let size = egui::vec2(780.0, 540.0);
+    let (mut app, commands) = fixture();
+    let departure = selection_signature(selection(&app));
+    let undo = undo_texts(&app);
+    compact_enter(&mut app, size);
+    compact_edit(&mut app, size, "origin");
+    compact_frame(&mut app, size, 0.001, key(egui::Key::Enter));
+    compact_settle(&mut app, size);
+    compact_click(&mut app, size, "browse_row:0");
+    compact_frame(&mut app, size, 0.001, key(egui::Key::Space));
+    compact_settle(&mut app, size);
+    assert!(app.browse.preview_visible());
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, "browse_preview_content").id)
+    );
+    compact_frame(
+        &mut app,
+        size,
+        0.001,
+        modified_key(
+            egui::Key::Tab,
+            egui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        ),
+    );
+    compact_frame(&mut app, size, 0.001, vec![]);
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, "browse_hide_preview").id)
+    );
+    compact_frame(&mut app, size, 0.001, key(egui::Key::Enter));
+    compact_settle(&mut app, size);
+    assert!(!app.browse.preview_visible());
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, "browse_row:0").id)
+    );
+    assert_draft(&app, departure, &undo);
+    assert!(commands.try_recv().is_err());
+    compact_frame(&mut app, size, 0.001, key(egui::Key::Escape));
+    compact_settle(&mut app, size);
+    assert!(!app.browse_marker_open());
+    assert_draft(&app, departure, &undo);
 }

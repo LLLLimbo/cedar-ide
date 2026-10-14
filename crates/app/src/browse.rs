@@ -1,13 +1,14 @@
 //! Common Find and return entry. Provider adapters retain
 //! authority; this view owns only selection, native input and one bounded preview.
 use crate::{
-    navigation, search_keyboard, CedarApp, ConnectionState, Job, Tool, WorkspaceKey, AMBER, MUTED,
+    chrome, navigation, search_keyboard, CedarApp, ConnectionState, Job, Tool, WorkspaceKey, AMBER,
+    MUTED,
 };
 use cedar_protocol::{
     FileDiscoveryIncompleteReason, Operation, Payload, DEFAULT_FILE_DISCOVERY_RESULTS,
     MAX_FILE_BYTES,
 };
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, emath::GuiRounding, RichText};
 use std::{collections::HashSet, sync::Arc};
 
 const BROWSE_PREVIEW_SEPARATOR: f32 = 6.0;
@@ -303,6 +304,7 @@ enum Target {
     Row(usize),
     Group(usize),
     Preview,
+    HidePreview,
     Open,
     Close,
     PreviewPane,
@@ -511,7 +513,7 @@ impl Browse {
     fn token(&self, target: Target) -> Token {
         let row = match target {
             Target::Row(index) => self.rows.get(index),
-            Target::Preview | Target::Open | Target::PreviewPane => {
+            Target::Preview | Target::HidePreview | Target::Open | Target::PreviewPane => {
                 self.selected.and_then(|index| self.rows.get(index))
             }
             _ => None,
@@ -2173,6 +2175,7 @@ impl CedarApp {
                 Target::Row(index) => format!("browse_row:{index}"),
                 Target::Group(index) => format!("browse_group:{index}"),
                 Target::Preview => "browse_preview".into(),
+                Target::HidePreview => "browse_hide_preview".into(),
                 Target::Open => "browse_open".into(),
                 Target::Close => "browse_close".into(),
                 Target::PreviewPane => "browse_preview_content".into(),
@@ -2254,6 +2257,11 @@ impl CedarApp {
         } else {
             scroll
         };
+        let scroll = if self.browse.provider == Provider::Files {
+            scroll.auto_shrink([false, false])
+        } else {
+            scroll
+        };
         let output = scroll
             .animated(false)
             .min_scrolled_height(max_height.min(64.0))
@@ -2315,13 +2323,30 @@ impl CedarApp {
                         let current = self.browse_row_current(&row);
                         let response = ui
                             .add_enabled_ui(current, |ui| {
-                                navigation::candidate_row(
-                                    ui,
-                                    id,
-                                    self.browse.selected == Some(index),
-                                    &label,
-                                    true,
-                                )
+                                if self.browse.provider == Provider::Files {
+                                    let annotation = match &row {
+                                        Row::File(candidate) => {
+                                            self.browse_loaded_annotation(candidate)
+                                        }
+                                        _ => "",
+                                    };
+                                    files_result_row(
+                                        ui,
+                                        id,
+                                        self.browse.selected == Some(index),
+                                        row.path(),
+                                        annotation,
+                                        &label,
+                                    )
+                                } else {
+                                    navigation::candidate_row(
+                                        ui,
+                                        id,
+                                        self.browse.selected == Some(index),
+                                        &label,
+                                        true,
+                                    )
+                                }
                             })
                             .inner;
                         if response.has_focus() {
@@ -2352,13 +2377,21 @@ impl CedarApp {
                         }
                     }
                 }
-                if self.browse.rows.is_empty() {
+                if self.browse.rows.is_empty()
+                    && (self.browse.provider == Provider::ProjectText
+                        || (!self.browse.discovery.pending_current()
+                            && self.browse.files_settlement.is_none()
+                            && self.browse.message.is_none()))
+                {
                     let empty = match &self.browse.discovery.accepted {
                         Some(source) if source.incomplete => {
                             "No matches observed in an incomplete scan; more files may exist."
                         }
                         Some(_) => {
                             "No matching project files in the searched scope and exclusions."
+                        }
+                        None if self.browse.provider == Provider::Files => {
+                            "No open or loaded files. Type a filename to search."
                         }
                         None => "No active results. Submit a query to find a file or text.",
                     };
@@ -2546,6 +2579,434 @@ impl CedarApp {
             ui.label(RichText::new(BROWSE_PREVIEW_RETURN).small().color(MUTED));
         }
     }
+    // Both Escape and the explicit Files close control retire only the preview
+    // intent. Its physical Read slot still belongs to its eventual reply.
+    fn browse_hide_preview(&mut self) {
+        self.browse.desired = None;
+        self.browse.review = None;
+        self.browse.settlement = None;
+        self.browse.context_reveal = None;
+        self.browse.preview = None;
+        self.browse.replacement = None;
+        self.browse.focus = self.browse.selected.map(Target::Row);
+    }
+
+    fn files_action(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        target: Target,
+        label: &str,
+        enabled: bool,
+    ) -> bool {
+        let selected = target == Target::Files;
+        let response = ui
+            .add_enabled_ui(enabled, |ui| {
+                files_action_control(ui, rect, self.browse.id(&target), label, selected)
+            })
+            .inner;
+        self.browse_response(ui, target, &response)
+    }
+
+    fn browse_files_surface(&mut self, ui: &mut egui::Ui) -> FilesActions {
+        let mut actions = FilesActions::default();
+        #[cfg(test)]
+        {
+            let visible = !ui.is_sizing_pass() && ui.is_visible();
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new("files_surface_visible_probe"), visible)
+            });
+        }
+        let screen = ui.ctx().screen_rect();
+        let width = (screen.width() - 64.0).clamp(1.0, 720.0);
+        ui.set_width(width);
+        let top = ui.next_widget_position();
+        let bottom_margin = egui::Frame::popup(ui.style()).total_margin().bottom;
+        let control_height = (egui::TextStyle::Button.resolve(ui.style()).size + 14.0).max(30.0);
+        let gap = 4.0;
+        let text_height = |style| {
+            egui::WidgetText::from("Ag")
+                .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style)
+                .size()
+                .y
+        };
+        let body_line_height = text_height(egui::TextStyle::Body);
+        let standard_row_height =
+            (text_height(egui::TextStyle::Button) + 8.0).max(chrome::ROW_HEIGHT);
+        let status_height = 2.0 * body_line_height + gap;
+        // Reserve twelve standard rows at the chosen UI font (about 508 points
+        // at 13 pt), then bound by the viewport. This ASCII metric is stable
+        // when optional CJK fonts arrive; no result count or state sizes it.
+        let normal_height = 12.0 * standard_row_height
+            + 11.0 * gap
+            + 4.0 * control_height
+            + 5.0 * gap
+            + status_height;
+        let height = (screen.bottom() - top.y - 24.0 - bottom_margin).clamp(1.0, normal_height);
+        let surface = egui::Rect::from_min_size(top, egui::vec2(width, height));
+        ui.set_min_size(surface.size());
+        let band = |y, h| egui::Rect::from_min_size(egui::pos2(top.x, y), egui::vec2(width, h));
+        let header = band(top.y, control_height);
+        let close_width = files_text_width(ui, "Close · Esc") + 16.0;
+        let files_width = files_text_width(ui, "Files") + 20.0;
+        let text_width = files_text_width(ui, "Project Text") + 20.0;
+        let close_rect = egui::Rect::from_min_max(
+            egui::pos2(header.right() - close_width, header.top()),
+            header.max,
+        );
+        let files_rect =
+            egui::Rect::from_min_size(header.min, egui::vec2(files_width, control_height));
+        let text_rect = files_rect.translate(egui::vec2(files_width + gap, 0.0));
+        let text_rect =
+            egui::Rect::from_min_size(text_rect.min, egui::vec2(text_width, control_height));
+        if self.files_action(ui, files_rect, Target::Files, "Files", true) {
+            actions.switch = Some(Provider::Files);
+        }
+        if self.files_action(
+            ui,
+            text_rect,
+            Target::Text,
+            "Project Text",
+            self.backend_supports("search") || self.backend_scoped_search_supported(),
+        ) {
+            actions.switch = Some(Provider::ProjectText);
+        }
+        actions.close = self.files_action(ui, close_rect, Target::Close, "Close · Esc", true);
+        let workspace_rect = egui::Rect::from_min_max(
+            egui::pos2(text_rect.right() + 12.0, header.top()),
+            egui::pos2(
+                (close_rect.left() - 12.0).max(text_rect.right() + 12.0),
+                header.bottom(),
+            ),
+        );
+        let workspace = self
+            .root
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&self.root);
+        ui.put(
+            workspace_rect,
+            egui::Label::new(RichText::new(workspace).color(chrome::MUTED)).truncate(),
+        )
+        .on_hover_text(format!("Workspace: {}", self.root));
+
+        let query_band = band(header.bottom() + gap, control_height);
+        let find_width = files_text_width(ui, "Find") + 24.0;
+        let find_rect = egui::Rect::from_min_max(
+            egui::pos2(query_band.right() - find_width, query_band.top()),
+            query_band.max,
+        );
+        let query_rect = egui::Rect::from_min_max(
+            query_band.min,
+            egui::pos2(find_rect.left() - gap, query_band.bottom()),
+        );
+        let query_id = self.browse.id(&Target::Query);
+        if self.browse.focus == Some(Target::Query) && !ui.is_sizing_pass() {
+            ui.memory_mut(|memory| memory.request_focus(query_id));
+        }
+        let previous_query = self.browse.query.clone();
+        let query = ui.put(
+            query_rect,
+            egui::TextEdit::singleline(&mut self.browse.query)
+                .id(query_id)
+                .char_limit(4096)
+                .desired_width(f32::INFINITY)
+                .hint_text("Type a filename"),
+        );
+        let edit_intent = self.browse.input.files_edit == Some(Target::Query);
+        if edit_intent {
+            self.browse.input.files_edit = None;
+        }
+        if (query.changed() && previous_query != self.browse.query)
+            || (edit_intent && (query.changed() || query.has_focus()))
+        {
+            self.browse_query_changed();
+            actions.edited = true;
+        }
+        self.browse_response(ui, Target::Query, &query);
+        let scope_band = band(
+            query_band.bottom().max(query.rect.bottom()) + gap,
+            control_height,
+        );
+        let discovery = self.backend_file_discovery_supported();
+        if discovery {
+            let label_width = files_text_width(ui, "Directory") + 12.0;
+            let label_rect =
+                egui::Rect::from_min_size(scope_band.min, egui::vec2(label_width, control_height));
+            ui.put(
+                label_rect,
+                egui::Label::new(RichText::new("Directory").color(chrome::MUTED)),
+            );
+            let scope_rect = egui::Rect::from_min_max(
+                egui::pos2(label_rect.right(), scope_band.top()),
+                scope_band.max,
+            );
+            let id = self.browse.id(&Target::Scope);
+            let previous_scope = self.browse.scope.clone();
+            let scope = ui.put(scope_rect, egui::TextEdit::singleline(&mut self.browse.scope).id(id).char_limit(4096).desired_width(f32::INFINITY).hint_text("Whole workspace"))
+                .on_hover_text(format!("Exact workspace-relative directory; empty searches workspace. Excluded directories: {}. Literal matching uses Unicode lowercase, without normalization.", cedar_protocol::FILE_DISCOVERY_EXCLUDED_DIRECTORIES.join(", ")));
+            let edit_intent = self.browse.input.files_edit == Some(Target::Scope);
+            if edit_intent {
+                self.browse.input.files_edit = None;
+            }
+            if (scope.changed() && previous_scope != self.browse.scope)
+                || (edit_intent && (scope.changed() || scope.has_focus()))
+            {
+                self.browse_query_changed();
+                actions.edited = true;
+            }
+            self.browse_response(ui, Target::Scope, &scope);
+        } else {
+            ui.put(
+                scope_band,
+                egui::Label::new(
+                    RichText::new("Open and loaded files · project discovery unavailable")
+                        .color(chrome::MUTED),
+                )
+                .truncate(),
+            )
+            .on_hover_text(
+                "Directory scope is unavailable for Open and loaded files. No folders are scanned.",
+            );
+        }
+        // Render in the established query → scope → submit keyboard order even
+        // though Find is visually alongside the query.
+        actions.submit = self.files_action(ui, find_rect, Target::Submit, "Find", true);
+
+        let footer = band(surface.bottom() - control_height, control_height);
+        let status_rect = band(scope_band.bottom() + gap, status_height);
+        let mut status_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("files_status")
+                .max_rect(status_rect),
+        );
+        status_ui.set_clip_rect(ui.clip_rect().intersect(status_rect));
+        let status_scroll = egui::ScrollArea::vertical().id_salt("files_status_scroll").auto_shrink([false, false]).min_scrolled_height(0.0).max_height(status_height).show(&mut status_ui, |ui| {
+            let source = if let Some(source) = &self.browse.discovery.accepted {
+                format!("Project files · {} results · {} entries examined", self.browse.rows.len(), source.examined)
+            } else if discovery && self.browse.discovery.pending_current() {
+                "Finding project files…".into()
+            } else if discovery {
+                if self.browse.query.is_empty() { "Project files · empty query shows open and loaded files".into() } else { "Project files".into() }
+            } else {
+                format!("Open and loaded files · {} results", self.browse.rows.len())
+            };
+            ui.add(egui::Label::new(RichText::new(source).color(chrome::MUTED)).truncate())
+                .on_hover_text(format!("Project files search after a short typing pause (250 ms); Enter searches now. Workspace: {}. Directory scope: /{}.", self.root, self.browse.scope));
+            if let Some(message) = &self.browse.message {
+                ui.label(RichText::new(message).color(if self.browse.files_settlement.is_some() { chrome::MUTED } else { AMBER })).on_hover_text(message);
+            } else if let Some(source) = self.browse.discovery.accepted.as_ref().filter(|source| source.incomplete) {
+                ui.colored_label(AMBER, format!("Incomplete scan: {}. A narrower directory scope can help with traversal limits.", source.reasons.iter().map(discovery_reason).collect::<Vec<_>>().join(", ")));
+            } else if self.browse.truncated {
+                ui.colored_label(AMBER, "Result limit reached; more matches may exist. Narrow the query.");
+            }
+        });
+        #[cfg(test)]
+        crate::browse_tests::record_files_status_scroll(
+            ui.ctx(),
+            status_scroll.id,
+            status_scroll.inner_rect,
+            status_scroll.content_size,
+        );
+        #[cfg(not(test))]
+        let _ = status_scroll;
+        let body = egui::Rect::from_min_max(
+            egui::pos2(top.x, status_rect.bottom() + gap),
+            egui::pos2(
+                surface.right(),
+                (footer.top() - gap).max(status_rect.bottom() + gap),
+            ),
+        )
+        .round_to_pixels(ui.pixels_per_point());
+        let preview_height = if self.browse.desired.is_some() {
+            // Font::row_height includes fallback-family metrics that may be
+            // taller than the actual row galleys. Measure this accepted list,
+            // without drawing or producing another set of native responses.
+            let row_height = self
+                .browse
+                .rows
+                .iter()
+                .map(|row| {
+                    egui::WidgetText::from(row.path())
+                        .into_galley(
+                            ui,
+                            Some(egui::TextWrapMode::Extend),
+                            f32::INFINITY,
+                            egui::TextStyle::Button,
+                        )
+                        .size()
+                        .y
+                        + 8.0
+                })
+                .fold(chrome::ROW_HEIGHT, f32::max);
+            let results_min = 3.0 * row_height + 2.0 * gap;
+            let preview_min =
+                (control_height + 3.0 * ui.text_style_height(&egui::TextStyle::Monospace)).ceil();
+            if body.height() >= results_min + preview_min {
+                (body.height() * 0.48).clamp(preview_min, body.height() - results_min)
+            } else {
+                // Below the supported budget, share the actual space. Never
+                // push Close or the action footer outside the viewport.
+                body.height() * 0.48
+            }
+        } else {
+            0.0
+        };
+        let results_rect = egui::Rect::from_min_max(
+            body.min,
+            egui::pos2(
+                body.right(),
+                (body.bottom() - preview_height).round_to_pixels(ui.pixels_per_point()),
+            ),
+        );
+        let mut results_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("files_results_panel")
+                .max_rect(results_rect),
+        );
+        results_ui.set_clip_rect(ui.clip_rect().intersect(results_rect));
+        self.browse_results_panel(
+            &mut results_ui,
+            results_rect.height(),
+            &mut actions.select,
+            &mut actions.open,
+            &mut None,
+        );
+        if self.browse.desired.is_some() {
+            let preview_rect =
+                egui::Rect::from_min_max(egui::pos2(body.left(), results_rect.bottom()), body.max);
+            actions.hide_preview = self.browse_files_preview(ui, preview_rect, control_height);
+        }
+        ui.painter().hline(
+            surface.x_range(),
+            footer.top() - gap / 2.0,
+            egui::Stroke::new(1.0_f32, chrome::BORDER),
+        );
+        let selected = self
+            .browse
+            .selected
+            .and_then(|index| self.browse.rows.get(index))
+            .is_some_and(|row| self.browse_row_current(row));
+        let preview_width = files_text_width(ui, "Preview · Space") + 16.0;
+        let open_width = files_text_width(ui, "Open · Enter") + 16.0;
+        let preview_button =
+            egui::Rect::from_min_size(footer.min, egui::vec2(preview_width, control_height));
+        let open_button = egui::Rect::from_min_size(
+            egui::pos2(preview_button.right() + gap, footer.top()),
+            egui::vec2(open_width, control_height),
+        );
+        actions.preview = self.files_action(
+            ui,
+            preview_button,
+            Target::Preview,
+            "Preview · Space",
+            selected,
+        );
+        actions.open |= self.files_action(ui, open_button, Target::Open, "Open · Enter", selected);
+        let hint_rect = egui::Rect::from_min_max(
+            egui::pos2(open_button.right() + 12.0, footer.top()),
+            footer.max,
+        );
+        let hint = if self.browse.desired.is_some() {
+            "Esc returns to results"
+        } else if query.has_focus() {
+            "Enter searches · ↓ selects"
+        } else {
+            "Read-only preview · 1 MiB max"
+        };
+        files_label_at(ui, hint_rect, egui::Label::new(RichText::new(hint).color(chrome::MUTED)).truncate().halign(egui::Align::Min))
+            .on_hover_text("Enter in the query searches; Enter on a result opens it. Space explicitly previews. Preview is read-only, at most 1 MiB, and never creates an editable tab. Escape returns to the selected result, then closes Files.");
+        actions
+    }
+
+    fn browse_files_preview(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        header_height: f32,
+    ) -> bool {
+        ui.painter().hline(
+            rect.x_range(),
+            rect.top(),
+            egui::Stroke::new(1.0_f32, chrome::BORDER),
+        );
+        let hide_width = files_text_width(ui, "Hide preview") + 16.0;
+        let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), header_height));
+        let hide_rect = egui::Rect::from_min_max(
+            egui::pos2(header.right() - hide_width, header.top()),
+            header.max,
+        );
+        let hide = self.files_action(ui, hide_rect, Target::HidePreview, "Hide preview", true);
+        let title_rect = egui::Rect::from_min_max(
+            header.min,
+            egui::pos2(hide_rect.left() - 8.0, header.bottom()),
+        );
+        let path = self
+            .browse
+            .desired
+            .as_ref()
+            .map(|ticket| ticket.row.path())
+            .unwrap_or("");
+        let source = match &self.browse.preview {
+            Some(Preview::Draft(_)) => "Draft · read-only",
+            Some(Preview::Disk { .. }) => "Disk · read-only",
+            Some(Preview::Message { .. }) => "Preview unavailable",
+            None => "Preview requested…",
+        };
+        files_label_at(
+            ui,
+            title_rect,
+            egui::Label::new(RichText::new(format!("{source} · {path}")).color(chrome::MUTED))
+                .truncate()
+                .halign(egui::Align::Min),
+        )
+        .on_hover_text(format!("{path}\n{}", self.browse_preview_title(false)));
+        let content_rect =
+            egui::Rect::from_min_max(egui::pos2(rect.left(), header.bottom()), rect.max)
+                .round_to_pixels(ui.pixels_per_point());
+        let mut content_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("files_preview_panel")
+                .max_rect(content_rect),
+        );
+        content_ui.set_clip_rect(ui.clip_rect().intersect(content_rect));
+        let id = self.browse.id(&Target::PreviewPane);
+        let scroll = egui::ScrollArea::both()
+            .id_salt("browse_preview_scroll")
+            .animated(false)
+            .auto_shrink([false, false])
+            .min_scrolled_height(0.0)
+            .max_height(content_rect.height())
+            .show(&mut content_ui, |ui| {
+                let content = if let Some(Preview::Message { message, .. }) = &self.browse.preview {
+                    ui.label(RichText::new(message).color(AMBER))
+                } else {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                self.current_preview_text(PreviewSurface::Browse)
+                                    .unwrap_or("Waiting for preview…"),
+                            )
+                            .monospace(),
+                        )
+                        .selectable(false),
+                    )
+                };
+                ui.interact(content.rect, id, egui::Sense::click())
+            });
+        #[cfg(test)]
+        record_context_scroll(
+            ui.ctx(),
+            scroll.id,
+            scroll.inner_rect,
+            PreviewSurface::Browse,
+        );
+        self.browse_response(&content_ui, Target::PreviewPane, &scroll.inner);
+        hide
+    }
+
     pub(super) fn browse_window(&mut self, ctx: &egui::Context) {
         self.validate_project_text_review();
         if !self.browse_current() {
@@ -2584,6 +3045,7 @@ impl CedarApp {
         let mut submit = false;
         let mut select = None;
         let mut preview = false;
+        let mut hide_preview = false;
         let mut open = false;
         let mut close = false;
         let mut switch = None;
@@ -2591,13 +3053,8 @@ impl CedarApp {
         if let Some(intent) = &key {
             match (&intent.source.token.target, intent.key) {
                 (_, egui::Key::Escape) => {
-                    if self.browse.desired.take().is_some() || self.browse.review.is_some() {
-                        self.browse.review = None;
-                        self.browse.settlement = None;
-                        self.browse.context_reveal = None;
-                        self.browse.preview = None;
-                        self.browse.replacement = None;
-                        self.browse.focus = self.browse.selected.map(Target::Row);
+                    if self.browse.desired.is_some() || self.browse.review.is_some() {
+                        self.browse_hide_preview();
                     } else {
                         close = true;
                     }
@@ -2645,6 +3102,18 @@ impl CedarApp {
         egui::Modal::new(modal_id).area(egui::Modal::default_area(modal_id).anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 24.0))).show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
             ui.spacing_mut().button_padding = egui::vec2(6.0, 3.0);
+            if self.browse.provider == Provider::Files {
+                let actions = self.browse_files_surface(ui);
+                if actions.edited { submit = false; select = None; preview = false; open = false; }
+                submit |= actions.submit;
+                select = actions.select.or(select);
+                preview |= actions.preview;
+                hide_preview |= actions.hide_preview;
+                open |= actions.open;
+                close |= actions.close;
+                switch = actions.switch.or(switch);
+                return;
+            }
             ui.set_width((ctx.screen_rect().width() - 64.0).clamp(240.0, 860.0));
             ui.heading("Find and return");
             ui.horizontal(|ui| {
@@ -2775,6 +3244,8 @@ impl CedarApp {
             self.browse_switch(provider);
         } else if submit {
             self.browse_submit();
+        } else if hide_preview {
+            self.browse_hide_preview();
         } else if let Some(first) = toggle_group {
             self.browse_toggle_text_group(first);
         } else {
@@ -2807,6 +3278,255 @@ impl CedarApp {
             ctx.request_repaint();
         }
     }
+}
+
+#[derive(Default)]
+struct FilesActions {
+    edited: bool,
+    submit: bool,
+    select: Option<usize>,
+    preview: bool,
+    hide_preview: bool,
+    open: bool,
+    close: bool,
+    switch: Option<Provider>,
+}
+
+fn files_label_at(ui: &mut egui::Ui, rect: egui::Rect, label: egui::Label) -> egui::Response {
+    // Ui::put centers the entire label widget even when its text halign is Min.
+    // Use a left-origin child so the actual painted title starts at the pane edge.
+    let mut label_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    label_ui.set_clip_rect(ui.clip_rect().intersect(rect));
+    label_ui.add(label)
+}
+
+fn files_text_width(ui: &egui::Ui, text: &str) -> f32 {
+    egui::WidgetText::from(text)
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Button,
+        )
+        .size()
+        .x
+}
+
+fn files_action_control(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: egui::Id,
+    label: &str,
+    selected: bool,
+) -> egui::Response {
+    let response = ui.interact(rect, id, egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, selected);
+        if selected || response.hovered() || response.has_focus() {
+            ui.painter().rect(
+                rect,
+                3.0,
+                if selected {
+                    chrome::SELECTED
+                } else {
+                    chrome::HOVER
+                },
+                if response.has_focus() {
+                    egui::Stroke::new(1.0_f32, chrome::FOCUS)
+                } else {
+                    egui::Stroke::NONE
+                },
+                egui::StrokeKind::Inside,
+            );
+        }
+        let galley = egui::WidgetText::from(label).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            (rect.width() - 12.0).max(0.0),
+            egui::TextStyle::Button,
+        );
+        ui.painter().galley(
+            rect.center() - galley.size() / 2.0,
+            galley,
+            visuals.text_color(),
+        );
+        if selected {
+            ui.painter().hline(
+                rect.x_range(),
+                rect.bottom() - 1.0,
+                egui::Stroke::new(2.0_f32, chrome::FOCUS),
+            );
+        }
+    }
+    response
+}
+
+// Elide only a painted copy. Character boundaries keep UTF-8 intact, while
+// retaining the end keeps extensions and the nearest parent directory useful.
+// Neither this text nor the resulting galley ever supplies an action identity.
+fn files_path_galley(
+    ui: &egui::Ui,
+    text: &str,
+    width: f32,
+    color: egui::Color32,
+    tail: bool,
+) -> Arc<egui::Galley> {
+    // Keep non-ASCII input intact: scalar slicing could detach combining marks,
+    // emoji modifiers, or ZWJ sequences. Native single-line elision retains the
+    // original layout text; it does not promise grapheme-boundary rendering.
+    if !text.is_ascii() {
+        return egui::WidgetText::from(RichText::new(text).color(color)).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            width.max(0.0),
+            egui::TextStyle::Button,
+        );
+    }
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let layout = |text: String| ui.fonts(|fonts| fonts.layout_no_wrap(text, font.clone(), color));
+    let full = layout(text.to_owned());
+    if full.size().x <= width {
+        return full;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut low = 0;
+    let mut high = chars.len();
+    let mut best = layout("…".into());
+    while low < high {
+        let keep = (low + high).div_ceil(2);
+        let suffix = if tail { keep } else { keep.div_ceil(2) };
+        let prefix = keep - suffix;
+        let text = chars[..prefix]
+            .iter()
+            .chain(std::iter::once(&'…'))
+            .chain(chars[chars.len() - suffix..].iter())
+            .collect();
+        let candidate = layout(text);
+        if candidate.size().x <= width {
+            best = candidate;
+            low = keep;
+        } else {
+            high = keep - 1;
+        }
+    }
+    best
+}
+
+fn files_result_row(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    selected: bool,
+    path: &str,
+    annotation: &str,
+    accessible: &str,
+) -> egui::Response {
+    let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let width = ui.available_width();
+    let padding = 6.0;
+    let icon_width = 20.0;
+    let status = egui::WidgetText::from(RichText::new(annotation)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (width * 0.4).max(0.0),
+        egui::TextStyle::Button,
+    );
+    let status_width = if annotation.is_empty() {
+        0.0
+    } else {
+        status.size().x + 12.0
+    };
+    let text_width = (width - 2.0 * padding - icon_width - status_width).max(1.0);
+    let name_width = if parent.is_empty() {
+        text_width
+    } else {
+        (text_width * 0.6).min(files_text_width(ui, name))
+    };
+    let name = files_path_galley(ui, name, name_width, chrome::TEXT, false);
+    let parent = files_path_galley(
+        ui,
+        parent,
+        (text_width - name.size().x - 12.0).max(1.0),
+        chrome::MUTED,
+        true,
+    );
+    let height =
+        (name.size().y.max(parent.size().y).max(status.size().y) + 8.0).max(chrome::ROW_HEIGHT);
+    let (_, rect) = ui.allocate_space(egui::vec2(width, height));
+    let response = ui.interact(rect, id, egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            accessible,
+        )
+    });
+    if ui.is_rect_visible(rect) {
+        let background = if selected {
+            chrome::SELECTED
+        } else if response.hovered() {
+            chrome::HOVER
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        ui.painter().rect(
+            rect,
+            3.0,
+            background,
+            if response.has_focus() {
+                egui::Stroke::new(1.0_f32, chrome::FOCUS)
+            } else {
+                egui::Stroke::NONE
+            },
+            egui::StrokeKind::Inside,
+        );
+        chrome::paint_icon(
+            ui,
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + padding + 8.0, rect.center().y),
+                egui::vec2(16.0, 16.0),
+            ),
+            chrome::file_icon(path, false),
+            chrome::MUTED,
+        );
+        let x = rect.left() + padding + icon_width;
+        ui.painter().galley(
+            egui::pos2(x, rect.center().y - name.size().y / 2.0),
+            name.clone(),
+            chrome::TEXT,
+        );
+        ui.painter().galley(
+            egui::pos2(
+                x + name.size().x + 12.0,
+                rect.center().y - parent.size().y / 2.0,
+            ),
+            parent,
+            chrome::MUTED,
+        );
+        if !annotation.is_empty() {
+            ui.painter().galley(
+                egui::pos2(
+                    rect.right() - padding - status.size().x,
+                    rect.center().y - status.size().y / 2.0,
+                ),
+                status,
+                if annotation == "Open" {
+                    chrome::MUTED
+                } else {
+                    AMBER
+                },
+            );
+        }
+    }
+    response
+        .on_hover_text(accessible)
+        .on_disabled_hover_text(accessible)
 }
 
 fn owns_key(target: &Target, key: egui::Key) -> bool {

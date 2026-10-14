@@ -1,6 +1,24 @@
-# Verification checkpoint — 0.71.1 narrow CI repair candidate
+# Verification checkpoint — 0.72.0 Files layout candidate
 
-## Current 0.71.1 candidate 2
+## Current 0.72.0 Files layout candidate
+
+The [phase 72 report](TEST_REPORT_PHASE72_FILES_LAYOUT.md) separates the accepted
+bounded Linux Files visual baseline from final-version local gates and the still
+separate exact-source CI/package gates. Files rows use the full width with a
+filename/parent hierarchy and explicitly requested lower preview; the action
+footer stays fixed. Project Text and Recent layout are unchanged. Native pending
+preview, narrow/large-font native windows, Windows/macOS GUI, and complete Unicode
+grapheme rendering remain unverified. Final-version local Rust passed **2,240/0/71 across 50 suites** with default
+parallelism; Python ran **821 tests: 811 passed, ten skipped, zero failed suites**
+across 30 scripts. Strict workspace Clippy, formatting, aggregate release build,
+and the installed-font CJK opt-in passed. Unmodified canonical drivers passed
+Browse v7 **74 fields/17 operations**, Scoped **57/10**, Search **57/12**,
+Structure **45/11** (mock LSP), and additional Report triage **55/10**, using one
+independently frozen default-feature normal agent with pre/post artifact hashes.
+Exact-source dual-platform CI and all three package audits remain pending.
+Historical results below retain their original checkpoint scope and outcome.
+
+## Prior 0.71.1 candidate 2
 
 The [candidate 2 report](TEST_REPORT_PHASE711_CANDIDATE2.md) records the sole
 license-test canonical-path oracle correction. Fresh Python verification is

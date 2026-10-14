@@ -390,7 +390,7 @@ fn connected_welcome_opens_the_existing_project_files_provider_without_a_request
     click(&mut app, size, "welcome_files");
     assert!(app.browse_marker_open());
     let output = frame(&mut app, size, vec![]);
-    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Text(draw) if draw.galley.text().starts_with("Project files · search after a short typing pause"))));
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Text(draw) if draw.galley.text().starts_with("Project files · empty query shows open and loaded files"))));
     assert!(commands.try_recv().is_err());
 }
 

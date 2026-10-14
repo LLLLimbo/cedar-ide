@@ -1362,4 +1362,19 @@ impl CedarApp {
     pub(super) fn browse_loaded_label(&self, candidate: &LoadedCandidate) -> String {
         self.navigation_candidate_label(&candidate.0)
     }
+    // Presentation only: retain the same source/admission checks as the legacy
+    // label. A compact Browse row must not infer permission from its text.
+    pub(super) fn browse_loaded_annotation(&self, candidate: &LoadedCandidate) -> &'static str {
+        match candidate.0.source {
+            Source::Buffer(_) => "Open",
+            Source::Loaded(admission) => {
+                match self.explorer_loaded_file_stale(&candidate.0.path, admission) {
+                    Some(true) => "Stale · disk unverified",
+                    Some(false) => "",
+                    None => "Changed · re-enter scope",
+                }
+            }
+            Source::Current => "",
+        }
+    }
 }
