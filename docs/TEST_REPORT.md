@@ -1,6 +1,23 @@
-# Verification checkpoint — 0.70 stale-navigation candidate
+# Verification checkpoint — 0.70.1 Project status wording candidate
 
-## Current 0.70 stale-navigation candidate
+## Current 0.70.1 Project status wording candidate
+
+This patch only makes a completed Project selection identify its historical target:
+`Selection completed: /path`. A new Recent, tab or Back activation does not alter
+the retained Project scope, list or selection and must not dispatch an automatic
+List or Read. Only this generated success label is single-row truncated; the full
+UTF-8 path remains available on hover. Other status layouts and all request,
+input, focus, cancellation and navigation lifecycles remain unchanged.
+See the [0.70.1 report](TEST_REPORT_PHASE701_PROJECT_STATUS.md) for the source-bound
+negative control, focused/aggregate checks and retained process-proof contracts.
+Final local 0.70.1 checks passed: Rust **2,206/0/71 across 50 suites**, Python
+**806 total / ten skipped / zero failed suites across 29 suites**, formatting and
+strict Clippy. Current-artifact Browse v7 **74/17**, Structure **45/11**, Scoped
+**57/10** and Search **57/12** proofs passed (fields/operations). Exact-source CI,
+three package audits and a bounded native wording regression remain pending.
+No new feature, operation, protocol or provider is introduced.
+
+## Historical 0.70 stale-navigation candidate checkpoint
 
 **0.70 is not yet accepted.** A superseded ordinary Open Read may still populate
 an exact inactive buffer, but must not leave a canceled Text line jump on a newly

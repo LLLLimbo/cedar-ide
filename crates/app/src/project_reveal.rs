@@ -3,6 +3,8 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+pub(super) const PROJECT_SELECTION_COMPLETED: &str = "Selection completed: /";
+
 pub(crate) const MAX_PROJECT_REVEAL_LISTS: usize = 32;
 pub(crate) const PROJECT_REVEAL_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -331,8 +333,9 @@ impl CedarApp {
                             return;
                         }
                         response.request_focus();
+                        self.explorer.message =
+                            Some(format!("{PROJECT_SELECTION_COMPLETED}{}", intent.path));
                         self.explorer.selected = intent.path;
-                        self.explorer.message = Some("Current file selected in Project".into());
                         ctx.request_repaint();
                         return;
                     }

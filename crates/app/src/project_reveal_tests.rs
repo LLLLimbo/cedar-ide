@@ -36,7 +36,7 @@ fn frame(app: &mut CedarApp, events: Vec<egui::Event>) {
     frame_at(app, [900.0, 740.0], events);
 }
 
-fn frame_at(app: &mut CedarApp, size: [f32; 2], events: Vec<egui::Event>) {
+fn frame_at(app: &mut CedarApp, size: [f32; 2], events: Vec<egui::Event>) -> egui::FullOutput {
     let ctx = app.editor_ctx.clone();
     let mut input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
@@ -45,7 +45,7 @@ fn frame_at(app: &mut CedarApp, size: [f32; 2], events: Vec<egui::Event>) {
     };
     let mut native = eframe::Frame::_new_kittest();
     eframe::App::raw_input_hook(app, &ctx, &mut input);
-    let _ = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native));
+    ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native))
 }
 
 fn settle(app: &mut CedarApp) {
@@ -396,14 +396,19 @@ fn project_reveal_flat_cached_exact_file_needs_zero_requests_and_missing_does_no
         settle(&mut app);
         assert!(!app.project_reveal_pending());
         assert!(commands.try_recv().is_err());
-        assert_eq!(
-            app.explorer
-                .message
-                .as_deref()
-                .unwrap()
-                .contains("selected in Project"),
-            present
-        );
+        if present {
+            assert_eq!(
+                app.explorer.message.as_deref(),
+                Some("Selection completed: /current.rs")
+            );
+            assert_eq!(app.explorer.selected, "current.rs");
+        } else {
+            assert_eq!(
+                app.explorer.message.as_deref(),
+                Some("Current file is missing from its complete Project listing: /current.rs")
+            );
+            assert_ne!(app.explorer.selected, "current.rs");
+        }
     }
 }
 
@@ -493,10 +498,11 @@ fn project_reveal_discarded_pass_cannot_dispatch_or_finish_visible_target() {
         assert!(app.project_reveal_pending());
         assert!(commands.try_recv().is_err());
         assert_eq!(ctx.memory(|memory| memory.focused()), before_focus);
-        assert_ne!(
+        assert_eq!(
             app.explorer.message.as_deref(),
-            Some("Current file selected in Project")
+            Some("Selecting current file…")
         );
+        assert!(app.project_reveal_pending());
     }
 }
 
@@ -614,10 +620,11 @@ fn project_reveal_unrendered_or_zero_viewport_target_cannot_finish_from_cache_al
             ctx.memory(|memory| memory.focused()),
             Some(row_id("current.rs"))
         );
-        assert_ne!(
+        assert_eq!(
             app.explorer.message.as_deref(),
-            Some("Current file selected in Project")
+            Some("Selecting current file…")
         );
+        assert!(app.project_reveal_pending());
         assert!(commands.try_recv().is_err());
     }
 }
@@ -973,3 +980,6 @@ fn project_reveal_prior_composition_cannot_be_masked_by_disabled_on_entry() {
         }
     }
 }
+
+#[path = "project_status_tests.rs"]
+mod project_status_tests;

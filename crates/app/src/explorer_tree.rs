@@ -1227,7 +1227,14 @@ impl CedarApp {
             ui.label(RichText::new("Loading one directory…").small().color(MUTED));
         }
         if let Some(message) = &self.explorer.message {
-            ui.label(RichText::new(message).small().color(RED));
+            let label = egui::Label::new(RichText::new(message).small().color(RED));
+            // Only the completed path-bearing result needs a bounded row.
+            // Native Label truncation retains the full text on hover.
+            if message.starts_with(project_reveal::PROJECT_SELECTION_COMPLETED) {
+                ui.add(label.truncate());
+            } else {
+                ui.add(label);
+            }
         }
         if self.explorer.mode == Mode::Tree {
             if let Some(path) = self.explorer.retry_path.clone() {

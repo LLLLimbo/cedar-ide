@@ -359,7 +359,7 @@ impl Harness {
             "scoped normal-agent handshake not applied",
         )?;
         require(
-            env!("CARGO_PKG_VERSION") == "0.70.0"
+            env!("CARGO_PKG_VERSION") == "0.70.1"
                 && self.app.agent_info.as_ref().is_some_and(|info| {
                     info.version == env!("CARGO_PKG_VERSION")
                         && info.os == if cfg!(windows) { "windows" } else { "linux" }

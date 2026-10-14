@@ -838,3 +838,13 @@ selected-artifact proofs also passed. Structure uses a mock; canonical compile
 drivers were not run locally. Exact-source CI, packages and native gates remain
 pending. These checks do not establish Windows GUI, real SSH, broad IME or
 positive native Structure/JDT behavior.
+
+## Completed Project selection feedback (0.70.1 candidate)
+
+`Selection completed: /path` records the last successfully completed explicit
+Select Current File in Project action. The path is the validated target of that
+action. It can remain visible after Recent, a tab or Back activates another file;
+Project is still an explicitly loaded snapshot and does not automatically follow
+that navigation or issue another List/Read. The success line is truncated to one
+row when needed; hover shows its complete path. Pending, cancellation and failure
+messages retain their existing replacement and layout behavior.
