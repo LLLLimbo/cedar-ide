@@ -1,7 +1,7 @@
 //! Session-local, explicitly loaded Explorer snapshots. The single outstanding
 //! browser ticket also covers the original flat browser; mode changes never
 //! create a second queued List request.
-use crate::{model::parent_path, system_fonts, CedarApp, Job, GREEN, MUTED, RED, TEXT};
+use crate::{chrome, model::parent_path, system_fonts, CedarApp, Job, MUTED, RED, TEXT};
 use cedar_protocol::{Entry, Operation, Payload};
 use eframe::egui::{self, NumExt, RichText};
 use std::collections::{BTreeMap, HashSet};
@@ -479,6 +479,72 @@ impl Explorer {
     }
 }
 
+fn paint_project_row(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    entry: &Entry,
+    galley: std::sync::Arc<egui::Galley>,
+    selected: bool,
+    depth: usize,
+    expanded: Option<bool>,
+) {
+    let rect = response.rect;
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    if selected || response.has_focus() || response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            4,
+            if selected {
+                chrome::SELECTED
+            } else {
+                chrome::HOVER
+            },
+        );
+    }
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect,
+            4,
+            egui::Stroke::new(1.0_f32, chrome::FOCUS),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let indent = (depth as f32 * chrome::INDENT).min((rect.width() - 8.0).max(0.0) * 0.35);
+    let x = rect.left() + 2.0 + indent;
+    let icon_rect = |left| {
+        egui::Rect::from_center_size(
+            egui::pos2(left + 8.0, rect.center().y),
+            egui::vec2(16.0, 16.0),
+        )
+    };
+    if entry.is_dir {
+        chrome::paint_icon(
+            ui,
+            icon_rect(x),
+            if expanded == Some(true) {
+                chrome::Icon::ChevronDown
+            } else {
+                chrome::Icon::ChevronRight
+            },
+            MUTED,
+        );
+    }
+    chrome::paint_icon(
+        ui,
+        icon_rect(x + 17.0),
+        chrome::file_icon(&entry.path, entry.is_dir),
+        MUTED,
+    );
+    let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(rect));
+    painter.galley(
+        egui::pos2(x + 38.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        TEXT,
+    );
+}
+
 impl CedarApp {
     pub(super) fn project_focus_identity(&self) -> FocusIdentity {
         FocusIdentity {
@@ -673,10 +739,7 @@ impl CedarApp {
         galley: std::sync::Arc<egui::Galley>,
     ) -> egui::Response {
         let selected = self.explorer.selected == row.entry.path;
-        let padding = ui.spacing().button_padding;
-        let height = (galley.size().y + 2.0 * padding.y)
-            .max(27.0)
-            .max(ui.spacing().interact_size.y);
+        let height = chrome::ROW_HEIGHT.max(galley.size().y);
         let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), height));
         let response = ui.interact(
             rect,
@@ -708,38 +771,52 @@ impl CedarApp {
             });
             self.explorer.selected = row.entry.path.clone();
         }
-        let visuals = ui.style().interact(&response);
-        if selected || response.hovered() || response.has_focus() {
-            ui.painter().rect_filled(
-                rect,
-                visuals.corner_radius,
-                if selected {
-                    ui.visuals().selection.bg_fill
-                } else {
-                    visuals.bg_fill
-                },
-            );
-        }
-        if response.has_focus() {
-            ui.painter().rect_stroke(
-                rect,
-                visuals.corner_radius,
-                egui::Stroke::new(1.0_f32, GREEN),
-                egui::StrokeKind::Inside,
-            );
-        }
-        let indent =
-            (row.depth as f32 * 10.0).min((rect.width() - 2.0 * padding.x).max(0.0) * 0.35);
-        ui.painter().galley(
-            rect.min + egui::vec2(padding.x + indent, padding.y),
+        paint_project_row(
+            ui,
+            &response,
+            &row.entry,
             galley,
-            TEXT,
+            selected,
+            row.depth,
+            Some(row.expanded),
         );
         response.on_hover_text(if row.entry.path.is_empty() {
             "Workspace root"
         } else {
             &row.entry.path
         })
+    }
+
+    pub(crate) fn explorer_flat_row(
+        &self,
+        ui: &mut egui::Ui,
+        entry: &Entry,
+        galley: std::sync::Arc<egui::Galley>,
+        selected: bool,
+    ) -> egui::Response {
+        let (_, rect) = ui.allocate_space(egui::vec2(
+            ui.available_width(),
+            chrome::ROW_HEIGHT.max(galley.size().y),
+        ));
+        let response = ui.interact(
+            rect,
+            ui.make_persistent_id(("flat_entry", &entry.path)),
+            if self.ready() {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            },
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::Button,
+                self.ready(),
+                selected,
+                &entry.name,
+            )
+        });
+        paint_project_row(ui, &response, entry, galley, selected, 0, None);
+        response.on_hover_text(&entry.path)
     }
 
     pub(crate) fn explorer_pointer_activation(

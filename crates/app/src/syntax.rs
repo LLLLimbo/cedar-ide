@@ -1,19 +1,34 @@
 //! Small lexical colorizer; not a parser or language server.
 use eframe::egui::{self, text::LayoutJob, Color32, FontId, TextFormat};
-const TEXT: Color32 = Color32::from_rgb(211, 219, 231);
-const COMMENT: Color32 = Color32::from_rgb(116, 132, 145);
-const STRING: Color32 = Color32::from_rgb(167, 210, 151);
-const KEYWORD: Color32 = Color32::from_rgb(190, 166, 237);
-const NUMBER: Color32 = Color32::from_rgb(230, 190, 132);
+// JetBrains Islands Dark, IslandSchemeDark.xml at
+// e7e7972a41e572f9179f742685a9d9f739a7943b. Existing lexical classes only;
+// this does not imply IDEA's parsed/resolved semantic highlighting.
+const TEXT: Color32 = Color32::from_rgb(188, 190, 196);
+const GUTTER: Color32 = Color32::from_rgb(111, 115, 122);
+const COMMENT: Color32 = Color32::from_rgb(122, 126, 133);
+const STRING: Color32 = Color32::from_rgb(106, 171, 115);
+const KEYWORD: Color32 = Color32::from_rgb(207, 142, 109);
+const NUMBER: Color32 = Color32::from_rgb(42, 172, 184);
+
+/// Both code and its smaller line numbers use this explicit logical row height.
+/// egui snaps it to physical pixels, identically for both galleys at every scale.
+pub fn editor_line_height(code_size: f32) -> f32 {
+    code_size * 1.2
+}
+
+fn editor_format(font_size: f32, code_size: f32, color: Color32) -> TextFormat {
+    TextFormat {
+        font_id: FontId::monospace(font_size),
+        line_height: Some(editor_line_height(code_size)),
+        color,
+        ..Default::default()
+    }
+}
 
 pub fn highlight(text: &str, font_size: f32, enabled: bool) -> LayoutJob {
     let mut job = LayoutJob::default();
-    let format = |color| TextFormat {
-        font_id: FontId::monospace(font_size),
-        color,
-        ..Default::default()
-    };
-    if !enabled || text.len() > 256 * 1024 {
+    let format = |color| editor_format(font_size, font_size, color);
+    if text.is_empty() || !enabled || text.len() > 256 * 1024 {
         job.append(text, 0.0, format(TEXT));
         return job;
     }
@@ -145,9 +160,116 @@ pub fn galley(ui: &egui::Ui, text: &str, size: f32, enabled: bool) -> std::sync:
     ui.fonts(|fonts| fonts.layout_job(highlight(text, size, enabled)))
 }
 
+fn gutter_job(text: &str, code_size: f32) -> LayoutJob {
+    LayoutJob::single_section(
+        text.into(),
+        editor_format((code_size - 1.0).max(1.0), code_size, GUTTER),
+    )
+}
+
+fn gutter_layout(
+    fonts: &egui::text::Fonts,
+    text: &str,
+    code_size: f32,
+) -> (std::sync::Arc<egui::Galley>, f32) {
+    let gutter = fonts.layout_job(gutter_job(text, code_size));
+    // An equal line height prevents cumulative drift, but the 13 pt face still
+    // has a different ascent from 14 pt code. Measure the actual rasterized
+    // baselines so the offset also follows UI scale and font changes.
+    let code_sample = fonts.layout_job(highlight("0", code_size, false));
+    let gutter_sample = fonts.layout_job(gutter_job("0", code_size));
+    let baseline_offset =
+        code_sample.rows[0].glyphs[0].pos.y - gutter_sample.rows[0].glyphs[0].pos.y;
+    (gutter, baseline_offset)
+}
+
+/// Noninteractive line numbers, aligned to a code galley with a zero top margin.
+pub fn gutter(ui: &mut egui::Ui, line_numbers: &str, code_size: f32) -> egui::Response {
+    let (galley, baseline_offset) = ui.fonts(|fonts| gutter_layout(fonts, line_numbers, code_size));
+    let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), line_numbers)
+    });
+    ui.painter()
+        .galley(rect.min + egui::vec2(0.0, baseline_offset), galley, GUTTER);
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_and_smaller_gutter_request_the_same_line_height() {
+        for code_size in [12.0, 14.0, 20.0] {
+            for source in ["", "\n", "class Example { int n = 123; }\n// 中文"] {
+                for enabled in [false, true] {
+                    let code = highlight(source, code_size, enabled);
+                    assert!(!code.sections.is_empty());
+                    for section in code.sections {
+                        assert_eq!(section.format.font_id.size, code_size);
+                        assert_eq!(
+                            section.format.line_height,
+                            Some(editor_line_height(code_size))
+                        );
+                    }
+                }
+            }
+            let gutter = gutter_job("  1\n100\n200", code_size);
+            assert_eq!(gutter.sections[0].format.font_id.size, code_size - 1.0);
+            assert_eq!(
+                gutter.sections[0].format.line_height,
+                Some(editor_line_height(code_size))
+            );
+        }
+        assert!((editor_line_height(14.0) - 16.8).abs() < 0.0001);
+    }
+
+    #[test]
+    fn code_and_gutter_baselines_stay_aligned_through_line_200_at_multiple_scales() {
+        let line_numbers = (1..=200)
+            .map(|line| format!("{line:>3}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for pixels_per_point in [1.0, 1.25, 1.5, 2.0] {
+            for code_size in [12.0, 14.0, 20.0] {
+                let ctx = egui::Context::default();
+                ctx.set_fonts(crate::system_fonts::base_fonts());
+                ctx.set_pixels_per_point(pixels_per_point);
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    ctx.fonts(|fonts| {
+                        let (numbers, baseline_offset) =
+                            gutter_layout(fonts, &line_numbers, code_size);
+                        for (source, enabled) in [
+                            ("Plain text 0123", false),
+                            ("class Example { int value = 123; } // comment", true),
+                        ] {
+                            let text = std::iter::repeat_n(source, 200)
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let code = fonts.layout_job(highlight(&text, code_size, enabled));
+                            assert_eq!(code.rows.len(), 200);
+                            assert_eq!(numbers.rows.len(), 200);
+                            for index in [0, 99, 199] {
+                                let code_row = &code.rows[index];
+                                let number_row = &numbers.rows[index];
+                                assert_eq!(code_row.rect.min.y, number_row.rect.min.y);
+                                assert_eq!(code_row.rect.height(), number_row.rect.height());
+                                let code_baseline = code_row.glyphs[0].pos.y;
+                                let number_baseline = number_row.glyphs[0].pos.y + baseline_offset;
+                                assert!(
+                                    (code_baseline - number_baseline).abs() < 0.05,
+                                    "line {}, font {code_size}, scale {pixels_per_point}: code {code_baseline}, gutter {number_baseline}",
+                                    index + 1,
+                                );
+                            }
+                        }
+                    });
+                });
+            }
+        }
+    }
+
     #[test]
     fn preserves_unicode_and_unclosed_strings() {
         for source in [

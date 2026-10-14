@@ -135,19 +135,22 @@ fn focus(app: &mut CedarApp, probe: &str) {
     );
 }
 fn click(app: &mut CedarApp, probe: &str) {
+    click_at_size(app, SIZE, probe);
+}
+fn click_at_size(app: &mut CedarApp, size: egui::Vec2, probe: &str) {
     let rect = recorded_rect(app, probe).intersect(recorded_clip(app, probe));
     assert!(
         rect.is_finite() && rect.is_positive(),
         "{probe} has no visible hit target"
     );
     let pos = rect.center();
-    frame(app, vec![egui::Event::PointerMoved(pos)]);
-    frame(app, pointer(pos, true));
+    frame_at(app, size, vec![egui::Event::PointerMoved(pos)]);
+    frame_at(app, size, pointer(pos, true));
     assert!(
         recorded_response(app, probe).is_pointer_button_down_on(),
         "{probe} missed native press"
     );
-    frame(app, pointer(pos, false));
+    frame_at(app, size, pointer(pos, false));
     assert!(
         recorded_response(app, probe).clicked(),
         "{probe} missed native click"
@@ -194,6 +197,22 @@ fn reply(app: &mut CedarApp, id: u64, result: Result<Payload, String>) {
 }
 fn fixture() -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
+    // Match the production startup fonts and metrics before the first native frame.
+    // Optional CJK fallback must not replace a default-font Latin layout mid-gesture.
+    app.editor_ctx.set_fonts(system_fonts::base_fonts());
+    app.editor_ctx.style_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, FontId::monospace(14.0));
+    });
     let form = ConnectForm {
         local_root: "/workspace".into(),
         allow_run: false,
@@ -897,7 +916,12 @@ fn scoped_find_group_preview_open_back_and_native_undo_preserve_dirty_origin() {
 #[test]
 fn scoped_find_shared_controls_have_visible_native_geometry_at_both_font_sizes() {
     for surface in [Surface::Browse, Surface::Bottom] {
-        for size in [egui::vec2(1280.0, 900.0), egui::vec2(780.0, 540.0)] {
+        for size in [
+            egui::vec2(1280.0, 900.0),
+            egui::vec2(780.0, 540.0),
+            egui::vec2(823.0, 540.0),
+            egui::vec2(825.0, 540.0),
+        ] {
             for font in [13.0, 18.0] {
                 let (mut app, commands) = fixture();
                 enter(&mut app, surface);
@@ -1057,6 +1081,167 @@ fn scoped_find_shared_controls_have_visible_native_geometry_at_both_font_sizes()
                     }
                 }
                 assert!(commands.try_recv().is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn scoped_find_preview_budget_keeps_controls_and_long_results_reachable() {
+    // The modal's 760-point body breakpoint lies at an 824-point screen width.
+    for width in [823.0, 825.0] {
+        for height in [540.0, 900.0] {
+            for font in [13.0, 18.0] {
+                for empty in [false, true] {
+                    let size = egui::vec2(width, height);
+                    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                    let (mut app, commands) = fixture();
+                    let draft = (1..=120)
+                        .map(|line| format!("needle line {line}\n"))
+                        .collect::<String>();
+                    editor_state::commit(&app.editor_ctx, &mut app.documents[0], draft, 8);
+                    enter(&mut app, Surface::Browse);
+                    let pending = scoped(&mut app, &commands, Surface::Browse);
+                    let matches = if empty {
+                        vec![]
+                    } else {
+                        (2..=41)
+                            .map(|line| SearchMatch {
+                                path: "src/origin.rs".into(),
+                                line,
+                                text: "needle historical disk match".into(),
+                            })
+                            .collect()
+                    };
+                    reply(
+                        &mut app,
+                        pending.id,
+                        Ok(payload(request("needle", "src", &["*.rs"]), matches)),
+                    );
+                    settle(&mut app);
+                    app.editor_ctx.style_mut(|style| {
+                        for kind in [egui::TextStyle::Body, egui::TextStyle::Button] {
+                            style.text_styles.insert(kind, FontId::proportional(font));
+                        }
+                        style
+                            .text_styles
+                            .insert(egui::TextStyle::Monospace, FontId::monospace(font));
+                    });
+                    let visible = |app: &CedarApp, probe: &str| {
+                        let rect = recorded_rect(app, probe);
+                        let clip = recorded_clip(app, probe);
+                        assert!(rect.is_positive() && screen.contains_rect(rect) && clip.contains_rect(rect),
+                            "size={size:?}, font={font}, empty={empty}, {probe}: {rect:?} in {clip:?}");
+                    };
+                    let controls = [
+                        "browse_query",
+                        "browse_text_scope",
+                        "browse_masks",
+                        "browse_submit",
+                        "browse_preview",
+                        "browse_open",
+                        "browse_close",
+                    ];
+                    for _ in 0..4 {
+                        frame_at(&mut app, size, vec![]);
+                    }
+                    for probe in controls {
+                        visible(&app, probe);
+                    }
+                    assert!(app.browse_preview_text().is_none());
+                    if empty {
+                        assert_eq!(app.browse.selected_index(), None);
+                        assert!(!recorded_response(&app, "browse_preview").enabled());
+                        assert!(!recorded_response(&app, "browse_open").enabled());
+                    } else {
+                        // Real pointer/key ownership opens and closes preview on the same rows.
+                        click_at_size(&mut app, size, "browse_query");
+                        frame_at(
+                            &mut app,
+                            size,
+                            key(egui::Key::ArrowDown, egui::Modifiers::NONE),
+                        );
+                        for _ in 0..3 {
+                            frame_at(&mut app, size, vec![]);
+                        }
+                        for index in [0, 39] {
+                            assert_eq!(app.browse.selected_index(), Some(index));
+                            visible(&app, &format!("browse_row:{index}"));
+                            frame_at(&mut app, size, key(egui::Key::Space, egui::Modifiers::NONE));
+                            for _ in 0..4 {
+                                frame_at(&mut app, size, vec![]);
+                            }
+                            for probe in controls {
+                                visible(&app, probe);
+                            }
+                            assert!(app.project_text_review_armed());
+                            let (_, viewport) = app
+                                .editor_ctx
+                                .data(|data| {
+                                    data.get_temp::<(egui::Id, egui::Rect)>(egui::Id::new((
+                                        "project_text_context_scroll",
+                                        false,
+                                    )))
+                                })
+                                .expect("production preview viewport");
+                            let content = recorded_rect(&app, "browse_preview_content");
+                            assert!(viewport.is_positive() && screen.contains_rect(viewport));
+                            assert!(
+                                content.height() > viewport.height(),
+                                "long context must really scroll"
+                            );
+                            let target = recorded_rect(&app, "project_text_context_target");
+                            assert!(viewport
+                                .contains(egui::pos2(target.left() + 1.0, target.center().y)));
+                            let (_, results, content_size) = app
+                                .editor_ctx
+                                .data(|data| {
+                                    data.get_temp::<(egui::Id, egui::Rect, egui::Vec2)>(
+                                        egui::Id::new("browse_results_scroll_probe"),
+                                    )
+                                })
+                                .expect("production results viewport");
+                            assert!(screen.contains_rect(results) && results.is_positive());
+                            let row_height =
+                                recorded_rect(&app, &format!("browse_row:{index}")).height();
+                            assert!(
+                                results.height() >= row_height,
+                                "results must retain a usable native row"
+                            );
+                            assert!(
+                                content_size.y > results.height(),
+                                "long results must really scroll"
+                            );
+                            frame_at(
+                                &mut app,
+                                size,
+                                key(egui::Key::Escape, egui::Modifiers::NONE),
+                            );
+                            for _ in 0..3 {
+                                frame_at(&mut app, size, vec![]);
+                            }
+                            assert!(!app.project_text_review_armed());
+                            assert!(app.browse_preview_text().is_none());
+                            for probe in controls {
+                                visible(&app, probe);
+                            }
+                            visible(&app, &format!("browse_row:{index}"));
+                            if index == 0 {
+                                frame_at(
+                                    &mut app,
+                                    size,
+                                    key(egui::Key::End, egui::Modifiers::NONE),
+                                );
+                                for _ in 0..3 {
+                                    frame_at(&mut app, size, vec![]);
+                                }
+                            }
+                        }
+                    }
+                    assert!(commands.try_recv().is_err());
+                    assert_eq!(app.documents.len(), 1);
+                    assert!(app.documents[0].dirty());
+                }
             }
         }
     }

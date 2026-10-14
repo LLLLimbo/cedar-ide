@@ -163,7 +163,7 @@ fn record_diagnostic_pass(
             .as_ref()
             .and_then(|snapshot| snapshot.outer.as_ref());
         let search = snapshot.as_ref().and_then(|snapshot| {
-            snapshot.widgets.get("help").map(|widget| WidgetDiagnostic {
+            snapshot.widgets.get("R").map(|widget| WidgetDiagnostic {
                 rect: rect_coordinates(widget.rect),
                 paint_clip: rect_coordinates(widget.clip),
                 reveal: snapshot.reveals.get(&widget.id).cloned(),
@@ -223,89 +223,6 @@ struct Snapshot {
     outer: Option<Scroll>,
     explorer: Option<Scroll>,
     reveals: HashMap<egui::Id, RevealDiagnostic>,
-    footer_geometry: Option<FooterGeometry>,
-}
-
-const CHECK_FOOTER: &str = "sidebar_check_exact_footer";
-
-#[derive(Clone, Copy, Debug)]
-struct FooterGeometry {
-    initial_content_origin_y: f32,
-    pre_footer_content_min_y: f32,
-    final_content_min_y: f32,
-    viewport: egui::Rect,
-    offset_y: f32,
-    spacing_y: f32,
-}
-
-#[derive(Clone, Debug)]
-struct FooterRequest {
-    id: egui::Id,
-    row: egui::Rect,
-    target: Option<egui::Rect>,
-}
-
-#[derive(Clone, Default)]
-struct FooterChecks {
-    passes: usize,
-    requests: Vec<FooterRequest>,
-}
-
-// Opt-in observations assert every layout pass of only the new regressions.
-// They allocate no widgets and do not request focus, scrolling, or extra frames.
-pub(super) fn record_footer_target(
-    response: &egui::Response,
-    requested: bool,
-    target: Option<egui::Rect>,
-) {
-    response.ctx.data_mut(|data| {
-        if let Some(mut checks) = data.get_temp::<FooterChecks>(egui::Id::new(CHECK_FOOTER)) {
-            if requested {
-                assert!(
-                    checks.requests.len() < 128,
-                    "unexpected repeated footer requests"
-                );
-                checks.requests.push(FooterRequest {
-                    id: response.id,
-                    row: response.rect,
-                    target,
-                });
-            } else {
-                assert!(target.is_none(), "passive footer emitted a correction");
-            }
-            data.insert_temp(egui::Id::new(CHECK_FOOTER), checks);
-        }
-    });
-}
-
-pub(super) fn record_footer_geometry(
-    ui: &egui::Ui,
-    initial_content_origin_y: f32,
-    pre_footer_content_min_y: f32,
-    actual_viewport: egui::Rect,
-    viewport_offset_y: f32,
-    outer_item_spacing_y: f32,
-) {
-    let geometry = FooterGeometry {
-        initial_content_origin_y,
-        pre_footer_content_min_y,
-        final_content_min_y: ui.min_rect().top(),
-        viewport: actual_viewport,
-        offset_y: viewport_offset_y,
-        spacing_y: outer_item_spacing_y,
-    };
-    ui.ctx().data_mut(|data| {
-        if let Some(mut checks) = data.get_temp::<FooterChecks>(egui::Id::new(CHECK_FOOTER)) {
-            assert_eq!(
-                geometry.pre_footer_content_min_y, geometry.final_content_min_y,
-                "footer layout changed the minimum used by the scroll solver: {geometry:?}"
-            );
-            checks.passes += 1;
-            data.insert_temp(egui::Id::new(CHECK_FOOTER), checks);
-        }
-        data.get_temp_mut_or_default::<Snapshot>(egui::Id::new(PROBE))
-            .footer_geometry = Some(geometry);
-    });
 }
 
 pub(super) fn begin(ctx: &egui::Context) {
@@ -350,6 +267,13 @@ fn snapshot(app: &CedarApp) -> Snapshot {
         .data(|data| data.get_temp::<Snapshot>(egui::Id::new(PROBE)).unwrap())
 }
 fn widget(app: &CedarApp, label: &str) -> Widget {
+    if label == "project_heading" {
+        return Widget {
+            id: workspace_access_tests::recorded_response(app, label).id,
+            rect: workspace_access_tests::recorded_rect(app, label),
+            clip: workspace_access_tests::recorded_clip(app, label),
+        };
+    }
     snapshot(app)
         .widgets
         .get(label)
@@ -377,13 +301,14 @@ fn app(width: f32, long_directory: bool, font_size: f32) -> (CedarApp, Receiver<
     app.open_form = false;
     app.tool = Tool::Tests;
     app.tools_open = true;
+    app.editor_ctx.set_fonts(system_fonts::base_fonts());
     // Match CedarApp::new, not egui's smaller default spacing.
     app.editor_ctx.style_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(9.0, 8.0);
-        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style
             .text_styles
-            .insert(egui::TextStyle::Body, FontId::proportional(14.0));
+            .insert(egui::TextStyle::Body, FontId::proportional(13.0));
         style
             .text_styles
             .insert(egui::TextStyle::Button, FontId::proportional(font_size));
@@ -449,6 +374,7 @@ fn scaled_frame(
     let diagnostic_frame = diagnostic_frame(&ctx);
     let mut diagnostic_pass = 0;
     ctx.run(input, |ctx| {
+        workspace_access_tests::begin(ctx);
         if let Some(id) = ctx.data_mut(|data| {
             let id = data.get_temp::<egui::Id>(egui::Id::new("sidebar_test_request_focus"));
             data.remove::<egui::Id>(egui::Id::new("sidebar_test_request_focus"));
@@ -460,6 +386,7 @@ fn scaled_frame(
         app.header(ctx);
         app.footer(ctx);
         app.notifications(ctx);
+        app.tool_rail(ctx);
         app.tools(ctx);
         let offset_before_layout = diagnostic_outer_offset(ctx, diagnostic_frame);
         app.sidebar(ctx);
@@ -540,15 +467,18 @@ fn wheel(app: &mut CedarApp, size: [f32; 2], at: egui::Pos2, delta: f32) {
 }
 fn scroll_outer_bottom(app: &mut CedarApp, size: [f32; 2]) {
     let outer = snapshot(app).outer.unwrap();
-    // The outer gutter is outside the inner explorer and always owns this wheel.
+    // The outer gutter is outside the inner explorer when it is needed.
     wheel(
         app,
         size,
         egui::pos2(outer.rect.right() + 5.0, outer.rect.center().y),
         -10_000.0,
     );
-    assert_visible(app, "help");
+    let outer = snapshot(app).outer.unwrap();
+    assert!(outer.offset.is_finite());
+    assert!((outer.offset.y - (outer.content.y - outer.rect.height()).max(0.0)).abs() < 1.0);
 }
+
 fn assert_geometry(app: &CedarApp, width: f32) {
     let snapshot = snapshot(app);
     let outer = snapshot.outer.unwrap();
@@ -558,23 +488,83 @@ fn assert_geometry(app: &CedarApp, width: f32) {
         (sidebar.width() - width).abs() < 0.1,
         "sidebar expanded: {sidebar:?} / {width}"
     );
-    assert!(
-        (sidebar.shrink(8.0).right() - outer.rect.right() - 10.0).abs() < 0.1,
-        "outer gutter changed"
-    );
-    assert!(
-        (outer.rect.right() - explorer.rect.right() - 10.0).abs() < 0.1,
-        "inner gutter changed"
-    );
+    assert!(sidebar.contains_rect(outer.rect));
+    assert!(explorer.rect.left() >= outer.rect.left());
+    assert!(explorer.rect.right() <= outer.rect.right());
     assert!(outer.rect.is_finite() && explorer.rect.is_finite());
     assert!(outer.offset.is_finite() && explorer.offset.is_finite());
-    let help = snapshot.widgets["help"].rect;
-    assert!(help.left() >= outer.rect.left() && help.right() <= outer.rect.right());
-    assert!(
-        explorer.rect.bottom() < help.top(),
-        "Project rows overlap help"
-    );
-    assert!(snapshot.widgets["Up"].rect.bottom() < explorer.rect.top());
+    assert!(outer.content.is_finite() && explorer.content.is_finite());
+    assert!(explorer.rect.height() >= 64.0);
+    let heading = widget(app, "project_heading");
+    assert!(heading.rect.left() >= outer.rect.left());
+    assert!(heading.rect.right() <= outer.rect.right());
+    assert!(heading.rect.bottom() < explorer.rect.top());
+    // Scrollbars now appear only when needed. Their allocation must leave the
+    // real tree viewport inside the Project island at every width and scale.
+    for label in [
+        "Cancel selecting current file",
+        "Select Current File in Project",
+        "R",
+        "+",
+    ] {
+        let control = &snapshot.widgets[label];
+        assert!(
+            control.rect.left() >= outer.rect.left(),
+            "{label} escaped left edge"
+        );
+        assert!(
+            control.rect.right() <= outer.rect.right(),
+            "{label} escaped right edge: width={width} font={} pixels_per_point={} control={:?} outer={:?} sidebar={:?}",
+            egui::TextStyle::Button.resolve(&app.editor_ctx.style()).size,
+            app.editor_ctx.pixels_per_point(),
+            rect_coordinates(control.rect),
+            rect_coordinates(outer.rect),
+            rect_coordinates(sidebar)
+        );
+        assert!(control.rect.bottom() < explorer.rect.top());
+    }
+}
+
+fn assert_project_menu(app: &mut CedarApp, size: [f32; 2]) {
+    assert!(!snapshot(app).widgets.contains_key("help"));
+    focus(app, size, "project_heading");
+    key(app, size, egui::Key::Enter, egui::Modifiers::NONE);
+    for label in ["Up", "Flat", "Tree", "help"] {
+        let control = widget(app, label);
+        assert!(
+            control.clip.contains_rect(control.rect),
+            "{label} is clipped in Project menu"
+        );
+        assert!(
+            egui::Rect::from_min_size(egui::Pos2::ZERO, size.into()).contains_rect(control.rect)
+        );
+    }
+    // Help must be reachable from the real menu's native keyboard focus order.
+    let flat = widget(app, "Flat").id;
+    app.editor_ctx
+        .memory_mut(|memory| memory.request_focus(flat));
+    let help = widget(app, "help").id;
+    for _ in 0..4 {
+        key(app, size, egui::Key::Tab, egui::Modifiers::NONE);
+        if app.editor_ctx.memory(|memory| memory.focused()) == Some(help) {
+            break;
+        }
+    }
+    assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), Some(help));
+    key(app, size, egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!snapshot(app).widgets.contains_key("help"));
+}
+
+fn native_tab_to(app: &mut CedarApp, size: [f32; 2], label: &str, modifiers: egui::Modifiers) {
+    let id = widget(app, label).id;
+    for _ in 0..3 {
+        key(app, size, egui::Key::Tab, modifiers);
+        if app.editor_ctx.memory(|memory| memory.focused()) == Some(id) {
+            break;
+        }
+    }
+    assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), Some(id));
+    assert_visible(app, label);
 }
 
 #[test]
@@ -586,14 +576,11 @@ fn sidebar_footer_bounds_cover_narrow_default_wide_and_long_explorer() {
                 app.tools_open = false;
                 settle(&mut app, size);
                 assert_geometry(&app, width);
-                assert_visible(&app, "help");
-                assert!(
-                    (widget(&app, "help").rect.bottom()
-                        - snapshot(&app).outer.unwrap().rect.bottom())
-                    .abs()
-                        < 1.0,
-                    "ordinary footer moved from bottom"
-                );
+                let outer = snapshot(&app).outer.unwrap();
+                let explorer = snapshot(&app).explorer.unwrap();
+                assert!(outer.rect.contains_rect(explorer.rect));
+                assert!((explorer.rect.bottom() - outer.rect.bottom()).abs() < 1.0);
+                assert_project_menu(&mut app, size);
                 assert!(commands.try_recv().is_err());
             }
         }
@@ -614,17 +601,21 @@ fn sidebar_compact_actual_panel_order_keeps_controls_and_help_reachable() {
                     assert_geometry(&app, width);
                     let outer_id = snapshot(&app).outer.unwrap().id;
                     let inner_id = snapshot(&app).explorer.unwrap().id;
-                    let help_id = widget(&app, "help").id;
-                    focus(&mut app, size, "help");
-                    scroll_outer_bottom(&mut app, size);
+                    assert!(
+                        panel(&app, "tool_window_rail").right() <= panel(&app, "explorer").left()
+                    );
+                    assert!(panel(&app, "tool_window_rail").right() <= panel(&app, "tools").left());
+                    let heading_id = widget(&app, "project_heading").id;
+                    focus(&mut app, size, "project_heading");
+                    assert_project_menu(&mut app, size);
                     assert_geometry(&app, width);
                     assert_eq!(snapshot(&app).outer.unwrap().id, outer_id);
                     assert_eq!(snapshot(&app).explorer.unwrap().id, inner_id);
-                    assert_eq!(widget(&app, "help").id, help_id);
+                    assert_eq!(widget(&app, "project_heading").id, heading_id);
                     let offset = snapshot(&app).outer.unwrap().offset;
                     settle(&mut app, size);
                     assert_eq!(snapshot(&app).outer.unwrap().offset, offset);
-                    assert_visible(&app, "help");
+                    assert_visible(&app, "project_heading");
                     focus(&mut app, size, "R");
                     focus(&mut app, size, "+");
                     assert!(commands.try_recv().is_err());
@@ -652,8 +643,8 @@ fn sidebar_footer_scaling_and_larger_font_do_not_oscillate_gutters() {
                     assert_geometry(&app, width);
                     let now = (
                         snapshot(&app).outer.unwrap().rect,
-                        widget(&app, "help").rect,
-                        widget(&app, "help").rect,
+                        snapshot(&app).explorer.unwrap().rect,
+                        widget(&app, "project_heading").rect,
                     );
                     if let Some(previous) = previous {
                         assert_eq!(now, previous, "gutter or wrapping oscillated");
@@ -673,10 +664,10 @@ fn sidebar_last_unicode_entry_reveals_both_scroll_levels_and_opens_existing_draf
     for width in [180.0, 246.0, 460.0] {
         for font_size in [13.0, 18.0] {
             let (mut app, commands) = app(width, true, font_size);
-            // Loaded results leave a genuinely constrained Project viewport.
-            // The compact shell gives an empty tool enough space to avoid the
-            // outer overflow this two-level reveal regression must exercise.
+            // Deliberately size the tools panel so this continues to exercise
+            // both scroll levels even after tool content becomes more compact.
             load_long_report(&mut app);
+            app.tools_height = Some(400.0);
             app.entries[63] = Entry {
                 path: name.into(),
                 name: name.into(),
@@ -689,7 +680,7 @@ fn sidebar_last_unicode_entry_reveals_both_scroll_levels_and_opens_existing_draf
             begin_reveal_diagnostics(&app, width, font_size, size);
             settle(&mut app, size);
             search_focus_diagnostic_stage(&app);
-            focus(&mut app, size, "help");
+            focus(&mut app, size, "file-062.txt");
             app.editor_ctx.data_mut(|data| {
                 data.remove::<RevealDiagnostics>(egui::Id::new(REVEAL_DIAGNOSTIC))
             });
@@ -702,9 +693,9 @@ fn sidebar_last_unicode_entry_reveals_both_scroll_levels_and_opens_existing_draf
                 outer.content,
                 outer.offset
             );
-            // Shift+Tab passes the native explorer scrollbar before the final file.
+            // Native Tab reaches the final row after wheel scrolling both areas.
             for _ in 0..3 {
-                key(&mut app, size, egui::Key::Tab, egui::Modifiers::SHIFT);
+                key(&mut app, size, egui::Key::Tab, egui::Modifiers::NONE);
                 if app.editor_ctx.memory(|memory| memory.focused()) == Some(widget(&app, name).id) {
                     break;
                 }
@@ -748,8 +739,8 @@ fn sidebar_resize_and_tools_reopen_preserve_focus_draft_selection_and_undo() {
     let mut state = egui::TextEdit::load_state(&app.editor_ctx, id).unwrap();
     state.cursor.set_char_range(Some(selection));
     state.store(&app.editor_ctx, id);
-    focus(&mut app, large, "help");
-    let focus_id = widget(&app, "help").id;
+    focus(&mut app, large, "project_heading");
+    let focus_id = widget(&app, "project_heading").id;
     let outer_id = snapshot(&app).outer.unwrap().id;
     let inner_id = snapshot(&app).explorer.unwrap().id;
     for (width, size, tools_open) in [
@@ -762,12 +753,12 @@ fn sidebar_resize_and_tools_reopen_preserve_focus_draft_selection_and_undo() {
         set_width(&app, width);
         app.tools_open = tools_open;
         settle(&mut app, size);
-        assert_eq!(widget(&app, "help").id, focus_id);
+        assert_eq!(widget(&app, "project_heading").id, focus_id);
         assert_eq!(
             app.editor_ctx.memory(|memory| memory.focused()),
             Some(focus_id)
         );
-        assert_visible(&app, "help");
+        assert_visible(&app, "project_heading");
         assert_geometry(&app, width);
         assert_eq!(snapshot(&app).outer.unwrap().id, outer_id);
         assert_eq!(snapshot(&app).explorer.unwrap().id, inner_id);
@@ -808,11 +799,11 @@ fn sidebar_zero_height_is_finite_and_recovers_without_claiming_access() {
         }
     } else {
         assert!(snapshot.widgets.is_empty() && snapshot.explorer.is_none());
-        assert!(panel(&app, "explorer").height() <= 16.0);
+        assert!(panel(&app, "explorer").height() <= 20.0);
     }
     settle(&mut app, [780.0, 540.0]);
-    focus(&mut app, [780.0, 540.0], "help");
-    scroll_outer_bottom(&mut app, [780.0, 540.0]);
+    focus(&mut app, [780.0, 540.0], "file-063.txt");
+    assert_project_menu(&mut app, [780.0, 540.0]);
     assert!(commands.try_recv().is_err());
 }
 
@@ -821,10 +812,18 @@ fn sidebar_inner_wheel_hands_off_at_boundary_and_outer_thumb_reaches_help() {
     let size = [780.0, 540.0];
     let (mut app, commands) = app(180.0, true, 13.0);
     load_long_report(&mut app);
+    app.tools_height = Some(400.0);
     settle(&mut app, size);
     focus(&mut app, size, "file-000.txt");
     let explorer = snapshot(&app).explorer.unwrap();
-    wheel(&mut app, size, explorer.rect.center(), -10_000.0);
+    let visible = explorer
+        .rect
+        .intersect(snapshot(&app).outer.unwrap().rect)
+        .intersect(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into()));
+    assert!(visible.is_positive());
+    assert!(visible.contains_rect(widget(&app, "file-000.txt").rect));
+    // Only the actually visible part of the inner viewport owns pointer input.
+    wheel(&mut app, size, visible.center(), -10_000.0);
     assert!(snapshot(&app).explorer.unwrap().offset.y > 0.0);
     let focused = app.editor_ctx.memory(|memory| memory.focused());
     // Once the inner area reaches its boundary, continued wheel input can
@@ -838,7 +837,11 @@ fn sidebar_inner_wheel_hands_off_at_boundary_and_outer_thumb_reaches_help() {
     wheel(&mut app, size, at, -10_000.0);
     assert!(snapshot(&app).outer.unwrap().offset.y > 0.0);
     assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), focused);
-    assert_visible(&app, "help");
+    assert!(snapshot(&app)
+        .outer
+        .unwrap()
+        .rect
+        .intersects(snapshot(&app).explorer.unwrap().rect));
 
     focus(&mut app, size, "R");
     let outer = snapshot(&app).outer.unwrap();
@@ -874,8 +877,9 @@ fn sidebar_inner_wheel_hands_off_at_boundary_and_outer_thumb_reaches_help() {
         }],
     );
     settle(&mut app, size);
-    assert_visible(&app, "help");
+    assert!(snapshot(&app).outer.unwrap().offset.y > 0.0);
     assert_geometry(&app, 180.0);
+    assert_project_menu(&mut app, size);
     assert!(commands.try_recv().is_err());
 }
 
@@ -917,6 +921,7 @@ fn sidebar_held_outer_thumb_recovers_after_zero_height() {
     let tiny = [780.0, 180.0];
     let (mut app, commands) = app(180.0, true, 13.0);
     load_long_report(&mut app);
+    app.tools_height = Some(400.0);
     settle(&mut app, size);
     let outer = snapshot(&app).outer.unwrap();
     let handle_height = outer.rect.height() * outer.rect.height() / outer.content.y;
@@ -948,7 +953,7 @@ fn sidebar_held_outer_thumb_recovers_after_zero_height() {
     frame(&mut app, tiny, vec![]);
     let skipped = snapshot(&app);
     assert!(skipped.outer.is_none() && skipped.explorer.is_none() && skipped.widgets.is_empty());
-    assert!(panel(&app, "explorer").height() <= 16.0);
+    assert!(panel(&app, "explorer").height() <= 20.0);
     assert_eq!(
         egui::scroll_area::State::load(&app.editor_ctx, outer.id)
             .unwrap()
@@ -968,47 +973,19 @@ fn sidebar_held_outer_thumb_recovers_after_zero_height() {
     settle(&mut app, size);
     assert_eq!(snapshot(&app).outer.unwrap().id, outer.id);
     assert_geometry(&app, 180.0);
-    focus(&mut app, size, "help");
+    focus(&mut app, size, "file-063.txt");
     scroll_outer_bottom(&mut app, size);
+    assert_project_menu(&mut app, size);
     assert!(commands.try_recv().is_err());
 }
 
-fn check_footer_geometry(app: &CedarApp) {
-    let snapshot = snapshot(app);
-    let geometry = snapshot.footer_geometry.unwrap();
-    let outer = snapshot.outer.unwrap();
-    assert_eq!(geometry.viewport, outer.rect);
-    assert_eq!(
-        geometry.pre_footer_content_min_y,
-        geometry.final_content_min_y
-    );
-    assert_eq!(
-        geometry.initial_content_origin_y + geometry.offset_y,
-        outer.rect.top()
-    );
-    assert_eq!(geometry.spacing_y, 8.0);
-}
-
-fn enable_footer_checks(app: &CedarApp) {
-    app.editor_ctx
-        .data_mut(|data| data.insert_temp(egui::Id::new(CHECK_FOOTER), FooterChecks::default()));
-}
-
-fn footer_checks(app: &CedarApp) -> FooterChecks {
-    app.editor_ctx.data(|data| {
-        data.get_temp::<FooterChecks>(egui::Id::new(CHECK_FOOTER))
-            .unwrap()
-    })
-}
-
-fn footer_scaled_settle(app: &mut CedarApp, size: [f32; 2], scale: f32) {
+fn scaled_settle(app: &mut CedarApp, size: [f32; 2], scale: f32) {
     for _ in 0..4 {
         scaled_frame(app, size, vec![], scale);
-        check_footer_geometry(app);
     }
 }
 
-fn footer_scaled_tab(app: &mut CedarApp, size: [f32; 2], scale: f32, modifiers: egui::Modifiers) {
+fn scaled_tab(app: &mut CedarApp, size: [f32; 2], scale: f32, modifiers: egui::Modifiers) {
     for pressed in [true, false] {
         scaled_frame(
             app,
@@ -1022,15 +999,14 @@ fn footer_scaled_tab(app: &mut CedarApp, size: [f32; 2], scale: f32, modifiers: 
             }],
             scale,
         );
-        check_footer_geometry(app);
     }
-    footer_scaled_settle(app, size, scale);
+    scaled_settle(app, size, scale);
 }
 
 #[test]
 fn sidebar_footer_exact_viewport_and_content_min_survive_native_tabs_at_three_scales() {
     let size = [780.0, 540.0];
-    let mut corrected = 0;
+    let mut revealed = 0;
     for (width, font_size, scale) in [
         (180.0, 13.0, 1.0),
         (246.0, 18.0, 1.0),
@@ -1044,64 +1020,67 @@ fn sidebar_footer_exact_viewport_and_content_min_survive_native_tabs_at_three_sc
     ] {
         let (mut app, commands) = app(width, true, font_size);
         load_long_report(&mut app);
-        enable_footer_checks(&app);
-        footer_scaled_settle(&mut app, size, scale);
+        // Leave room for the 30pt menu heading as well as a 24pt file row.
+        // The 64pt inner viewport still overflows and exercises both levels.
+        app.tools_height = Some(390.0);
+        scaled_settle(&mut app, size, scale);
+        let outer_height = snapshot(&app).outer.unwrap().rect.height();
+        assert!(outer_height >= widget(&app, "project_heading").rect.height());
+        assert!(
+            outer_height < 64.0,
+            "fixture must retain genuine outer overflow"
+        );
         assert_geometry(&app, width);
-        let help_id = widget(&app, "help").id;
-        app.editor_ctx.data_mut(|data| {
-            data.insert_temp(egui::Id::new("sidebar_test_request_focus"), help_id)
-        });
-        footer_scaled_settle(&mut app, size, scale);
-        assert_eq!(
-            app.editor_ctx.memory(|memory| memory.focused()),
-            Some(help_id)
-        );
-        assert_visible(&app, "help");
-        // The last actual file remains reachable with native Shift+Tab and Tab.
+        let outer_id = snapshot(&app).outer.unwrap().id;
+        let inner_id = snapshot(&app).explorer.unwrap().id;
+        let previous_id = widget(&app, "file-062.txt").id;
         let last_id = widget(&app, "file-063.txt").id;
-        for _ in 0..3 {
-            footer_scaled_tab(&mut app, size, scale, egui::Modifiers::SHIFT);
-            if app.editor_ctx.memory(|memory| memory.focused()) == Some(last_id) {
-                break;
-            }
-        }
+        app.editor_ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("sidebar_test_request_focus"), previous_id)
+        });
+        scaled_settle(&mut app, size, scale);
         assert_eq!(
             app.editor_ctx.memory(|memory| memory.focused()),
-            Some(last_id)
+            Some(previous_id)
         );
-        assert_visible(&app, "file-063.txt");
-        for _ in 0..3 {
-            footer_scaled_tab(&mut app, size, scale, egui::Modifiers::NONE);
-            if app.editor_ctx.memory(|memory| memory.focused()) == Some(help_id) {
-                break;
+        assert_visible(&app, "file-062.txt");
+        // The old footer is now a popup. Preserve native row-to-row traversal
+        // through both real scroll areas instead of tabbing into absent content.
+        for (label, id, modifiers) in [
+            ("file-063.txt", last_id, egui::Modifiers::NONE),
+            ("file-062.txt", previous_id, egui::Modifiers::SHIFT),
+            ("file-063.txt", last_id, egui::Modifiers::NONE),
+        ] {
+            for _ in 0..3 {
+                scaled_tab(&mut app, size, scale, modifiers);
+                if app.editor_ctx.memory(|memory| memory.focused()) == Some(id) {
+                    break;
+                }
             }
+            assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), Some(id));
+            assert_visible(&app, label);
+            assert!(snapshot(&app)
+                .explorer
+                .unwrap()
+                .rect
+                .contains_rect(widget(&app, label).rect));
+            assert_eq!(snapshot(&app).outer.unwrap().id, outer_id);
+            assert_eq!(snapshot(&app).explorer.unwrap().id, inner_id);
         }
-        assert_eq!(
-            app.editor_ctx.memory(|memory| memory.focused()),
-            Some(help_id)
-        );
-        assert_visible(&app, "help");
-        assert_eq!(widget(&app, "help").id, help_id);
-        let checks = footer_checks(&app);
-        assert!(checks.passes > 0);
-        assert!(checks.requests.iter().any(|request| request.id == help_id));
-        for request in &checks.requests {
-            if let Some(target) = request.target {
-                assert_eq!(target.x_range(), request.row.x_range());
-                assert_eq!(target.height(), request.row.height());
-                corrected += 1;
-            }
-        }
-        let previous = snapshot(&app).outer.unwrap().offset;
-        let requests = checks.requests.len();
-        footer_scaled_settle(&mut app, size, scale);
-        assert_eq!(snapshot(&app).outer.unwrap().offset, previous);
-        assert_eq!(footer_checks(&app).requests.len(), requests);
+        let outer = snapshot(&app).outer.unwrap();
+        let inner = snapshot(&app).explorer.unwrap();
+        assert!(outer.offset.y > 0.0 && inner.offset.y > 0.0);
+        revealed += 1;
+        scaled_settle(&mut app, size, scale);
+        assert_eq!(snapshot(&app).outer.unwrap().offset, outer.offset);
+        assert_eq!(snapshot(&app).explorer.unwrap().offset, inner.offset);
+        assert_eq!(widget(&app, "file-063.txt").id, last_id);
+        assert_project_menu(&mut app, size);
         assert!(commands.try_recv().is_err());
     }
     assert!(
-        corrected > 0,
-        "native footer focus never exercised the correction"
+        revealed > 0,
+        "native focus never exercised both scroll levels"
     );
 }
 
@@ -1110,6 +1089,9 @@ fn sidebar_wrapped_selected_file_and_footer_keep_native_reveal_order_after_wheel
     let size = [780.0, 540.0];
     let name = "最后一份 Unicode draft 文件.txt";
     let (mut app, commands) = app(180.0, true, 18.0);
+    // Leave room for the 30pt menu heading as well as a 24pt file row.
+    // The 64pt inner viewport still overflows and exercises both levels.
+    app.tools_height = Some(390.0);
     app.entries[63] = Entry {
         path: name.into(),
         name: name.into(),
@@ -1119,19 +1101,18 @@ fn sidebar_wrapped_selected_file_and_footer_keep_native_reveal_order_after_wheel
     document.text = "precious unsaved draft 雪".into();
     app.documents.push(document);
     app.active_document = Some(1);
-    enable_footer_checks(&app);
     settle(&mut app, size);
-    focus(&mut app, size, "help");
+    let outer_height = snapshot(&app).outer.unwrap().rect.height();
+    assert!(outer_height >= widget(&app, "project_heading").rect.height());
+    assert!(
+        outer_height < 64.0,
+        "fixture must retain genuine outer overflow"
+    );
+    focus(&mut app, size, "file-062.txt");
     scroll_outer_bottom(&mut app, size);
     assert!(snapshot(&app).outer.unwrap().offset.y > 0.0);
     let file_id = widget(&app, name).id;
-    for _ in 0..3 {
-        key(&mut app, size, egui::Key::Tab, egui::Modifiers::SHIFT);
-        check_footer_geometry(&app);
-        if app.editor_ctx.memory(|memory| memory.focused()) == Some(file_id) {
-            break;
-        }
-    }
+    native_tab_to(&mut app, size, name, egui::Modifiers::NONE);
     assert_eq!(
         app.editor_ctx.memory(|memory| memory.focused()),
         Some(file_id)
@@ -1143,33 +1124,66 @@ fn sidebar_wrapped_selected_file_and_footer_keep_native_reveal_order_after_wheel
         .unwrap()
         .rect
         .contains_rect(widget(&app, name).rect));
-    assert!(widget(&app, name).rect.height() > 27.0);
+    // The Islands row truncates this long Unicode label rather than wrapping.
+    assert!(widget(&app, name).rect.width() <= snapshot(&app).explorer.unwrap().rect.width());
+    assert_eq!(widget(&app, name).rect.height(), chrome::ROW_HEIGHT);
+    native_tab_to(&mut app, size, "file-062.txt", egui::Modifiers::SHIFT);
+    native_tab_to(&mut app, size, name, egui::Modifiers::NONE);
     let nested_offset = snapshot(&app).explorer.unwrap().offset;
-    let search_id = widget(&app, "help").id;
-    let requests_before_tab = footer_checks(&app).requests.len();
-    for _ in 0..3 {
-        key(&mut app, size, egui::Key::Tab, egui::Modifiers::NONE);
-        check_footer_geometry(&app);
-        if app.editor_ctx.memory(|memory| memory.focused()) == Some(search_id) {
-            break;
-        }
-    }
-    assert_eq!(
-        app.editor_ctx.memory(|memory| memory.focused()),
-        Some(search_id)
-    );
-    assert_visible(&app, "help");
-    assert_eq!(snapshot(&app).explorer.unwrap().offset, nested_offset);
-    assert!(footer_checks(&app).requests[requests_before_tab..]
-        .iter()
-        .any(|request| request.id == search_id));
     let outer_offset = snapshot(&app).outer.unwrap().offset;
     settle(&mut app, size);
     assert_eq!(snapshot(&app).outer.unwrap().offset, outer_offset);
+    assert_eq!(snapshot(&app).explorer.unwrap().offset, nested_offset);
+    assert_project_menu(&mut app, size);
+    assert_eq!(snapshot(&app).explorer.unwrap().offset, nested_offset);
     assert_eq!(app.active_document, Some(1));
     assert_eq!(app.documents[0].text, "precious unsaved draft 雪");
     assert_eq!(app.documents[0].saved_text, "saved");
     assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn sidebar_four_project_icon_slots_stay_distinct_at_all_widths_and_fonts() {
+    let size = [780.0, 540.0];
+    for width in [180.0, 246.0, 460.0] {
+        for font_size in [13.0, 18.0] {
+            let (mut app, commands) = app(width, true, font_size);
+            app.tools_open = false;
+            settle(&mut app, size);
+            assert_geometry(&app, width);
+            let labels = [
+                "+",
+                "R",
+                "Select Current File in Project",
+                "Cancel selecting current file",
+            ];
+            let controls: Vec<_> = labels.iter().map(|label| widget(&app, label)).collect();
+            let outer = snapshot(&app).outer.unwrap();
+            for (index, control) in controls.iter().enumerate() {
+                assert!(
+                    outer.rect.contains_rect(control.rect),
+                    "{} is outside Project",
+                    labels[index]
+                );
+                assert!(
+                    control.clip.contains_rect(control.rect),
+                    "{} is clipped",
+                    labels[index]
+                );
+                assert_eq!(control.rect.width(), 26.0);
+                for other in &controls[index + 1..] {
+                    assert_ne!(control.id, other.id);
+                    assert!(
+                        control.rect.intersect(other.rect).width() <= 0.0,
+                        "Project action slots overlap"
+                    );
+                }
+            }
+            assert!(widget(&app, "project_heading").rect.right() <= controls[0].rect.left());
+            assert_project_menu(&mut app, size);
+            assert!(commands.try_recv().is_err());
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

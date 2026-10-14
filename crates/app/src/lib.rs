@@ -13,6 +13,7 @@ mod build_problem_process_tests;
 #[cfg(test)]
 mod build_problem_ui_tests;
 mod build_problems;
+mod chrome;
 #[cfg(test)]
 mod column_navigation_process_tests;
 pub mod completion;
@@ -153,11 +154,11 @@ use std::{
 };
 use worker::{Command, Event, Worker, WorkerEvent};
 
-const BG: Color32 = Color32::from_rgb(17, 21, 29);
-const PANEL: Color32 = Color32::from_rgb(22, 28, 38);
-const BORDER: Color32 = Color32::from_rgb(44, 53, 66);
-const MUTED: Color32 = Color32::from_rgb(139, 155, 174);
-const TEXT: Color32 = Color32::from_rgb(218, 227, 238);
+const BG: Color32 = chrome::SURFACE;
+const PANEL: Color32 = chrome::SURFACE;
+const BORDER: Color32 = chrome::BORDER;
+const MUTED: Color32 = chrome::MUTED;
+const TEXT: Color32 = chrome::TEXT;
 const GREEN: Color32 = Color32::from_rgb(146, 215, 174);
 const AMBER: Color32 = Color32::from_rgb(234, 185, 117);
 const RED: Color32 = Color32::from_rgb(243, 150, 154);
@@ -384,6 +385,29 @@ impl HeaderMenus {
     }
 }
 
+#[derive(Clone, Default)]
+struct IslandMenus {
+    pass: u64,
+    viewport: egui::ViewportId,
+    roots: Vec<(egui::Id, egui::Id)>,
+}
+fn register_island_menu(ui: &egui::Ui, root: egui::Id) {
+    let ctx = ui.ctx();
+    let pass = ctx.cumulative_pass_nr();
+    let viewport = ctx.viewport_id();
+    let bar = ui.id();
+    ctx.data_mut(|data| {
+        let menus =
+            data.get_temp_mut_or_default::<IslandMenus>(egui::Id::new("cedar_island_menus"));
+        if menus.pass != pass || menus.viewport != viewport {
+            menus.roots.clear();
+            menus.pass = pass;
+            menus.viewport = viewport;
+        }
+        menus.roots.push((bar, root));
+    });
+}
+
 pub struct CedarApp {
     editor_ctx: egui::Context,
     enter_input: Option<enter_indent::FrameInput>,
@@ -470,24 +494,25 @@ pub struct CedarApp {
 impl CedarApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = PANEL;
+        visuals.panel_fill = chrome::FRAME;
         visuals.window_fill = PANEL;
         visuals.extreme_bg_color = BG;
-        visuals.faint_bg_color = Color32::from_rgb(27, 35, 46);
+        visuals.faint_bg_color = chrome::FRAME;
         visuals.override_text_color = Some(TEXT);
-        visuals.selection.bg_fill = Color32::from_rgb(51, 88, 77);
-        visuals.selection.stroke = Stroke::new(1.0_f32, GREEN);
+        visuals.selection.bg_fill = chrome::SELECTED;
+        visuals.selection.stroke = Stroke::new(1.0_f32, chrome::FOCUS);
         visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER);
-        visuals.widgets.inactive.bg_fill = Color32::from_rgb(34, 44, 57);
-        visuals.widgets.hovered.bg_fill = Color32::from_rgb(43, 61, 68);
-        visuals.widgets.active.bg_fill = Color32::from_rgb(51, 76, 75);
+        visuals.widgets.inactive.bg_fill = chrome::FRAME;
+        visuals.widgets.hovered.bg_fill = chrome::HOVER;
+        visuals.widgets.active.bg_fill = chrome::SELECTED;
         cc.egui_ctx.set_visuals(visuals);
+        cc.egui_ctx.set_fonts(system_fonts::base_fonts());
         cc.egui_ctx.style_mut(|style| {
-            style.spacing.item_spacing = egui::vec2(9.0, 8.0);
-            style.spacing.button_padding = egui::vec2(10.0, 6.0);
+            style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+            style.spacing.button_padding = egui::vec2(8.0, 4.0);
             style
                 .text_styles
-                .insert(egui::TextStyle::Body, FontId::proportional(14.0));
+                .insert(egui::TextStyle::Body, FontId::proportional(13.0));
             style
                 .text_styles
                 .insert(egui::TextStyle::Button, FontId::proportional(13.0));
@@ -2122,6 +2147,22 @@ impl CedarApp {
         if ctx != &self.editor_ctx {
             return false;
         }
+        if let Some(menus) =
+            ctx.data(|data| data.get_temp::<IslandMenus>(egui::Id::new("cedar_island_menus")))
+        {
+            if menus.viewport == ctx.viewport_id()
+                && menus.pass.checked_add(1) == Some(ctx.cumulative_pass_nr())
+            {
+                for (id, root) in menus.roots {
+                    let mut bar = egui::menu::BarState::load(ctx, id);
+                    if bar.as_ref().is_some_and(|menu| menu.id == root) {
+                        bar.take();
+                        bar.store(ctx, id);
+                        return true;
+                    }
+                }
+            }
+        }
         let Some(header) = ctx.data(|data| data.get_temp::<HeaderMenus>(HeaderMenus::key())) else {
             return false;
         };
@@ -2143,50 +2184,41 @@ impl CedarApp {
     }
 
     fn header(&mut self, ctx: &egui::Context) {
-        let font = egui::TextStyle::Button.resolve(&ctx.style()).size;
-        let height = if font > 15.0 { 48.0 } else { 40.0 };
         egui::TopBottomPanel::top("header")
-            // A minimum allows measured wrapping instead of clipping at unusual
-            // font sizes or widths. The ordinary connected row is 40 / 48 points.
-            .min_height(height)
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(8.0))
+            .exact_height(44.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(chrome::FRAME)
+                    .inner_margin(egui::Margin::symmetric(8, 5)),
+            )
             .show(ctx, |ui| {
-                ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.set_row_height(height - 16.0);
-                    let reserved = ["Workspace", "Files", "Project Text", "Find Results", "Tools"]
-                        .into_iter().map(|text| shell_button_width(ui, text, false)).sum::<f32>()
-                        + 22.0 + 6.0 * ui.spacing().item_spacing.x;
-                    let identity_width = (ui.available_width() - reserved).clamp(0.0, 180.0);
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+                ui.horizontal(|ui| {
                     logo(ui, 22.0);
-                    let workspace = ui.menu_button("Workspace", |ui| self.workspace_menu(ui, ctx)).response;
+                    let name = self
+                        .root
+                        .rsplit(['/', '\\'])
+                        .find(|part| !part.is_empty())
+                        .unwrap_or("Workspace");
+                    let title = egui::WidgetText::from(RichText::new(name).strong()).into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Truncate),
+                        (ui.available_width() - 240.0).clamp(40.0, 220.0),
+                        egui::TextStyle::Button,
+                    );
+                    let workspace =
+                        chrome::menu_button(ui, title, |ui| self.workspace_menu(ui, ctx)).response;
                     let workspace_id = workspace.id;
                     #[cfg(test)]
                     workspace_access_tests::record(ui, "workspace_menu", &workspace);
-                    workspace.on_hover_text(if self.root.is_empty() { "Workspace connection, recovery and save actions" } else { &self.root });
-                    if identity_width >= 48.0 {
-                        let name = self.root.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or("Cedar");
-                        ui.add_sized([identity_width, height - 16.0], egui::Label::new(RichText::new(name).strong().color(TEXT)).truncate()).on_hover_text(&self.root);
-                    }
-                    let files = ui.add_enabled(self.workspace_key.is_some(), egui::Button::new("Files")).on_hover_text("Find project files · Ctrl/Cmd+Shift+N");
-                    #[cfg(test)]
-                    workspace_access_tests::record(ui, "browse_entry", &files);
-                    if files.clicked() { self.show_browse(browse::Provider::Files); }
-                    let text = ui.add_enabled(self.workspace_key.is_some(), egui::Button::new("Project Text")).on_hover_text("Search project text · Ctrl/Cmd+Shift+F");
-                    #[cfg(test)]
-                    workspace_access_tests::record(ui, "project_text_entry", &text);
-                    if text.clicked() { self.show_browse(browse::Provider::ProjectText); }
-                    #[cfg(test)]
-                    browsing_shell_tests::record_find_diagnostic(self, ctx, "before-header-response", None);
-                    let results = ui.selectable_label(self.tools_open && self.tool == Tool::Search, "Find Results").on_hover_text("Return to retained results or the search query · Ctrl/Cmd+J toggles tools");
-                    #[cfg(test)]
-                    {
-                        workspace_access_tests::record(ui, "find_results_entry", &results);
-                        browsing_shell_tests::record_find_diagnostic(self, ctx, "after-header-response", Some(&results));
-                    }
-                    if results.clicked() { self.show_find_results(ctx, &results); }
-                    let tools = ui.menu_button("Tools", |ui| self.tools_menu(ui)).response;
+                    workspace.on_hover_text(if self.root.is_empty() {
+                        "Workspace connection, recovery and save actions"
+                    } else {
+                        &self.root
+                    });
+                    ui.add_space(6.0);
+                    self.history_controls(ui);
+                    let tools = chrome::menu_button(ui, "Tools", |ui| self.tools_menu(ui)).response;
                     #[cfg(test)]
                     workspace_access_tests::record(ui, "tools_menu", &tools);
                     let header = HeaderMenus {
@@ -2196,8 +2228,93 @@ impl CedarApp {
                         roots: [workspace_id, tools.id],
                     };
                     ctx.data_mut(|data| data.insert_temp(HeaderMenus::key(), header));
-                    tools.on_hover_text("Git, commands, language and test results");
+                    tools.on_hover_text("File Structure, Git, commands, language and test results");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let text = ui
+                            .add_enabled(
+                                self.workspace_key.is_some(),
+                                chrome::IconButton::new(chrome::Icon::SearchText, "Project Text"),
+                            )
+                            .on_hover_text("Search project text · Ctrl/Cmd+Shift+F");
+                        #[cfg(test)]
+                        workspace_access_tests::record(ui, "project_text_entry", &text);
+                        if text.clicked() {
+                            self.show_browse(browse::Provider::ProjectText);
+                        }
+                        let files = ui
+                            .add_enabled(
+                                self.workspace_key.is_some(),
+                                chrome::IconButton::new(chrome::Icon::Search, "Files"),
+                            )
+                            .on_hover_text("Find project files · Ctrl/Cmd+Shift+N");
+                        #[cfg(test)]
+                        workspace_access_tests::record(ui, "browse_entry", &files);
+                        if files.clicked() {
+                            self.show_browse(browse::Provider::Files);
+                        }
+                    });
                 });
+            });
+    }
+
+    fn tool_rail(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::left("tool_window_rail")
+            .exact_width(44.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(chrome::FRAME)
+                    .inner_margin(egui::Margin::symmetric(4, 0)),
+            )
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                let project = ui
+                    .add_enabled(
+                        self.workspace_key.is_some(),
+                        chrome::IconButton::new(chrome::Icon::Project, "Project").rail(true),
+                    )
+                    .on_hover_text("Focus Project · Alt+1 or Ctrl/Cmd+Shift+E");
+                #[cfg(test)]
+                workspace_access_tests::record(ui, "project_rail", &project);
+                if project.clicked() {
+                    self.show_project(ctx, &project);
+                }
+                #[cfg(test)]
+                browsing_shell_tests::record_find_diagnostic(
+                    self,
+                    ctx,
+                    "before-header-response",
+                    None,
+                );
+                let results = ui
+                    .add(
+                        chrome::IconButton::new(chrome::Icon::Search, "Find Results")
+                            .rail(self.tools_open && self.tool == Tool::Search),
+                    )
+                    .on_hover_text("Find Results · return to retained results or the search query");
+                #[cfg(test)]
+                {
+                    workspace_access_tests::record(ui, "find_results_entry", &results);
+                    browsing_shell_tests::record_find_diagnostic(
+                        self,
+                        ctx,
+                        "after-header-response",
+                        Some(&results),
+                    );
+                }
+                if results.clicked() {
+                    self.show_find_results(ctx, &results);
+                }
+                let git = ui
+                    .add_enabled(
+                        self.workspace_key.is_some(),
+                        chrome::IconButton::new(chrome::Icon::Git, "Git Changes")
+                            .rail(self.tools_open && self.tool == Tool::Git),
+                    )
+                    .on_hover_text("Git Changes");
+                if git.clicked() {
+                    self.show_git_tool(ctx, &git);
+                }
             });
     }
 
@@ -2287,83 +2404,248 @@ impl CedarApp {
         }
     }
 
+    fn status_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        recovery_status: &str,
+        protected: bool,
+        compact: bool,
+    ) {
+        let (color, label) = match self.state {
+            ConnectionState::Idle => (MUTED, "Not connected"),
+            ConnectionState::Connecting => (AMBER, "Connecting"),
+            ConnectionState::Ready => (
+                if compact { GREEN } else { MUTED },
+                if compact { "●" } else { "Connected" },
+            ),
+            ConnectionState::Disconnected => (RED, "Disconnected"),
+            ConnectionState::Disconnecting => (AMBER, "Disconnecting"),
+            ConnectionState::CleanupUnverified => (AMBER, "Cleanup unverified"),
+        };
+        let recovery = ui.small_button(RichText::new(if compact { "Recovery" } else { recovery_status }).size(12.0).color(if protected { MUTED } else { AMBER }))
+            .on_hover_text(format!("{recovery_status} · Private recovery on this computer. Click to review copies and settings"));
+        #[cfg(test)]
+        workspace_access_tests::record(ui, "recovery_status", &recovery);
+        if recovery.clicked() {
+            self.recovery.visible = true;
+        }
+        let connection =
+            ui.colored_label(color, label)
+                .on_hover_text(if compact { "Connected" } else { label });
+        #[cfg(test)]
+        workspace_access_tests::record(ui, "connection_status", &connection);
+        #[cfg(not(test))]
+        let _ = connection;
+    }
+
     fn footer(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("status")
-            .exact_height(29.0)
+        let style = ctx.style();
+        let available_width = (ctx.available_rect().width() - 20.0).max(0.0);
+        let workspace = self.recovery_workspace();
+        let (recovery_status, protected) = self.recovery.status(workspace.as_ref(), self.active());
+        let compact =
+            protected && self.state == ConnectionState::Ready && !self.unverified_local_close;
+        let meta_width = if self.active().is_some() {
+            218.0_f32
+        } else {
+            0.0
+        };
+        let recovery_width = ctx.fonts(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    if compact { "Recovery" } else { recovery_status }.into(),
+                    egui::FontId::proportional(12.0),
+                    MUTED,
+                )
+                .size()
+                .x
+        }) + 2.0 * style.spacing.button_padding.x;
+        let connection_width = if compact { 14.0 } else { 132.0 };
+        let controls_width = recovery_width + connection_width + 2.0 * style.spacing.item_spacing.x;
+        let pending = (!self.pending.is_empty()).then(|| format!("{} pending", self.pending.len()));
+        let pending_width = pending.as_ref().map_or(0.0, |label| {
+            ctx.fonts(|fonts| {
+                fonts
+                    .layout_no_wrap(label.clone(), egui::FontId::proportional(12.0), MUTED)
+                    .size()
+                    .x
+            }) + 12.0
+                + 2.0 * style.spacing.item_spacing.x
+        });
+        // Reserve critical controls before the elided path. Only a genuinely
+        // constrained width wraps status; Idle alone never adds another row.
+        let controls_fit = meta_width + pending_width + controls_width + 8.0 <= available_width;
+        let right_width =
+            meta_width + pending_width + if controls_fit { controls_width } else { 0.0 };
+        let left_width = (available_width - right_width - style.spacing.item_spacing.x).max(0.0);
+        let show_notice = !self.notice.is_empty()
+            && self.notice != "Workspace connected"
+            && self.notice != "Ready when you are"
+            && !self.notice.starts_with("Saved ")
+            && !self.notice.starts_with("CJK fallback:");
+        let saves_unavailable =
+            self.state == ConnectionState::Ready && !self.backend_supports("write");
+        let extra_risk = self.unverified_local_close || saves_unavailable;
+        let risk_width = ctx.fonts(|fonts| {
+            let font = egui::TextStyle::Body.resolve(&style);
+            [
+                (self.unverified_local_close, "Prior cleanup unverified"),
+                (saves_unavailable, "Saves unavailable"),
+            ]
+            .into_iter()
+            .filter(|(show, _)| *show)
+            .map(|(_, label)| {
+                fonts
+                    .layout_no_wrap(label.into(), font.clone(), AMBER)
+                    .size()
+                    .x
+                    + style.spacing.item_spacing.x
+            })
+            .sum::<f32>()
+        });
+        let risk_fits = risk_width <= available_width;
+        let (body_height, notice_height) = ctx.fonts(|fonts| {
+            let notice_height = if show_notice {
+                let mut job = egui::text::LayoutJob::simple(
+                    self.notice.clone(),
+                    egui::TextStyle::Small.resolve(&style),
+                    AMBER,
+                    available_width,
+                );
+                job.wrap.max_rows = 1;
+                fonts.layout_job(job).size().y
+            } else {
+                0.0
+            };
+            (
+                fonts.row_height(&egui::TextStyle::Body.resolve(&style)),
+                notice_height,
+            )
+        });
+        let height = 8.0
+            + body_height.max(20.0)
+            + if extra_risk && risk_fits {
+                style.spacing.item_spacing.y + body_height.max(style.spacing.interact_size.y)
+            } else {
+                0.0
+            }
+            + if show_notice {
+                style.spacing.item_spacing.y + notice_height
+            } else {
+                0.0
+            };
+        let panel = egui::TopBottomPanel::bottom("status");
+        // Bounded rows, including newly arrived risk labels, have a known height
+        // before painting. Using the last frame's automatic height can clip a
+        // new row below the window and leaves a gap when it clears.
+        let panel = if controls_fit && risk_fits {
+            panel.exact_height(height)
+        } else {
+            // Dedicated risk controls retain their full, wrapping presentation.
+            panel.min_height(height)
+        };
+        panel
             .frame(
                 egui::Frame::new()
-                    .fill(Color32::from_rgb(25, 38, 38))
-                    .inner_margin(egui::Margin::symmetric(12, 5)),
+                    .fill(chrome::FRAME)
+                    .inner_margin(egui::Margin::symmetric(10, 4)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    let (color, label) = match self.state {
-                        ConnectionState::Idle => (MUTED, "Not connected"),
-                        ConnectionState::Connecting => (AMBER, "Connecting"),
-                        ConnectionState::Ready => (GREEN, "Connected"),
-                        ConnectionState::Disconnected => (RED, "Disconnected"),
-                        ConnectionState::Disconnecting => (AMBER, "Disconnecting"),
-                        ConnectionState::CleanupUnverified => (AMBER, "Cleanup unverified"),
-                    };
-                    let connection = ui.colored_label(color, label);
-                    #[cfg(test)]
-                    workspace_access_tests::record(ui, "connection_status", &connection);
-                    #[cfg(not(test))]
-                    let _ = connection;
-                    if self.unverified_local_close {
-                        ui.colored_label(AMBER, "Prior cleanup unverified").on_hover_text(disconnect::UNVERIFIED);
+                    if left_width > 0.0 {
+                        let path =
+                            self.active()
+                                .map(|doc| doc.path.as_str())
+                                .unwrap_or_else(|| {
+                                    self.root
+                                        .rsplit(['/', '\\'])
+                                        .find(|part| !part.is_empty())
+                                        .unwrap_or("Cedar")
+                                });
+                        let status_path = ui
+                            .allocate_ui_with_layout(
+                                egui::vec2(left_width, 20.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    // Reserve the whole path lane without centering the
+                                    // label's galley (add_sized centers the widget itself).
+                                    ui.set_min_width(left_width);
+                                    ui.add(
+                                        egui::Label::new(RichText::new(path).color(MUTED))
+                                            .truncate(),
+                                    )
+                                },
+                            )
+                            .inner
+                            .on_hover_text(format!(
+                                "{}\n{}\n{}\n{}",
+                                self.root,
+                                self.agent_status(),
+                                self.agent_details(),
+                                self.notice
+                            ));
+                        #[cfg(test)]
+                        workspace_access_tests::record(ui, "status_path", &status_path);
+                        #[cfg(not(test))]
+                        let _ = status_path;
                     }
-                    let workspace = self.recovery_workspace();
-                    let (recovery_status, protected) = self.recovery.status(workspace.as_ref(), self.active());
-                    let recovery = ui.small_button(RichText::new(recovery_status).color(if protected { GREEN } else { AMBER })).on_hover_text("Private recovery on this computer. Click to review copies and settings");
-                    #[cfg(test)]
-                    workspace_access_tests::record(ui, "recovery_status", &recovery);
-                    if recovery.clicked() { self.recovery.visible = true; }
-                    if self.ready() {
-                        let status = self.agent_status();
-                        ui.add_sized([240.0, 18.0], egui::Label::new(RichText::new(&status).small().color(MUTED)).truncate())
-                            .on_hover_text(format!("{status}\n{}", self.agent_details()));
-                    }
-                    if let Some(form) = &self.active_form {
-                        ui.label(
-                            RichText::new(if form.ssh {
-                                format!("SSH · {}", form.host)
-                            } else {
-                                "Local".into()
-                            })
-                            .small()
-                            .color(MUTED),
-                        );
-                    }
-                    if !self.pending.is_empty() {
-                        ui.spinner();
-                        ui.label(RichText::new(format!("{} pending", self.pending.len())).small());
-                    }
-                    if ui.available_width() > 690.0 {
-                        ui.add_sized(
-                            [350.0, 18.0],
-                            egui::Label::new(RichText::new(&self.notice).small().color(MUTED))
-                                .truncate(),
-                        );
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(doc) = self.active() {
-                            ui.label(RichText::new("UTF-8").small().color(MUTED));
-                            ui.label(RichText::new(language(&doc.path)).small().color(MUTED));
-                            ui.label(
-                                RichText::new(format!("Ln {}, Col {}", doc.cursor.0, doc.cursor.1))
-                                    .small()
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(right_width, 20.0),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_width(right_width);
+                            if controls_fit {
+                                self.status_controls(ui, recovery_status, protected, compact);
+                            }
+                            if let Some(label) = &pending {
+                                ui.label(RichText::new(label).size(12.0).color(MUTED));
+                                ui.add(egui::Spinner::new().size(12.0));
+                            }
+                            if let Some(doc) = self.active() {
+                                ui.label(RichText::new("UTF-8").size(12.0).color(MUTED));
+                                ui.label(
+                                    RichText::new(language(&doc.path)).size(12.0).color(MUTED),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Ln {}, Col {}",
+                                        doc.cursor.0, doc.cursor.1
+                                    ))
+                                    .size(12.0)
                                     .color(MUTED),
-                            );
-                        } else {
-                            ui.label(
-                                RichText::new("Native Rust · independent open-source prototype")
-                                    .small()
-                                    .color(MUTED),
-                            );
+                                );
+                            }
+                        },
+                    );
+                });
+                if !controls_fit {
+                    ui.horizontal_wrapped(|ui| {
+                        self.status_controls(ui, recovery_status, protected, compact)
+                    });
+                }
+                if self.unverified_local_close
+                    || (self.state == ConnectionState::Ready && !self.backend_supports("write"))
+                {
+                    ui.horizontal_wrapped(|ui| {
+                        if self.unverified_local_close {
+                            ui.colored_label(AMBER, "Prior cleanup unverified")
+                                .on_hover_text(disconnect::UNVERIFIED);
+                        }
+                        if self.state == ConnectionState::Ready && !self.backend_supports("write") {
+                            ui.colored_label(AMBER, "Saves unavailable")
+                                .on_hover_text(self.agent_details());
                         }
                     });
-                });
+                }
+                if show_notice {
+                    // Reports can contain a complete long search scope. Keep the
+                    // inherited bounded status lane; the full text remains on hover.
+                    ui.add(
+                        egui::Label::new(RichText::new(&self.notice).small().color(AMBER))
+                            .truncate(),
+                    )
+                    .on_hover_text(&self.notice);
+                }
             });
     }
 
@@ -2405,8 +2687,10 @@ impl CedarApp {
     }
 
     fn sidebar(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("explorer").default_width(246.0).width_range(180.0..=460.0).resizable(true)
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(8.0)).show(ctx, |ui| {
+        // egui 0.31's panel minimum subtracts inner, but not outer, margins.
+        // Compensate the 4pt island gap so the actual minimum remains 180pt.
+        egui::SidePanel::left("explorer").default_width(246.0).width_range((180.0 - f32::from(chrome::GAP))..=460.0).resizable(true)
+            .frame(chrome::island()).show(ctx, |ui| {
                 let size_id = ui.make_persistent_id("sidebar_viewport_size");
                 let size = ui.available_size();
                 let resized = ctx.data_mut(|data| {
@@ -2414,8 +2698,8 @@ impl CedarApp {
                     data.insert_temp(size_id, size);
                     previous.is_some_and(|previous| previous != size)
                 });
-                // Keep both gutters allocated even without overflow. Animated gutter
-                // widths would otherwise change wrapping and the height budget itself.
+                // Solid gutters appear only when needed. Content and reveal targets
+                // use the actual viewport, including any in-progress gutter animation.
                 ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                 #[cfg(test)]
                 sidebar_layout_tests::begin(ctx);
@@ -2436,102 +2720,104 @@ impl CedarApp {
                     // changing tool/mode height can cover newly positioned rows.
                     // Wheel, touchpad and scrollbar scrolling remain available.
                     .drag_to_scroll(false)
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                     .min_scrolled_height(0.0).auto_shrink([false, false]).animated(false)
                     .show_viewport(ui, |ui, viewport| {
                         // The paint clip includes a margin outside the real viewport.
                         // Capture the viewport origin before content changes min_rect.
-                        let initial_content_origin = ui.max_rect().min;
-                        let actual_viewport = viewport.translate(initial_content_origin.to_vec2());
+                        let actual_viewport = viewport.translate(ui.min_rect().min.to_vec2());
+                        // Bound the content before creating the horizontal child: its
+                        // initial minimum width otherwise retains the rounded-up edge.
+                        let content_right = (actual_viewport.right() * 8.0).floor() / 8.0;
+                        ui.set_max_width((content_right - ui.max_rect().left()).max(0.0));
+                        let mut toolbar_reveal = None;
                         ui.horizontal(|ui| {
-                            let heading = ui.add(egui::Label::new(RichText::new("PROJECT").size(11.0).strong().color(MUTED)).sense(egui::Sense::focusable_noninteractive()));
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.spacing_mut().interact_size.y = chrome::HEADER_HEIGHT;
+                            let heading_text = egui::WidgetText::from(RichText::new("Project ⌄").strong()).into_galley(ui, Some(egui::TextWrapMode::Truncate), (ui.available_width() - 108.0 - 2.0 * ui.spacing().button_padding.x).max(20.0), egui::TextStyle::Button);
+                            let heading = chrome::menu_button(ui, heading_text, |ui| {
+                                let scope = self.explorer_scope();
+                                ui.add(egui::Label::new(format!("Scope: /{scope}")).truncate()).on_hover_text(&scope);
+                                let up = ui.add_enabled(self.ready() && !self.explorer_busy() && self.explorer.mode == explorer_tree::Mode::Flat && !self.directory.is_empty(), egui::Button::new("Up"));
+                                #[cfg(test)]
+                                sidebar_layout_tests::record(ui, "Up", &up);
+                                if up.clicked() { self.list(parent_path(&self.directory)); ui.close_menu(); }
+                                ui.separator();
+                                for (mode, label) in [(explorer_tree::Mode::Flat, "Flat"), (explorer_tree::Mode::Tree, "Tree")] {
+                                    let response = ui.selectable_label(self.explorer.mode == mode, label);
+                                    #[cfg(test)]
+                                    {
+                                        workspace_access_tests::record(ui, if mode == explorer_tree::Mode::Flat { "explorer_flat_mode" } else { "explorer_tree_mode" }, &response);
+                                        sidebar_layout_tests::record(ui, label, &response);
+                                    }
+                                    if response.clicked() { self.explorer_set_mode(mode); ui.close_menu(); }
+                                }
+                                ui.separator();
+                                let help = ui.add(egui::Label::new("Ctrl/Cmd+P  Choose a file\nCtrl/Cmd+G  Go to line\nCtrl/Cmd+F  Find in file\nCtrl/Cmd+S  Save changes\nAlt+1  Focus Project").sense(egui::Sense::focusable_noninteractive()));
+                                #[cfg(test)]
+                                {
+                                    sidebar_layout_tests::record(ui, "help", &help);
+                                    workspace_access_tests::record(ui, "project_shortcuts", &help);
+                                }
+                                #[cfg(not(test))]
+                                let _ = help;
+                            }).response;
+                            register_island_menu(ui, heading.id);
                             self.record_project_access_fallback(ui, &heading);
-                            reveal(&heading);
+                            if reveal(&heading) { toolbar_reveal = Some(heading.rect); }
                             #[cfg(test)]
                             workspace_access_tests::record(ui, "project_heading", &heading);
+                            heading.on_hover_text("Project view, directory scope and keyboard shortcuts");
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let refresh = ui.add_enabled(self.ready() && !self.explorer_busy(), egui::Button::new("R").small()).on_hover_text("Refresh directory · Ctrl/Cmd+Shift+E or Alt+1 focuses Project without refreshing");
+                                // Four independent, always allocated targets. Cancel never takes Reveal's slot.
+                                ui.push_id("project_reveal_actions", |ui| {
+                                    let cancel = ui.push_id("cancel", |ui| ui.add_enabled(self.project_reveal_pending(), chrome::IconButton::new(chrome::Icon::Close, "Cancel selecting current file"))).inner.on_hover_text("Cancel selecting current file");
+                                    if reveal(&cancel) { toolbar_reveal = Some(cancel.rect); }
+                                    #[cfg(test)]
+                                    { workspace_access_tests::record(ui, "project_reveal_cancel", &cancel); sidebar_layout_tests::record(ui, "Cancel selecting current file", &cancel); }
+                                    if cancel.clicked() { self.cancel_project_reveal(); }
+                                    let select = ui.push_id("select", |ui| ui.add_enabled(self.ready() && self.active().is_some(), chrome::IconButton::new(chrome::Icon::Target, "Select Current File in Project"))).inner.on_hover_text("Select Current File in Project · load only its known parent folders");
+                                    if reveal(&select) { toolbar_reveal = Some(select.rect); }
+                                    #[cfg(test)]
+                                    { workspace_access_tests::record(ui, "project_select_current", &select); sidebar_layout_tests::record(ui, "Select Current File in Project", &select); }
+                                    self.select_current_file_in_project(ctx, &select);
+                                });
+                                let refresh = ui.push_id("refresh", |ui| ui.add_enabled(self.ready() && !self.explorer_busy(), chrome::IconButton::new(chrome::Icon::Refresh, "Refresh directory"))).inner.on_hover_text("Refresh directory · Alt+1 focuses Project without refreshing");
+                                if reveal(&refresh) { toolbar_reveal = Some(refresh.rect); }
                                 #[cfg(test)]
-                                workspace_access_tests::record(ui, "explorer_refresh", &refresh);
-                                reveal(&refresh);
-                                #[cfg(test)]
-                                sidebar_layout_tests::record(ui, "R", &refresh);
+                                { workspace_access_tests::record(ui, "explorer_refresh", &refresh); sidebar_layout_tests::record(ui, "R", &refresh); }
                                 if refresh.clicked() { self.explorer_refresh(&self.explorer_scope()); }
-                                let new_file = ui.add_enabled(self.ready(), egui::Button::new("+").small()).on_hover_text("New UTF-8 file");
-                                reveal(&new_file);
+                                let new_file = ui.push_id("new_file", |ui| ui.add_enabled(self.ready(), chrome::IconButton::new(chrome::Icon::Add, "New file"))).inner.on_hover_text("New UTF-8 file");
+                                if reveal(&new_file) { toolbar_reveal = Some(new_file.rect); }
                                 #[cfg(test)]
                                 sidebar_layout_tests::record(ui, "+", &new_file);
-                                if new_file.clicked() {
-                                    self.explorer_new_file();
-                                }
+                                #[cfg(test)]
+                                workspace_access_tests::record(ui, "project_new_file", &new_file);
+                                if new_file.clicked() { self.explorer_new_file(); }
                             });
                         });
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            let up = ui.add_enabled(self.ready() && !self.explorer_busy() && self.explorer.mode == explorer_tree::Mode::Flat && !self.directory.is_empty(), egui::Button::new("Up").small()).on_hover_text("Parent directory");
-                            reveal(&up);
-                            #[cfg(test)]
-                            sidebar_layout_tests::record(ui, "Up", &up);
-                            if up.clicked() { self.list(parent_path(&self.directory)); }
-                            let scope = self.explorer_scope();
-                            ui.add(egui::Label::new(RichText::new(format!("Scope: /{scope}")).monospace().size(12.0)).truncate()).on_hover_text(format!("Directory scope for Ctrl/Cmd+P and New File: /{scope}"));
-                        });
-                        ui.horizontal(|ui| {
-                            let flat = ui.selectable_label(self.explorer.mode == explorer_tree::Mode::Flat, "Flat").on_hover_text("Browse one directory at a time");
-                            reveal(&flat);
-                            #[cfg(test)]
-                            workspace_access_tests::record(ui, "explorer_flat_mode", &flat);
-                            #[cfg(test)]
-                            sidebar_layout_tests::record(ui, "Flat", &flat);
-                            if flat.clicked() { self.explorer_set_mode(explorer_tree::Mode::Flat); }
-                            let tree = ui.selectable_label(self.explorer.mode == explorer_tree::Mode::Tree, "Tree").on_hover_text("Load folders only when explicitly expanded or refreshed. Arrow keys navigate focused rows; Enter opens or toggles; Tab moves normally");
-                            reveal(&tree);
-                            #[cfg(test)]
-                            workspace_access_tests::record(ui, "explorer_tree_mode", &tree);
-                            #[cfg(test)]
-                            sidebar_layout_tests::record(ui, "Tree", &tree);
-                            if tree.clicked() { self.explorer_set_mode(explorer_tree::Mode::Tree); }
-                        });
-                        ui.push_id("project_reveal_actions", |ui| {
-                            let select_current = ui.add_enabled(self.ready() && self.active().is_some(), egui::Button::new("Select Current File in Project").wrap()).on_hover_text("Select the active file, loading only its known parent folders when needed. Keeps Flat or Tree mode; never reads a file");
-                            reveal(&select_current);
-                            #[cfg(test)]
-                            workspace_access_tests::record(ui, "project_select_current", &select_current);
-                            #[cfg(test)]
-                            sidebar_layout_tests::record(ui, "Select Current File in Project", &select_current);
-                            self.select_current_file_in_project(ctx, &select_current);
-                            // Keep this footprint stable when the original
-                            // pointer press cancels before widgets process it.
-                            let cancel = ui.add_enabled(self.project_reveal_pending(), egui::Button::new("Cancel selecting current file").wrap());
-                            reveal(&cancel);
-                            #[cfg(test)]
-                            workspace_access_tests::record(ui, "project_reveal_cancel", &cancel);
-                            #[cfg(test)]
-                            sidebar_layout_tests::record(ui, "Cancel selecting current file", &cancel);
-                            if cancel.clicked() { self.cancel_project_reveal(); }
-                        });
-                        // Isolate status/control counts from file-row identities.
+                        if let Some(row) = toolbar_reveal {
+                            if let Some(target) = sidebar_reveal::footer_target(row, actual_viewport, ui.min_rect().top(), viewport.min.y, ui.spacing().item_spacing.y) {
+                                ui.scroll_to_rect(target, Some(egui::Align::TOP));
+                            }
+                        }
+                        // Later status and tree requests retain native last-writer priority.
                         ui.push_id("explorer_status", |ui| self.explorer_status(ui, resized));
-                        ui.separator();
-                        let shortcut_help = egui::WidgetText::from(RichText::new("Ctrl/Cmd+P  Choose a file\nCtrl/Cmd+G  Go to line\nCtrl/Cmd+F  Find in file\nCtrl/Cmd+S  Save changes").size(11.0).color(MUTED))
-                            .into_galley(ui, Some(egui::TextWrapMode::Wrap), ui.available_width(), egui::TextStyle::Body);
-                        let separator_height = 6.0;
-                        let footer_height = (shortcut_help.size().y + separator_height + 2.0 * ui.spacing().item_spacing.y).ceil();
+                        ui.add_space(4.0);
+                        let footer_height = 0.0;
                         let file_text_width = (ui.available_width() - ui.spacing().scroll.allocated_width() - 2.0 * ui.spacing().button_padding.x).max(0.0);
                         let tree_rows = if self.explorer.mode == explorer_tree::Mode::Tree { self.explorer_visible_rows() } else { Vec::new() };
                         let display_entries = if self.explorer.mode == explorer_tree::Mode::Tree { tree_rows.iter().map(|row| row.entry.clone()).collect() } else { self.entries.clone() };
                         let file_galleys: Vec<_> = display_entries.iter().enumerate().map(|(index, entry)| {
                             let row = tree_rows.get(index);
-                            let icon = if entry.is_dir { if row.is_some_and(|row| row.expanded) { "−" } else { "+" } } else { "·" };
                             let state = row.filter(|row| row.entry.is_dir).map_or("", |row| {
-                                if row.loading { " · loading" } else if row.stale { " · stale, Refresh" }
-                                else if row.error.is_some() { " · error, Retry" } else if !row.loaded { " · not loaded" }
-                                else { "" }
+                                if row.loading { " · loading" } else if row.stale { " · stale" }
+                                else if row.error.is_some() { " · error" } else { "" }
                             });
-                            let indent = row.map_or(0.0, |row| (row.depth as f32 * 10.0).min(file_text_width * 0.35));
-                            let color = if entry.is_dir { AMBER } else if syntax::supports(&entry.path) { GREEN } else { TEXT };
-                            egui::WidgetText::from(RichText::new(format!("{icon}  {}{state}", entry.name)).color(color))
-                                .into_galley(ui, Some(egui::TextWrapMode::Wrap), (file_text_width - indent).max(0.0), egui::TextStyle::Button)
+                            let indent = row.map_or(0.0, |row| (row.depth as f32 * chrome::INDENT).min(file_text_width * 0.35));
+                            let name = if entry.path.is_empty() && entry.is_dir { self.root.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or("Workspace") } else { &entry.name };
+                            egui::WidgetText::from(RichText::new(format!("{name}{state}")).color(TEXT))
+                                .into_galley(ui, Some(egui::TextWrapMode::Truncate), (file_text_width - indent - 38.0).max(0.0), egui::TextStyle::Body)
                         }).collect();
                         let explorer_min_height = file_galleys.iter().fold(64.0_f32, |height, galley| {
                             height.max(galley.size().y + 2.0 * ui.spacing().button_padding.y + 2.0 * ui.spacing().item_spacing.y).max(ui.spacing().interact_size.y)
@@ -2547,16 +2833,18 @@ impl CedarApp {
                         let mut open = None;
                         let mut retry = None;
                         let explorer = egui::ScrollArea::vertical().id_salt("explorer_scroll").drag_to_scroll(false)
-                            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                             .min_scrolled_height(explorer_min_height).max_height(explorer_height)
                             .auto_shrink([false, false]).animated(false).show_viewport(ui, |ui, viewport| {
+                                let actual_viewport = viewport.translate(ui.min_rect().min.to_vec2());
+                                ui.spacing_mut().item_spacing.y = 0.0;
                                 if self.explorer.mode == explorer_tree::Mode::Flat && self.entries.is_empty() { ui.label(RichText::new(if !self.ready() { "Connect a workspace to browse files" } else if self.explorer_scope_loaded() { "This directory is empty" } else { "Directory not loaded. Refresh explicitly to load it" }).small().color(MUTED)); }
                                 for (index, (entry, galley)) in display_entries.iter().zip(&file_galleys).enumerate() {
                                     let selected = self.active().is_some_and(|doc| doc.path == entry.path);
                                     let response = if let Some(row) = tree_rows.get(index) {
                                         self.explorer_tree_row(ui, row, galley.clone())
                                     } else {
-                                        ui.add_enabled(self.ready(), egui::Button::new(galley.clone()).selected(selected).frame(selected).min_size(egui::vec2(ui.available_width(), 27.0))).on_hover_text(&entry.path)
+                                        self.explorer_flat_row(ui, entry, galley.clone(), selected)
                                     };
                                     let explicit_tree_reveal = self.explorer.mode == explorer_tree::Mode::Tree
                                         && self.explorer.key_reveal.as_deref() == Some(entry.path.as_str()) && response.has_focus();
@@ -2565,6 +2853,11 @@ impl CedarApp {
                                     let newly_revealed = response.gained_focus() || (resized && response.has_focus()) || explicit_tree_reveal || access_reveal || current_file_reveal;
                                     if newly_revealed || (pending_focus == Some(response.id) && response.has_focus()) {
                                         response.scroll_to_me(None);
+                                        // Correct this request before any later row or label can
+                                        // issue its own native request. The stack grows downward.
+                                        if let Some(target) = sidebar_reveal::footer_target(response.rect, actual_viewport, ui.min_rect().top(), viewport.min.y, ui.spacing().item_spacing.y) {
+                                            ui.scroll_to_rect(target, Some(egui::Align::TOP));
+                                        }
                                         focused_entry = Some((response.id, newly_revealed, response.rect, viewport.min.y));
                                     }
                                     #[cfg(test)]
@@ -2582,6 +2875,9 @@ impl CedarApp {
                                             let newly_revealed = retry_response.gained_focus() || (resized && retry_response.has_focus());
                                             if newly_revealed || (pending_focus == Some(retry_response.id) && retry_response.has_focus()) {
                                                 retry_response.scroll_to_me(None);
+                                                if let Some(target) = sidebar_reveal::footer_target(retry_response.rect, actual_viewport, ui.min_rect().top(), viewport.min.y, ui.spacing().item_spacing.y) {
+                                                    ui.scroll_to_rect(target, Some(egui::Align::TOP));
+                                                }
                                                 focused_entry = Some((retry_response.id, newly_revealed, retry_response.rect, viewport.min.y));
                                             }
                                             #[cfg(test)]
@@ -2597,7 +2893,7 @@ impl CedarApp {
                             // The inner area consumes its own target. Reveal its viewport
                             // through the outer area afterwards, then correct the inner
                             // target once if its previous clip was hidden by the outer area.
-                            if newly_revealed && !ui.clip_rect().contains_rect(explorer.inner_rect) {
+                            if newly_revealed && !actual_viewport.contains_rect(explorer.inner_rect) {
                                 ctx.data_mut(|data| data.insert_temp(pending_id, id));
                             }
                             let target = if explorer.inner_rect.height() <= size.y {
@@ -2609,6 +2905,9 @@ impl CedarApp {
                                 row_rect.translate(egui::vec2(0.0, old_offset - explorer.state.offset.y))
                             };
                             ui.scroll_to_rect(target, None);
+                            if let Some(target) = sidebar_reveal::footer_target(target, actual_viewport, ui.min_rect().top(), viewport.min.y, ui.spacing().item_spacing.y) {
+                                ui.scroll_to_rect(target, Some(egui::Align::TOP));
+                            }
                         }
                         #[cfg(test)]
                         sidebar_layout_tests::record_scroll(ctx, false, &explorer);
@@ -2617,26 +2916,6 @@ impl CedarApp {
                             if self.explorer.mode == explorer_tree::Mode::Tree { self.explorer_activate(&entry.path); }
                             else if entry.is_dir { self.list(entry.path); } else { self.open(entry.path, None); }
                         }
-                        // Shortcut help is a legitimate noninteractive Tab stop.
-                        // Keep the exact outer reveal correction for this footer.
-                        let footer_content_min_y = ui.min_rect().top();
-                        let outer_viewport_offset_y = viewport.min.y;
-                        let outer_item_spacing_y = ui.spacing().item_spacing.y;
-                        ui.add(egui::Separator::default().spacing(separator_height));
-                        let help = ui.add(egui::Label::new(shortcut_help).sense(egui::Sense::focusable_noninteractive())).on_hover_text("Ctrl/Cmd+J  Hide tools and return to editor, or show the selected tool\nCtrl/Cmd+Shift+E or Alt+1  Focus Project without refreshing");
-                        let requested = reveal(&help);
-                        let target = if requested { sidebar_reveal::footer_target(help.rect, actual_viewport, footer_content_min_y, outer_viewport_offset_y, outer_item_spacing_y) } else { None };
-                        #[cfg(test)]
-                        sidebar_layout_tests::record_footer_target(&help, requested, target);
-                        if let Some(target) = target { ui.scroll_to_rect(target, Some(egui::Align::TOP)); }
-                        #[cfg(test)]
-                        sidebar_layout_tests::record(ui, "help", &help);
-                        #[cfg(test)]
-                        workspace_access_tests::record(ui, "project_shortcuts", &help);
-                        #[cfg(test)]
-                        sidebar_layout_tests::record_footer_geometry(ui, initial_content_origin.y, footer_content_min_y, actual_viewport, outer_viewport_offset_y, outer_item_spacing_y);
-                        #[cfg(not(test))]
-                        let _ = help;
                     });
                 #[cfg(test)]
                 sidebar_layout_tests::record_scroll(ctx, true, &outer);
@@ -2652,10 +2931,10 @@ impl CedarApp {
         let mut close_tools = None;
         let mut automatic_height = false;
         let resize = tools_resize::prepare(ctx, self.tools_height, &self.tools_height_reset);
-        let frame = egui::Frame::new().fill(PANEL).inner_margin(8.0);
+        let frame = chrome::island();
         egui::TopBottomPanel::bottom("tools")
             .default_height(245.0)
-            .height_range(150.0..=500.0)
+            .height_range((150.0 - f32::from(chrome::GAP))..=500.0)
             .resizable(true)
             .frame(frame)
             .show(ctx, |ui| {
@@ -2996,65 +3275,145 @@ impl CedarApp {
     ) {
         let mut activate = None;
         let mut close = None;
+        let mut compare = false;
+        let mut check_save = false;
+        let can_compare = self.backend_supports("read")
+            && !self.disk_review.busy()
+            && !self.interrupted_save_check.busy();
+        let can_check_save = can_compare
+            && !self.documents.iter().any(|doc| doc.saving)
+            && !self
+                .pending
+                .values()
+                .any(|job| matches!(job, Job::Save { .. }));
         ui.horizontal(|ui| {
-            self.history_controls(ui);
-            egui::ScrollArea::horizontal()
-                .id_salt("tabs")
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        for doc in &self.documents {
-                            let active = Some(doc.id) == self.active_document;
-                            egui::Frame::new()
-                                .fill(if active {
-                                    Color32::from_rgb(35, 45, 57)
-                                } else {
-                                    BG
-                                })
-                                .inner_margin(egui::Margin::symmetric(9, 5))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        let name = doc.path.rsplit('/').next().unwrap_or(&doc.path);
-                                        let suffix = if doc.saving {
-                                            "  ~"
-                                        } else if doc.dirty() {
-                                            "  *"
-                                        } else {
-                                            ""
-                                        };
-                                        let tab = ui
-                                            .add(
-                                                egui::Button::new(
-                                                    RichText::new(format!("{name}{suffix}"))
-                                                        .color(if active { GREEN } else { MUTED }),
-                                                )
-                                                .frame(false),
-                                            )
-                                            .on_hover_text(&doc.path);
-                                        #[cfg(test)]
-                                        workspace_access_tests::record(
-                                            ui,
-                                            &format!("editor_tab:{}", doc.id),
-                                            &tab,
-                                        );
-                                        if tab.clicked() {
-                                            activate = Some(doc.id);
-                                        }
-                                        if ui
-                                            .add(
-                                                egui::Button::new(RichText::new("x").color(MUTED))
-                                                    .small()
-                                                    .frame(false),
-                                            )
-                                            .on_hover_text("Close tab · Ctrl/Cmd+W")
-                                            .clicked()
-                                        {
-                                            close = Some(doc.id);
-                                        }
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+            ui.spacing_mut().interact_size.y = chrome::HEADER_HEIGHT;
+            let tabs_width = (ui.available_width() - 30.0).max(0.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(tabs_width, 30.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_min_size(egui::vec2(tabs_width, chrome::HEADER_HEIGHT));
+                    egui::ScrollArea::horizontal()
+                        .id_salt("tabs")
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().interact_size.y = 26.0;
+                                for doc in &self.documents {
+                                    let active = Some(doc.id) == self.active_document;
+                                    ui.push_id(("editor_tab", doc.id), |ui| {
+                                        egui::Frame::new()
+                                            .fill(if active { chrome::SELECTED } else { BG })
+                                            .stroke(Stroke::new(
+                                                1.0_f32,
+                                                if active {
+                                                    Color32::from_rgb(53, 83, 135)
+                                                } else {
+                                                    BG
+                                                },
+                                            ))
+                                            .corner_radius(6)
+                                            .inner_margin(egui::Margin::symmetric(6, 1))
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    let (rect, _) = ui.allocate_exact_size(
+                                                        egui::vec2(16.0, 16.0),
+                                                        egui::Sense::hover(),
+                                                    );
+                                                    chrome::paint_icon(
+                                                        ui,
+                                                        rect,
+                                                        chrome::file_icon(&doc.path, false),
+                                                        MUTED,
+                                                    );
+                                                    let name = doc
+                                                        .path
+                                                        .rsplit('/')
+                                                        .next()
+                                                        .unwrap_or(&doc.path);
+                                                    let suffix = if doc.saving {
+                                                        "  ~"
+                                                    } else if doc.dirty() {
+                                                        "  •"
+                                                    } else {
+                                                        ""
+                                                    };
+                                                    let tab = ui
+                                                        .add(
+                                                            egui::Button::new(
+                                                                RichText::new(format!(
+                                                                    "{name}{suffix}"
+                                                                ))
+                                                                .color(if active {
+                                                                    TEXT
+                                                                } else {
+                                                                    MUTED
+                                                                }),
+                                                            )
+                                                            .frame(false),
+                                                        )
+                                                        .on_hover_text(&doc.path);
+                                                    #[cfg(test)]
+                                                    workspace_access_tests::record(
+                                                        ui,
+                                                        &format!("editor_tab:{}", doc.id),
+                                                        &tab,
+                                                    );
+                                                    if tab.clicked() {
+                                                        activate = Some(doc.id);
+                                                    }
+                                                    let close_tab = ui
+                                                        .add(chrome::IconButton::new(
+                                                            chrome::Icon::Close,
+                                                            "Close tab",
+                                                        ))
+                                                        .on_hover_text("Close tab · Ctrl/Cmd+W");
+                                                    if close_tab.clicked() {
+                                                        close = Some(doc.id);
+                                                    }
+                                                });
+                                            });
                                     });
-                                });
-                        }
-                    });
-                });
+                                }
+                            });
+                        });
+                },
+            );
+            let menu = chrome::menu_button(ui, "", |ui| {
+                if let Some(doc) = self.active() {
+                    if ui.button("Copy draft").clicked() {
+                        ui.ctx().copy_text(doc.text.clone());
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(can_compare, egui::Button::new("Compare with disk"))
+                        .on_hover_text("Read the current file without changing your draft")
+                        .clicked()
+                    {
+                        compare = true;
+                        ui.close_menu();
+                    }
+                }
+            })
+            .response;
+            chrome::paint_icon(
+                ui,
+                egui::Rect::from_center_size(menu.rect.center(), egui::vec2(16.0, 16.0)),
+                chrome::Icon::More,
+                MUTED,
+            );
+            menu.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    ui.is_enabled(),
+                    "Editor actions",
+                )
+            });
+            register_island_menu(ui, menu.id);
+            #[cfg(test)]
+            workspace_access_tests::record(ui, "editor_overflow", &menu);
+            menu.on_hover_text("Editor actions · Copy draft and Compare with disk");
         });
         self.history_message(ui);
         let activate = activate.filter(|_| {
@@ -3069,49 +3428,20 @@ impl CedarApp {
             self.close_tab_requested = Some(id);
         }
         ui.separator();
-        let mut compare = false;
-        let mut check_save = false;
-        let can_compare = self.backend_supports("read")
-            && !self.disk_review.busy()
-            && !self.interrupted_save_check.busy();
-        let can_check_save = can_compare
-            && !self.documents.iter().any(|doc| doc.saving)
-            && !self
-                .pending
-                .values()
-                .any(|job| matches!(job, Job::Save { .. }));
+        // Routine path/dirty state lives in status/tabs. Save risks remain explicit in the editor.
         if let Some(doc) = self.active() {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(&doc.path).size(12.0).color(MUTED));
-                if doc.save_outcome_unknown() {
-                    ui.label(RichText::new("SAVE OUTCOME UNKNOWN").size(10.0).color(AMBER));
-                } else if doc.dirty() {
-                    ui.label(RichText::new("UNSAVED").size(10.0).color(AMBER));
-                }
-                if doc.text.len() > cedar_protocol::MAX_FILE_BYTES {
-                    ui.label(
-                        RichText::new("OVER 1 MiB · copy or shorten to save")
-                            .size(11.0)
-                            .color(RED),
-                    );
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_enabled(can_compare, egui::Button::new("Compare with disk").small())
-                        .on_hover_text("Read the current file without changing your draft")
-                        .clicked()
-                    {
-                        compare = true;
-                    }
+            if doc.save_outcome_unknown() || doc.text.len() > cedar_protocol::MAX_FILE_BYTES {
+                ui.horizontal_wrapped(|ui| {
+                    if doc.save_outcome_unknown() { ui.colored_label(AMBER, "SAVE OUTCOME UNKNOWN"); }
+                    if doc.text.len() > cedar_protocol::MAX_FILE_BYTES { ui.colored_label(RED, "OVER 1 MiB · copy or shorten to save"); }
                     if doc.interrupted_save.is_some() && !doc.save_outcome_unverifiable {
                         check_save = ui.add_enabled(can_check_save, egui::Button::new("Check interrupted save").small())
-                            .on_hover_text("Read disk twice and compare with the submitted contents; never retries the write").clicked();
+                            .on_hover_text("Read disk twice and compare with submitted contents; never retries the write").clicked();
                     }
-                    if ui.small_button("Copy draft").clicked() {
-                        ui.ctx().copy_text(doc.text.clone());
-                    }
+                    if ui.add_enabled(can_compare, egui::Button::new("Compare with disk").small()).clicked() { compare = true; }
+                    if ui.small_button("Copy draft").clicked() { ui.ctx().copy_text(doc.text.clone()); }
                 });
-            });
+            }
         }
         if compare {
             self.compare_with_disk();
@@ -3263,14 +3593,7 @@ impl CedarApp {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.horizontal_top(|ui| {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(line_numbers)
-                                    .font(FontId::monospace(font_size))
-                                    .color(Color32::from_rgb(88, 105, 124)),
-                            )
-                            .selectable(false),
-                        );
+                        syntax::gutter(ui, &line_numbers, font_size);
                         let tab_owned = tab_context_owned
                             && jump_to.is_none()
                             && ui.ctx().memory(|memory| memory.has_focus(editor_id))
@@ -3425,6 +3748,11 @@ impl CedarApp {
 }
 
 impl eframe::App for CedarApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // eframe expects gamma-encoded components, unlike egui::Rgba's linear values.
+        chrome::FRAME.to_normalized_gamma_f32()
+    }
+
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.capture_project_reveal_input(raw_input);
         self.capture_file_structure_input(raw_input);
@@ -3509,12 +3837,13 @@ impl eframe::App for CedarApp {
         self.header(ctx);
         self.footer(ctx);
         self.notifications(ctx);
+        self.tool_rail(ctx);
         self.tools(ctx);
         if self.workspace_key.is_some() {
             self.sidebar(ctx);
         }
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BG).inner_margin(8.0))
+            .frame(chrome::island())
             .show(ctx, |ui| {
                 if self.documents.is_empty() {
                     self.welcome(ui, ctx);
@@ -4084,10 +4413,85 @@ mod tests {
             }
         }
     }
+    fn status_test_app() -> CedarApp {
+        let app = CedarApp::empty();
+        app.editor_ctx.set_fonts(system_fonts::base_fonts());
+        app.editor_ctx.style_mut(|style| {
+            style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+            style.spacing.button_padding = egui::vec2(8.0, 4.0);
+            style
+                .text_styles
+                .insert(egui::TextStyle::Body, FontId::proportional(13.0));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Button, FontId::proportional(13.0));
+            style.interaction.tooltip_delay = 0.0;
+            style.interaction.tooltip_grace_time = 0.0;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
+        app
+    }
+
+    fn status_test_frame(
+        app: &mut CedarApp,
+        size: [f32; 2],
+        time: f64,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let ctx = app.editor_ctx.clone();
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                workspace_access_tests::begin(ctx);
+                app.footer(ctx);
+            },
+        )
+    }
+
+    fn status_test_text(output: &egui::FullOutput, screen: egui::Rect, prefix: &str) -> egui::Rect {
+        let (rect, clip) = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text().starts_with(prefix) => {
+                    Some((text.visual_bounding_rect(), shape.clip_rect))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing status text: {prefix}"));
+        assert!(
+            screen.contains_rect(rect),
+            "{prefix} outside screen: {rect:?}"
+        );
+        assert!(
+            clip.contains_rect(rect),
+            "{prefix} clipped: {rect:?} / {clip:?}"
+        );
+        rect
+    }
+
+    fn status_test_response(app: &CedarApp, screen: egui::Rect, name: &str) -> egui::Response {
+        let response = workspace_access_tests::recorded_response(app, name);
+        assert!(
+            response.rect.is_positive() && screen.contains_rect(response.rect),
+            "{name} outside screen: {:?}",
+            response.rect
+        );
+        assert!(
+            workspace_access_tests::recorded_clip(app, name).contains_rect(response.rect),
+            "{name} hit target clipped"
+        );
+        response
+    }
+
     #[test]
     fn maximum_agent_metadata_preserves_recovery_visibility_at_minimum_window_size() {
-        let ctx = egui::Context::default();
-        let mut app = CedarApp::empty();
+        let mut app = status_test_app();
         let mut info = agent_support::full_test_agent();
         info.version = "v".repeat(cedar_protocol::MAX_AGENT_VERSION_BYTES);
         info.os = "o".repeat(cedar_protocol::MAX_AGENT_PLATFORM_BYTES);
@@ -4095,39 +4499,355 @@ mod tests {
         info.validate().unwrap();
         app.agent_info = Some(info);
         app.state = ConnectionState::Ready;
+        app.root = "status-metadata-fixture".into();
         app.active_form = Some(ConnectForm::default());
         app.recovery.enabled = true;
         app.recovery.error = Some("Backup needs review".into());
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(780.0, 540.0));
-        let output = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(screen),
-                ..Default::default()
-            },
-            |ctx| app.footer(ctx),
+        let size = [780.0, 540.0];
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+        for time in [0.0, 0.1, 0.2] {
+            status_test_frame(&mut app, size, time, vec![]);
+        }
+        let output = status_test_frame(&mut app, size, 0.3, vec![]);
+        status_test_text(&output, screen, "Recovery needs attention");
+        let recovery = status_test_response(&app, screen, "recovery_status");
+        assert!(recovery.enabled() && recovery.sense.senses_click());
+        assert!(app.agent_status().len() > 128);
+        assert!(app.agent_details().contains("not verified identity"));
+        // Routine agent metadata belongs to the real path tooltip. Observe its
+        // painted contents after a native hover, not private tooltip storage.
+        let hover_at = status_test_text(&output, screen, &app.root).center();
+        status_test_frame(
+            &mut app,
+            size,
+            1.0,
+            vec![egui::Event::PointerMoved(hover_at)],
         );
-        let text = |prefix: &str| {
-            output
+        status_test_frame(&mut app, size, 2.0, vec![]);
+        let tooltip = status_test_frame(&mut app, size, 3.0, vec![]);
+        let metadata = tooltip.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::epaint::Shape::Text(text)
+                if text.galley.text().contains(&app.agent_status())
+                    && text.galley.text().contains(&app.agent_details()) => Some((text, shape.clip_rect)),
+            _ => None,
+        }).expect("actual hovered path tooltip must retain full reported metadata and identity caveat");
+        assert!(screen.contains_rect(metadata.0.visual_bounding_rect()));
+        assert!(metadata.1.contains_rect(metadata.0.visual_bounding_rect()));
+        // The warning remains a real reachable Recovery action.
+        for (time, pressed) in [(4.0, true), (4.1, false)] {
+            status_test_frame(
+                &mut app,
+                size,
+                time,
+                vec![
+                    egui::Event::PointerMoved(recovery.rect.center()),
+                    egui::Event::PointerButton {
+                        pos: recovery.rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(app.recovery.visible);
+        assert_eq!(app.recovery.error.as_deref(), Some("Backup needs review"));
+    }
+
+    #[test]
+    fn ordinary_idle_and_healthy_status_fit_one_standard_height_line() {
+        let size = [780.0, 540.0];
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+        for ready in [false, true] {
+            let mut app = status_test_app();
+            if ready {
+                app.state = ConnectionState::Ready;
+                app.root = "/workspace".into();
+                app.recovery.enabled = true;
+                app.recovery.initialized = true;
+                let mut doc = Document::new(
+                    1,
+                    "src/Main.java".into(),
+                    "class Main {}".into(),
+                    "r1".into(),
+                );
+                doc.cursor = (200, 42);
+                app.documents.push(doc);
+                app.active_document = Some(1);
+            }
+            for time in [0.0, 0.1, 0.2] {
+                status_test_frame(&mut app, size, time, vec![]);
+            }
+            let output = status_test_frame(&mut app, size, 0.3, vec![]);
+            let panel =
+                egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("status"))
+                    .unwrap()
+                    .rect;
+            assert!(
+                panel.height() >= 24.0 && panel.height() <= 28.0,
+                "ordinary status used extra rows: ready={ready}, panel={panel:?}"
+            );
+            for name in ["connection_status", "recovery_status"] {
+                assert!(panel.contains_rect(status_test_response(&app, screen, name).rect));
+            }
+            let path = if ready { "src/Main.java" } else { "Cedar" };
+            let glyphs = status_test_text(&output, screen, path);
+            let hit = status_test_response(&app, screen, "status_path").rect;
+            assert!((hit.left() - (panel.left() + 10.0)).abs() <= 0.125);
+            assert!((glyphs.left() - hit.left()).abs() <= 1.0,
+                "path glyphs must paint at the left status margin, not the lane center: {glyphs:?} / {hit:?}");
+            if ready {
+                for label in ["src/Main.java", "Ln 200, Col 42", "UTF-8"] {
+                    status_test_text(&output, screen, label);
+                }
+            } else {
+                status_test_text(&output, screen, "Not connected");
+                status_test_text(&output, screen, "Recovery off");
+            }
+        }
+    }
+
+    #[test]
+    fn status_pending_and_long_notices_cannot_displace_connected_content() {
+        let size = [780.0, 540.0];
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+        let mut app = status_test_app();
+        app.state = ConnectionState::Ready;
+        app.recovery.enabled = true;
+        app.recovery.initialized = true;
+        app.documents.push(Document::new(
+            1,
+            "src/Main.java".into(),
+            "draft".into(),
+            "r1".into(),
+        ));
+        app.active_document = Some(1);
+        let frame = |app: &mut CedarApp, time: f64| {
+            let ctx = app.editor_ctx.clone();
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| {
+                    workspace_access_tests::begin(ctx);
+                    app.footer(ctx);
+                    egui::CentralPanel::default().show(ctx, |ui| app.editor(ui));
+                },
+            )
+        };
+        let panel = |app: &CedarApp| {
+            egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("status"))
+                .unwrap()
+                .rect
+        };
+        for time in [0.0, 0.1, 0.2] {
+            frame(&mut app, time);
+        }
+        let idle = panel(&app);
+        app.pending.insert(
+            1,
+            Job::List {
+                path: String::new(),
+            },
+        );
+        let output = frame(&mut app, 0.3);
+        assert_eq!(
+            panel(&app),
+            idle,
+            "ordinary Read/List progress must not move the tools or editor vertically"
+        );
+        status_test_text(&output, screen, "1 pending");
+        for (time, scope) in [(0.4, "a".repeat(4000)), (0.5, "路径/".repeat(400))] {
+            app.notice = format!("1 matches for directory {scope}");
+            let output = frame(&mut app, time);
+            assert!(
+                panel(&app).height() <= 48.0,
+                "long notice consumed editor space: {:?}",
+                panel(&app)
+            );
+            let notice = output
                 .shapes
                 .iter()
                 .find_map(|shape| match &shape.shape {
-                    egui::epaint::Shape::Text(text) if text.galley.text().starts_with(prefix) => {
-                        Some((text.visual_bounding_rect(), shape.clip_rect))
+                    egui::epaint::Shape::Text(text) if text.galley.text() == app.notice => {
+                        Some(text)
                     }
                     _ => None,
                 })
-                .unwrap_or_else(|| panic!("Missing status text: {prefix}"))
-        };
-        let (recovery, recovery_clip) = text("Recovery needs attention");
-        let (reported, agent_clip) = text("Reported agent");
-        assert!(screen.contains_rect(recovery));
-        assert!(recovery_clip.contains_rect(recovery));
-        assert!(screen.contains_rect(reported));
-        assert!(agent_clip.contains_rect(reported));
-        assert!(reported.width() <= 242.0);
-        assert!(recovery.right() < reported.left());
-        assert!(app.agent_status().len() > 128);
-        assert!(app.agent_details().contains("not verified identity"));
+                .expect("full notice must remain in the elided galley for its hover disclosure");
+            assert_eq!(notice.galley.rows.len(), 1);
+            status_test_text(&output, screen, "1 matches for directory");
+            status_test_text(&output, screen, "UTF-8");
+            status_test_response(&app, screen, "recovery_status");
+            // The scrollable TextEdit canvas can exceed its clip; require its
+            // real visible viewport and the actual document glyphs, not the
+            // entire canvas, to remain available above the status panel.
+            let editor = workspace_access_tests::recorded_response(&app, "editor");
+            let visible_editor = editor
+                .rect
+                .intersect(workspace_access_tests::recorded_clip(&app, "editor"))
+                .intersect(screen);
+            assert!(
+                visible_editor.is_positive()
+                    && visible_editor.height() > 100.0
+                    && visible_editor.bottom() <= panel(&app).top()
+            );
+            status_test_text(&output, screen, "draft");
+        }
+        app.notice.clear();
+        app.pending.clear();
+        frame(&mut app, 0.6);
+        assert_eq!(panel(&app), idle);
+        assert_eq!(app.documents[0].text, "draft");
+    }
+
+    #[test]
+    fn status_first_risk_frame_is_visible_with_pending_and_notice_at_both_fonts() {
+        let size = [780.0, 540.0];
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+        for font in [13.0, 18.0] {
+            for notice_before in [false, true] {
+                let mut app = status_test_app();
+                app.editor_ctx.style_mut(|style| {
+                    style
+                        .text_styles
+                        .insert(egui::TextStyle::Body, FontId::proportional(font));
+                    style
+                        .text_styles
+                        .insert(egui::TextStyle::Button, FontId::proportional(font));
+                });
+                app.state = ConnectionState::Ready;
+                app.agent_info = Some(agent_support::full_test_agent());
+                app.recovery.enabled = true;
+                app.recovery.initialized = true;
+                app.documents.push(Document::new(
+                    1,
+                    "Main.java".into(),
+                    "draft".into(),
+                    "r1".into(),
+                ));
+                app.active_document = Some(1);
+                if notice_before {
+                    app.notice = "Read completed".into();
+                }
+                for time in [0.0, 0.1, 0.2] {
+                    status_test_frame(&mut app, size, time, vec![]);
+                }
+                let before = egui::containers::panel::PanelState::load(
+                    &app.editor_ctx,
+                    egui::Id::new("status"),
+                )
+                .unwrap()
+                .rect;
+                app.unverified_local_close = true;
+                app.agent_info
+                    .as_mut()
+                    .unwrap()
+                    .capabilities
+                    .retain(|name| name != "write");
+                app.pending.insert(
+                    1,
+                    Job::List {
+                        path: String::new(),
+                    },
+                );
+                app.notice = "Read completed".into();
+                let output = status_test_frame(&mut app, size, 0.3, vec![]);
+                for label in [
+                    "Prior cleanup unverified",
+                    "Saves unavailable",
+                    "Read completed",
+                    "1 pending",
+                    "UTF-8",
+                ] {
+                    status_test_text(&output, screen, label);
+                }
+                status_test_response(&app, screen, "recovery_status");
+                status_test_response(&app, screen, "connection_status");
+                app.unverified_local_close = false;
+                app.agent_info = Some(agent_support::full_test_agent());
+                app.pending.clear();
+                if !notice_before {
+                    app.notice.clear();
+                }
+                let output = status_test_frame(&mut app, size, 0.4, vec![]);
+                assert_eq!(
+                    egui::containers::panel::PanelState::load(
+                        &app.editor_ctx,
+                        egui::Id::new("status")
+                    )
+                    .unwrap()
+                    .rect,
+                    before
+                );
+                status_test_text(&output, screen, "UTF-8");
+                assert_eq!(app.documents[0].text, "draft");
+            }
+        }
+    }
+
+    #[test]
+    fn status_keeps_connection_recovery_and_cleanup_risks_visible_with_long_paths() {
+        let size = [780.0, 540.0];
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+        for (state, label) in [
+            (ConnectionState::Idle, "Not connected"),
+            (ConnectionState::Connecting, "Connecting"),
+            (ConnectionState::Disconnected, "Disconnected"),
+            (ConnectionState::Disconnecting, "Disconnecting"),
+            (ConnectionState::CleanupUnverified, "Cleanup unverified"),
+        ] {
+            let mut app = status_test_app();
+            app.state = state;
+            app.root = format!("/workspace/{}", "long-directory/".repeat(64));
+            app.unverified_local_close = true;
+            app.recovery.enabled = true;
+            app.recovery.error = Some("Retained backup failure".into());
+            let mut doc = Document::new(
+                1,
+                format!("{}Main.java", "long-directory/".repeat(64)),
+                "saved".into(),
+                "r1".into(),
+            );
+            doc.text = "dirty draft".into();
+            doc.cursor = (200, 42);
+            app.documents.push(doc);
+            app.active_document = Some(1);
+            let before = (
+                app.documents[0].text.clone(),
+                app.documents[0].saved_text.clone(),
+                app.documents[0].edit_version,
+            );
+            for time in [0.0, 0.1, 0.2] {
+                status_test_frame(&mut app, size, time, vec![]);
+            }
+            let output = status_test_frame(&mut app, size, 0.3, vec![]);
+            for text in [
+                label,
+                "Recovery needs attention",
+                "Prior cleanup unverified",
+                "Ln 200, Col 42",
+                "UTF-8",
+            ] {
+                status_test_text(&output, screen, text);
+            }
+            for name in ["connection_status", "recovery_status"] {
+                status_test_response(&app, screen, name);
+            }
+            assert_eq!(
+                (
+                    app.documents[0].text.clone(),
+                    app.documents[0].saved_text.clone(),
+                    app.documents[0].edit_version
+                ),
+                before
+            );
+            assert_eq!(app.active_document, Some(1));
+            assert!(app.documents[0].dirty());
+            assert!(app.pending.is_empty());
+        }
     }
     #[test]
     fn slow_file_open_does_not_steal_focus_from_newer_navigation() {

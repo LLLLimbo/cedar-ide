@@ -55,11 +55,17 @@ fn focus(app: &CedarApp) -> Option<egui::Id> {
     app.editor_ctx.memory(|memory| memory.focused())
 }
 fn click(app: &mut CedarApp, probe: &str) {
-    let pos = recorded_rect(app, probe)
-        .intersect(recorded_clip(app, probe))
-        .center();
-    assert!(recorded_clip(app, probe).contains(pos));
+    let rect = recorded_rect(app, probe);
+    let clip = recorded_clip(app, probe);
+    let pos = rect.intersect(clip).center();
+    assert!(clip.contains(pos), "{probe}: {rect:?} outside {clip:?}");
     frame(app, now(app) + 0.01, vec![egui::Event::PointerMoved(pos)]);
+    assert_eq!(
+        recorded_rect(app, probe),
+        rect,
+        "{probe}: moved after arrival"
+    );
+    assert!(recorded_clip(app, probe).contains(pos));
     for pressed in [true, false] {
         frame(
             app,
@@ -71,12 +77,73 @@ fn click(app: &mut CedarApp, probe: &str) {
                 modifiers: egui::Modifiers::NONE,
             }],
         );
+        if pressed {
+            assert!(
+                recorded_response(app, probe).is_pointer_button_down_on(),
+                "{probe}: native press missed {pos:?}; current rect={:?}, clip={:?}",
+                recorded_rect(app, probe),
+                recorded_clip(app, probe)
+            );
+        }
     }
     assert!(
         recorded_response(app, probe).clicked_by(egui::PointerButton::Primary),
         "{probe}"
     );
 }
+fn expose_cross_row_targets(app: &mut CedarApp, bottom: bool) {
+    if !bottom {
+        return;
+    }
+    let probes = [row_probe(bottom, 1), row_probe(bottom, 2)];
+    let geometry = |app: &CedarApp| {
+        probes
+            .each_ref()
+            .map(|probe| (recorded_rect(app, probe), recorded_clip(app, probe)))
+    };
+    let before = geometry(app);
+    if before.iter().all(|(rect, clip)| clip.contains_rect(*rect)) {
+        return;
+    }
+    // The automatic results viewport requests five controls; this fixture has
+    // three groups and three rows. Scroll the real viewport before either
+    // measured click, keeping selection and focus on the armed origin row.
+    let pos = before[0].0.intersect(before[0].1).center();
+    assert!(before[0].0.contains(pos) && before[0].1.contains(pos));
+    let selected_before = selected(app, bottom);
+    let focused = focus(app);
+    frame(
+        app,
+        now(app) + 0.01,
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -72.0),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    let mut previous = geometry(app);
+    for _ in 0..32 {
+        idle(app, 0.01);
+        let current = geometry(app);
+        assert_eq!(selected(app, bottom), selected_before);
+        assert_eq!(focus(app), focused);
+        assert!(app.project_text_review_armed());
+        if current == previous
+            && current.iter().all(|(rect, clip)| clip.contains_rect(*rect))
+            && app
+                .editor_ctx
+                .input(|input| input.smooth_scroll_delta == egui::Vec2::ZERO)
+        {
+            return;
+        }
+        previous = current;
+    }
+    panic!("native wheel did not expose stable cross-row targets: {previous:?}");
+}
+
 fn reply(app: &mut CedarApp, command: &Command, text: &str) {
     let Operation::Read { path } = &command.op else {
         panic!("not Read")
@@ -119,6 +186,22 @@ fn fixture_with_targets(
     targets: [(&str, usize); 3],
 ) -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
+    // Match the production startup fonts and metrics before the first native frame.
+    // Optional CJK fallback must not replace a default-font Latin layout mid-gesture.
+    app.editor_ctx.set_fonts(system_fonts::base_fonts());
+    app.editor_ctx.style_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, FontId::monospace(14.0));
+    });
     let form = ConnectForm {
         local_root: "/workspace".into(),
         allow_run: false,
@@ -1012,8 +1095,16 @@ fn continuous_preview_same_row_double_click_survives_settlement_but_cross_row_do
 
         let (mut app, commands) = fixture(bottom);
         arm(&mut app, &commands, bottom);
+        // egui's triple window is twice its 0.3-second double window.
+        // Retire setup's origin click before the measured cross-row pair.
+        idle(&mut app, 1.0);
+        expose_cross_row_targets(&mut app, bottom);
+        assert!(commands.try_recv().is_err());
         click(&mut app, &row_probe(bottom, 1));
         click(&mut app, &row_probe(bottom, 2));
+        let cross_row = recorded_response(&app, &row_probe(bottom, 2));
+        assert!(cross_row.double_clicked_by(egui::PointerButton::Primary));
+        assert!(!cross_row.triple_clicked_by(egui::PointerButton::Primary));
         assert!(
             commands.try_recv().is_err(),
             "global cross-row double timing cannot Open"

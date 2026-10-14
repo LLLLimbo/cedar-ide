@@ -29,6 +29,7 @@ jobs:
         run: python scripts/windows_fixture_compiler.py
       - run: cargo fmt --all -- --check
       - run: python scripts/test_public_export.py
+      - run: python -B scripts/test_collect_licenses.py
       - run: python scripts/test_capability_smoke.py
       - run: python scripts/test_column_navigation_acceptance.py
       - run: python -B scripts/test_file_structure_acceptance.py

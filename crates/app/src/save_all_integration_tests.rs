@@ -7,7 +7,8 @@ use sha2::{Digest, Sha256};
 
 const ROOT: &str = "/project";
 const BASE: &str = "saved text\n";
-const MENU_TRIGGER: &str = "Workspace";
+const MENU_TRIGGER: &str = "workspace_menu";
+const WORKSPACE_CAPTION: &str = "project";
 const MENU_SAVE_ALL: &str = "Save all editor buffers · Ctrl/Cmd+Shift+S";
 const MENU_CANCEL: &str = "Cancel remaining saves";
 
@@ -30,16 +31,17 @@ fn app() -> (CedarApp, Receiver<Command>) {
     app.generation = 7;
     app.open_form = false;
     app.explorer.mode = explorer_tree::Mode::Tree;
-    // Exercise the shipped desktop spacing, not egui's narrower defaults.
+    // Exercise the shipped desktop fonts and spacing, not egui's defaults.
+    app.editor_ctx.set_fonts(system_fonts::base_fonts());
     app.editor_ctx.style_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(9.0, 8.0);
-        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style
             .text_styles
-            .insert(egui::TextStyle::Body, FontId::proportional(14.0));
+            .insert(egui::TextStyle::Body, FontId::proportional(13.0));
         style
             .text_styles
-            .insert(egui::TextStyle::Button, FontId::proportional(14.0));
+            .insert(egui::TextStyle::Button, FontId::proportional(13.0));
         style
             .text_styles
             .insert(egui::TextStyle::Monospace, FontId::monospace(14.0));
@@ -176,6 +178,21 @@ fn has_label(output: &egui::FullOutput, label: &str) -> bool {
         .any(|(text, _)| text.galley.job.text == label)
 }
 
+fn control_rect(app: &CedarApp, name: &str) -> egui::Rect {
+    let rect = workspace_access_tests::recorded_rect(app, name);
+    let clip = workspace_access_tests::recorded_clip(app, name);
+    assert!(rect.is_positive(), "{name} has no rendered hit target");
+    assert!(
+        app.editor_ctx.screen_rect().contains_rect(rect),
+        "{name} outside minimum window: {rect:?}"
+    );
+    assert!(
+        clip.contains_rect(rect),
+        "{name} clipped at minimum width: {rect:?} by {clip:?}"
+    );
+    rect
+}
+
 fn pointer(at: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
     vec![
         egui::Event::PointerMoved(at),
@@ -194,8 +211,8 @@ fn click(app: &mut CedarApp, time: f64, at: egui::Pos2) -> egui::FullOutput {
 }
 
 fn open_save_menu(app: &mut CedarApp, time: f64) -> egui::FullOutput {
-    let output = frame(app, time, vec![]);
-    let at = label_rect(&output, MENU_TRIGGER).center();
+    frame(app, time, vec![]);
+    let at = control_rect(app, MENU_TRIGGER).center();
     click(app, time + 0.01, at);
     frame(app, time + 0.03, vec![])
 }
@@ -265,7 +282,8 @@ fn menu_cancel_on_acknowledgement_frame_stops_before_next_write_even_with_follow
         let (mut app, commands) = app();
         let first = start(&mut app, &commands);
         let output = open_save_menu(&mut app, 1.0);
-        let at = label_rect(&output, MENU_CANCEL).center();
+        assert!(has_label(&output, MENU_CANCEL));
+        let at = control_rect(&app, "workspace_cancel_saves").center();
         enqueue_ack(&app, &first, true);
         if eof {
             app.result_tx
@@ -725,8 +743,9 @@ fn save_controls_and_menu_are_visible_and_clickable_at_supported_minimum_width()
     frame(&mut app, 0.0, vec![]);
     let output = frame(&mut app, 0.1, vec![]);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(780.0, 540.0));
-    let trigger = label_rect(&output, MENU_TRIGGER);
+    let trigger = control_rect(&app, MENU_TRIGGER);
     assert!(screen.contains_rect(trigger));
+    assert!(trigger.contains_rect(label_rect(&output, WORKSPACE_CAPTION)));
     let menu = open_save_menu(&mut app, 1.0);
     for label in [
         "Save file · Ctrl/Cmd+S",
@@ -752,7 +771,7 @@ fn save_controls_and_menu_are_visible_and_clickable_at_supported_minimum_width()
             "{label} clipped at minimum width: {rect:?}"
         );
     }
-    let at = label_rect(&menu, MENU_SAVE_ALL).center();
+    let at = control_rect(&app, "workspace_save_all").center();
     assert!(screen.contains(at));
     click(&mut app, 1.1, at);
     assert!(app.save_all_busy());
@@ -764,7 +783,8 @@ fn workspace_trigger_shows_identity_only_on_pointer_hover() {
     let (mut app, commands) = app();
     frame(&mut app, 0.0, vec![]);
     let output = frame(&mut app, 0.01, vec![]);
-    let at = label_rect(&output, MENU_TRIGGER).center();
+    let at = control_rect(&app, MENU_TRIGGER).center();
+    assert!(has_label(&output, WORKSPACE_CAPTION));
     assert!(!has_label(&output, ROOT));
     let delay = f64::from(app.editor_ctx.style().interaction.tooltip_delay);
     frame(&mut app, 0.1, vec![egui::Event::PointerMoved(at)]);
@@ -783,8 +803,9 @@ fn workspace_trigger_shows_identity_only_on_pointer_hover() {
 fn save_menu_keeps_pointer_identity_across_frames_and_repeated_open_dismiss() {
     let (mut app, commands) = app();
     frame(&mut app, 0.0, vec![]);
-    let output = frame(&mut app, 0.01, vec![]);
-    let at = label_rect(&output, MENU_TRIGGER).center();
+    frame(&mut app, 0.01, vec![]);
+    let at = control_rect(&app, MENU_TRIGGER).center();
+    let rendered_id = workspace_access_tests::recorded_response(&app, MENU_TRIGGER).id;
     frame(&mut app, 1.0, pointer(at, true));
     frame(&mut app, 1.1, vec![]);
     frame(&mut app, 1.2, pointer(at, false));
@@ -792,6 +813,7 @@ fn save_menu_keeps_pointer_identity_across_frames_and_repeated_open_dismiss() {
         .editor_ctx
         .interaction_snapshot(|interaction| interaction.clicked)
         .expect("the menu trigger retains the pointer press until release");
+    assert_eq!(trigger_id, rendered_id);
     let opened = frame(&mut app, 1.3, vec![]);
     assert!(has_label(&opened, MENU_SAVE_ALL));
     assert!(has_label(&opened, MENU_CANCEL));

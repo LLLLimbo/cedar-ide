@@ -798,6 +798,40 @@ impl CedarApp {
         };
     }
 
+    pub(super) fn show_project(&mut self, ctx: &egui::Context, response: &egui::Response) {
+        let Some(pointer) = clean_activation(self, ctx, response, false) else {
+            return;
+        };
+        if self.workspace_access_blocked(ctx) {
+            return;
+        }
+        claim_activation(ctx);
+        self.request_workspace_access(ctx, Target::Explorer);
+        self.workspace_access
+            .intent
+            .as_mut()
+            .unwrap()
+            .pointer_surrender = pointer;
+    }
+
+    pub(super) fn show_git_tool(&mut self, ctx: &egui::Context, response: &egui::Response) {
+        let Some(pointer) = clean_activation(self, ctx, response, false) else {
+            return;
+        };
+        if self.workspace_access_blocked(ctx) {
+            return;
+        }
+        claim_activation(ctx);
+        self.tool = Tool::Git;
+        self.tools_open = true;
+        self.request_workspace_access(ctx, Target::Tool(Tool::Git));
+        self.workspace_access
+            .intent
+            .as_mut()
+            .unwrap()
+            .pointer_surrender = pointer;
+    }
+
     pub(super) fn show_find_results(&mut self, ctx: &egui::Context, response: &egui::Response) {
         let Some(pointer) = clean_activation(self, ctx, response, false) else {
             return;

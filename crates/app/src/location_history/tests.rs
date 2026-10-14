@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 fn app() -> CedarApp {
     let mut app = CedarApp::empty();
+    app.editor_ctx.set_fonts(crate::system_fonts::base_fonts());
     app.open_form = false;
     app.state = ConnectionState::Ready;
     app.agent_info = Some(crate::agent_support::full_test_agent());
@@ -182,14 +183,15 @@ fn history_frame(app: &mut CedarApp, direction: Direction, button: bool) {
         frame(app, key(shortcut_key, egui::Modifiers::COMMAND));
         return;
     }
-    let output = frame(app, vec![]);
-    let at = label(
-        &output,
+    frame(app, vec![]);
+    let at = crate::workspace_access_tests::recorded_rect(
+        app,
         match direction {
             Direction::Back => "Back",
             Direction::Forward => "Forward",
         },
-    );
+    )
+    .center();
     frame(
         app,
         vec![
@@ -678,8 +680,8 @@ fn shortcuts_buttons_and_one_shot_focus_use_production_frames() {
         key(egui::Key::CloseBracket, egui::Modifiers::COMMAND),
     );
     assert_eq!(app.active_document, Some(2));
-    let output = frame(&mut app, vec![]);
-    let at = label(&output, "Back");
+    frame(&mut app, vec![]);
+    let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
     frame(
         &mut app,
         vec![
@@ -818,12 +820,13 @@ fn unrelated_pending_jump_cannot_complete_a_read_or_language_ticket() {
 #[test]
 fn active_tab_click_cancels_pending_read_without_admitting_or_focusing_its_reply() {
     let mut app = app();
-    let output = frame(&mut app, vec![]);
+    frame(&mut app, vec![]);
     let (worker, commands) = Worker::recording();
     app.worker = Some(worker);
     app.open("later.txt".into(), None);
     let command = commands.try_recv().unwrap();
-    let at = label(&output, "1.txt");
+    let tab = crate::workspace_access_tests::recorded_response(&app, "editor_tab:1").id;
+    let at = crate::workspace_access_tests::recorded_rect(&app, "editor_tab:1").center();
     frame(
         &mut app,
         vec![
@@ -841,6 +844,11 @@ fn active_tab_click_cancels_pending_read_without_admitting_or_focusing_its_reply
                 modifiers: egui::Modifiers::NONE,
             },
         ],
+    );
+    assert_eq!(
+        app.editor_ctx
+            .interaction_snapshot(|snapshot| snapshot.clicked),
+        Some(tab)
     );
     assert!(app.location_history.pending.is_none());
     app.apply_event(Event {
@@ -888,8 +896,8 @@ fn held_history_press_cannot_act_on_new_navigation_generation_or_edited_target()
         let mut app = app();
         app.activate_history_tab(2);
         app.activate_history_tab(3);
-        let output = frame(&mut app, vec![]);
-        let at = label(&output, "Back");
+        frame(&mut app, vec![]);
+        let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
         frame(
             &mut app,
             vec![
@@ -1114,8 +1122,8 @@ fn saturated_versions_and_same_sum_document_replacement_cancel_held_buttons() {
             unrelated.edit_version = 1;
             app.documents.push(unrelated);
         }
-        let output = frame(&mut app, vec![]);
-        let at = label(&output, "Back");
+        frame(&mut app, vec![]);
+        let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
         frame(
             &mut app,
             vec![
@@ -1201,6 +1209,7 @@ fn typing_query_cursor_undo_and_save_ack_only_explicit_find_movement_admits_navi
 #[test]
 fn selected_search_result_admits_after_its_line_selection() {
     let mut app = app();
+    settle_system_fonts(&mut app);
     app.tools_open = true;
     app.tool = crate::Tool::Search;
     // Admit a real submitted search batch before exercising its native row.
@@ -1228,9 +1237,12 @@ fn selected_search_result_admits_after_its_line_selection() {
             truncated: false,
         }),
     });
-    // The first update admits the staged batch; subsequent frames present its
-    // native grouped row before any pointer event is captured.
-    for index in 0..3 {
+    // Admit the staged batch, then observe the automatic panel until the real
+    // row allocation and clip agree across consecutive frames. A fixed three
+    // frames can still be in the middle of content-sized panel settlement.
+    let mut previous_geometry = None;
+    let mut stable_frames = 0;
+    for index in 0..16 {
         frame(&mut app, vec![]);
         let panel =
             egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("tools"))
@@ -1262,7 +1274,21 @@ fn selected_search_result_admits_after_its_line_selection() {
             crate::workspace_access_tests::recorded_rect(&app, "search_scope"),
             crate::workspace_access_tests::recorded_rect(&app, "search_masks"),
         );
+        let geometry = (panel, row_geometry);
+        if row_geometry.is_some() && previous_geometry == Some(geometry) {
+            stable_frames += 1;
+        } else {
+            stable_frames = 0;
+        }
+        previous_geometry = Some(geometry);
+        if stable_frames == 2 {
+            break;
+        }
     }
+    assert_eq!(
+        stable_frames, 2,
+        "the native automatic results panel did not settle before pointer input"
+    );
     let response = crate::workspace_access_tests::recorded_response(&app, "search_row:0");
     // After end_pass, egui read_response can prefer the preceding pass's rect.
     // Pair the current recorded allocation with its current recorded clip.
@@ -1283,6 +1309,16 @@ fn selected_search_result_admits_after_its_line_selection() {
     let departure = selection(&app, 1);
     let target_selection = selection(&app, 2);
     frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+    assert_eq!(
+        crate::workspace_access_tests::recorded_rect(&app, "search_row:0"),
+        rect,
+        "the hover frame moved the settled pointer target"
+    );
+    assert_eq!(
+        crate::workspace_access_tests::recorded_clip(&app, "search_row:0"),
+        clip,
+        "the hover frame changed the settled pointer clip"
+    );
     frame(
         &mut app,
         vec![
@@ -1420,38 +1456,66 @@ fn compact_editor_history_controls_tabs_copy_compare_and_find_remain_visible() {
         app.activate_history_tab(2);
         let ctx = app.editor_ctx.clone();
         let mut native = eframe::Frame::_new_kittest();
-        let mut render = |app: &mut CedarApp| {
-            ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                    ..Default::default()
-                },
-                |ctx| eframe::App::update(app, ctx, &mut native),
-            )
+        let mut render = |app: &mut CedarApp, events| {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            };
+            eframe::App::raw_input_hook(app, &ctx, &mut input);
+            ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native))
         };
-        render(&mut app);
-        let output = render(&mut app);
+        render(&mut app, vec![]);
+        render(&mut app, vec![]);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
         for name in [
             "Back",
             "Forward",
-            "1.txt",
-            "2.txt",
-            "3.txt",
-            "Copy draft",
-            "Compare with disk",
+            "editor_tab:1",
+            "editor_tab:2",
+            "editor_tab:3",
+            "editor_overflow",
         ] {
+            let rect = crate::workspace_access_tests::recorded_rect(&app, name);
+            assert!(screen.contains_rect(rect), "{name} outside {size:?}");
             assert!(
-                screen.contains(label(&output, name)),
-                "{name} outside {size:?}"
+                crate::workspace_access_tests::recorded_clip(&app, name).contains_rect(rect),
+                "{name} clipped at {size:?}"
             );
         }
         let back = crate::workspace_access_tests::recorded_response(&app, "Back");
         let forward = crate::workspace_access_tests::recorded_response(&app, "Forward");
         assert!(back.rect.right() < forward.rect.left());
         assert!(screen.contains_rect(back.rect) && screen.contains_rect(forward.rect));
+        let at = crate::workspace_access_tests::recorded_rect(&app, "editor_overflow").center();
+        render(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let output = render(&mut app, vec![]);
+        for name in ["Copy draft", "Compare with disk"] {
+            assert!(
+                screen.contains(label(&output, name)),
+                "{name} outside {size:?}"
+            );
+        }
+        render(&mut app, key(egui::Key::Escape, egui::Modifiers::NONE));
         app.find_open = true;
-        let output = render(&mut app);
+        let output = render(&mut app, vec![]);
         assert!(screen.contains(label(&output, "FIND")));
         let editor = crate::workspace_access_tests::recorded_response(&app, "editor");
         assert!(editor.rect.min.y < screen.max.y - 29.0);
@@ -1502,7 +1566,7 @@ fn queue_file(app: &CedarApp, request: u64, path: &str) {
 fn ready_read_yields_to_same_frame_tab_chooser_text_and_modal_without_unseen_history() {
     for intent in 0..4 {
         let mut app = app();
-        let output = frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
         let original = selection(&app, 1);
         app.editor_ctx
             .memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", 1u64))));
@@ -1513,7 +1577,8 @@ fn ready_read_yields_to_same_frame_tab_chooser_text_and_modal_without_unseen_his
         queue_file(&app, read.id, "late.txt");
         let events = match intent {
             0 => {
-                let at = label(&output, "3.txt");
+                let at =
+                    crate::workspace_access_tests::recorded_rect(&app, "editor_tab:3").center();
                 vec![
                     egui::Event::PointerMoved(at),
                     egui::Event::PointerButton {
@@ -1654,8 +1719,8 @@ fn ready_read_on_a_captured_tab_release_uses_visible_departure_and_orphan_releas
 {
     for captured in [false, true] {
         let mut app = app();
-        let output = frame(&mut app, vec![]);
-        let at = label(&output, "3.txt");
+        frame(&mut app, vec![]);
+        let at = crate::workspace_access_tests::recorded_rect(&app, "editor_tab:3").center();
         let original = selection(&app, 1);
         let (worker, commands) = Worker::recording();
         app.worker = Some(worker);
@@ -1702,8 +1767,8 @@ fn ready_read_on_a_captured_tab_release_uses_visible_departure_and_orphan_releas
 fn ready_read_disabled_control_release_and_empty_ime_do_not_cancel() {
     for disabled in [false, true] {
         let mut app = app();
-        let output = frame(&mut app, vec![]);
-        let at = label(&output, "Back");
+        frame(&mut app, vec![]);
+        let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
         let (worker, commands) = Worker::recording();
         app.worker = Some(worker);
         app.open("late.txt".into(), None);
@@ -1747,8 +1812,8 @@ fn ready_read_disabled_control_release_and_empty_ime_do_not_cancel() {
 #[test]
 fn captured_tab_release_survives_panel_motion_and_supersedes_ready_read() {
     let mut app = app();
-    let output = frame(&mut app, vec![]);
-    let at = label(&output, "3.txt");
+    frame(&mut app, vec![]);
+    let at = crate::workspace_access_tests::recorded_rect(&app, "editor_tab:3").center();
     let (worker, commands) = Worker::recording();
     app.worker = Some(worker);
     app.open("late.txt".into(), None);
@@ -1773,7 +1838,7 @@ fn captured_tab_release_survives_panel_motion_and_supersedes_ready_read() {
     app.active_form = Some(form);
     app.root = "/workspace".into();
     queue_file(&app, read.id, "late.txt");
-    let output = frame(
+    frame(
         &mut app,
         vec![egui::Event::PointerButton {
             pos: at,
@@ -1782,7 +1847,14 @@ fn captured_tab_release_survives_panel_motion_and_supersedes_ready_read() {
             modifiers: egui::Modifiers::NONE,
         }],
     );
-    assert!((label(&output, "3.txt").x - at.x).abs() > 100.0);
+    assert!(
+        (crate::workspace_access_tests::recorded_rect(&app, "editor_tab:3")
+            .center()
+            .x
+            - at.x)
+            .abs()
+            > 100.0
+    );
     assert_eq!(app.active_document, Some(3));
     assert_eq!(app.location_history.back.len(), 1);
     assert_eq!(app.location_history.back[0].document, 1);
@@ -1865,8 +1937,12 @@ fn ready_read_preserves_only_the_current_owned_back_or_forward_release() {
         if forward {
             assert!(step(&mut app, Direction::Back));
         }
-        let output = frame(&mut app, vec![]);
-        let at = label(&output, if forward { "Forward" } else { "Back" });
+        frame(&mut app, vec![]);
+        let at = crate::workspace_access_tests::recorded_rect(
+            &app,
+            if forward { "Forward" } else { "Back" },
+        )
+        .center();
         let (worker, commands) = Worker::recording();
         app.worker = Some(worker);
         app.open("late.txt".into(), None);
@@ -1907,8 +1983,8 @@ fn ready_read_preserves_only_the_current_owned_back_or_forward_release() {
     let mut app = app();
     app.activate_history_tab(2);
     app.activate_history_tab(3);
-    let output = frame(&mut app, vec![]);
-    let at = label(&output, "Back");
+    frame(&mut app, vec![]);
+    let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
     let (worker, commands) = Worker::recording();
     app.worker = Some(worker);
     app.open("late.txt".into(), None);
@@ -1959,8 +2035,8 @@ fn captured_history_click_after_save_ack_and_before_eof_keeps_worker_order() {
         2,
     );
     app.activate_history_tab(2);
-    let output = frame(&mut app, vec![]);
-    let at = label(&output, "Back");
+    frame(&mut app, vec![]);
+    let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
     let (worker, commands) = Worker::recording();
     app.worker = Some(worker);
     app.open("late.txt".into(), None);
@@ -2036,8 +2112,8 @@ fn ready_read_all_stale_history_release_is_consumed_once_without_opposite_entry(
     let mut app = app();
     app.activate_history_tab(2);
     app.documents[0].edit_version += 1;
-    let output = frame(&mut app, vec![]);
-    let at = label(&output, "Back");
+    frame(&mut app, vec![]);
+    let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
     let (worker, commands) = Worker::recording();
     app.worker = Some(worker);
     app.open("late.txt".into(), None);
@@ -2081,8 +2157,8 @@ fn ready_read_all_stale_history_release_is_consumed_once_without_opposite_entry(
 fn mixed_history_release_and_text_does_not_prehandle_or_replay_back() {
     let mut app = app();
     app.activate_history_tab(2);
-    let output = frame(&mut app, vec![]);
-    let at = label(&output, "Back");
+    frame(&mut app, vec![]);
+    let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
     let (worker, commands) = Worker::recording();
     app.worker = Some(worker);
     app.open("late.txt".into(), None);
@@ -2143,9 +2219,13 @@ fn editor_focus_ime_housekeeping_preserves_owned_history_pointer_clicks() {
                     let editor = egui::Id::new(("editor", app.active_document.unwrap()));
                     app.editor_ctx
                         .memory_mut(|memory| memory.request_focus(editor));
-                    let output = frame(&mut app, vec![]);
+                    frame(&mut app, vec![]);
                     assert!(app.editor_ctx.memory(|memory| memory.has_focus(editor)));
-                    let at = label(&output, if forward { "Forward" } else { "Back" });
+                    let at = crate::workspace_access_tests::recorded_rect(
+                        &app,
+                        if forward { "Forward" } else { "Back" },
+                    )
+                    .center();
                     let read = if ready {
                         let (worker, commands) = Worker::recording();
                         app.worker = Some(worker);
@@ -2212,8 +2292,8 @@ fn substantive_ime_and_paste_still_cancel_owned_history_pointer_clicks() {
             let editor = egui::Id::new(("editor", 2u64));
             app.editor_ctx
                 .memory_mut(|memory| memory.request_focus(editor));
-            let output = frame(&mut app, vec![]);
-            let at = label(&output, "Back");
+            frame(&mut app, vec![]);
+            let at = crate::workspace_access_tests::recorded_rect(&app, "Back").center();
             let pointer = |pressed| egui::Event::PointerButton {
                 pos: at,
                 button: egui::PointerButton::Primary,
@@ -2236,13 +2316,12 @@ fn substantive_ime_and_paste_still_cancel_owned_history_pointer_clicks() {
     }
 }
 
-fn settled_history_banner_app(forward: bool) -> CedarApp {
-    let mut app = app();
+fn settle_system_fonts(app: &mut CedarApp) {
     // Let the real CJK loader finish before injecting a result at a fixed
     // gesture boundary. It stays enabled, including on hosts without CJK fonts.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        frame(&mut app, vec![]);
+        frame(app, vec![]);
         if app.error.is_some() || app.notice.starts_with("CJK fallback:") {
             break;
         }
@@ -2252,6 +2331,11 @@ fn settled_history_banner_app(forward: bool) -> CedarApp {
         );
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+}
+
+fn settled_history_banner_app(forward: bool) -> CedarApp {
+    let mut app = app();
+    settle_system_fonts(&mut app);
     app.error = None;
     app.notice = "Settled font result".into();
     app.activate_history_tab(2);
@@ -2261,6 +2345,13 @@ fn settled_history_banner_app(forward: bool) -> CedarApp {
     frame(&mut app, vec![]);
     frame(&mut app, vec![]);
     app
+}
+
+fn move_history_header_with_banner(app: &mut CedarApp) {
+    // Notifications now render below the header. A changed workspace title
+    // moves the real header buttons at the same boundary, preserving the
+    // geometry-versus-widget-ownership case without changing navigation state.
+    app.root = "/workspace/received-workspace-with-a-long-display-name".into();
 }
 
 fn history_banner_pointer_case(before_press: bool, ready: bool, stale: bool, stationary: bool) {
@@ -2302,6 +2393,7 @@ fn history_banner_pointer_case(before_press: bool, ready: bool, stale: bool, sta
                 modifiers: egui::Modifiers::NONE,
             };
             let inject_result = |app: &mut CedarApp| {
+                move_history_header_with_banner(app);
                 if error {
                     app.error = Some("Generated font completion error".into());
                 } else {
@@ -2336,6 +2428,12 @@ fn history_banner_pointer_case(before_press: bool, ready: bool, stale: bool, sta
                 before.id, pressed.id,
                 "banner changed the history widget ID"
             );
+            if before_press {
+                assert!(
+                    !pressed_rect.contains(at),
+                    "the workspace-title update must move the rendered history button"
+                );
+            }
             assert!(egui_owned, "the rendered history button must own the press");
             if !before_press {
                 inject_result(&mut app);
@@ -2371,6 +2469,10 @@ fn history_banner_pointer_case(before_press: bool, ready: bool, stale: bool, sta
             assert_eq!(
                 before.id, released.id,
                 "banner changed the history widget ID"
+            );
+            assert!(
+                !released_rect.contains(at),
+                "the workspace-title update must move the rendered history button"
             );
             if before_press && !stationary {
                 assert!(released_rect.contains(release_at));
@@ -2454,6 +2556,7 @@ fn history_banner_same_frame_primary_click_keeps_actual_widget_ownership() {
         let name = if forward { "Forward" } else { "Back" };
         let before = crate::workspace_access_tests::recorded_response(&app, name);
         let at = crate::workspace_access_tests::recorded_rect(&app, name).center();
+        move_history_header_with_banner(&mut app);
         app.error = Some("Generated error before a same-frame click".into());
         let pointer = |pressed| egui::Event::PointerButton {
             pos: at,
@@ -2506,6 +2609,7 @@ fn history_banner_orphan_and_disabled_releases_do_not_cancel_ready_read() {
             pressed,
             modifiers: egui::Modifiers::NONE,
         };
+        move_history_header_with_banner(&mut app);
         app.error = Some("Generated error before an unowned gesture".into());
         if disabled {
             frame(&mut app, vec![egui::Event::PointerMoved(at), pointer(true)]);
@@ -2536,6 +2640,7 @@ fn history_banner_drag_and_changed_target_cancel_captured_press() {
             pressed,
             modifiers: egui::Modifiers::NONE,
         };
+        move_history_header_with_banner(&mut app);
         app.error = Some("Generated error before a cancelled gesture".into());
         frame(
             &mut app,
@@ -2598,6 +2703,7 @@ fn history_banner_foreign_button_capture_cannot_become_primary_navigation() {
                 crate::workspace_access_tests::recorded_response(&app, "Back")
                     .is_pointer_button_down_on()
             );
+            move_history_header_with_banner(&mut app);
             app.error = Some("Generated error while a foreign button owns the widget".into());
             let elsewhere = egui::pos2(600.0, 400.0);
             let mut press = vec![

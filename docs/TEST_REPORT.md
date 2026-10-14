@@ -1,6 +1,18 @@
-# Verification checkpoint — 0.70.1 Project status wording candidate
+# Verification checkpoint — 0.71.0 main-window visual reconstruction candidate
 
-## Current 0.70.1 Project status wording candidate
+## Current 0.71.0 main-window candidate
+
+The main-window structure has an actual native visual baseline, with explicit
+limitations and final-source regression work described in the
+[0.71 report](TEST_REPORT_PHASE71_ISLANDS_SHELL.md). This does not claim full
+IDEA parity, search-dialog reconstruction, automatic menu focus return or a
+released package. Final local Rust passed **2,222/0/71 (50 suites)**, with
+strict Clippy and formatting. Python passed **818 tests / ten skipped / zero
+failed suites**, and all four retained current-artifact process proofs passed.
+Exact-source CI and package acceptance remain
+separate gates. Historical sections below preserve their original outcomes.
+
+## Prior 0.70.1 Project status wording candidate
 
 This patch only makes a completed Project selection identify its historical target:
 `Selection completed: /path`. A new Recent, tab or Back activation does not alter
@@ -13,8 +25,10 @@ negative control, focused/aggregate checks and retained process-proof contracts.
 Final local 0.70.1 checks passed: Rust **2,206/0/71 across 50 suites**, Python
 **806 total / ten skipped / zero failed suites across 29 suites**, formatting and
 strict Clippy. Current-artifact Browse v7 **74/17**, Structure **45/11**, Scoped
-**57/10** and Search **57/12** proofs passed (fields/operations). Exact-source CI,
-three package audits and a bounded native wording regression remain pending.
+**57/10** and Search **57/12** proofs passed (fields/operations). Exact-source
+[CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38494545055) and three
+package audits subsequently passed; the native wording run was paused to
+prioritize main-window visual work, without advancing native acceptance.
 No new feature, operation, protocol or provider is introduced.
 
 ## Historical 0.70 stale-navigation candidate checkpoint

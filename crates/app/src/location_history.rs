@@ -772,7 +772,17 @@ impl CedarApp {
             ] {
                 let response = ui
                     .push_id(("location_history", label), |ui| {
-                        ui.add_enabled(enabled && available, egui::Button::new(label).small())
+                        ui.add_enabled(
+                            enabled && available,
+                            crate::chrome::IconButton::new(
+                                if direction == Direction::Back {
+                                    crate::chrome::Icon::Back
+                                } else {
+                                    crate::chrome::Icon::Forward
+                                },
+                                label,
+                            ),
+                        )
                     })
                     .inner
                     .on_hover_text(help);

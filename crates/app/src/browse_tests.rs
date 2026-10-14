@@ -88,6 +88,15 @@ fn frame_at_size(
     size: egui::Vec2,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
+    observed_frame_at_size(app, size, events, |_| {})
+}
+
+fn observed_frame_at_size(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    events: Vec<egui::Event>,
+    mut observe: impl FnMut(&CedarApp),
+) -> egui::FullOutput {
     let ctx = app.editor_ctx.clone();
     let mut input = egui::RawInput {
         time: Some(ctx.input(|input| input.time) + 0.1),
@@ -97,7 +106,12 @@ fn frame_at_size(
     };
     eframe::App::raw_input_hook(app, &ctx, &mut input);
     let mut native = eframe::Frame::_new_kittest();
-    let output = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native));
+    let output = ctx.run(input, |ctx| {
+        eframe::App::update(app, ctx, &mut native);
+        // Read the actual current widget map before end_pass swaps it. This
+        // observer cannot mutate the app, inject input, or deliver a reply.
+        observe(app);
+    });
     assert!(output
         .shapes
         .iter()
@@ -183,7 +197,28 @@ fn click(app: &mut CedarApp, probe: &str) {
     click_at_size(app, SIZE, probe);
 }
 
-fn click_at_size(app: &mut CedarApp, size: egui::Vec2, probe: &str) {
+fn click_at_size(app: &mut CedarApp, size: egui::Vec2, probe: &str) -> egui::FullOutput {
+    if matches!(probe, "explorer_flat_mode" | "explorer_tree_mode") {
+        let heading = recorded_response(app, "project_heading").id;
+        let menus = app
+            .editor_ctx
+            .data(|data| data.get_temp::<IslandMenus>(egui::Id::new("cedar_island_menus")))
+            .expect("production Project menu was not registered");
+        let open = menus.roots.into_iter().any(|(bar, root)| {
+            root == heading
+                && egui::menu::BarState::load(&app.editor_ctx, bar)
+                    .as_ref()
+                    .is_some_and(|menu| menu.id == heading)
+        });
+        if !open {
+            click_at_size(app, size, "project_heading");
+            // Native menu contents need their measured follow-up pass before
+            // their actual responses can receive the next pointer gesture.
+            for _ in 0..3 {
+                frame_at_size(app, size, vec![]);
+            }
+        }
+    }
     let pos = visible_center(app, probe);
     let id = recorded_response(app, probe).id;
     let rect = recorded_rect(app, probe);
@@ -215,11 +250,12 @@ fn click_at_size(app: &mut CedarApp, size: egui::Vec2, probe: &str) {
         recorded_response(app, probe).is_pointer_button_down_on(),
         "{probe}: native press did not reach its current rendered rectangle at {pos:?}"
     );
-    frame_at_size(app, size, pointer(pos, false));
+    let output = frame_at_size(app, size, pointer(pos, false));
     assert!(
         recorded_response(app, probe).clicked_by(egui::PointerButton::Primary),
         "{probe}: native release did not click the rendered control at {pos:?}"
     );
+    output
 }
 
 fn focused(app: &CedarApp) -> Option<egui::Id> {
@@ -283,6 +319,22 @@ fn file(path: &str, text: &str) -> Payload {
 
 fn fixture() -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
+    // Match the production startup fonts and metrics before the first native frame.
+    // Optional CJK fallback must not replace a default-font Latin layout mid-gesture.
+    app.editor_ctx.set_fonts(system_fonts::base_fonts());
+    app.editor_ctx.style_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, FontId::monospace(14.0));
+    });
     let form = ConnectForm {
         local_root: "/workspace".into(),
         allow_run: false,
@@ -1282,9 +1334,17 @@ fn browse_row_continuity_group_to_unselected_row_only_selects_even_across_passes
             enter(&mut app, true);
             submit_text(&mut app, &commands, &["a.txt", "nested/查询-Ω😀.txt"]);
             click(&mut app, "browse_group:1");
+            assert!(
+                !app.search_state.group_expanded(1),
+                "first group click must collapse"
+            );
             settle(&mut app);
             continuity_tick(&mut app, 1.0, vec![]);
             let group = continuity_click(&mut app, "browse_group:1", false);
+            assert!(
+                app.search_state.group_expanded(1),
+                "second group click must expand"
+            );
             assert!(!group.double);
             for _ in 0..3 {
                 continuity_tick(&mut app, 0.01, vec![]);
@@ -5680,14 +5740,87 @@ fn browse_normal_agent_find_recent_project_reveal_continuous_preview_and_exact_r
     assert_eq!(app.explorer_loaded_directory_count(), 0);
     assert!(commands.try_recv().is_err());
     let cancelled_start = proof.ledger.len();
-    click(&mut app, "project_select_current");
+    let release = click_at_size(&mut app, SIZE, "project_select_current");
     assert!(app.project_reveal_pending());
-    // Pinned egui swaps its widget maps at end_pass; read_response first
-    // consults the preceding map. Render the newly enabled Cancel once more
-    // before reading its response, without input or delivering the pending List.
+    assert_eq!(
+        release.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+        std::time::Duration::ZERO,
+        "starting Reveal must schedule its next real paint"
+    );
+    let pending = app
+        .explorer
+        .outstanding
+        .clone()
+        .expect("one pending ancestor List");
+    assert_eq!(pending.path, "");
+    let cancel_id = recorded_response(&app, "project_reveal_cancel").id;
+    let cancel_before = recorded_rect(&app, "project_reveal_cancel");
+    let mut painted = Vec::new();
+    // RTL draws Cancel before Select starts the intent, unlike the former
+    // Select-then-Cancel row. The first requested repaint must enable Cancel.
+    // Capture before end_pass, so the assertion observes that actual render.
+    let enabled = observed_frame_at_size(&mut app, SIZE, vec![], |app| {
+        assert!(app.project_reveal_pending());
+        assert_eq!(app.explorer.outstanding.as_ref(), Some(&pending));
+        assert_eq!(app.pending.len(), 1);
+        assert!(
+            matches!(app.pending.get(&pending.request), Some(Job::TreeList { ticket }) if ticket == &pending)
+        );
+        let response = recorded_response(app, "project_reveal_cancel");
+        assert!(
+            response.enabled(),
+            "Cancel must be enabled on the first requested paint"
+        );
+        assert_eq!(response.id, cancel_id);
+        assert_eq!(response.rect, cancel_before);
+        assert!(recorded_clip(app, "project_reveal_cancel").contains_rect(response.rect));
+        let causes = app.editor_ctx.repaint_causes();
+        assert!(
+            causes
+                .iter()
+                .any(|cause| cause.file.rsplit(['/', '\\']).next() == Some("project_reveal.rs")),
+            "the follow-up paint must retain the production Reveal repaint cause"
+        );
+        painted.push(serde_json::json!({
+            "pass": app.editor_ctx.cumulative_pass_nr(),
+            "enabled": response.enabled(),
+            "id": format!("{:?}", response.id),
+            "rect": [response.rect.left(), response.rect.top(), response.rect.right(), response.rect.bottom()],
+            "repaint_causes": causes.iter().map(|cause| format!("{}:{}", cause.file, cause.line)).collect::<Vec<_>>(),
+        }));
+    });
+    assert!(!painted.is_empty() && painted.len() <= 2);
+    assert_eq!(
+        enabled.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+        std::time::Duration::ZERO,
+        "the enabled-widget paint must schedule its observation pass"
+    );
+    assert_eq!(
+        proof.ledger.len(),
+        cancelled_start,
+        "the pending List remains undelivered"
+    );
+    // end_pass swaps this_pass/prev_pass; outside run, read_response prefers
+    // the old this_pass map. One further requested, input-free pass retires
+    // that observation lag. There is no polling loop or manual repaint.
     frame(&mut app, vec![]);
     assert!(app.project_reveal_pending());
+    assert_eq!(app.explorer.outstanding.as_ref(), Some(&pending));
+    assert_eq!(app.pending.len(), 1);
+    assert_eq!(proof.ledger.len(), cancelled_start);
+    eprintln!(
+        "browse_normal_cancel_repaint {}",
+        serde_json::json!({
+            "release_delay_ns": release.viewport_output[&egui::ViewportId::ROOT].repaint_delay.as_nanos(),
+            "enabled_delay_ns": enabled.viewport_output[&egui::ViewportId::ROOT].repaint_delay.as_nanos(),
+            "painted": painted,
+            "input_free_frames": 2,
+            "pending_list_delivered": false,
+        })
+    );
     let cancel = recorded_response(&app, "project_reveal_cancel");
+    assert_eq!(cancel.id, cancel_id);
+    assert_eq!(cancel.rect, cancel_before);
     let cancel_rect = recorded_rect(&app, "project_reveal_cancel");
     let cancel_pos = visible_center(&app, "project_reveal_cancel");
     assert!(cancel.enabled());

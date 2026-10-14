@@ -111,6 +111,7 @@ fn held_frame(app: &mut CedarApp, events: Vec<egui::Event>) -> egui::FullOutput 
         app.header(ctx);
         app.footer(ctx);
         app.notifications(ctx);
+        app.tool_rail(ctx);
         app.tools(ctx);
         app.sidebar(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -131,6 +132,54 @@ fn focus(app: &mut CedarApp, path: &str) {
     app.editor_ctx
         .memory_mut(|memory| memory.request_focus(row_id(path)));
     app.explorer_select(path);
+}
+
+fn project_menu_is_open(app: &CedarApp) -> bool {
+    let heading = workspace_access_tests::recorded_response(app, "project_heading").id;
+    let menus = app
+        .editor_ctx
+        .data(|data| data.get_temp::<IslandMenus>(egui::Id::new("cedar_island_menus")))
+        .expect("production Project menu was not registered");
+    menus.roots.into_iter().any(|(bar, root)| {
+        root == heading
+            && egui::menu::BarState::load(&app.editor_ctx, bar)
+                .as_ref()
+                .is_some_and(|menu| menu.id == heading)
+    })
+}
+
+fn click_project_heading(app: &mut CedarApp) {
+    let rect = workspace_access_tests::recorded_rect(app, "project_heading");
+    assert!(workspace_access_tests::recorded_clip(app, "project_heading").contains_rect(rect));
+    let pos = rect.center();
+    frame(app, vec![egui::Event::PointerMoved(pos)]);
+    for pressed in [true, false] {
+        frame(
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+    }
+    assert!(
+        workspace_access_tests::recorded_response(app, "project_heading")
+            .clicked_by(egui::PointerButton::Primary)
+    );
+    settle(app);
+}
+
+fn open_project_menu(app: &mut CedarApp) {
+    if !project_menu_is_open(app) {
+        // The title may be above the compact outer viewport after scrolling.
+        // Reveal its real control before opening its native menu.
+        let heading = workspace_access_tests::recorded_response(app, "project_heading").id;
+        focus_rendered(app, heading);
+        click_project_heading(app);
+    }
+    assert!(project_menu_is_open(app));
 }
 
 #[test]
@@ -825,7 +874,7 @@ fn deep_rows_have_finite_visible_width_at_minimum_sidebar_size() {
         .iter()
         .find_map(|shape| match &shape.shape {
             egui::epaint::Shape::Text(text)
-                if text.galley.text().contains("not loaded")
+                if text.galley.text() == "d"
                     && response.rect.contains(text.visual_bounding_rect().center()) =>
             {
                 Some((shape.clip_rect, text.visual_bounding_rect()))
@@ -1103,6 +1152,9 @@ fn compact_retry_and_mode_focus_reveal_through_both_scroll_areas() {
         for _ in 0..20 {
             frame(&mut app, vec![]);
         }
+        if name != "tree_retry:dir" {
+            open_project_menu(&mut app);
+        }
         let id = workspace_access_tests::recorded_response(&app, name).id;
         app.editor_ctx
             .data_mut(|data| data.insert_temp(egui::Id::new("tree_test_focus"), id));
@@ -1132,6 +1184,10 @@ fn compact_retry_and_mode_focus_reveal_through_both_scroll_areas() {
             text.0
         );
         assert!(text.0.contains_rect(text.1), "{name} label remains clipped");
+        if name != "tree_retry:dir" {
+            click_project_heading(&mut app);
+            assert!(!project_menu_is_open(&app));
+        }
     }
     assert!(commands.try_recv().is_err());
 }
@@ -1236,8 +1292,16 @@ fn focus_rendered(app: &mut CedarApp, id: egui::Id) {
     settle(app);
 }
 
-fn shell_ids(app: &CedarApp) -> Vec<egui::Id> {
-    [
+fn shell_ids(app: &mut CedarApp) -> Vec<egui::Id> {
+    let already_open = project_menu_is_open(app);
+    open_project_menu(app);
+    let shortcuts = workspace_access_tests::recorded_response(app, "project_shortcuts");
+    assert!(
+        workspace_access_tests::recorded_clip(app, "project_shortcuts")
+            .contains_rect(shortcuts.rect)
+    );
+    let ids = [
+        "project_heading",
         "project_shortcuts",
         "browse_entry",
         "project_text_entry",
@@ -1246,14 +1310,19 @@ fn shell_ids(app: &CedarApp) -> Vec<egui::Id> {
     ]
     .iter()
     .map(|label| workspace_access_tests::recorded_response(app, label).id)
-    .collect()
+    .collect();
+    if !already_open {
+        click_project_heading(app);
+        assert!(!project_menu_is_open(app));
+    }
+    ids
 }
 
 #[test]
 fn global_retry_controls_keep_path_identity_and_reveal_in_compact_outer_scroll() {
     for tree in [false, true] {
         let (mut app, commands) = global_retry_fixture(tree);
-        let footer = shell_ids(&app);
+        let footer = shell_ids(&mut app);
         let expected_path = if tree { "d63" } else { "missing-a" };
         let id = workspace_access_tests::recorded_response(&app, "explorer_status_retry").id;
         assert_eq!(
@@ -1261,17 +1330,17 @@ fn global_retry_controls_keep_path_identity_and_reveal_in_compact_outer_scroll()
             explorer_tree::retry_id(if tree { "tree_limit" } else { "flat" }, expected_path)
         );
         // Adding/removing an unrelated status widget cannot rename Retry or
-        // the Project footer or the moved browsing and Tools entries.
+        // the Project menu help or the moved browsing and Tools entries.
         app.explorer.message = Some("An additional status label".into());
         settle(&mut app);
         assert_eq!(
             workspace_access_tests::recorded_response(&app, "explorer_status_retry").id,
             id
         );
-        assert_eq!(shell_ids(&app), footer);
+        assert_eq!(shell_ids(&mut app), footer);
         app.explorer.message = None;
         settle(&mut app);
-        assert_eq!(shell_ids(&app), footer);
+        assert_eq!(shell_ids(&mut app), footer);
         let sidebar =
             egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("explorer"))
                 .unwrap()
@@ -1390,11 +1459,11 @@ fn branch_retry_and_shell_ids_survive_inserted_preceding_sibling_rows() {
     error(&mut app, commands.try_recv().unwrap(), "failed z", true);
     settle(&mut app);
     let id = workspace_access_tests::recorded_response(&app, "tree_retry:z").id;
-    let footer = shell_ids(&app);
+    let footer = shell_ids(&mut app);
     assert_eq!(id, explorer_tree::retry_id("branch", "z"));
     app.explorer_expand("a");
     settle(&mut app); // Loading status adds a widget in its fixed scope.
-    assert_eq!(shell_ids(&app), footer);
+    assert_eq!(shell_ids(&mut app), footer);
     reply(
         &mut app,
         commands.try_recv().unwrap(),
@@ -1405,7 +1474,7 @@ fn branch_retry_and_shell_ids_survive_inserted_preceding_sibling_rows() {
         workspace_access_tests::recorded_response(&app, "tree_retry:z").id,
         id
     );
-    assert_eq!(shell_ids(&app), footer);
+    assert_eq!(shell_ids(&mut app), footer);
 }
 
 #[test]

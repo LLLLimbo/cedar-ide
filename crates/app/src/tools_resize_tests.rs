@@ -21,11 +21,11 @@ fn app(tool: Tool) -> (CedarApp, Receiver<Command>) {
     app.tool = tool;
     app.tools_open = true;
     app.editor_ctx.style_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(9.0, 8.0);
-        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style
             .text_styles
-            .insert(egui::TextStyle::Body, FontId::proportional(14.0));
+            .insert(egui::TextStyle::Body, FontId::proportional(13.0));
         style
             .text_styles
             .insert(egui::TextStyle::Button, FontId::proportional(13.0));
@@ -86,6 +86,7 @@ fn input_frames_diagnostic(
         app.header(ctx);
         app.footer(ctx);
         app.notifications(ctx);
+        app.tool_rail(ctx);
         let available = ctx.available_rect();
         app.tools(ctx);
         let panel = app.tools_open.then(|| {
@@ -519,12 +520,37 @@ fn tools_resize_window_clamp_and_regrow_do_not_overwrite_the_preference() {
 #[test]
 fn tools_resize_content_overflow_does_not_become_the_stored_height() {
     let (mut app, commands) = app(Tool::Tests);
+    app.editor_ctx.set_fonts(system_fonts::base_fonts());
+    app.editor_ctx.style_mut(|style| {
+        for text_style in [egui::TextStyle::Body, egui::TextStyle::Button] {
+            style
+                .text_styles
+                .insert(text_style, FontId::proportional(18.0));
+        }
+    });
     let narrow = [620.0, 900.0];
-    settle(&mut app, narrow);
+    let passive = settle(&mut app, narrow);
+    // The compact 13pt shell can already fit at the 150pt minimum. Use the
+    // supported larger-font layout to establish actual content overflow,
+    // rather than calling zero native movement a deliberate resize.
+    assert!(
+        passive.panel.unwrap().height() > 150.0,
+        "overflow fixture must begin above minimum: {:?}",
+        passive.panel
+    );
+    assert_eq!(passive.preferred, None);
     let (origin, geometry) = press(&mut app, narrow);
     let moved = egui::pos2(origin.x, geometry.available.bottom() - 150.0);
+    assert!(origin.y != moved.y,
+        "overflow fixture must perform a nonzero native drag: origin={origin:?}, target={moved:?}, panel={:?}", geometry.panel);
     let dragged = frame(&mut app, narrow, vec![egui::Event::PointerMoved(moved)]);
-    near(dragged.preferred.unwrap(), 150.0);
+    assert!(native(&app).dragged_by(egui::PointerButton::Primary));
+    near(
+        dragged
+            .preferred
+            .expect("a nonzero owned drag records its native allocation"),
+        150.0,
+    );
     // Wrapped report controls retain the existing content-overflow behavior.
     assert!(dragged.panel.unwrap().height() > 150.0);
     frame(

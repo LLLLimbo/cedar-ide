@@ -55,6 +55,23 @@ fn settle(app: &mut CedarApp) {
 }
 
 fn click(app: &mut CedarApp, name: &str) {
+    if matches!(name, "explorer_flat_mode" | "explorer_tree_mode") {
+        let heading = workspace_access_tests::recorded_response(app, "project_heading").id;
+        let menus = app
+            .editor_ctx
+            .data(|data| data.get_temp::<IslandMenus>(egui::Id::new("cedar_island_menus")))
+            .expect("production Project menu was not registered");
+        let open = menus.roots.into_iter().any(|(bar, root)| {
+            root == heading
+                && egui::menu::BarState::load(&app.editor_ctx, bar)
+                    .as_ref()
+                    .is_some_and(|menu| menu.id == heading)
+        });
+        if !open {
+            click(app, "project_heading");
+            settle(app);
+        }
+    }
     let rect = workspace_access_tests::recorded_rect(app, name);
     for pressed in [true, false] {
         frame(
@@ -715,13 +732,19 @@ fn project_reveal_action_is_readable_and_keyboard_usable_at_declared_small_windo
         assert!(response.rect.is_finite() && response.rect.is_positive());
         assert!(
             clip.contains_rect(response.rect),
-            "wrapped action must be fully readable at font {font_size}: {:?} / {clip:?}",
+            "title action must be fully visible at font {font_size}: {:?} / {clip:?}",
             response.rect
         );
+        let heading = workspace_access_tests::recorded_rect(&app, "project_heading");
+        let cancel = workspace_access_tests::recorded_rect(&app, "project_reveal_cancel");
         assert!(
-            response.rect.top()
-                >= workspace_access_tests::recorded_rect(&app, "explorer_tree_mode").bottom()
+            (response.rect.center().y - heading.center().y).abs() <= 1.0,
+            "Reveal remains in the Project title row"
         );
+        assert_eq!(response.rect.size(), egui::vec2(26.0, 26.0));
+        assert_eq!(cancel.size(), egui::vec2(26.0, 26.0));
+        assert!(!response.rect.intersect(heading).is_positive());
+        assert!(!response.rect.intersect(cancel).is_positive());
         assert!(response.rect.bottom() < workspace_access_tests::recorded_rect(&app, "/").top());
         assert!(
             commands.try_recv().is_err(),

@@ -4,6 +4,20 @@ const REPLACE_INPUT: &str = "literal_replace_text";
 
 fn app() -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
+    app.editor_ctx.set_fonts(system_fonts::base_fonts());
+    app.editor_ctx.style_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, FontId::monospace(14.0));
+    });
     app.state = ConnectionState::Ready;
     app.open_form = false;
     app.documents = vec![
@@ -20,18 +34,17 @@ fn app() -> (CedarApp, Receiver<Command>) {
 fn frame(app: &mut CedarApp, time: f64, events: Vec<egui::Event>) -> egui::FullOutput {
     let ctx = app.editor_ctx.clone();
     let mut frame = eframe::Frame::_new_kittest();
-    ctx.run(
-        egui::RawInput {
-            time: Some(time),
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(780.0, 540.0),
-            )),
-            events,
-            ..Default::default()
-        },
-        |ctx| eframe::App::update(app, ctx, &mut frame),
-    )
+    let mut input = egui::RawInput {
+        time: Some(time),
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(780.0, 540.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut frame))
 }
 
 fn key(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
@@ -47,21 +60,22 @@ fn key(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
         .collect()
 }
 
-fn label_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
-    fn find(shape: &egui::epaint::Shape, label: &str) -> Option<egui::Pos2> {
-        match shape {
-            egui::epaint::Shape::Text(text) if text.galley.job.text == label => {
-                Some(text.visual_bounding_rect().center())
-            }
-            egui::epaint::Shape::Vec(shapes) => shapes.iter().find_map(|shape| find(shape, label)),
-            _ => None,
-        }
-    }
-    output
-        .shapes
-        .iter()
-        .find_map(|shape| find(&shape.shape, label))
-        .unwrap_or_else(|| panic!("missing tab {label}"))
+fn tab_position(app: &CedarApp, document: u64) -> egui::Pos2 {
+    // Read the actual native Button response, independent of the filename's
+    // paint shape or the dirty/saving marker appended to it.
+    let name = format!("editor_tab:{document}");
+    let rect = workspace_access_tests::recorded_rect(app, &name);
+    let clip = workspace_access_tests::recorded_clip(app, &name);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(780.0, 540.0));
+    assert!(
+        rect.is_positive() && screen.contains_rect(rect),
+        "{name}: {rect:?}"
+    );
+    assert!(
+        clip.contains_rect(rect),
+        "{name} clipped: {rect:?} / {clip:?}"
+    );
+    rect.center()
 }
 
 fn click_at(app: &mut CedarApp, time: f64, at: egui::Pos2) {
@@ -82,9 +96,10 @@ fn click_at(app: &mut CedarApp, time: f64, at: egui::Pos2) {
     }
 }
 
-fn click_tab(app: &mut CedarApp, time: f64, label: &str) {
-    let output = frame(app, time, vec![]);
-    click_at(app, time + 0.01, label_position(&output, label));
+fn click_tab(app: &mut CedarApp, time: f64, document: u64) {
+    frame(app, time, vec![]);
+    let at = tab_position(app, document);
+    click_at(app, time + 0.01, at);
 }
 
 fn focused(app: &CedarApp, id: egui::Id) -> bool {
@@ -102,7 +117,7 @@ fn selection(app: &CedarApp, document: u64) -> egui::text::CCursorRange {
 #[test]
 fn tab_pointer_activation_accepts_typing_and_undo_without_an_editor_click() {
     let (mut app, commands) = app();
-    click_tab(&mut app, 0.0, "second.txt");
+    click_tab(&mut app, 0.0, 2);
     assert_eq!(app.active_document, Some(2));
     assert!(focused(&app, egui::Id::new(("editor", 2u64))));
     frame(&mut app, 1.0, vec![egui::Event::Text("!".into())]);
@@ -121,13 +136,7 @@ fn tab_batched_press_release_keeps_focus_for_switch_and_same_tab_activation() {
     app.find_open = true;
     for (index, document) in [2, 2, 1, 1].into_iter().enumerate() {
         let time = index as f64 * 10.0;
-        let path = if document == 1 {
-            "first.txt"
-        } else {
-            "second.txt"
-        };
-        let output = frame(&mut app, time, vec![]);
-        let at = label_position(&output, path);
+        frame(&mut app, time, vec![]);
         let input_id = egui::Id::new(REPLACE_INPUT);
         let field = app
             .editor_ctx
@@ -137,6 +146,7 @@ fn tab_batched_press_release_keeps_focus_for_switch_and_same_tab_activation() {
             .center();
         click_at(&mut app, time + 1.0, field);
         assert!(focused(&app, input_id));
+        let at = tab_position(&app, document);
         // Native backends can deliver a fast click in one input frame. The
         // editor must retain focus even though that frame has an outside press.
         let mut events = vec![egui::Event::PointerMoved(at)];
@@ -152,7 +162,11 @@ fn tab_batched_press_release_keeps_focus_for_switch_and_same_tab_activation() {
         );
         frame(&mut app, time + 2.0, events);
         assert_eq!(app.active_document, Some(document));
-        assert!(focused(&app, egui::Id::new(("editor", document))));
+        assert!(
+            focused(&app, egui::Id::new(("editor", document))),
+            "batch {index}, tab {document}, target {at:?}, focused {:?}",
+            app.editor_ctx.memory(|memory| memory.focused())
+        );
         frame(&mut app, time + 3.0, vec![egui::Event::Text("!".into())]);
         let active = document as usize - 1;
         assert!(app.documents[active].text.ends_with('!'));
@@ -190,24 +204,24 @@ fn switching_dirty_tabs_preserves_each_cursor_and_complete_undo_redo_branch() {
     frame(&mut app, 2.0, vec![]);
     let selections = [selection(&app, 1), selection(&app, 2)];
     let versions = [app.documents[0].edit_version, app.documents[1].edit_version];
-    click_tab(&mut app, 3.0, "first.txt  *");
+    click_tab(&mut app, 3.0, 1);
     assert_eq!(selection(&app, 1), selections[0]);
     assert_eq!(app.documents[0].edit_version, versions[0]);
     frame(&mut app, 4.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
     assert_eq!(app.documents[0].text, "first draft");
     let first_undone_cursor = selection(&app, 1);
-    click_tab(&mut app, 5.0, "second.txt  *");
+    click_tab(&mut app, 5.0, 2);
     assert_eq!(selection(&app, 2), selections[1]);
     assert_eq!(app.documents[1].edit_version, versions[1]);
     frame(&mut app, 6.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
     assert_eq!(app.documents[1].text, "second draft");
-    click_tab(&mut app, 7.0, "first.txt  *");
+    click_tab(&mut app, 7.0, 1);
     assert_eq!(selection(&app, 1), first_undone_cursor);
     let redo = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
     frame(&mut app, 8.0, key(egui::Key::Z, redo));
     assert_eq!(app.documents[0].text, "first newer");
     assert_eq!(app.documents[1].text, "second draft");
-    click_tab(&mut app, 9.0, "second.txt  *");
+    click_tab(&mut app, 9.0, 2);
     frame(&mut app, 10.0, key(egui::Key::Z, redo));
     assert_eq!(app.documents[1].text, "second newer");
     assert_eq!(app.documents[0].saved_text, "first saved");
@@ -231,7 +245,7 @@ fn same_tab_click_focuses_editor_but_idle_frames_preserve_find_and_replace_focus
             "first dirty".into(),
             5,
         );
-        click_tab(&mut app, 0.0, "first.txt  *");
+        click_tab(&mut app, 0.0, 1);
         let cursor = selection(&app, 1);
         let input_id = egui::Id::new(input);
         let at = app
@@ -256,7 +270,7 @@ fn same_tab_click_focuses_editor_but_idle_frames_preserve_find_and_replace_focus
         frame(&mut app, 6.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
         assert_eq!(app.documents[0].text, "first dirty");
         assert_eq!(app.documents[0].edit_version, 1);
-        click_tab(&mut app, 7.0, "first.txt  *");
+        click_tab(&mut app, 7.0, 1);
         assert!(focused(&app, egui::Id::new(("editor", 1u64))));
         assert_eq!(selection(&app, 1), cursor);
         frame(&mut app, 8.0, key(egui::Key::Z, egui::Modifiers::COMMAND));
@@ -271,7 +285,7 @@ fn late_open_after_tab_activation_cannot_reactivate_or_steal_field_focus() {
     app.find_open = true;
     app.open("late.txt".into(), Some(2));
     let command = commands.try_recv().unwrap();
-    click_tab(&mut app, 0.0, "second.txt");
+    click_tab(&mut app, 0.0, 2);
     let input_id = egui::Id::new(REPLACE_INPUT);
     let at = app
         .editor_ctx
@@ -304,8 +318,8 @@ fn navigation_and_foreign_modals_block_tab_activation_without_delayed_focus() {
     for navigation in [true, false] {
         let (mut app, commands) = app();
         app.find_open = true;
-        let output = frame(&mut app, 0.0, vec![]);
-        let at = label_position(&output, "second.txt");
+        frame(&mut app, 0.0, vec![]);
+        let at = tab_position(&app, 2);
         if navigation {
             app.show_file_chooser();
         } else {

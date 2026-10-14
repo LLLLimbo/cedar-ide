@@ -1,6 +1,6 @@
 # Public source checkpoint
 
-This is the source-only public export of tested development stage `phase701-0.70.1-project-status`.
+This is the source-only public export of tested development stage `phase71-0.71.0-islands-shell`.
 It is an independent Rust IDE project, not a complete IntelliJ IDEA replacement.
 Public commits preserve the phase-by-phase development sequence, but their hashes
 differ from the private build checkpoints because generated evidence is omitted.
@@ -9,6 +9,8 @@ differ from the private build checkpoints because generated evidence is omitted.
 
 Source, deterministic tests, test fixtures, reproducible verification scripts,
 Cargo.lock, CI configuration, and upstream license notices are included.
+The only permitted binary source assets are two exact, hash-pinned OFL font faces
+(when present), accompanied by their readable manifest and complete license notices.
 The one complete JDT completion response needed by a deterministic compile-time
 test remains as a data fixture, without unrelated startup logs or temporary URIs.
 Raw screenshots, process logs and other JSON/JSONL measurement payloads from the cloud

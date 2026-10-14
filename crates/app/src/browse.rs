@@ -10,6 +10,9 @@ use cedar_protocol::{
 use eframe::egui::{self, RichText};
 use std::{collections::HashSet, sync::Arc};
 
+const BROWSE_PREVIEW_SEPARATOR: f32 = 6.0;
+const BROWSE_PREVIEW_RETURN: &str = "Escape returns to the selected result";
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) enum Provider {
     #[default]
@@ -2253,6 +2256,7 @@ impl CedarApp {
         };
         let output = scroll
             .animated(false)
+            .min_scrolled_height(max_height.min(64.0))
             .max_height(max_height)
             .show(ui, |ui| {
                 // Group adapters preserve original accepted indexes; no snippets are copied.
@@ -2371,24 +2375,142 @@ impl CedarApp {
         #[cfg(not(test))]
         let _ = output;
     }
-    fn browse_preview_panel(&mut self, ui: &mut egui::Ui, max_height: f32) {
+    fn browse_preview_title(&self, scrolling: bool) -> String {
+        let mut title = match &self.browse.preview {
+            Some(Preview::Draft(_)) => "Current open draft · read-only preview".to_owned(),
+            Some(Preview::Disk { revision, .. }) => format!(
+                "Disk preview · revision {} · search coordinates may be historical",
+                &revision[..8]
+            ),
+            Some(Preview::Message { message, .. }) => message.clone(),
+            None => "Preview requested…".to_owned(),
+        };
+        if scrolling {
+            title.push_str(" · scroll for more");
+        }
+        title
+    }
+
+    // Only the stacked, open-preview layout shares a vertical budget. Measure
+    // text without rendering a second Ui: sizing must not consume reveal/input
+    // ownership or manufacture a second set of widget responses.
+    fn browse_narrow_pane_heights(
+        &self,
+        ui: &egui::Ui,
+        results_max: f32,
+        preview_max: f32,
+    ) -> (f32, f32, bool) {
+        let width = ui.available_width();
+        let spacing = ui.spacing().item_spacing;
+        let padding = ui.spacing().button_padding;
+        let small = |text: &str, width: f32| {
+            egui::WidgetText::from(RichText::new(text).small())
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Wrap),
+                    width.max(1.0),
+                    egui::TextStyle::Body,
+                )
+                .size()
+                .y
+        };
+        let buttons = ["Preview · Space", "Open · Enter"].map(|text| {
+            egui::WidgetText::from(text)
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Wrap),
+                    (width - 2.0 * padding.x).max(1.0),
+                    egui::TextStyle::Button,
+                )
+                .size()
+                + 2.0 * padding
+        });
+        let hint_width = width - buttons[0].x - buttons[1].x - 2.0 * spacing.x;
+        let action_height = buttons[0]
+            .y
+            .max(buttons[1].y)
+            .max(ui.spacing().interact_size.y)
+            .max(small(self.browse_preview_hint(), hint_width));
+        let context = self.current_project_text_context(PreviewSurface::Browse);
+        let note_height = context
+            .as_ref()
+            .map_or(0.0, |context| small(&context.note, width));
+        let body_height = context.as_ref().map_or(preview_max, |context| {
+            context
+                .text
+                .lines()
+                .map(|line| {
+                    egui::WidgetText::from(RichText::new(line).monospace())
+                        .into_galley(
+                            ui,
+                            Some(egui::TextWrapMode::Extend),
+                            width,
+                            egui::TextStyle::Body,
+                        )
+                        .size()
+                        .y
+                })
+                .sum::<f32>()
+        });
+        let preview_target = (body_height + ui.spacing().scroll.allocated_width()).min(preview_max);
+        let bottom_margin = egui::Frame::popup(ui.style()).total_margin().bottom;
+        let chrome = action_height
+            + BROWSE_PREVIEW_SEPARATOR
+            + small(&self.browse_preview_title(true), width)
+            + note_height
+            + small(BROWSE_PREVIEW_RETURN, width)
+            + spacing.y * if context.is_some() { 6.0 } else { 5.0 }
+            + bottom_margin;
+        let remaining = (ui.ctx().screen_rect().bottom().min(ui.clip_rect().bottom())
+            - ui.next_widget_position().y
+            - chrome)
+            .max(0.0);
+        // The supported minimum window retains a native result row and a
+        // context line. Long context uses the existing bounded scroll area.
+        let row_height = (ui.text_style_height(&egui::TextStyle::Button) + 2.0 * padding.y)
+            .max(ui.spacing().interact_size.y);
+        let results_min = (2.0 * row_height + spacing.y).min(results_max);
+        let preview_min = ui
+            .text_style_height(&egui::TextStyle::Monospace)
+            .min(preview_max);
+        if remaining < row_height + preview_min {
+            // Below the supported window height, do not manufacture space.
+            // This explicitly limited view may expose partial lines; the
+            // existing title says to scroll and Escape/Close remain unchanged.
+            let scale = remaining / (row_height + preview_min);
+            return (row_height * scale, preview_min * scale, true);
+        }
+        let preview = preview_target
+            .max(preview_min)
+            .min((remaining - results_min).max(preview_min));
+        let results = results_max.min(remaining - preview);
+        (results, preview, preview < body_height)
+    }
+
+    fn browse_preview_hint(&self) -> &'static str {
+        if self.browse.provider == Provider::ProjectText {
+            "Read-only context · Space starts following selection · Esc stops"
+        } else {
+            "Explicit read-only preview · 1 MiB maximum"
+        }
+    }
+
+    fn browse_preview_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        max_height: f32,
+        budgeted: bool,
+        scrolling: bool,
+    ) {
         if self.browse.desired.is_some() {
-            ui.separator();
+            ui.add(egui::Separator::default().spacing(BROWSE_PREVIEW_SEPARATOR));
             let context = self.current_project_text_context(PreviewSurface::Browse);
             let reveal = self.take_context_reveal(ui, PreviewSurface::Browse);
             let text = context
                 .as_ref()
                 .map(|context| context.text.as_str())
                 .or_else(|| self.current_preview_text(PreviewSurface::Browse));
-            let title = match &self.browse.preview {
-                Some(Preview::Draft(_)) => "Current open draft · read-only preview".to_owned(),
-                Some(Preview::Disk { revision, .. }) => format!(
-                    "Disk preview · revision {} · search coordinates may be historical",
-                    &revision[..8]
-                ),
-                Some(Preview::Message { message, .. }) => message.clone(),
-                None => "Preview requested…".to_owned(),
-            };
+            let title = self.browse_preview_title(scrolling);
             ui.label(RichText::new(title).small().color(MUTED));
             if let Some(context) = &context {
                 ui.label(RichText::new(&context.note).small().color(MUTED));
@@ -2397,6 +2519,7 @@ impl CedarApp {
             let scroll = egui::ScrollArea::both()
                 .id_salt("browse_preview_scroll")
                 .animated(self.browse.provider == Provider::Files)
+                .min_scrolled_height(if budgeted { 0.0 } else { 64.0 })
                 .max_height(max_height)
                 .show(ui, |ui| {
                     let content = if let Some(context) = &context {
@@ -2420,11 +2543,7 @@ impl CedarApp {
                 PreviewSurface::Browse,
             );
             self.browse_response(ui, Target::PreviewPane, &scroll.inner);
-            ui.label(
-                RichText::new("Escape returns to the selected result")
-                    .small()
-                    .color(MUTED),
-            );
+            ui.label(RichText::new(BROWSE_PREVIEW_RETURN).small().color(MUTED));
         }
     }
     pub(super) fn browse_window(&mut self, ctx: &egui::Context) {
@@ -2611,11 +2730,17 @@ impl CedarApp {
             if let Some(message) = &self.browse.message { ui.colored_label(AMBER, message); }
             if self.browse.truncated { ui.colored_label(AMBER, if self.browse.provider == Provider::ProjectText { "Search incomplete; more matches may exist." } else { "Result limit reached; more matches may exist. Narrow the query." }); }
             let max_height = (ctx.screen_rect().height() - 400.0).clamp(70.0, 280.0);
+            let preview_height = (ctx.screen_rect().height() - 400.0).clamp(45.0, 180.0);
             let wide = ui.available_width() >= 760.0;
+            let (max_height, preview_height, preview_scrolling) = if !wide && self.browse.desired.is_some() {
+                self.browse_narrow_pane_heights(ui, max_height, preview_height)
+            } else {
+                (max_height, preview_height, false)
+            };
             if wide {
                 ui.columns(2, |columns| {
                     self.browse_results_panel(&mut columns[0], max_height, &mut select, &mut open, &mut toggle_group);
-                    self.browse_preview_panel(&mut columns[1], max_height);
+                    self.browse_preview_panel(&mut columns[1], max_height, false, false);
                 });
             } else {
                 self.browse_results_panel(ui, max_height, &mut select, &mut open, &mut toggle_group);
@@ -2624,9 +2749,9 @@ impl CedarApp {
             ui.horizontal(|ui| {
                 preview |= self.browse_button(ui, Target::Preview, "Preview · Space", selected);
                 open |= self.browse_button(ui, Target::Open, "Open · Enter", selected);
-                ui.label(RichText::new(if self.browse.provider == Provider::ProjectText { "Read-only context · Space starts following selection · Esc stops" } else { "Explicit read-only preview · 1 MiB maximum" }).small().color(MUTED));
+                ui.label(RichText::new(self.browse_preview_hint()).small().color(MUTED));
             });
-            if !wide { self.browse_preview_panel(ui, (ctx.screen_rect().height() - 400.0).clamp(45.0, 180.0)); }
+            if !wide { self.browse_preview_panel(ui, preview_height, true, preview_scrolling); }
         });
         self.finish_files_composition();
         // Same modal quarantine as the legacy chooser: entry/exit events cannot

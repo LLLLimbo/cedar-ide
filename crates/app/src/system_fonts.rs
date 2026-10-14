@@ -1,4 +1,5 @@
-//! Optional local-only CJK fallback. Nothing is downloaded or bundled from the OS.
+//! Embedded Latin UI/code faces and optional local-only CJK fallback.
+//! No fonts are downloaded at runtime or bundled from the OS.
 use ab_glyph::Font;
 use eframe::egui;
 use std::{
@@ -11,6 +12,31 @@ use std::{
 pub const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_COLLECTION_FACES: u32 = 32;
 const FALLBACK_NAME: &str = "cedar-system-cjk";
+const UI_FONT_NAME: &str = "cedar-inter-regular";
+const CODE_FONT_NAME: &str = "cedar-jetbrains-mono-regular";
+const UI_FONT: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+const CODE_FONT: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
+
+/// Build the same embedded base at startup and when a system fallback arrives.
+/// Keep egui's symbol/emoji faces behind our primary Latin faces.
+pub fn base_fonts() -> egui::FontDefinitions {
+    let mut definitions = egui::FontDefinitions::default();
+    for (name, bytes, family) in [
+        (UI_FONT_NAME, UI_FONT, egui::FontFamily::Proportional),
+        (CODE_FONT_NAME, CODE_FONT, egui::FontFamily::Monospace),
+    ] {
+        definitions
+            .font_data
+            .insert(name.into(), Arc::new(egui::FontData::from_static(bytes)));
+        definitions
+            .families
+            .entry(family)
+            .or_default()
+            .insert(0, name.into());
+    }
+    definitions
+}
+
 struct LoadedFont {
     bytes: Vec<u8>,
     index: u32,
@@ -81,7 +107,12 @@ pub fn contains_cjk(text: &str) -> bool {
     })
 }
 fn install(ctx: &egui::Context, font: LoadedFont) {
-    let mut definitions = egui::FontDefinitions::default();
+    ctx.set_fonts(with_system_fallback(font));
+    ctx.request_repaint();
+}
+
+fn with_system_fallback(font: LoadedFont) -> egui::FontDefinitions {
+    let mut definitions = base_fonts();
     let mut data = egui::FontData::from_owned(font.bytes);
     data.index = font.index;
     definitions
@@ -95,8 +126,7 @@ fn install(ctx: &egui::Context, font: LoadedFont) {
             .or_default()
             .push(FALLBACK_NAME.into());
     }
-    ctx.set_fonts(definitions);
-    ctx.request_repaint();
+    definitions
 }
 fn candidates() -> Vec<PathBuf> {
     #[cfg(target_os = "windows")]
@@ -236,6 +266,117 @@ fn choose_face(bytes: &[u8]) -> Result<(u32, String), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_faces_match_pinned_identity_and_hashes() {
+        use sha2::{Digest, Sha256};
+        for (bytes, family, version, hash, monospaced) in [
+            (
+                UI_FONT,
+                "Inter",
+                "Version 4.001;git-9221beed3",
+                "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82",
+                false,
+            ),
+            (
+                CODE_FONT,
+                "JetBrains Mono",
+                "Version 2.304; ttfautohint (v1.8.4.7-5d5b)",
+                "a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f",
+                true,
+            ),
+        ] {
+            assert_eq!(format!("{:x}", Sha256::digest(bytes)), hash);
+            let face = ttf_parser::Face::parse(bytes, 0).unwrap();
+            let has_name = |id, expected: &str| {
+                face.names()
+                    .into_iter()
+                    .any(|name| name.name_id == id && name.to_string().as_deref() == Some(expected))
+            };
+            assert!(has_name(ttf_parser::name_id::FAMILY, family));
+            assert!(has_name(ttf_parser::name_id::SUBFAMILY, "Regular"));
+            assert!(has_name(ttf_parser::name_id::VERSION, version));
+            assert_eq!(face.weight().to_number(), 400);
+            assert_eq!(face.is_monospaced(), monospaced);
+            let font = ab_glyph::FontRef::try_from_slice(bytes).unwrap();
+            assert!((32_u8..=126).all(|c| font.glyph_id(char::from(c)).0 != 0));
+        }
+    }
+
+    #[test]
+    fn base_fonts_are_repeatable_and_keep_builtin_fallbacks() {
+        let base = base_fonts();
+        assert_eq!(base, base_fonts());
+        let defaults = egui::FontDefinitions::default();
+        for (family, name) in [
+            (egui::FontFamily::Proportional, UI_FONT_NAME),
+            (egui::FontFamily::Monospace, CODE_FONT_NAME),
+        ] {
+            let fonts = &base.families[&family];
+            assert_eq!(fonts[0], name);
+            assert_eq!(&fonts[1..], defaults.families[&family]);
+        }
+        for (name, data) in defaults.font_data {
+            assert_eq!(base.font_data[&name], data);
+        }
+    }
+
+    fn test_fallback() -> LoadedFont {
+        // This fixture exercises replacement ordering without depending on any
+        // installed OS font. Actual CJK coverage is a separate optional test.
+        LoadedFont {
+            bytes: CODE_FONT.to_vec(),
+            index: 0,
+            family: "Test fallback".into(),
+            path: "test-fixture.ttf".into(),
+        }
+    }
+
+    #[test]
+    fn late_fallback_only_appends_to_embedded_base() {
+        let base = base_fonts();
+        let mut with_fallback = with_system_fallback(test_fallback());
+        assert!(with_fallback.font_data.remove(FALLBACK_NAME).is_some());
+        for family in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
+            let fonts = with_fallback.families.get_mut(&family).unwrap();
+            assert_eq!(fonts.pop().as_deref(), Some(FALLBACK_NAME));
+            assert!(!fonts.iter().any(|name| name == FALLBACK_NAME));
+        }
+        assert_eq!(with_fallback, base);
+    }
+
+    fn latin_metrics(ctx: &egui::Context) -> Vec<(egui::Vec2, Vec<egui::Pos2>)> {
+        let mut metrics = Vec::new();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            for font in [
+                egui::FontId::proportional(13.0),
+                egui::FontId::monospace(14.0),
+            ] {
+                let galley = ctx.fonts(|fonts| {
+                    fonts.layout_no_wrap("Cedar 0123 Wi".into(), font, egui::Color32::WHITE)
+                });
+                metrics.push((
+                    galley.size(),
+                    galley.rows[0]
+                        .glyphs
+                        .iter()
+                        .map(|glyph| glyph.pos)
+                        .collect(),
+                ));
+            }
+        });
+        metrics
+    }
+
+    #[test]
+    fn installing_late_fallback_does_not_reset_latin_metrics() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(base_fonts());
+        let before = latin_metrics(&ctx);
+        install(&ctx, test_fallback());
+        assert_eq!(latin_metrics(&ctx), before);
+    }
+
     #[test]
     fn detects_cjk_without_loading_for_ascii() {
         assert!(!contains_cjk("fn main() { println!(\"hello\"); }"));
@@ -254,6 +395,8 @@ mod tests {
     #[ignore = "requires an installed supported system CJK font"]
     fn real_system_cjk_fallback_covers_chinese() {
         let ctx = egui::Context::default();
+        ctx.set_fonts(base_fonts());
+        let latin_before = latin_metrics(&ctx);
         let mut before = true;
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             before =
@@ -261,7 +404,7 @@ mod tests {
         });
         assert!(
             !before,
-            "Pinned default egui fonts unexpectedly already contain Chinese"
+            "Pinned embedded Latin fonts unexpectedly already contain Chinese"
         );
         let font = load_system_font().expect("No supported system font");
         println!(
@@ -288,5 +431,6 @@ mod tests {
             after,
             "Installed font fallback did not make Chinese glyphs available to egui"
         );
+        assert_eq!(latin_metrics(&ctx), latin_before);
     }
 }

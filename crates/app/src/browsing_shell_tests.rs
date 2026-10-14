@@ -16,6 +16,48 @@ const LEGACY: [(Tool, &str); 4] = [
     (Tool::Tests, "Test Results"),
 ];
 
+#[test]
+fn island_tab_baselines_and_overflow_share_fixed_header_geometry() {
+    let size = [1180.0, 812.0];
+    let (mut app, _commands) = fixture(13.0);
+    app.documents.push(Document::new(
+        2,
+        "中文.txt".into(),
+        "中文".into(),
+        "b".repeat(64),
+    ));
+    app.documents.push(Document::new(
+        3,
+        "src/main/java/IslandsPreview.java".into(),
+        "class IslandsPreview {}".into(),
+        "c".repeat(64),
+    ));
+    for active in [1, 2, 3] {
+        app.active_document = Some(active);
+        settle(&mut app, size);
+        let heading = visible(&app, size, "project_heading");
+        let first = visible(&app, size, "editor_tab:1");
+        for id in [2, 3] {
+            let tab = visible(&app, size, &format!("editor_tab:{id}"));
+            assert!(
+                (tab.center().y - first.center().y).abs() <= 0.125,
+                "tab baselines diverged: {first:?} / {tab:?}"
+            );
+        }
+        let overflow = visible(&app, size, "editor_overflow");
+        assert!(
+            (first.center().y - heading.center().y).abs() <= 0.125,
+            "Project/editor header centers diverged: {heading:?} / {first:?}"
+        );
+        assert!((overflow.center().y - first.center().y).abs() <= 0.125);
+        assert!(
+            overflow.right() >= size[0] - 20.0,
+            "overflow must stay at the right edge, not follow the last tab: {overflow:?}"
+        );
+        assert!(overflow.width() >= 26.0 && overflow.height() >= 26.0);
+    }
+}
+
 pub(super) fn fixture(font: f32) -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
     let form = ConnectForm {
@@ -41,9 +83,10 @@ pub(super) fn fixture(font: f32) -> (CedarApp, Receiver<Command>) {
     app.search_query = "retained query".into();
     app.search_scope = "src".into();
     app.search_masks = "*.rs".into();
+    app.editor_ctx.set_fonts(system_fonts::base_fonts());
     app.editor_ctx.style_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(9.0, 8.0);
-        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style
             .text_styles
             .insert(egui::TextStyle::Body, FontId::proportional(font));
@@ -86,7 +129,17 @@ fn visible(app: &CedarApp, size: [f32; 2], name: &str) -> egui::Rect {
     rect
 }
 pub(super) fn click(app: &mut CedarApp, size: [f32; 2], name: &str) {
-    let at = visible(app, size, name).center();
+    let at = if name == "editor" {
+        // TextEdit owns the full scrollable document. Click its real visible
+        // intersection, rather than requiring the entire document on screen.
+        let rect = workspace_access_tests::recorded_rect(app, name)
+            .intersect(workspace_access_tests::recorded_clip(app, name))
+            .intersect(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into()));
+        assert!(rect.is_positive(), "editor has no visible pointer target");
+        rect.center()
+    } else {
+        visible(app, size, name).center()
+    };
     for pressed in [true, false] {
         frame(
             app,
@@ -167,20 +220,22 @@ fn compact_shell_primary_entries_and_closed_menu_status_fit_at_both_fonts() {
                 egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("header"))
                     .unwrap()
                     .rect;
-            assert_eq!(header.height(), if font > 15.0 { 48.0 } else { 40.0 });
+            assert_eq!(header.height(), 44.0);
             let back = visible(&app, size, "Back");
             let forward = visible(&app, size, "Forward");
             let tab = visible(&app, size, "editor_tab:1");
-            assert!(back.right() < forward.left() && forward.right() < tab.left());
+            assert!(back.right() < forward.left());
             assert!(
-                back.y_range().intersects(tab.y_range())
-                    && forward.y_range().intersects(tab.y_range()),
-                "history controls left the tab band"
+                header.contains_rect(back)
+                    && header.contains_rect(forward)
+                    && back.bottom() < tab.top()
+                    && forward.bottom() < tab.top(),
+                "history controls must stay in the header above the tab band"
             );
             visible(&app, size, "connection_status");
             visible(&app, size, "recovery_status");
             let output = frame(&mut app, size, vec![]);
-            for text in ["Connected", "UNSAVED"] {
+            for text in ["Connected", "origin.txt  •"] {
                 assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Text(draw) if draw.galley.text() == text && shape.clip_rect.contains_rect(draw.visual_bounding_rect()))), "closed shell hides {text}");
             }
             app.error = Some("A visible workspace error".into());
@@ -209,6 +264,11 @@ fn workspace_and_tools_menus_remain_visible_and_pointer_reachable_after_resize()
                 "workspace_copy_draft",
                 "workspace_loaded_files",
             ] {
+                if workspace_access_tests::recorded_response(&app, name).enabled() {
+                    // A resized popup can retain a smaller scroll viewport.
+                    // Native focus must reveal each action before pointer use.
+                    tab_to(&mut app, size, name);
+                }
                 visible(&app, size, name);
             }
             // Clicking the menu button closes it without invoking an action.
@@ -239,13 +299,17 @@ fn long_workspace_identity_keeps_every_menu_action_reachable() {
     for font in [13.0, 18.0] {
         let (mut app, commands) = fixture(font);
         app.root = format!(
-            "/projects/{}/workspace",
-            "a-long-directory-name/".repeat(120)
+            "/projects/{}/{}",
+            "a-long-directory-name/".repeat(120),
+            "long-workspace-identity-".repeat(40)
         );
         // Produce a real, bounded completion status without sending a Write.
         app.queue_save_all();
         app.cancel_save_all();
         settle(&mut app, size);
+        for name in ESSENTIAL.into_iter().chain(["Back", "Forward"]) {
+            visible(&app, size, name);
+        }
         assert!(app.save_all_message().unwrap().contains("Cancelled"));
         click(&mut app, size, "workspace_menu");
         for name in [
@@ -423,14 +487,35 @@ pub(super) fn open_header_root(ctx: &egui::Context) -> Option<egui::Id> {
         .map(|root| root.id)
 }
 
+fn open_shell_root(app: &CedarApp, menu: &str) -> Option<egui::Id> {
+    if matches!(menu, "workspace_menu" | "tools_menu") {
+        return open_header_root(&app.editor_ctx);
+    }
+    let root = workspace_access_tests::recorded_response(app, menu).id;
+    let menus = app.editor_ctx.data(|data| {
+        data.get_temp::<IslandMenus>(egui::Id::new("cedar_island_menus"))
+            .expect("island menu owners must be registered by production layout")
+    });
+    let (bar, _) = menus
+        .roots
+        .into_iter()
+        .find(|(_, id)| *id == root)
+        .expect("rendered island menu root must have its own registered bar");
+    egui::menu::BarState::load(&app.editor_ctx, bar)
+        .as_ref()
+        .map(|menu| menu.id)
+}
+
 fn menu_painted(output: &egui::FullOutput, menu: &str) -> bool {
-    let text = if menu == "workspace_menu" {
-        "Save all editor buffers · Ctrl/Cmd+Shift+S"
-    } else {
-        "Test Results"
+    let text = match menu {
+        "workspace_menu" => "Save all editor buffers · Ctrl/Cmd+Shift+S",
+        "tools_menu" => "Test Results",
+        "project_heading" => "Ctrl/Cmd+P  Choose a file",
+        "editor_overflow" => "Copy draft",
+        _ => panic!("unrecognized menu {menu}"),
     };
     output.shapes.iter().any(|shape| {
-        matches!(&shape.shape, egui::epaint::Shape::Text(draw) if draw.galley.text() == text)
+        matches!(&shape.shape, egui::epaint::Shape::Text(draw) if draw.galley.text().starts_with(text))
     })
 }
 
@@ -471,7 +556,12 @@ pub(super) fn draft_snapshot(app: &CedarApp) -> DraftSnapshot {
 #[test]
 fn header_escape_closes_each_rendered_root_and_preserves_dirty_selection_and_native_undo() {
     let size = [1280.0, 900.0];
-    for menu in ["workspace_menu", "tools_menu"] {
+    for menu in [
+        "workspace_menu",
+        "tools_menu",
+        "project_heading",
+        "editor_overflow",
+    ] {
         let (mut app, commands) = fixture(13.0);
         settle(&mut app, size);
         click(&mut app, size, "editor");
@@ -488,10 +578,10 @@ fn header_escape_closes_each_rendered_root_and_preserves_dirty_selection_and_nat
         click(&mut app, size, menu);
         let before = frame(&mut app, size, vec![]);
         let root = workspace_access_tests::recorded_response(&app, menu).id;
-        assert_eq!(open_header_root(&app.editor_ctx), Some(root));
+        assert_eq!(open_shell_root(&app, menu), Some(root));
         assert!(menu_painted(&before, menu));
         let pressed = frame(&mut app, size, vec![escape_event(true)]);
-        assert_eq!(open_header_root(&app.editor_ctx), None);
+        assert_eq!(open_shell_root(&app, menu), None);
         assert!(!menu_painted(&pressed, menu));
         frame(&mut app, size, vec![escape_event(false)]);
         let idle = frame(&mut app, size, vec![]);
@@ -535,12 +625,17 @@ fn header_escape_keeps_existing_no_menu_dismissal_and_only_dismisses_its_menu() 
     key(&mut app, size, egui::Key::Escape, egui::Modifiers::NONE);
     assert!(!app.find_open, "no-menu Escape still closes inline Find");
     assert_eq!(draft_snapshot(&app), snapshot);
-    for menu in ["workspace_menu", "tools_menu"] {
+    for menu in [
+        "workspace_menu",
+        "tools_menu",
+        "project_heading",
+        "editor_overflow",
+    ] {
         app.find_open = true;
         settle(&mut app, size);
         click(&mut app, size, menu);
         key(&mut app, size, egui::Key::Escape, egui::Modifiers::NONE);
-        assert_eq!(open_header_root(&app.editor_ctx), None);
+        assert_eq!(open_shell_root(&app, menu), None);
         assert!(
             app.find_open,
             "owned menu Escape does not also close inline Find"
@@ -636,7 +731,12 @@ fn header_escape_rejects_stale_pass_viewport_context_and_unowned_root() {
 #[test]
 fn header_escape_closes_menu_while_ready_open_is_retired_without_replacing_dirty_editor() {
     let size = [1280.0, 900.0];
-    for menu in ["workspace_menu", "tools_menu"] {
+    for menu in [
+        "workspace_menu",
+        "tools_menu",
+        "project_heading",
+        "editor_overflow",
+    ] {
         let (mut app, commands) = fixture(13.0);
         app.next_document = 2;
         settle(&mut app, size);
@@ -645,7 +745,7 @@ fn header_escape_closes_menu_while_ready_open_is_retired_without_replacing_dirty
         let read = commands.try_recv().unwrap();
         assert!(matches!(&read.op, Operation::Read { path } if path == "queued.txt"));
         click(&mut app, size, menu);
-        assert!(open_header_root(&app.editor_ctx).is_some());
+        assert!(open_shell_root(&app, menu).is_some());
         let snapshot = draft_snapshot(&app);
         let navigation = app.navigation_epoch;
         app.result_tx
@@ -661,7 +761,7 @@ fn header_escape_closes_menu_while_ready_open_is_retired_without_replacing_dirty
             }))
             .unwrap();
         key(&mut app, size, egui::Key::Escape, egui::Modifiers::NONE);
-        assert_eq!(open_header_root(&app.editor_ctx), None);
+        assert_eq!(open_shell_root(&app, menu), None);
         assert_eq!(app.navigation_epoch, navigation + 1);
         assert!(!app.pending.contains_key(&read.id));
         assert!(app.location_history.pending.is_none());
@@ -685,6 +785,242 @@ fn header_escape_closes_menu_while_ready_open_is_retired_without_replacing_dirty
             commands.try_recv().is_err(),
             "Escape must not issue another operation"
         );
+    }
+}
+
+#[test]
+fn island_escape_rejects_stale_pass_viewport_context_and_unowned_root() {
+    let size = [1280.0, 900.0];
+    let owner_key = egui::Id::new("cedar_island_menus");
+    for menu in ["project_heading", "editor_overflow"] {
+        for invalid in [
+            "missing", "stale", "overflow", "viewport", "context", "root", "bar",
+        ] {
+            let (mut app, commands) = fixture(13.0);
+            settle(&mut app, size);
+            click(&mut app, size, "editor");
+            click(&mut app, size, menu);
+            frame(
+                &mut app,
+                size,
+                vec![egui::Event::PointerMoved(egui::pos2(1100.0, 800.0))],
+            );
+            let snapshot = draft_snapshot(&app);
+            let ctx = app.editor_ctx.clone();
+            let root = workspace_access_tests::recorded_response(&app, menu).id;
+            let mut owners = ctx.data(|data| data.get_temp::<IslandMenus>(owner_key).unwrap());
+            let index = owners.roots.iter().position(|(_, id)| *id == root).unwrap();
+            let actual_bar = owners.roots[index].0;
+            let mut bar = egui::menu::BarState::load(&ctx, actual_bar);
+            assert_eq!(bar.as_ref().map(|menu| menu.id), Some(root));
+            let mut expected_root = root;
+            let other = egui::Id::new(("unrelated_island_menu_root", menu));
+            let mut unrelated_bar = None;
+            match invalid {
+                "missing" => {}
+                "stale" => owners.pass -= 1,
+                "overflow" => owners.pass = u64::MAX,
+                "viewport" => owners.viewport = egui::ViewportId::from_hash_of("other_viewport"),
+                "context" => app.editor_ctx = egui::Context::default(),
+                "root" => {
+                    bar.as_mut().unwrap().id = other;
+                    expected_root = other;
+                    bar.store(&ctx, actual_bar);
+                }
+                "bar" => {
+                    let id = egui::Id::new(("unrelated_island_menu_bar", menu));
+                    owners.roots[index].0 = id;
+                    bar.as_mut().unwrap().id = other;
+                    bar.store(&ctx, id);
+                    unrelated_bar = Some(id);
+                }
+                _ => unreachable!(),
+            }
+            ctx.data_mut(|data| {
+                if invalid == "missing" {
+                    data.remove::<IslandMenus>(owner_key);
+                } else {
+                    data.insert_temp(owner_key, owners);
+                }
+            });
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
+                events: vec![escape_event(true)],
+                ..Default::default()
+            };
+            eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+            let mut native = eframe::Frame::_new_kittest();
+            let _ = ctx.run(input, |ctx| eframe::App::update(&mut app, ctx, &mut native));
+            assert_eq!(
+                egui::menu::BarState::load(&ctx, actual_bar)
+                    .as_ref()
+                    .map(|menu| menu.id),
+                Some(expected_root),
+                "{menu}/{invalid} must not close an unproven island menu"
+            );
+            if let Some(id) = unrelated_bar {
+                assert_eq!(
+                    egui::menu::BarState::load(&ctx, id)
+                        .as_ref()
+                        .map(|menu| menu.id),
+                    Some(other)
+                );
+            }
+            app.editor_ctx = ctx;
+            frame(&mut app, size, vec![escape_event(false)]);
+            frame(&mut app, size, vec![]);
+            assert_eq!(
+                egui::menu::BarState::load(&app.editor_ctx, actual_bar)
+                    .as_ref()
+                    .map(|menu| menu.id),
+                Some(expected_root)
+            );
+            assert_eq!(draft_snapshot(&app), snapshot);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn island_menus_native_keyboard_access_and_escape_preserve_inline_find() {
+    for font in [13.0, 18.0] {
+        for menu in ["project_heading", "editor_overflow"] {
+            let size = [780.0, 540.0];
+            let (mut app, commands) = fixture(font);
+            app.find_open = true;
+            settle(&mut app, size);
+            click(&mut app, size, "editor");
+            let snapshot = draft_snapshot(&app);
+            // Native Tab indents a focused code editor. The real Project rail
+            // establishes a chrome focus owner without injecting a focus ID.
+            click(&mut app, size, "project_rail");
+            tab_to(&mut app, size, menu);
+            key(&mut app, size, egui::Key::Enter, egui::Modifiers::NONE);
+            assert!(open_shell_root(&app, menu).is_some());
+            assert!(menu_painted(&frame(&mut app, size, vec![]), menu));
+            if menu == "project_heading" {
+                for item in [
+                    "explorer_flat_mode",
+                    "explorer_tree_mode",
+                    "project_shortcuts",
+                ] {
+                    tab_to(&mut app, size, item);
+                    visible(&app, size, item);
+                }
+            }
+            key(&mut app, size, egui::Key::Escape, egui::Modifiers::NONE);
+            assert!(open_shell_root(&app, menu).is_none());
+            assert!(app.find_open);
+            assert_eq!(draft_snapshot(&app), snapshot);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn project_toolbar_slots_are_visible_disjoint_and_stable_across_pending_at_both_fonts() {
+    let size = [780.0, 540.0];
+    let slots = [
+        "project_heading",
+        "project_new_file",
+        "explorer_refresh",
+        "project_select_current",
+        "project_reveal_cancel",
+    ];
+    for width in [180.0, 246.0, 460.0] {
+        for font in [13.0, 18.0] {
+            let (mut app, commands) = fixture(font);
+            app.editor_ctx.data_mut(|data| {
+                data.insert_persisted(
+                    egui::Id::new("explorer"),
+                    egui::containers::panel::PanelState {
+                        rect: egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, size[1]),
+                        ),
+                    },
+                );
+            });
+            settle(&mut app, size);
+            click(&mut app, size, "editor");
+            let original = slots.map(|name| {
+                let rect = visible(&app, size, name);
+                (
+                    workspace_access_tests::recorded_response(&app, name).id,
+                    rect,
+                )
+            });
+            let sidebar = egui::containers::panel::PanelState::load(
+                &app.editor_ctx,
+                egui::Id::new("explorer"),
+            )
+            .unwrap()
+            .rect;
+            assert!(
+                (sidebar.width() - width).abs() < 0.1,
+                "toolbar expanded {width}px sidebar at {font}pt: actual={sidebar:?}; heading/slots={original:?}"
+            );
+            for (index, (id, rect)) in original.iter().enumerate() {
+                assert!(
+                    sidebar.contains_rect(*rect),
+                    "{} outside sidebar at {width}px/{font}pt",
+                    slots[index]
+                );
+                for (other_id, other) in &original[index + 1..] {
+                    assert_ne!(id, other_id, "independent toolbar actions share an ID");
+                    assert!(
+                        !rect.intersect(*other).is_positive(),
+                        "toolbar slots overlap at {width}px/{font}pt: {rect:?} / {other:?}"
+                    );
+                }
+            }
+            assert!(
+                !workspace_access_tests::recorded_response(&app, "project_reveal_cancel").enabled()
+            );
+            let snapshot = draft_snapshot(&app);
+            click(&mut app, size, "project_select_current");
+            assert!(app.project_reveal_pending());
+            assert!(
+                workspace_access_tests::recorded_response(&app, "project_reveal_cancel").enabled()
+            );
+            let list = commands
+                .try_recv()
+                .expect("explicit Reveal requests its root listing once");
+            assert!(matches!(&list.op, Operation::List { path } if path.is_empty()));
+            assert!(commands.try_recv().is_err());
+            for (index, name) in slots.iter().enumerate() {
+                assert_eq!(
+                    (
+                        workspace_access_tests::recorded_response(&app, name).id,
+                        visible(&app, size, name)
+                    ),
+                    original[index],
+                    "pending moved or renamed {name}"
+                );
+            }
+            app.cancel_project_reveal();
+            settle(&mut app, size);
+            assert!(!app.project_reveal_pending());
+            assert!(
+                !workspace_access_tests::recorded_response(&app, "project_reveal_cancel").enabled()
+            );
+            for (index, name) in slots.iter().enumerate() {
+                assert_eq!(
+                    (
+                        workspace_access_tests::recorded_response(&app, name).id,
+                        visible(&app, size, name)
+                    ),
+                    original[index],
+                    "cancellation moved or renamed {name}"
+                );
+            }
+            assert_eq!(draft_snapshot(&app), snapshot);
+            assert!(
+                app.pending.contains_key(&list.id),
+                "cancel must preserve the ordinary directory request"
+            );
+            assert!(commands.try_recv().is_err());
+        }
     }
 }
 

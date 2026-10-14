@@ -39,6 +39,22 @@ fn app(count: usize) -> (CedarApp, Receiver<Command>) {
 
 fn app_with_snapshot(initial_snapshot: Option<Snapshot>) -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
+    // Match the production startup fonts and metrics before the first native frame.
+    // Optional CJK fallback must not replace a default-font Latin layout mid-gesture.
+    app.editor_ctx.set_fonts(system_fonts::base_fonts());
+    app.editor_ctx.style_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, FontId::monospace(14.0));
+    });
     let form = ConnectForm {
         local_root: "/workspace".into(),
         allow_run: false,
