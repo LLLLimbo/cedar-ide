@@ -77,6 +77,8 @@ mod model;
 mod navigation;
 mod profile_ui;
 #[cfg(test)]
+mod project_context_tests;
+#[cfg(test)]
 mod project_text_preview_tests;
 mod recent_files;
 mod recovery;
@@ -2755,6 +2757,36 @@ impl CedarApp {
         }
     }
 
+    fn project_context_label(ui: &mut egui::Ui, text: &str, ready: bool) -> egui::Response {
+        let label = egui::Label::new(RichText::new(text).color(MUTED))
+            .truncate()
+            .selectable(false)
+            .sense(egui::Sense::hover());
+        if !ready {
+            return ui.add(label);
+        }
+        // egui 0.31 adds an automatic tooltip for elided Labels. Keep its
+        // native layout, widget info and non-selectable paint path, but let
+        // this context's single workspace/scope tooltip supply the full text.
+        let (galley_pos, galley, response) = label.layout_in_ui(ui);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
+        });
+        if ui.is_rect_visible(response.rect) {
+            let response_color = ui.style().visuals.text_color();
+            let underline = if response.has_focus() || response.highlighted() {
+                Stroke::new(1.0_f32, response_color)
+            } else {
+                Stroke::NONE
+            };
+            ui.painter().add(
+                egui::epaint::TextShape::new(galley_pos, galley, response_color)
+                    .with_underline(underline),
+            );
+        }
+        response
+    }
+
     fn sidebar(&mut self, ctx: &egui::Context) {
         // egui 0.31's panel minimum subtracts inner, but not outer, margins.
         // Compensate the 4pt island gap so the actual minimum remains 180pt.
@@ -2872,6 +2904,29 @@ impl CedarApp {
                                 ui.scroll_to_rect(target, Some(egui::Align::TOP));
                             }
                         }
+                        // Project's directory scope is independent of the active editor.
+                        // Keep its mode and exact scope visible without a navigation action.
+                        ui.push_id("project_context", |ui| {
+                            let mode = match self.explorer.mode {
+                                explorer_tree::Mode::Flat => "Flat",
+                                explorer_tree::Mode::Tree => "Tree",
+                            };
+                            let scope = self.explorer_scope();
+                            let context = match self.state {
+                                ConnectionState::Ready => format!("Scope: /{scope}"),
+                                ConnectionState::Connecting => "Connecting…".into(),
+                                ConnectionState::Disconnecting => "Disconnecting…".into(),
+                                ConnectionState::CleanupUnverified => "Connection cleanup unverified".into(),
+                                ConnectionState::Idle | ConnectionState::Disconnected => "Not connected".into(),
+                            };
+                            let text = format!("{mode} · {context}");
+                            let response = Self::project_context_label(ui, &text, self.ready());
+                            #[cfg(test)]
+                            project_context_tests::record(ui, &response, actual_viewport, &text);
+                            if self.ready() {
+                                response.on_hover_text(format!("Workspace: {}\nProject directory scope: /{}", self.root, scope));
+                            }
+                        });
                         // Later status and tree requests retain native last-writer priority.
                         ui.push_id("explorer_status", |ui| self.explorer_status(ui, resized));
                         ui.add_space(4.0);

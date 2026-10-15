@@ -1,6 +1,6 @@
 # Public source checkpoint
 
-This is the source-only public export of tested development stage `phase76-0.76.0-files-ime-acceptance-candidate`.
+This is the source-only public export of tested development stage `phase77-0.77.0-project-context-r2-candidate`.
 It is an independent Rust IDE project, not a complete IntelliJ IDEA replacement.
 Public commits preserve the phase-by-phase development sequence, but their hashes
 differ from the private build checkpoints because generated evidence is omitted.

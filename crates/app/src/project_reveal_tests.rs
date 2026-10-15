@@ -138,6 +138,7 @@ fn project_reveal_flat_actual_button_loads_only_parent_and_focuses_exact_visible
         .is_positive());
     assert_eq!(app.explorer.mode, Mode::Flat);
     assert_eq!(app.explorer.selected, "src/current.rs");
+    crate::project_context_tests::assert_recorded(&app, "Flat · Scope: /src");
     assert!(!app.project_reveal_pending());
     assert!(commands.try_recv().is_err());
 }
@@ -162,6 +163,7 @@ fn project_reveal_tree_lists_only_exact_ancestors_then_cached_reveal_has_no_requ
     }
     assert_eq!(app.explorer.mode, Mode::Tree);
     assert_eq!(app.explorer.selected, "one/two/current.rs");
+    crate::project_context_tests::assert_recorded(&app, "Tree · Scope: /one/two");
     assert!(workspace_access_tests::recorded_response(&app, "current.rs").has_focus());
     click(&mut app, "project_select_current");
     settle(&mut app);
@@ -240,6 +242,7 @@ fn project_reveal_cancel_keeps_list_slot_and_late_ordinary_cache_without_next_re
         .iter()
         .any(|row| row.entry.path == "src"));
     assert!(!app.explorer_busy());
+    crate::project_context_tests::assert_recorded(&app, "Tree · Scope: /");
     assert!(commands.try_recv().is_err());
     assert_ne!(
         app.editor_ctx.memory(|memory| memory.focused()),
@@ -842,6 +845,7 @@ fn project_reveal_canceled_flat_list_may_settle_ordinary_directory_without_reviv
     listed(&mut app, command, vec![entry("src/current.rs", false)]);
     settle(&mut app);
     assert_eq!(app.directory, "src");
+    crate::project_context_tests::assert_recorded(&app, "Flat · Scope: /src");
     assert_eq!(app.entries[0].path, "src/current.rs");
     assert!(!app.explorer_busy());
     assert!(!app.project_reveal_pending());

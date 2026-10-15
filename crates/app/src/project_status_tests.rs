@@ -161,6 +161,7 @@ fn completed_project_selection_names_historical_target_after_recent_tab_and_back
         settle(&mut app);
         assert_eq!(app.active().unwrap().path, "origin.rs", "{route}");
         assert_eq!(app.directory, directory);
+        crate::project_context_tests::assert_recorded(&app, &format!("Flat · Scope: /{directory}"));
         assert_eq!(
             app.entries
                 .iter()
@@ -260,6 +261,15 @@ fn later_cancel_failure_and_mode_change_replace_completed_project_status() {
                 assert_eq!(app.explorer.message.as_deref(), Some("Current file was not selected: its directory listing failed, was incomplete, or exceeded an Explorer limit. Refresh or Retry explicitly"));
             }
         }
+        crate::project_context_tests::assert_recorded(
+            &app,
+            match action {
+                "cancel" => "Flat · Scope: /",
+                "failure" => "Flat · Scope: /中文",
+                "mode" => "Tree · Scope: /",
+                _ => unreachable!(),
+            },
+        );
         assert_eq!(draft_witness(&app), before);
         assert!(!app.project_reveal_pending());
         assert!(commands.try_recv().is_err());
