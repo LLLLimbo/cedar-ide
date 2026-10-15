@@ -861,3 +861,1384 @@ fn files_live_terminal_ime_with_focus_loss_or_escape_preserves_text_and_stays_pa
         assert!(commands.try_recv().is_err());
     }
 }
+
+// Synthetic egui event model only; this does not exercise an OS IME. The
+// opposite oracles are intentional: accepted commit must settle; unaccepted
+// commit/cancel must preserve final native bytes without automatic admission.
+#[derive(Clone, Copy, Debug)]
+enum ImeFocusEnding {
+    AcceptedThenFocus,
+    CancelBeforePointer,
+    CancelBetweenPointer,
+    CommitBeforePointer,
+    CommitBetweenPointer,
+    FocusThenLateCommit,
+}
+
+fn ime_focus_frame(
+    app: &mut CedarApp,
+    commands: &Receiver<Command>,
+    ledger: &mut Vec<Command>,
+    label: &str,
+    time: f64,
+    events: Vec<egui::Event>,
+    discard: bool,
+) -> Vec<serde_json::Value> {
+    let ctx = app.editor_ctx.clone();
+    let raw = format!("{events:?}");
+    let before = serde_json::json!({
+        "focus": format!("{:?}", focused(app)),
+        "query": app.browse.query(), "scope": app.browse.scope(),
+        "controller": app.browse.ime_focus_observation(),
+    });
+    let mut input = egui::RawInput {
+        time: Some(time),
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SIZE)),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let hook = app.browse.ime_focus_observation();
+    let mut native = eframe::Frame::_new_kittest();
+    let mut passes = Vec::new();
+    let output = ctx.run(input, |ctx| {
+        eframe::App::update(app, ctx, &mut native);
+        let mut emitted = Vec::new();
+        for command in commands.try_iter() {
+            emitted.push(serde_json::json!({"id": command.id, "op": command.op}));
+            ledger.push(command);
+        }
+        let pass = serde_json::json!({
+            "label": label, "time": time, "raw": raw,
+            "before": before, "after_raw_hook": hook,
+            "pass": passes.len(), "cumulative_pass": ctx.cumulative_pass_nr(),
+            "query": app.browse.query(), "scope": app.browse.scope(),
+            "focus": format!("{:?}", focused(app)),
+            "query_response": crate::workspace_access_tests::recorded_observation(app, "browse_query"),
+            "scope_response": crate::workspace_access_tests::recorded_observation(app, "browse_scope"),
+            "controller": app.browse.ime_focus_observation(),
+            "commands": emitted, "documents": app.documents.len(),
+            "active_document": app.active_document,
+            "preview_visible": app.browse.preview_visible(),
+            "result_paths": app.browse.paths(),
+            "requested_discard": discard && passes.is_empty(),
+        });
+        eprintln!("IME_FOCUS_TRACE {pass}");
+        if discard && passes.is_empty() {
+            ctx.request_discard("IME focus terminal batch one additional pass");
+        }
+        passes.push(pass);
+    });
+    assert!(output
+        .shapes
+        .iter()
+        .all(|shape| shape.clip_rect.is_finite()));
+    passes
+}
+
+fn ime_focus_click(
+    app: &mut CedarApp,
+    commands: &Receiver<Command>,
+    ledger: &mut Vec<Command>,
+    probe: &str,
+) {
+    let pos = visible_center(app, probe);
+    for (label, events) in [
+        ("pointer_move", vec![egui::Event::PointerMoved(pos)]),
+        ("pointer_press", pointer(pos, true)),
+        ("pointer_release", pointer(pos, false)),
+    ] {
+        let t = now(app) + 0.001;
+        ime_focus_frame(app, commands, ledger, label, t, events, false);
+    }
+    assert_eq!(
+        focused(app),
+        Some(recorded_response(app, probe).id),
+        "fixture: actual pointer transfer"
+    );
+}
+
+fn ime_focus_case(origin: &str, ending: ImeFocusEnding, discard: bool) {
+    use ImeFocusEnding::*;
+    let destination = if origin == "browse_query" {
+        "browse_scope"
+    } else {
+        "browse_query"
+    };
+    eprintln!("IME_FOCUS_CASE origin={origin} destination={destination} ending={ending:?} discard={discard}");
+    let (mut app, commands) = discovery_fixture();
+    enter(&mut app, false);
+    let departure = selection_signature(selection(&app));
+    let undo = undo_texts(&app);
+    let history = (
+        app.location_history.back.len(),
+        app.location_history.forward.len(),
+    );
+    edit(&mut app, "browse_query", "stable");
+    edit(&mut app, "browse_scope", "src");
+    select_control(&mut app, origin);
+    let mut ledger: Vec<Command> = commands.try_iter().collect();
+    assert!(ledger.is_empty(), "fixture dispatched before composition");
+    assert_eq!(focused(&app), Some(recorded_response(&app, origin).id));
+    let t = now(&app) + 0.001;
+    ime_focus_frame(
+        &mut app,
+        &commands,
+        &mut ledger,
+        "preedit",
+        t,
+        vec![
+            egui::Event::Ime(egui::ImeEvent::Enabled),
+            egui::Event::Ime(egui::ImeEvent::Preedit("预".into())),
+        ],
+        false,
+    );
+    assert_eq!(
+        (app.browse.query(), app.browse.scope()),
+        if origin == "browse_query" {
+            ("预", "src")
+        } else {
+            ("stable", "预")
+        }
+    );
+    let t = now(&app) + 1.0;
+    ime_focus_frame(
+        &mut app,
+        &commands,
+        &mut ledger,
+        "preedit_idle",
+        t,
+        vec![],
+        false,
+    );
+    assert!(ledger.is_empty(), "preedit must not search");
+    let terminal = |cancel| {
+        vec![
+            egui::Event::Ime(if cancel {
+                egui::ImeEvent::Preedit(String::new())
+            } else {
+                egui::ImeEvent::Commit("终".into())
+            }),
+            egui::Event::Ime(egui::ImeEvent::Disabled),
+        ]
+    };
+    let committed_at;
+    if matches!(ending, AcceptedThenFocus) {
+        committed_at = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "accepted_terminal",
+            committed_at,
+            terminal(false),
+            discard,
+        );
+        assert_eq!(
+            if origin == "browse_query" {
+                app.browse.query()
+            } else {
+                app.browse.scope()
+            },
+            "终",
+            "positive control must prove actual acceptance"
+        );
+        ime_focus_click(&mut app, &commands, &mut ledger, destination);
+    } else if matches!(ending, FocusThenLateCommit) {
+        ime_focus_click(&mut app, &commands, &mut ledger, destination);
+        committed_at = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "late_terminal",
+            committed_at,
+            terminal(false),
+            discard,
+        );
+    } else {
+        let pos = visible_center(&app, destination);
+        let press = egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let release = egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let cancel = matches!(ending, CancelBeforePointer | CancelBetweenPointer);
+        let mut events = Vec::new();
+        if matches!(ending, CancelBeforePointer | CommitBeforePointer) {
+            events.extend(terminal(cancel));
+        }
+        events.extend([egui::Event::PointerMoved(pos), press]);
+        if matches!(ending, CancelBetweenPointer | CommitBetweenPointer) {
+            events.extend(terminal(cancel));
+        }
+        events.push(release);
+        committed_at = now(&app) + 0.001;
+        let passes = ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "same_batch_terminal_pointer",
+            committed_at,
+            events,
+            discard,
+        );
+        let expected_focus = format!("Some({:?})", recorded_response(&app, destination).id);
+        assert_eq!(
+            passes[0]["focus"].as_str(),
+            Some(expected_focus.as_str()),
+            "fixture: transfer must occur in first update pass"
+        );
+    }
+    assert_eq!(
+        focused(&app),
+        Some(recorded_response(&app, destination).id),
+        "fixture: terminal transfer must be genuine"
+    );
+    let final_query = app.browse.query().to_owned();
+    let final_scope = app.browse.scope().to_owned();
+    let accepted = if origin == "browse_query" {
+        final_query == "终"
+    } else {
+        final_scope == "终"
+    };
+    let destination_unchanged = if origin == "browse_query" {
+        final_scope == "src"
+    } else {
+        final_query == "stable"
+    };
+    let cancel = matches!(ending, CancelBeforePointer | CancelBetweenPointer);
+    let should_search = accepted && !cancel && destination_unchanged;
+    let mut failures = Vec::new();
+    if !destination_unchanged {
+        failures.push("origin terminal contaminated destination".to_owned());
+    }
+    if !ledger.is_empty() {
+        failures.push("command emitted before full debounce".to_owned());
+    }
+    ime_focus_frame(
+        &mut app,
+        &commands,
+        &mut ledger,
+        "deadline_249ms",
+        committed_at + 0.249,
+        vec![],
+        false,
+    );
+    if !ledger.is_empty() {
+        failures.push("command emitted before 250ms".to_owned());
+    }
+    ime_focus_frame(
+        &mut app,
+        &commands,
+        &mut ledger,
+        "deadline_250ms",
+        committed_at + 0.250,
+        vec![],
+        false,
+    );
+    ime_focus_frame(
+        &mut app,
+        &commands,
+        &mut ledger,
+        "terminal_idle",
+        committed_at + 2.0,
+        vec![],
+        false,
+    );
+    assert_eq!(
+        (app.browse.query(), app.browse.scope()),
+        (final_query.as_str(), final_scope.as_str()),
+        "idle must preserve final widget bytes"
+    );
+    let expected_count = usize::from(should_search);
+    if ledger.len() != expected_count {
+        failures.push(format!("automatic commands={}, expected={expected_count}; actual origin accepted={accepted}; cancel={cancel}", ledger.len()));
+    }
+    for command in &ledger {
+        if !matches!(&command.op, Operation::FindFiles { query, scope, limit } if should_search && query == &final_query && scope == &final_scope && *limit == cedar_protocol::DEFAULT_FILE_DISCOVERY_RESULTS)
+        {
+            failures.push(format!(
+                "unauthorized automatic operation id={} op={:?}",
+                command.id, command.op
+            ));
+        }
+    }
+    assert_eq!(focused(&app), Some(recorded_response(&app, destination).id));
+    assert!(app.browse.paths().is_empty() && !app.browse.preview_visible());
+    assert_eq!(app.documents.len(), 1);
+    assert_eq!(
+        history,
+        (
+            app.location_history.back.len(),
+            app.location_history.forward.len()
+        )
+    );
+    assert_draft(&app, departure, &undo);
+    eprintln!(
+        "IME_FOCUS_RESULT {}",
+        serde_json::json!({"origin": origin, "ending": format!("{ending:?}"), "discard": discard, "accepted": accepted, "destination_unchanged": destination_unchanged, "query": final_query, "scope": final_scope, "automatic_count": ledger.len(), "failures": failures})
+    );
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+    if !should_search {
+        // Cancellation/ambiguous termination is not permanent: an actual fresh
+        // Text event after refocusing/selecting the original control restores it.
+        ime_focus_click(&mut app, &commands, &mut ledger, origin);
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "recovery_select",
+            t,
+            modified_key(egui::Key::A, command_modifiers()),
+            false,
+        );
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "recovery_text",
+            t,
+            vec![egui::Event::Text("fresh".into())],
+            false,
+        );
+        let query = app.browse.query().to_owned();
+        let scope = app.browse.scope().to_owned();
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "recovery_249ms",
+            t + 0.249,
+            vec![],
+            false,
+        );
+        assert!(ledger.is_empty());
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "recovery_250ms",
+            t + 0.250,
+            vec![],
+            false,
+        );
+        assert_eq!(ledger.len(), 1);
+        assert!(
+            matches!(&ledger[0].op, Operation::FindFiles { query: q, scope: s, limit } if q == &query && s == &scope && *limit == cedar_protocol::DEFAULT_FILE_DISCOVERY_RESULTS)
+        );
+        assert_draft(&app, departure, &undo);
+    }
+}
+
+macro_rules! ime_focus_test {
+    ($name:ident, $origin:literal, $ending:ident) => {
+        #[test]
+        fn $name() {
+            ime_focus_case($origin, ImeFocusEnding::$ending, false);
+        }
+    };
+}
+ime_focus_test!(
+    files_live_ime_focus_query_to_scope_accepted_then_focus,
+    "browse_query",
+    AcceptedThenFocus
+);
+ime_focus_test!(
+    files_live_ime_focus_query_to_scope_cancel_before_pointer,
+    "browse_query",
+    CancelBeforePointer
+);
+ime_focus_test!(
+    files_live_ime_focus_query_to_scope_cancel_between_pointer,
+    "browse_query",
+    CancelBetweenPointer
+);
+ime_focus_test!(
+    files_live_ime_focus_query_to_scope_commit_before_pointer,
+    "browse_query",
+    CommitBeforePointer
+);
+ime_focus_test!(
+    files_live_ime_focus_query_to_scope_commit_between_pointer,
+    "browse_query",
+    CommitBetweenPointer
+);
+ime_focus_test!(
+    files_live_ime_focus_query_to_scope_focus_then_late_commit,
+    "browse_query",
+    FocusThenLateCommit
+);
+ime_focus_test!(
+    files_live_ime_focus_scope_to_query_accepted_then_focus,
+    "browse_scope",
+    AcceptedThenFocus
+);
+ime_focus_test!(
+    files_live_ime_focus_scope_to_query_cancel_before_pointer,
+    "browse_scope",
+    CancelBeforePointer
+);
+ime_focus_test!(
+    files_live_ime_focus_scope_to_query_cancel_between_pointer,
+    "browse_scope",
+    CancelBetweenPointer
+);
+ime_focus_test!(
+    files_live_ime_focus_scope_to_query_commit_before_pointer,
+    "browse_scope",
+    CommitBeforePointer
+);
+ime_focus_test!(
+    files_live_ime_focus_scope_to_query_commit_between_pointer,
+    "browse_scope",
+    CommitBetweenPointer
+);
+ime_focus_test!(
+    files_live_ime_focus_scope_to_query_focus_then_late_commit,
+    "browse_scope",
+    FocusThenLateCommit
+);
+
+#[test]
+fn files_live_ime_focus_query_to_scope_commit_before_pointer_requested_discard() {
+    ime_focus_case("browse_query", ImeFocusEnding::CommitBeforePointer, true);
+}
+
+fn ime_focus_extra_start(
+    origin: &str,
+    preedit: &str,
+) -> (CedarApp, Receiver<Command>, Vec<Command>) {
+    ime_focus_extra_start_with_undo_checkpoint(origin, preedit, false)
+}
+
+fn ime_focus_extra_start_with_undo_checkpoint(
+    origin: &str,
+    preedit: &str,
+    checkpoint: bool,
+) -> (CedarApp, Receiver<Command>, Vec<Command>) {
+    let (mut app, commands) = discovery_fixture();
+    enter(&mut app, false);
+    edit(&mut app, "browse_query", "stable");
+    edit(&mut app, "browse_scope", "src");
+    select_control(&mut app, origin);
+    let mut ledger: Vec<_> = commands.try_iter().collect();
+    assert!(ledger.is_empty());
+    if checkpoint {
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "undo_enable",
+            t,
+            vec![egui::Event::Ime(egui::ImeEvent::Enabled)],
+            false,
+        );
+        let t = now(&app) + 1.1;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "undo_checkpoint",
+            t,
+            vec![],
+            false,
+        );
+        assert!(ledger.is_empty());
+    }
+    let t = now(&app) + 0.001;
+    ime_focus_frame(
+        &mut app,
+        &commands,
+        &mut ledger,
+        "extra_preedit",
+        t,
+        vec![
+            egui::Event::Ime(egui::ImeEvent::Enabled),
+            egui::Event::Ime(egui::ImeEvent::Preedit(preedit.into())),
+        ],
+        false,
+    );
+    assert_eq!(
+        if origin == "browse_query" {
+            app.browse.query()
+        } else {
+            app.browse.scope()
+        },
+        preedit
+    );
+    let t = now(&app) + 1.0;
+    ime_focus_frame(
+        &mut app,
+        &commands,
+        &mut ledger,
+        "extra_preedit_idle",
+        t,
+        vec![],
+        false,
+    );
+    assert!(ledger.is_empty());
+    (app, commands, ledger)
+}
+
+fn ime_focus_extra_expect_one(
+    app: &mut CedarApp,
+    commands: &Receiver<Command>,
+    ledger: &mut Vec<Command>,
+    t: f64,
+    query: &str,
+    scope: &str,
+) {
+    ime_focus_frame(
+        app,
+        commands,
+        ledger,
+        "extra_249ms",
+        t + 0.249,
+        vec![],
+        false,
+    );
+    assert!(ledger.is_empty());
+    ime_focus_frame(
+        app,
+        commands,
+        ledger,
+        "extra_250ms",
+        t + 0.250,
+        vec![],
+        false,
+    );
+    assert_eq!(ledger.len(), 1);
+    assert!(
+        matches!(&ledger[0].op, Operation::FindFiles { query: q, scope: s, limit } if q == query && s == scope && *limit == cedar_protocol::DEFAULT_FILE_DISCOVERY_RESULTS)
+    );
+    ime_focus_frame(app, commands, ledger, "extra_idle", t + 2.0, vec![], false);
+    assert_eq!(ledger.len(), 1);
+}
+
+#[test]
+fn files_live_ime_focus_returned_owner_cannot_revive_late_terminal() {
+    for origin in ["browse_query", "browse_scope"] {
+        let destination = if origin == "browse_query" {
+            "browse_scope"
+        } else {
+            "browse_query"
+        };
+        let (mut app, commands, mut ledger) = ime_focus_extra_start(origin, "预");
+        let departure = selection_signature(selection(&app));
+        let undo = undo_texts(&app);
+        ime_focus_click(&mut app, &commands, &mut ledger, destination);
+        ime_focus_click(&mut app, &commands, &mut ledger, origin);
+        let t = now(&app) + 1.0;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "returned_owner_idle",
+            t,
+            vec![],
+            false,
+        );
+        assert!(ledger.is_empty());
+        assert_eq!(
+            app.browse.ime_focus_observation()["composition_owner_valid"],
+            false
+        );
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "returned_owner_late_terminal",
+            t,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Commit("终".into())),
+                egui::Event::Ime(egui::ImeEvent::Disabled),
+            ],
+            false,
+        );
+        let final_bytes = (app.browse.query().to_owned(), app.browse.scope().to_owned());
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "returned_owner_late_idle",
+            t + 2.0,
+            vec![],
+            false,
+        );
+        assert!(
+            ledger.is_empty(),
+            "returning focus must not revive old ownership"
+        );
+        assert_eq!(
+            (app.browse.query(), app.browse.scope()),
+            (final_bytes.0.as_str(), final_bytes.1.as_str())
+        );
+        // A genuinely fresh lifecycle may establish ownership again.
+        select_control(&mut app, origin);
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "fresh_lifecycle",
+            t,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Enabled),
+                egui::Event::Ime(egui::ImeEvent::Preedit("新".into())),
+            ],
+            false,
+        );
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "fresh_lifecycle_commit",
+            t,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Commit("新终".into())),
+                egui::Event::Ime(egui::ImeEvent::Disabled),
+            ],
+            false,
+        );
+        let query = app.browse.query().to_owned();
+        let scope = app.browse.scope().to_owned();
+        assert_eq!(
+            if origin == "browse_query" {
+                &query
+            } else {
+                &scope
+            },
+            "新终"
+        );
+        ime_focus_extra_expect_one(&mut app, &commands, &mut ledger, t, &query, &scope);
+        assert_draft(&app, departure, &undo);
+    }
+}
+
+#[test]
+fn files_live_ime_focus_same_value_unicode_commit_keeps_interval_after_transfer() {
+    for origin in ["browse_query", "browse_scope"] {
+        let destination = if origin == "browse_query" {
+            "browse_scope"
+        } else {
+            "browse_query"
+        };
+        for text in ["预", "中文😀𐐀e\u{301}"] {
+            let (mut app, commands, mut ledger) = ime_focus_extra_start(origin, text);
+            let t = now(&app) + 0.001;
+            ime_focus_frame(
+                &mut app,
+                &commands,
+                &mut ledger,
+                "same_value_commit",
+                t,
+                vec![
+                    egui::Event::Ime(egui::ImeEvent::Commit(text.into())),
+                    egui::Event::Ime(egui::ImeEvent::Disabled),
+                ],
+                false,
+            );
+            assert_eq!(
+                if origin == "browse_query" {
+                    app.browse.query()
+                } else {
+                    app.browse.scope()
+                },
+                text
+            );
+            ime_focus_click(&mut app, &commands, &mut ledger, destination);
+            let query = app.browse.query().to_owned();
+            let scope = app.browse.scope().to_owned();
+            ime_focus_extra_expect_one(&mut app, &commands, &mut ledger, t, &query, &scope);
+        }
+    }
+}
+
+#[test]
+fn files_live_ime_focus_mixed_text_or_paste_commit_is_not_rejected() {
+    for origin in ["browse_query", "browse_scope"] {
+        for paste in [false, true] {
+            for commit_first in [false, true] {
+                let (mut app, commands, mut ledger) = ime_focus_extra_start(origin, "预");
+                let text = if paste {
+                    egui::Event::Paste("后😀".into())
+                } else {
+                    egui::Event::Text("后😀".into())
+                };
+                let commit = egui::Event::Ime(egui::ImeEvent::Commit("终".into()));
+                let mut events = if commit_first {
+                    vec![commit, text]
+                } else {
+                    vec![text, commit]
+                };
+                events.push(egui::Event::Ime(egui::ImeEvent::Disabled));
+                let t = now(&app) + 0.001;
+                ime_focus_frame(
+                    &mut app,
+                    &commands,
+                    &mut ledger,
+                    "mixed_commit",
+                    t,
+                    events,
+                    false,
+                );
+                assert_eq!(
+                    if origin == "browse_query" {
+                        app.browse.query()
+                    } else {
+                        app.browse.scope()
+                    },
+                    "终后😀"
+                );
+                let query = app.browse.query().to_owned();
+                let scope = app.browse.scope().to_owned();
+                ime_focus_extra_expect_one(&mut app, &commands, &mut ledger, t, &query, &scope);
+            }
+        }
+    }
+}
+
+#[test]
+fn files_live_ime_focus_unicode_scalar_limit_preserves_protocol_rejection() {
+    let commit = "终😀𐐀e\u{301}".repeat(1000);
+    let expected: String = commit.chars().take(4096).collect();
+    for origin in ["browse_query", "browse_scope"] {
+        let (mut app, commands, mut ledger) = ime_focus_extra_start(origin, "预");
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "unicode_limit_commit",
+            t,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Commit(commit.clone())),
+                egui::Event::Ime(egui::ImeEvent::Disabled),
+            ],
+            false,
+        );
+        assert_eq!(
+            if origin == "browse_query" {
+                app.browse.query()
+            } else {
+                app.browse.scope()
+            },
+            expected
+        );
+        let query = app.browse.query().to_owned();
+        let scope = app.browse.scope().to_owned();
+        assert!(app.browse.ime_focus_observation()["settlement"].is_object());
+        let error = cedar_protocol::validate_file_discovery_request(
+            &query,
+            &scope,
+            cedar_protocol::DEFAULT_FILE_DISCOVERY_RESULTS,
+        )
+        .expect_err("4096 multibyte scalars exceed the existing protocol byte limit");
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "unicode_limit_249ms",
+            t + 0.249,
+            vec![],
+            false,
+        );
+        assert!(ledger.is_empty());
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "unicode_limit_250ms",
+            t + 0.250,
+            vec![],
+            false,
+        );
+        assert!(
+            ledger.is_empty(),
+            "native scalar acceptance does not bypass protocol validation"
+        );
+        let expected_error = error.to_string();
+        assert_eq!(app.browse.preview_message(), Some(expected_error.as_str()));
+        assert_eq!(
+            (app.browse.query(), app.browse.scope()),
+            (query.as_str(), scope.as_str())
+        );
+    }
+}
+
+#[test]
+fn files_live_ime_focus_direct_commit_without_preedit_keeps_existing_path() {
+    for origin in ["browse_query", "browse_scope"] {
+        let (mut app, commands) = discovery_fixture();
+        enter(&mut app, false);
+        edit(&mut app, "browse_query", "stable");
+        edit(&mut app, "browse_scope", "src");
+        select_control(&mut app, origin);
+        let mut ledger: Vec<_> = commands.try_iter().collect();
+        assert!(ledger.is_empty());
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "direct_commit",
+            t,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Commit("直接😀".into())),
+                egui::Event::Ime(egui::ImeEvent::Disabled),
+            ],
+            false,
+        );
+        assert_eq!(
+            if origin == "browse_query" {
+                app.browse.query()
+            } else {
+                app.browse.scope()
+            },
+            "直接😀"
+        );
+        let query = app.browse.query().to_owned();
+        let scope = app.browse.scope().to_owned();
+        ime_focus_extra_expect_one(&mut app, &commands, &mut ledger, t, &query, &scope);
+    }
+}
+
+#[test]
+fn files_live_ime_focus_handoff_disabled_preserves_final_bytes_and_explicit_find() {
+    for origin in ["browse_query", "browse_scope"] {
+        let destination = if origin == "browse_query" {
+            "browse_scope"
+        } else {
+            "browse_query"
+        };
+        let (mut app, commands, mut ledger) = ime_focus_extra_start(origin, "预");
+        ime_focus_click(&mut app, &commands, &mut ledger, destination);
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "handoff_disabled",
+            t,
+            vec![egui::Event::Ime(egui::ImeEvent::Disabled)],
+            false,
+        );
+        let query = app.browse.query().to_owned();
+        let scope = app.browse.scope().to_owned();
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "handoff_disabled_idle",
+            t + 2.0,
+            vec![],
+            false,
+        );
+        assert!(ledger.is_empty());
+        assert_eq!(
+            (app.browse.query(), app.browse.scope()),
+            (query.as_str(), scope.as_str())
+        );
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "handoff_explicit_find",
+            t,
+            key(egui::Key::Enter),
+            false,
+        );
+        assert_eq!(ledger.len(), 1);
+        assert!(
+            matches!(&ledger[0].op, Operation::FindFiles { query: q, scope: s, .. } if q == &query && s == &scope)
+        );
+    }
+}
+
+#[test]
+fn files_live_ime_focus_old_singleflight_reply_cannot_restart_rejected_terminal() {
+    for origin in ["browse_query", "browse_scope"] {
+        let destination = if origin == "browse_query" {
+            "browse_scope"
+        } else {
+            "browse_query"
+        };
+        let (mut app, commands) = discovery_fixture();
+        enter(&mut app, false);
+        edit(&mut app, "browse_query", "stable");
+        edit(&mut app, "browse_scope", "src");
+        settle_files(&mut app);
+        let first = expect_discovery(&commands, "stable", "src");
+        select_control(&mut app, origin);
+        let mut ledger = Vec::new();
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "pending_preedit",
+            t,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Enabled),
+                egui::Event::Ime(egui::ImeEvent::Preedit("预".into())),
+            ],
+            false,
+        );
+        ime_focus_click(&mut app, &commands, &mut ledger, destination);
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "pending_late_terminal",
+            t,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Commit("终".into())),
+                egui::Event::Ime(egui::ImeEvent::Disabled),
+            ],
+            false,
+        );
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "pending_terminal_idle",
+            t + 2.0,
+            vec![],
+            false,
+        );
+        assert!(
+            ledger.is_empty(),
+            "old physical flight still owns the only slot"
+        );
+        reply(
+            &mut app,
+            first.id,
+            Ok(discovery_result("stable", "src", &["src/old.rs"], vec![])),
+        );
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "retired_old_reply",
+            t,
+            vec![],
+            false,
+        );
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "retired_old_reply_idle",
+            t + 2.0,
+            vec![],
+            false,
+        );
+        assert!(
+            ledger.is_empty(),
+            "releasing old flight must not dispatch preedit"
+        );
+        assert!(app.browse.paths().is_empty());
+        edit(&mut app, origin, "fresh");
+        let t = now(&app);
+        let query = app.browse.query().to_owned();
+        let scope = app.browse.scope().to_owned();
+        ime_focus_extra_expect_one(&mut app, &commands, &mut ledger, t, &query, &scope);
+        assert_ne!(first.id, ledger[0].id);
+        let prior_error = app.error.clone();
+        reply(&mut app, first.id, Err("stale rejected old request".into()));
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "duplicate_old_reply",
+            t,
+            vec![],
+            false,
+        );
+        assert_eq!(app.error, prior_error);
+        assert_eq!(ledger.len(), 1);
+        assert!(app.browse.paths().is_empty());
+    }
+}
+
+#[test]
+fn files_live_ime_focus_disabled_then_late_commit_cannot_escape_cancelled_owner() {
+    let mut failures = Vec::new();
+    for origin in ["browse_query", "browse_scope"] {
+        let destination = if origin == "browse_query" {
+            "browse_scope"
+        } else {
+            "browse_query"
+        };
+        let (mut app, commands, mut ledger) = ime_focus_extra_start(origin, "预");
+        ime_focus_click(&mut app, &commands, &mut ledger, destination);
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "cancel_owner_disabled",
+            t,
+            vec![egui::Event::Ime(egui::ImeEvent::Disabled)],
+            false,
+        );
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "cancel_owner_idle",
+            t + 1.0,
+            vec![],
+            false,
+        );
+        assert!(ledger.is_empty());
+        let query = app.browse.query().to_owned();
+        let scope = app.browse.scope().to_owned();
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "cancel_owner_late_commit",
+            t,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Commit("终".into())),
+                egui::Event::Ime(egui::ImeEvent::Disabled),
+            ],
+            false,
+        );
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "cancel_owner_late_249ms",
+            t + 0.249,
+            vec![],
+            false,
+        );
+        assert!(ledger.is_empty());
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "cancel_owner_late_250ms",
+            t + 0.250,
+            vec![],
+            false,
+        );
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "cancel_owner_late_idle",
+            t + 2.0,
+            vec![],
+            false,
+        );
+        assert_eq!(
+            (app.browse.query(), app.browse.scope()),
+            (query.as_str(), scope.as_str())
+        );
+        for command in &ledger {
+            failures.push(format!(
+                "{origin}: canceled owner escaped via late Commit: id={} op={:?}",
+                command.id, command.op
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+#[test]
+fn files_live_ime_focus_fresh_destination_lifecycle_replaces_invalid_owner() {
+    for origin in ["browse_query", "browse_scope"] {
+        let destination = if origin == "browse_query" {
+            "browse_scope"
+        } else {
+            "browse_query"
+        };
+        let (mut app, commands, mut ledger) = ime_focus_extra_start(origin, "预");
+        ime_focus_click(&mut app, &commands, &mut ledger, destination);
+        select_control(&mut app, destination);
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "destination_fresh_lifecycle",
+            t,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Enabled),
+                egui::Event::Ime(egui::ImeEvent::Preedit("新".into())),
+            ],
+            false,
+        );
+        assert_eq!(
+            if destination == "browse_query" {
+                app.browse.query()
+            } else {
+                app.browse.scope()
+            },
+            "新"
+        );
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "destination_fresh_commit",
+            t,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Commit("新终".into())),
+                egui::Event::Ime(egui::ImeEvent::Disabled),
+            ],
+            false,
+        );
+        assert_eq!(
+            if destination == "browse_query" {
+                app.browse.query()
+            } else {
+                app.browse.scope()
+            },
+            "新终"
+        );
+        let query = app.browse.query().to_owned();
+        let scope = app.browse.scope().to_owned();
+        ime_focus_extra_expect_one(&mut app, &commands, &mut ledger, t, &query, &scope);
+    }
+}
+
+#[test]
+fn files_live_ime_focus_handoff_barrier_releases_only_for_fresh_owned_actions() {
+    for origin in ["browse_query", "browse_scope"] {
+        let destination = if origin == "browse_query" {
+            "browse_scope"
+        } else {
+            "browse_query"
+        };
+        for recovery in [
+            "text",
+            "paste",
+            "same_text",
+            "empty_paste",
+            "backspace",
+            "undo",
+            "fresh_ime",
+        ] {
+            let (mut app, commands, mut ledger) =
+                ime_focus_extra_start_with_undo_checkpoint(origin, "预", recovery == "undo");
+            ime_focus_click(&mut app, &commands, &mut ledger, destination);
+            let t = now(&app) + 0.001;
+            ime_focus_frame(
+                &mut app,
+                &commands,
+                &mut ledger,
+                "barrier_cancel",
+                t,
+                vec![egui::Event::Ime(egui::ImeEvent::Disabled)],
+                false,
+            );
+            assert_eq!(app.browse.ime_focus_observation()["handoff_barrier"], true);
+            let t = now(&app) + 1.0;
+            ime_focus_frame(
+                &mut app,
+                &commands,
+                &mut ledger,
+                "barrier_idle",
+                t,
+                vec![],
+                false,
+            );
+            assert!(ledger.is_empty());
+            if matches!(recovery, "text" | "paste" | "same_text" | "fresh_ime") {
+                select_control(&mut app, origin);
+            } else if recovery == "undo" {
+                ime_focus_click(&mut app, &commands, &mut ledger, origin);
+            }
+            assert_eq!(
+                app.browse.ime_focus_observation()["handoff_barrier"],
+                true,
+                "focus/selection alone must not release {recovery}"
+            );
+            let events = match recovery {
+                "text" => vec![egui::Event::Text("fresh".into())],
+                "paste" => vec![egui::Event::Paste("fresh".into())],
+                "same_text" => vec![egui::Event::Text("预".into())],
+                "empty_paste" => vec![egui::Event::Paste(String::new())],
+                "backspace" => key(egui::Key::Backspace),
+                "undo" => modified_key(egui::Key::Z, command_modifiers()),
+                "fresh_ime" => vec![
+                    egui::Event::Ime(egui::ImeEvent::Enabled),
+                    egui::Event::Ime(egui::ImeEvent::Preedit("新".into())),
+                ],
+                _ => unreachable!(),
+            };
+            let t = now(&app) + 0.001;
+            ime_focus_frame(&mut app, &commands, &mut ledger, recovery, t, events, false);
+            let t = if recovery == "undo" {
+                // Native Undo first restores only the composition selection.
+                // changed() alone must not release the cancellation barrier.
+                assert_eq!(app.browse.ime_focus_observation()["handoff_barrier"], true);
+                assert_eq!(
+                    if origin == "browse_query" {
+                        app.browse.query()
+                    } else {
+                        app.browse.scope()
+                    },
+                    "预"
+                );
+                assert!(ledger.is_empty());
+                let t = now(&app) + 0.001;
+                ime_focus_frame(
+                    &mut app,
+                    &commands,
+                    &mut ledger,
+                    "undo_actual_bytes",
+                    t,
+                    modified_key(egui::Key::Z, command_modifiers()),
+                    false,
+                );
+                t
+            } else {
+                t
+            };
+            assert_eq!(
+                app.browse.ime_focus_observation()["handoff_barrier"],
+                false,
+                "fresh {recovery} must release the bounded barrier"
+            );
+            let t = if recovery == "fresh_ime" {
+                let t = now(&app) + 0.001;
+                ime_focus_frame(
+                    &mut app,
+                    &commands,
+                    &mut ledger,
+                    "barrier_fresh_commit",
+                    t,
+                    vec![
+                        egui::Event::Ime(egui::ImeEvent::Commit("新终".into())),
+                        egui::Event::Ime(egui::ImeEvent::Disabled),
+                    ],
+                    false,
+                );
+                t
+            } else {
+                t
+            };
+            let query = app.browse.query().to_owned();
+            let scope = app.browse.scope().to_owned();
+            if recovery == "undo" {
+                assert_eq!(
+                    if origin == "browse_query" {
+                        query.as_str()
+                    } else {
+                        scope.as_str()
+                    },
+                    if origin == "browse_query" {
+                        "stable"
+                    } else {
+                        "src"
+                    }
+                );
+            }
+            ime_focus_extra_expect_one(&mut app, &commands, &mut ledger, t, &query, &scope);
+        }
+    }
+}
+
+#[test]
+fn files_live_ime_focus_handoff_late_commit_with_backspace_stays_paused() {
+    for origin in ["browse_query", "browse_scope"] {
+        let destination = if origin == "browse_query" {
+            "browse_scope"
+        } else {
+            "browse_query"
+        };
+        let (mut app, commands, mut ledger) = ime_focus_extra_start(origin, "预");
+        ime_focus_click(&mut app, &commands, &mut ledger, destination);
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "mixed_cancel",
+            t,
+            vec![egui::Event::Ime(egui::ImeEvent::Disabled)],
+            false,
+        );
+        assert_eq!(app.browse.ime_focus_observation()["handoff_barrier"], true);
+        let before = if destination == "browse_query" {
+            app.browse.query()
+        } else {
+            app.browse.scope()
+        }
+        .to_owned();
+        let t = now(&app) + 0.001;
+        let mut events = vec![egui::Event::Ime(egui::ImeEvent::Commit("迟".into()))];
+        events.extend(key(egui::Key::Backspace));
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "late_commit_backspace",
+            t,
+            events,
+            false,
+        );
+        let after = if destination == "browse_query" {
+            app.browse.query()
+        } else {
+            app.browse.scope()
+        };
+        assert_ne!(
+            after, before,
+            "the native Backspace must really change destination bytes"
+        );
+        assert_eq!(
+            after,
+            if destination == "browse_query" {
+                "stabl"
+            } else {
+                "sr"
+            }
+        );
+        assert_eq!(app.browse.ime_focus_observation()["handoff_barrier"], true);
+        assert!(app.browse.ime_focus_observation()["settlement"].is_null());
+        for (label, dt) in [
+            ("mixed_249ms", 0.249),
+            ("mixed_250ms", 0.250),
+            ("mixed_idle", 2.0),
+        ] {
+            ime_focus_frame(
+                &mut app,
+                &commands,
+                &mut ledger,
+                label,
+                t + dt,
+                vec![],
+                false,
+            );
+            assert!(
+                ledger.is_empty(),
+                "raw IME batch must not become a clean keyboard edit"
+            );
+        }
+    }
+}

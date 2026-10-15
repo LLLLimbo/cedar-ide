@@ -18,6 +18,7 @@ struct Widget {
     id: egui::Id,
     rect: egui::Rect,
     clip: egui::Rect,
+    observation: serde_json::Value,
 }
 
 pub(super) fn begin(ctx: &egui::Context) {
@@ -29,6 +30,19 @@ pub(super) fn record(ui: &egui::Ui, name: &str, response: &egui::Response) {
         id: response.id,
         rect: response.rect,
         clip: ui.clip_rect(),
+        // Copy plain values while the real response is current. Do not retain
+        // Response/Context or call Context recursively inside its data lock.
+        observation: serde_json::json!({
+            "id": format!("{:?}", response.id),
+            "changed": response.changed(),
+            "has_focus": response.has_focus(),
+            "gained_focus": response.gained_focus(),
+            "lost_focus": response.lost_focus(),
+            "sizing_pass": ui.is_sizing_pass(),
+            "cursor": egui::TextEdit::load_state(ui.ctx(), response.id)
+                .and_then(|state| state.cursor.char_range())
+                .map(|range| format!("{range:?}")),
+        }),
     };
     ui.ctx().data_mut(|data| {
         data.get_temp_mut_or_default::<HashMap<String, Widget>>(egui::Id::new(PROBE))
@@ -58,6 +72,10 @@ fn widget(app: &CedarApp, name: &str) -> Widget {
             .unwrap_or_else(|| panic!("missing {name}"))
             .clone()
     })
+}
+
+pub(super) fn recorded_observation(app: &CedarApp, name: &str) -> serde_json::Value {
+    widget(app, name).observation
 }
 
 pub(super) fn recorded_response(app: &CedarApp, name: &str) -> egui::Response {

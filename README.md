@@ -2,7 +2,9 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-当前 **0.74.0 Recent Files 布局候选**使用紧凑的文件名/弱父路径层级与独立 Open/Closed 标记，固定弹窗高度、选中路径带和底栏，并为 Open closed file 预留动作宽度。本地 filter、打开时清 query/Undo、默认最近另一文件、单击仅选择以及显式普通 Open 保持原合同；没有 preview、edited-only 或跨连接持久化。仍标为 0.73.0 的开发候选已通过 381 项 focused 检查（1 项忽略）及限定 Linux 正常窗原图比较，单次运行正常 rc0、Connected 303.617 秒，完整 postflight 通过。最终 0.74.0 的完整验证、精确发布产物和 CI 单独归属，不能重标这些开发图；真实 CJK 样例可读也不代表任意路径字形或 4 KiB tooltip 全部可见。见[0.74 阶段报告](docs/TEST_REPORT_PHASE74_RECENT_LAYOUT.md)和[Recent 使用边界](docs/RECENT_FILES.md)。
+当前 **0.75.0 Files 输入法转焦修复候选**保留原查询或 Directory 控件的 composition 所有权：转焦时未被原控件接纳的旧终结事件不再让可见预编辑文字自动搜索；先合法提交、后转焦仍保留原 250 毫秒间隔。分批 Disabled 后迟到 Commit 的旁路也由有限暂停屏障阻断，新的有效编辑、新输入法生命周期或干净的显式 Find 可恢复。仍标为 0.74.0 的独立开发源码通过两轮 48 项 Files 检查、保留输入套件 212 通过/1 既有忽略、格式和严格 app Clippy，并通过独立审查；这些不是最终 0.75.0 全量或公开 CI 结果。真实 OS 输入法未实测，同一字段内只移动 caret 的其它 IME 接缝不在本次结论内。见[0.75 阶段报告](docs/TEST_REPORT_PHASE75_IME_FOCUS_HANDOFF.md)和[离线输入合同](docs/FIND_AND_RETURN.md#files-ime-focus-handoff-075-candidate)。
+
+历史 **0.74.0 Recent Files 布局候选**使用紧凑的文件名/弱父路径层级与独立 Open/Closed 标记，固定弹窗高度、选中路径带和底栏，并为 Open closed file 预留动作宽度。本地 filter、打开时清 query/Undo、默认最近另一文件、单击仅选择以及显式普通 Open 保持原合同；没有 preview、edited-only 或跨连接持久化。仍标为 0.73.0 的开发候选已通过 381 项 focused 检查（1 项忽略）及限定 Linux 正常窗原图比较，单次运行正常 rc0、Connected 303.617 秒，完整 postflight 通过。最终 0.74.0 的完整验证、精确发布产物和 CI 单独归属，不能重标这些开发图；真实 CJK 样例可读也不代表任意路径字形或 4 KiB tooltip 全部可见。见[0.74 阶段报告](docs/TEST_REPORT_PHASE74_RECENT_LAYOUT.md)和[Recent 使用边界](docs/RECENT_FILES.md)。
 
 历史 **0.73.0 Project Text 布局候选**把项目文本搜索整理为紧凑的查询/筛选区、全宽分组结果、文件名/父路径层级和显式下置只读预览，固定操作区不随结果变化移动；计数是匹配行数而非词出现次数。限定 Linux 正常窗实图已确认开发候选的改善，但该次产物仍标为 0.72.0；最终 0.73.0 的单复数文案、版本传播与执行证明单独归属，不重标旧图为最终版本验收。Files/Recent、请求和输入状态机保持原有契约，不新增正则、Words 或 Replace，也不声明 IDEA 像素一致。见[0.73 阶段报告](docs/TEST_REPORT_PHASE73_TEXT_LAYOUT.md)及[使用边界](docs/FIND_AND_RETURN.md#project-text-layout-073-candidate)。
 

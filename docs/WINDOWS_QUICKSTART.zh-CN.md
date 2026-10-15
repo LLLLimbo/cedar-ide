@@ -5,6 +5,10 @@ IntelliJ IDEA 的完整替代品。请从本项目对应提交的 GitHub Actions
 同目录的 `cedar.exe` 与 `cedar-agent.exe`；不要混用不同版本。
 
 
+## 0.75 Files 输入法转焦修复候选
+
+前端保留查询或 Directory 原控件的输入法 composition 所有权；转焦后的旧终结事件不会把未确认的可见预编辑文字自动搜索。先合法提交、后转焦仍保留 250 毫秒间隔；明确的新编辑或干净的 Find 可恢复暂停。完整离线边界见同目录 [Files 输入法转焦合同](FIND_AND_RETURN.md#files-ime-focus-handoff-075-candidate)。真实 OS 输入法与 Windows/macOS GUI 未因此获得实测结论。
+
 ## Find and return 浏览候选（0.60.0）
 
 连接工作区后，点击 **Find…**，或按 **Ctrl+Shift+N** 查文件、**Ctrl+Shift+F** 查项目文本。输入查询后按 Enter 提交；Down 或单击选择结果，**Space / Preview** 显式预览，**Enter / Open** 或双击打开，再用 **Back / Ctrl+[** 返回。预览已有草稿不发送 Read，也不保存或覆盖未保存文字。

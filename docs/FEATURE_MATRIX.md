@@ -1,8 +1,10 @@
-# 功能矩阵与后续验收 · 0.70 过期导航候选（待验收）
+# 功能矩阵与后续验收 · 0.75 Files 输入法转焦修复候选
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-当前 **0.70 过期导航定位加固候选尚未验收**。普通 Open 的 Read 晚到后仍可缓存准确的非活动文件字节；新文档只有在导航仍有效且不属于语言导航目标时才保存普通行跳转。之后 Files/Recent 普通打开不得继承已取消的 Text 行号，应与同字节的新普通打开光标一致。有效后台跳转、脏稿、Undo 和历史必须保留；旧 0.69 生产帧负向对照不等于既往原生 GUI 缺陷。0.70.0 本地 Rust **2,203/0/71（50 套件）**、Python **806 项/10 跳过/零失败套件（29 套件）**、格式与严格 Clippy 通过；当前产物 Browse v7 **74/17**、Structure **45/11**、Scoped Search **57/10**、Search **57/12** 进程证明通过。最初的 schema、编译及 Back 观察器失败继续保留；精确 CI、三种包和原生仍待完成，各层验证见[0.70 报告](TEST_REPORT_PHASE70_STALE_NAVIGATION.md)。
+当前 0.75 候选只修 Files query/Directory 的输入法转焦所有权与有限暂停屏障，保留合法提交后的 250 毫秒间隔，不新增搜索提供者、协议或自动读取。开发版 focused 检查及独审已通过；最终 0.75 全量、精确 CI/分发包结果由单独证据确认，真实 OS 输入法未实测。见[阶段报告](TEST_REPORT_PHASE75_IME_FOCUS_HANDOFF.md)与[离线合同](FIND_AND_RETURN.md#files-ime-focus-handoff-075-candidate)。下列既有验收状态保留其历史归属。
+
+历史记录：**0.70 过期导航定位加固候选当时尚未验收**。普通 Open 的 Read 晚到后仍可缓存准确的非活动文件字节；新文档只有在导航仍有效且不属于语言导航目标时才保存普通行跳转。之后 Files/Recent 普通打开不得继承已取消的 Text 行号，应与同字节的新普通打开光标一致。有效后台跳转、脏稿、Undo 和历史必须保留；旧 0.69 生产帧负向对照不等于既往原生 GUI 缺陷。0.70.0 本地 Rust **2,203/0/71（50 套件）**、Python **806 项/10 跳过/零失败套件（29 套件）**、格式与严格 Clippy 通过；当前产物 Browse v7 **74/17**、Structure **45/11**、Scoped Search **57/10**、Search **57/12** 进程证明通过。最初的 schema、编译及 Back 观察器失败继续保留；精确 CI、三种包和原生仍待完成，各层验证见[0.70 报告](TEST_REPORT_PHASE70_STALE_NAVIGATION.md)。
 
 最新已限定验收基线为 **0.69.0 Files 输入即搜索**：[精确双平台 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38458861975) 四项作业和三种包通过；Linux **2,200/0/71**、Windows **2,138/0/114**，两端各 50 套件，24 项新增 Files 检查通过。Browse v6 **64 严格字段/16 操作**保留完整旧 57 字段/14 操作前缀，恰加两次 FindFiles、零自动 Read。限定 Trust OFF Linux 原生覆盖不按 Enter 输入、范围、Preview/Open/Back、脏稿 Undo 和取消重开，计时与完整性通过；单击替代计划中的 Down，该次原生 Down 入口未测。250 毫秒与操作计数不由像素证明；广泛 IME/CJK、Windows/macOS GUI、真实 SSH、正向 Structure/JDT GUI 与 Ctrl+F12 限制保留。Linux Java Restart 为 `grace_expired`、signal 9，不是全部优雅退出；0.68 第一次启动观察仍未完成，不推断产品启动故障。见[当前报告](TEST_REPORT.md#accepted-0690-bounded-baseline)及[离线指南](FIND_AND_RETURN.md#files-search-as-you-type-069-bounded-acceptance)。
 

@@ -2,6 +2,16 @@
 
 Design decision, 2026-10-12, with delivery status updated on 2026-10-13 for the accepted 0.69.0 bounded baseline and the 0.70 stale-navigation candidate. This roadmap does not itself establish a new release or acceptance.
 
+## Current 0.75 fix checkpoint
+
+The 0.75 candidate fixes Files query/Directory IME focus-handoff ownership and a
+bounded cancelled-terminal barrier, without changing product direction, protocol
+or provider scope. Focused still-074 development checks and independent review
+passed; final-version full validation and exact public CI/package acceptance
+remain separate. Real OS IME is unverified. See the
+[phase report](TEST_REPORT_PHASE75_IME_FOCUS_HANDOFF.md). The dated delivery
+statements below retain their historical attribution.
+
 ## Product decision and baseline
 
 Cedar will prioritize understanding and navigating projects: finding files and text, inspecting results, following code relationships, and returning to the previous context. Integrated project Build, Run, test execution and debugger development are no longer roadmap priorities. Existing modules are retained; this decision does not remove working editing, recovery, remote access or execution features.

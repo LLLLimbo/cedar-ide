@@ -363,6 +363,9 @@ struct Input {
     composing: bool,
     files_ime_commit: bool,
     files_ime_cancel: bool,
+    files_ime_owner_stable: bool,
+    files_ime_batch: bool,
+    files_plain_edit: bool,
     files_edit: Option<Target>,
     key: Option<KeyIntent>,
     pressed: Option<Presented>,
@@ -398,6 +401,13 @@ impl Input {
     }
 }
 
+// Ownership survives a transfer back to the original field. Only a fresh
+// composition lifecycle can replace an invalidated owner.
+struct FilesComposition {
+    owner: Target,
+    valid: bool,
+}
+
 #[derive(Default)]
 pub(super) struct Browse {
     context: Option<Context>,
@@ -409,7 +419,10 @@ pub(super) struct Browse {
     files_settlement: Option<FilesSettlement>,
     // egui writes preedit into its String. Keep native text intact and pause
     // automatic admission until a clear commit or a later explicit action.
-    files_composition: bool,
+    files_composition: Option<FilesComposition>,
+    // A separated Disabled then late Commit must not relabel an interrupted
+    // composition as a new direct edit. Fresh owned edits/lifecycles release it.
+    files_handoff_barrier: bool,
     epoch: u64,
     exhausted: bool,
     snapshot: Option<navigation::LoadedSnapshot>,
@@ -436,6 +449,31 @@ pub(super) struct Browse {
     input: Input,
 }
 impl Browse {
+    #[cfg(test)]
+    pub(super) fn ime_focus_observation(&self) -> serde_json::Value {
+        serde_json::json!({
+            "epoch": self.epoch,
+            "composition": self.files_composition.is_some(),
+            "composition_owner": self.files_composition.as_ref().map(|c| format!("{:?}", c.owner)),
+            "composition_owner_valid": self.files_composition.as_ref().map(|c| c.valid),
+            "owner_stable_this_batch": self.input.files_ime_owner_stable,
+            "handoff_barrier": self.files_handoff_barrier,
+            "raw_ime_batch": self.input.files_ime_batch,
+            "raw_plain_edit": self.input.files_plain_edit,
+            "input_composing": self.input.composing,
+            "raw_commit": self.input.files_ime_commit,
+            "raw_cancel": self.input.files_ime_cancel,
+            "settlement": self.files_settlement.as_ref().map(|s| serde_json::json!({
+                "deadline": s.deadline, "last_seen": s.last_seen,
+                "epoch": s.epoch, "query": s.query, "scope": s.scope,
+                "generation": s.context.generation, "version": s.version,
+            })),
+            "flight": self.discovery.flight.as_ref().map(|(id, t)| serde_json::json!({
+                "id": id, "epoch": t.epoch, "query": t.query, "scope": t.scope,
+                "generation": t.context.generation, "version": t.version,
+            })),
+        })
+    }
     #[cfg(test)]
     pub(super) fn scope(&self) -> &str {
         &self.scope
@@ -560,7 +598,8 @@ impl CedarApp {
         self.browse_switch(provider);
     }
     fn browse_switch(&mut self, provider: Provider) {
-        self.browse.files_composition = false;
+        self.browse.files_composition = None;
+        self.browse.files_handoff_barrier = false;
         if self.browse.text_request.take().is_some() {
             self.search_state.retire();
         }
@@ -630,7 +669,8 @@ impl CedarApp {
         self.browse.focus = Some(Target::Group(first));
     }
     pub(super) fn browse_retire(&mut self) {
-        self.browse.files_composition = false;
+        self.browse.files_composition = None;
+        self.browse.files_handoff_barrier = false;
         if self.browse.text_request.take().is_some() {
             self.search_state.retire();
         }
@@ -729,9 +769,10 @@ impl CedarApp {
             return;
         }
         if self.browse.provider == Provider::Files {
-            if self.browse.files_composition || self.browse.input.composing {
+            if self.browse.files_composition.is_some() || self.browse.input.composing {
                 return;
             }
+            self.browse.files_handoff_barrier = false;
             // Enter/Find flush a waiting edit, but never duplicate its already
             // admitted flight or latest replacement.
             if self.browse.discovery.pending_current()
@@ -864,7 +905,15 @@ impl CedarApp {
     }
 
     fn arm_files_settlement(&mut self) {
-        if !self.browse_current() || self.browse.files_composition || self.browse.input.composing {
+        if !self.browse_current()
+            || self.browse.files_composition.is_some()
+            || self.browse.input.composing
+        {
+            return;
+        }
+        if self.browse.files_handoff_barrier {
+            self.browse.message = Some("Automatic search paused after composition. Edit the query or press Find to search.".into());
+            self.editor_ctx.request_repaint();
             return;
         }
         let now = self.editor_ctx.input(|input| input.time);
@@ -890,7 +939,8 @@ impl CedarApp {
         if !self.browse_current()
             || self.foreign_modal_owns_input(ctx)
             || self.browse.provider != Provider::Files
-            || self.browse.files_composition
+            || self.browse.files_composition.is_some()
+            || self.browse.files_handoff_barrier
             || self.browse.input.composing
             || !settlement.context.current(self)
             || settlement.epoch != self.browse.epoch
@@ -923,18 +973,48 @@ impl CedarApp {
         }
     }
 
+    fn observe_files_composition_focus(&mut self, target: Target, response: &egui::Response) {
+        let Some(composition) = &mut self.browse.files_composition else {
+            return;
+        };
+        if composition.owner == target {
+            let stable = response.has_focus() && !response.gained_focus() && !response.lost_focus();
+            composition.valid &= stable;
+            self.browse.input.files_ime_owner_stable |= stable && composition.valid;
+        }
+    }
+
     fn finish_files_composition(&mut self) {
+        // A later-rendered control may have taken focus after the owner's
+        // response was observed. Reconcile against the final native focus.
+        if let Some(owner) = self
+            .browse
+            .files_composition
+            .as_ref()
+            .map(|c| c.owner.clone())
+        {
+            if self.editor_ctx.memory(|memory| memory.focused()) != Some(self.browse.id(&owner)) {
+                self.browse.files_composition.as_mut().unwrap().valid = false;
+            }
+        }
         if self.browse.provider != Provider::Files || self.browse.input.composing {
             return;
         }
-        if self.browse.files_composition
+        if self.browse.files_composition.is_some()
             && (self.browse.input.files_ime_commit || self.browse.input.files_ime_cancel)
         {
-            self.browse.files_composition = false;
-            if self.browse.input.files_ime_commit {
-                // A clear commit (even identical text) gets a full interval.
+            let composition = self.browse.files_composition.take().unwrap();
+            if self.browse.input.files_ime_commit
+                && composition.valid
+                && self.browse.input.files_ime_owner_stable
+            {
+                // A terminal owned by a continuously focused original control
+                // (even identical text) gets one full interval. Later focus
+                // transfers cannot cancel this already completed composition.
                 self.browse_query_changed();
             } else {
+                self.browse.files_handoff_barrier |=
+                    !composition.valid || !self.browse.input.files_ime_owner_stable;
                 // Disabled, empty Commit and ambiguous endings do not prove
                 // the final String committed. Preserve it exactly; only a new
                 // committed edit or explicit Find may admit these bytes.
@@ -1729,15 +1809,39 @@ impl CedarApp {
         });
         self.browse.input.files_ime_commit = false;
         self.browse.input.files_ime_cancel = false;
+        self.browse.input.files_ime_owner_stable = false;
+        self.browse.input.files_ime_batch =
+            raw.events.iter().any(|e| matches!(e, egui::Event::Ime(_)));
+        self.browse.input.files_plain_edit = false;
         self.browse.input.files_edit = None;
+        if let Some(owner) = self
+            .browse
+            .files_composition
+            .as_ref()
+            .map(|c| c.owner.clone())
+        {
+            if focused != Some(self.browse.id(&owner)) {
+                self.browse.files_composition.as_mut().unwrap().valid = false;
+            }
+        }
         if allowed && self.browse.provider == Provider::Files {
+            self.browse.input.files_plain_edit = raw
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Text(_) | egui::Event::Paste(_)));
             // Conservative edit intent from the original owned batch, never
             // replayed. Even a final-same Text/Paste is a fresh intent; a no-op
             // Delete/Backspace alone is not. Widgets consume this once.
             if raw.events.iter().any(|event| match event {
                 egui::Event::Text(_) | egui::Event::Paste(_) => true,
                 egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
-                    !text.is_empty() && text != "\n" && text != "\r"
+                    // Active composition commits belong only to their original
+                    // control. Do not turn a late terminal into a destination edit.
+                    self.browse.files_composition.is_none()
+                        && !self.browse.files_handoff_barrier
+                        && !text.is_empty()
+                        && text != "\n"
+                        && text != "\r"
                 }
                 _ => false,
             }) {
@@ -1753,21 +1857,28 @@ impl CedarApp {
                     })
                     .map(|item| item.token.target.clone());
             }
-            let edits_files = focused == Some(self.browse.id(&Target::Query))
-                || focused == Some(self.browse.id(&Target::Scope));
-            if edits_files
-                && raw.events.iter().any(|event| {
-                    matches!(
-                        event,
-                        egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_))
-                    )
-                })
-                && !self.browse.files_composition
-            {
-                self.browse.files_composition = true;
+            let owner = [Target::Query, Target::Scope]
+                .into_iter()
+                .find(|target| focused == Some(self.browse.id(target)));
+            let lifecycle = raw.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_))
+                )
+            });
+            if let Some(owner) = owner.filter(|owner| {
+                lifecycle
+                    && self
+                        .browse
+                        .files_composition
+                        .as_ref()
+                        .is_none_or(|c| c.owner != *owner || !c.valid)
+            }) {
+                self.browse.files_composition = Some(FilesComposition { owner, valid: true });
+                self.browse.files_handoff_barrier = false;
                 self.browse_query_changed();
             }
-            if self.browse.files_composition {
+            if self.browse.files_composition.is_some() {
                 // Preserve order: a new preedit after a commit makes the
                 // final buffer uncommitted again, even if Disabled follows it.
                 for event in &raw.events {
@@ -3141,6 +3252,7 @@ impl CedarApp {
                 .desired_width(f32::INFINITY)
                 .hint_text("Type a filename"),
         );
+        self.observe_files_composition_focus(Target::Query, &query);
         let edit_intent = self.browse.input.files_edit == Some(Target::Query);
         if edit_intent {
             self.browse.input.files_edit = None;
@@ -3148,6 +3260,13 @@ impl CedarApp {
         if (query.changed() && previous_query != self.browse.query)
             || (edit_intent && (query.changed() || query.has_focus()))
         {
+            if !self.browse.input.files_ime_batch
+                || (self.browse.input.files_plain_edit
+                    && edit_intent
+                    && (query.changed() || query.has_focus()))
+            {
+                self.browse.files_handoff_barrier = false;
+            }
             self.browse_query_changed();
             actions.edited = true;
         }
@@ -3173,6 +3292,7 @@ impl CedarApp {
             let previous_scope = self.browse.scope.clone();
             let scope = ui.put(scope_rect, egui::TextEdit::singleline(&mut self.browse.scope).id(id).char_limit(4096).desired_width(f32::INFINITY).hint_text("Whole workspace"))
                 .on_hover_text(format!("Exact workspace-relative directory; empty searches workspace. Excluded directories: {}. Literal matching uses Unicode lowercase, without normalization.", cedar_protocol::FILE_DISCOVERY_EXCLUDED_DIRECTORIES.join(", ")));
+            self.observe_files_composition_focus(Target::Scope, &scope);
             let edit_intent = self.browse.input.files_edit == Some(Target::Scope);
             if edit_intent {
                 self.browse.input.files_edit = None;
@@ -3180,6 +3300,13 @@ impl CedarApp {
             if (scope.changed() && previous_scope != self.browse.scope)
                 || (edit_intent && (scope.changed() || scope.has_focus()))
             {
+                if !self.browse.input.files_ime_batch
+                    || (self.browse.input.files_plain_edit
+                        && edit_intent
+                        && (scope.changed() || scope.has_focus()))
+                {
+                    self.browse.files_handoff_barrier = false;
+                }
                 self.browse_query_changed();
                 actions.edited = true;
             }

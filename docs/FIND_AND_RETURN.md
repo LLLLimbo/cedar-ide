@@ -4,7 +4,12 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-The **0.74.0 Recent Files layout candidate** is a separate connection-local
+The **0.75.0 Files IME focus-handoff candidate** preserves the existing search
+contract while preventing cancelled or unaccepted composition from resuming
+automatic search across query/Directory focus transfer. The complete offline
+interaction boundary is [below](#files-ime-focus-handoff-075-candidate).
+
+The earlier **0.74.0 Recent Files layout candidate** is a separate connection-local
 chooser, described in [Recent Files](RECENT_FILES.md). Its filename/parent/status
 rows and fixed footer do not add search, preview or a new provider. Recent reopens
 with an empty filter and its Undo cleared, unlike the retained Project Text query.
@@ -45,6 +50,37 @@ symbols, real-JDT popup behavior and native Ctrl+F12 remain unmeasured. The
 0.67.0 native shortcut-entry failure and independent raw-hook observation are
 preserved in the
 [phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
+
+## Files IME focus handoff (0.75 candidate)
+
+Files keeps the original composing query or Directory control as the owner.
+If focus transfers before that control completes its composition, an old terminal
+Commit cannot resume automatic search, including after focus returns to the old
+field or a separated Disabled event has already ended that lifecycle. The native
+final query and Directory bytes remain visible; the app does not replace them
+with a guessed commit. A valid commit completed before a later focus transfer
+still keeps its original full 250 ms interval and does not restart it.
+
+After an interrupted handoff, fresh native edits can resume automatic search.
+In a clean batch containing no IME, a genuine byte change in either Files field,
+including Backspace, Undo, Text or Paste, is a new committed edit. In an
+IME-containing mixed batch, Text/Paste must carry the original field's owned
+intent and actually be handled there. Existing same-value Text and empty-Paste
+fresh-intent behavior remains. Selection/caret movement, pointer focus, idle and
+a selection-only Undo do not resume it. A new Enabled/Preedit lifecycle belongs
+to the then-focused Files field and must complete with continuous owner focus;
+an actually executed clean Find/Enter is also an explicit way to search the
+visible values. Closing or switching the provider clears this local pause state.
+
+Mixed Text/Paste and valid commits, literal Unicode handling, existing validation
+limits, one physical FindFiles flight, latest replacement and stale-reply guards
+remain unchanged. Typing still does not automatically Read a file, preview,
+activate, save, retry or poll. The development checks use production-font egui
+update frames and synthetic raw events; they are not real OS input-method tests.
+This is a focus-handoff fix, not a general proof that every native Commit was
+accepted. Same-field pointer/caret-only IME interactions are outside this claim.
+The source-only phase report is docs/TEST_REPORT_PHASE75_IME_FOCUS_HANDOFF.md;
+that report is not required for this self-contained packaged interaction guide.
 
 ## Project Text layout (0.73 candidate)
 

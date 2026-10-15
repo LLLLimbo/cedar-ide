@@ -1,6 +1,27 @@
-# Verification checkpoint — 0.74.0 Recent Files layout candidate
+# Verification checkpoint — 0.75.0 Files IME focus-handoff fix candidate
 
-## Current 0.74.0 Recent Files layout candidate
+## Current 0.75.0 Files IME focus-handoff fix candidate
+
+The [phase 75 report](TEST_REPORT_PHASE75_IME_FOCUS_HANDOFF.md) records a Files-only
+composition-owner and bounded handoff-cancellation fix. The unchanged original
+12-case matrix plus requested discard changed from 6 pass / 7 fail to 13 pass.
+The separate still-0.74.0 development source passed all 48 Files live tests twice,
+with 572 identical traces per run, plus retained input suites at 212 pass and
+1 existing ignored test. Those suites overlap by 24 tests. Formatting and strict
+app all-targets/all-features Clippy passed, followed by independent source,
+executable, log and protection review. Original red traces and two new fixture
+oracle mistakes remain recorded; no original assertion or protocol limit was
+weakened. These are focused development results, not final-version aggregate,
+canonical, package or public CI acceptance.
+
+This source report is sealed before the final 0.75.0 full Rust/Python, strict
+workspace Clippy, release, exact-feature pins and five original canonical gates.
+Their future outcomes belong to separate source-bound external receipts and will
+not be backfilled into this sealed source. Real OS IME remains unverified; the
+focus-handoff property is not a comprehensive native Commit acceptance proof.
+A same-field caret-move seam remains outside this scoped fix.
+
+## Prior 0.74.0 Recent Files layout candidate
 
 The [phase 74 report](TEST_REPORT_PHASE74_RECENT_LAYOUT.md) records the compact
 Recent chooser, exact path/row identities, fixed action/footer geometry, pure-paint
