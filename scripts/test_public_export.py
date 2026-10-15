@@ -32,13 +32,67 @@ def git_environment():
     return environment
 
 
-def git(root, *arguments):
+def git(root, *arguments, index=None):
+    environment = git_environment()
+    if index is not None:
+        environment['GIT_INDEX_FILE'] = str(index.resolve())
     return subprocess.check_output(['git', '-C', str(root), *arguments],
-                                   stderr=subprocess.DEVNULL, env=git_environment(), timeout=10)
+                                   stderr=subprocess.DEVNULL, env=environment, timeout=10)
 
 
 def tagged_blob(root, path):
     return git(root, 'cat-file', 'blob', 'refs/tags/test-stage:' + Path(path).as_posix())
+
+
+def tree_entries(root, tree):
+    entries = {}
+    for entry in git(root, 'ls-tree', '-rz', '--full-tree', tree).split(b'\0'):
+        if entry:
+            metadata, path = entry.split(b'\t', 1)
+            entries[path.decode('utf-8')] = tuple(metadata.decode('ascii').split())
+    return entries
+
+
+# Every negative still starts from all approved vendor and bundle bytes. Only
+# its named path is staged into a fresh index, never other cases' checkout dirt.
+VENDOR_ROOT = Path(vendored_egui.ROOT)
+VENDOR_CASES = (
+    ('source', 'unapproved bytes', VENDOR_ROOT / 'src/lib.rs', 'modify'),
+    ('license', 'unapproved bytes', VENDOR_ROOT / 'LICENSE-MIT', 'modify'),
+    ('provenance', 'unapproved bytes', VENDOR_ROOT / 'vendor-upstream.json', 'modify'),
+    ('patch', 'unapproved bytes', VENDOR_ROOT / 'egui-observation.patch', 'modify'),
+    ('extra-binary', 'unexpected or missing source file set', VENDOR_ROOT / 'extra.bin', 'add'),
+    ('missing-source', 'unexpected or missing source file set', VENDOR_ROOT / 'src/lib.rs', 'delete'),
+    ('missing-license', 'missing approved file', VENDOR_ROOT / 'LICENSE-MIT', 'delete'),
+    ('missing-bundle-license', 'missing or invalid vendor bundle file',
+     Path('third-party-licenses/egui-0.31.1/LICENSE-MIT'), 'delete'),
+    ('wrong-bundle-license', 'missing or unapproved bundled license',
+     Path('third-party-licenses/egui-0.31.1/LICENSE-MIT'), 'modify'),
+    ('wrong-patch', 'unapproved Cargo patch identity/path', Path('Cargo.toml'), 'modify'),
+    ('missing-patch', 'vendor source has no exact Cargo patch', Path('Cargo.toml'), 'delete'),
+    ('duplicate-notice', 'missing or duplicate dependency/modification notice',
+     Path('THIRD_PARTY_NOTICES.md'), 'modify'),
+)
+
+
+def mutate_vendor_case(root, case):
+    change, _, relative, _ = case
+    path = root / relative
+    if change in ('source', 'license', 'provenance', 'patch'):
+        with path.open('ab') as output:
+            output.write(b' ')
+    elif change == 'extra-binary':
+        path.write_bytes(b'\x00\xff')
+    elif change.startswith('missing-'):
+        path.unlink()
+    elif change == 'wrong-bundle-license':
+        path.write_bytes(b'wrong license')
+    elif change == 'wrong-patch':
+        path.write_text('[patch.crates-io]\negui = { path = "elsewhere" }\n')
+    else:
+        assert change == 'duplicate-notice', change
+        with path.open('a') as output:
+            output.write('| egui | 0.31.1 | MIT OR Apache-2.0 | https://github.com/emilk/egui |\n')
 
 
 class PublicExportTests(unittest.TestCase):
@@ -120,11 +174,96 @@ class PublicExportTests(unittest.TestCase):
             else:
                 self.assertNotIn('encoding', files[path])
 
-    def run_export(self, source, destination, check=True):
+    def run_export(self, source, destination, check=True, tag='test-stage'):
         return subprocess.run([sys.executable, str(source / 'scripts/export_public_checkpoints.py'),
-                               '--destination', str(destination), '--tags', 'test-stage'],
+                               '--destination', str(destination), '--tags', tag],
                               check=check, capture_output=True, text=True, timeout=30,
                               env=git_environment())
+
+    def vendor_baseline(self, source):
+        self.fixture(source, False, vendor=True)
+        commit = git(source, 'rev-parse', 'refs/tags/test-stage').decode().strip()
+        tree = git(source, 'rev-parse', commit + '^{tree}').decode().strip()
+        entries = tree_entries(source, tree)
+        vendor_paths = {path for path in entries if path.startswith(VENDOR_ROOT.as_posix() + '/')}
+        bundle_paths = {path for path in entries if path.startswith('third-party-licenses/egui-0.31.1/')}
+        expected_vendor = {path.relative_to(EXPORTER.parent.parent).as_posix()
+                           for path in (EXPORTER.parent.parent / vendored_egui.ROOT).rglob('*')
+                           if path.is_file()}
+        self.assertEqual(vendor_paths, expected_vendor)
+        self.assertEqual(len(vendor_paths), 98)
+        self.assertEqual(bundle_paths, {'third-party-licenses/egui-0.31.1/LICENSE-' + suffix
+                                       for suffix in ('MIT', 'APACHE')})
+        self.assertEqual(len(vendor_paths | bundle_paths), 100)
+        blobs = {path.as_posix(): git(source, 'cat-file', 'blob', commit + ':' + path.as_posix())
+                 for path in {case[2] for case in VENDOR_CASES} if path.as_posix() in entries}
+        baseline = {'commit': commit, 'tree': tree, 'entries': entries, 'blobs': blobs}
+        self.assert_vendor_baseline_unchanged(source, baseline)
+        return baseline
+
+    def assert_vendor_baseline_unchanged(self, source, baseline):
+        self.assertEqual(git(source, 'rev-parse', 'HEAD').decode().strip(), baseline['commit'])
+        self.assertEqual(git(source, 'rev-parse', 'refs/tags/test-stage').decode().strip(), baseline['commit'])
+        self.assertEqual(git(source, 'write-tree').decode().strip(), baseline['tree'])
+
+    def prepare_vendor_index(self, source, baseline, relative, index):
+        # Preparation and TemporaryDirectory cleanup are outside subTest so a
+        # failure stops the group instead of proceeding with an uncertain setup.
+        self.assertFalse(index.exists())
+        self.assertNotIn(source.resolve(), index.resolve().parents)
+        git(source, 'read-tree', baseline['tree'], index=index)
+        path = source / relative
+        original = baseline['blobs'].get(relative.as_posix())
+        if original is None:
+            self.assertEqual(relative, VENDOR_ROOT / 'extra.bin')
+            if path.exists():
+                path.unlink()
+            self.assertFalse(path.exists())
+        else:
+            path.write_bytes(original)
+            self.assertEqual(path.read_bytes(), original)
+
+    def vendor_case_tree(self, source, baseline, case, index):
+        _, _, relative, operation = case
+        path = relative.as_posix()
+        git(source, 'add', '-A', '--', path, index=index)
+        tree = git(source, 'write-tree', index=index).decode().strip()
+        actual = tree_entries(source, tree)
+        expected = baseline['entries']
+        paths = set(expected)
+        if operation == 'delete':
+            self.assertIn(path, paths)
+            paths.remove(path)
+        elif operation == 'add':
+            self.assertNotIn(path, paths)
+            paths.add(path)
+        else:
+            self.assertEqual(operation, 'modify')
+        self.assertEqual(set(actual), paths)
+        for other in paths - {path}:
+            self.assertEqual(actual[other], expected[other], other)
+        if operation == 'modify':
+            self.assertEqual(actual[path][:2], expected[path][:2], path)
+            self.assertNotEqual(actual[path][2], expected[path][2], path)
+        elif operation == 'add':
+            self.assertEqual(actual[path][:2], ('100644', 'blob'), path)
+            self.assertEqual(git(source, 'cat-file', 'blob', tree + ':' + path), b'\x00\xff')
+        return tree
+
+    def tag_vendor_case(self, source, baseline, case, index, tag):
+        tree = self.vendor_case_tree(source, baseline, case, index)
+        commit = git(source, '-c', 'user.name=Export test', '-c', 'user.email=test@localhost',
+                     'commit-tree', tree, '-p', baseline['commit'], '-m', 'Synthetic ' + tag).decode().strip()
+        git(source, 'tag', tag, commit)
+        self.assertEqual(tree_entries(source, 'refs/tags/' + tag), tree_entries(source, tree))
+        self.assert_vendor_baseline_unchanged(source, baseline)
+        return tag
+
+    def assert_vendor_rejection(self, source, destination, case, tag):
+        result = self.run_export(source, destination, check=False, tag=tag)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(case[1], result.stderr)
+        self.assertFalse((destination / 'publish-manifest.json').exists())
 
     def check_export(self, published, fonts=False, crlf_checkout=False):
         with tempfile.TemporaryDirectory(prefix='cedar-export-test-') as directory:
@@ -356,52 +495,89 @@ class PublicExportTests(unittest.TestCase):
             self.assert_vendor_export(source, stage)
 
     def test_vendor_rejects_missing_changed_extra_or_unapproved_files(self):
-        cases = [
-            ('source', 'unapproved bytes'), ('license', 'unapproved bytes'),
-            ('provenance', 'unapproved bytes'), ('patch', 'unapproved bytes'),
-            ('extra-binary', 'unexpected or missing source file set'),
-            ('missing-source', 'unexpected or missing source file set'),
-            ('missing-license', 'missing approved file'),
-            ('missing-bundle-license', 'missing or invalid vendor bundle file'),
-            ('wrong-bundle-license', 'missing or unapproved bundled license'),
-            ('wrong-patch', 'unapproved Cargo patch identity/path'),
-            ('missing-patch', 'vendor source has no exact Cargo patch'),
-            ('duplicate-notice', 'missing or duplicate dependency/modification notice'),
-        ]
-        for change, message in cases:
-            with self.subTest(change=change), tempfile.TemporaryDirectory(prefix='cedar-vendor-export-reject-') as directory:
-                base = Path(directory)
-                source = base / 'source'
-                def mutate(root):
-                    vendor = root / vendored_egui.ROOT
-                    if change in ('source', 'license', 'provenance', 'patch'):
-                        name = {'source': 'src/lib.rs', 'license': 'LICENSE-MIT',
-                                'provenance': 'vendor-upstream.json', 'patch': 'egui-observation.patch'}[change]
-                        with (vendor / name).open('ab') as output:
-                            output.write(b' ')
-                    elif change == 'extra-binary':
-                        (vendor / 'extra.bin').write_bytes(b'\x00\xff')
-                    elif change == 'missing-source':
-                        (vendor / 'src/lib.rs').unlink()
-                    elif change == 'missing-license':
-                        (vendor / 'LICENSE-MIT').unlink()
-                    elif change == 'missing-bundle-license':
-                        (root / 'third-party-licenses/egui-0.31.1/LICENSE-MIT').unlink()
-                    elif change == 'wrong-bundle-license':
-                        (root / 'third-party-licenses/egui-0.31.1/LICENSE-MIT').write_bytes(b'wrong license')
-                    elif change == 'wrong-patch':
-                        (root / 'Cargo.toml').write_text('[patch.crates-io]\negui = { path = "elsewhere" }\n')
-                    elif change == 'missing-patch':
-                        (root / 'Cargo.toml').unlink()
+        with tempfile.TemporaryDirectory(prefix='cedar-vendor-export-reject-') as directory:
+            base = Path(directory)
+            source = base / 'source'
+            baseline = self.vendor_baseline(source)
+            for case in VENDOR_CASES:
+                # Cleanup must be outside subTest: a cleanup failure is fatal to
+                # the group, while a failed oracle still records its exact case.
+                with tempfile.TemporaryDirectory(prefix='case-', dir=base) as temporary:
+                    current = Path(temporary)
+                    index = current / 'index'
+                    self.prepare_vendor_index(source, baseline, case[2], index)
+                    with self.subTest(change=case[0]):
+                        mutate_vendor_case(source, case)
+                        tag = self.tag_vendor_case(source, baseline, case, index, 'test-stage-' + case[0])
+                        self.assert_vendor_rejection(source, current / 'export', case, tag)
+            self.assert_vendor_baseline_unchanged(source, baseline)
+
+    def test_vendor_private_index_without_mutation_preserves_baseline_tree(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-vendor-index-neutral-') as directory:
+            base = Path(directory)
+            source = base / 'source'
+            baseline = self.vendor_baseline(source)
+            with tempfile.TemporaryDirectory(prefix='index-', dir=base) as temporary:
+                index = Path(temporary) / 'index'
+                self.prepare_vendor_index(source, baseline, VENDOR_CASES[0][2], index)
+                self.assertEqual(git(source, 'write-tree', index=index).decode().strip(), baseline['tree'])
+                self.assertEqual(tree_entries(source, baseline['tree']), baseline['entries'])
+                self.assert_vendor_baseline_unchanged(source, baseline)
+
+    def test_vendor_private_index_isolates_previous_case_failures(self):
+        class InjectedFixtureFailure(AssertionError):
+            pass
+
+        cases = {case[0]: case for case in VENDOR_CASES}
+        faults = (('after-add', 'extra-binary'), ('after-delete', 'missing-license'),
+                  ('after-stage', 'source'), ('export-assertion', 'license'))
+        with tempfile.TemporaryDirectory(prefix='cedar-vendor-index-isolation-') as directory:
+            base = Path(directory)
+            source = base / 'source'
+            baseline = self.vendor_baseline(source)
+            for fault, change in faults:
+                failed = cases[change]
+                with tempfile.TemporaryDirectory(prefix='failed-', dir=base) as temporary:
+                    current = Path(temporary)
+                    index = current / 'index'
+                    self.prepare_vendor_index(source, baseline, failed[2], index)
+                    with self.subTest(fault=fault):
+                        marker = 'cedar-injected-' + fault
+                        with self.assertRaisesRegex(InjectedFixtureFailure, '^' + marker + '$'):
+                            mutate_vendor_case(source, failed)
+                            if fault == 'after-stage':
+                                git(source, 'add', '-A', '--', failed[2].as_posix(), index=index)
+                            elif fault == 'export-assertion':
+                                tag = self.tag_vendor_case(source, baseline, failed, index, 'failed-' + fault)
+                                self.assert_vendor_rejection(source, current / 'export', failed, tag)
+                            raise InjectedFixtureFailure(marker)
+                        self.assert_vendor_baseline_unchanged(source, baseline)
+                # Deliberately retain the failed case's checkout mutation. The
+                # next index must exclude it without cleanup restoring files.
+                dirty = source / failed[2]
+                if failed[3] == 'delete':
+                    self.assertFalse(dirty.exists())
+                    dirty_bytes = None
+                else:
+                    dirty_bytes = dirty.read_bytes()
+                    if failed[3] == 'add':
+                        self.assertEqual(dirty_bytes, b'\x00\xff')
                     else:
-                        with (root / 'THIRD_PARTY_NOTICES.md').open('a') as output:
-                            output.write('| egui | 0.31.1 | MIT OR Apache-2.0 | https://github.com/emilk/egui |\n')
-                self.fixture(source, False, vendor=True, mutate=mutate)
-                destination = base / 'export'
-                result = self.run_export(source, destination, check=False)
-                self.assertNotEqual(result.returncode, 0, result.stdout)
-                self.assertIn(message, result.stderr)
-                self.assertFalse((destination / 'publish-manifest.json').exists())
+                        self.assertNotEqual(dirty_bytes, baseline['blobs'][failed[2].as_posix()])
+                following = cases['wrong-patch']
+                with tempfile.TemporaryDirectory(prefix='following-', dir=base) as temporary:
+                    current = Path(temporary)
+                    index = current / 'index'
+                    self.prepare_vendor_index(source, baseline, following[2], index)
+                    with self.subTest(following=fault):
+                        mutate_vendor_case(source, following)
+                        tag = self.tag_vendor_case(source, baseline, following, index, 'following-' + fault)
+                        self.assert_vendor_rejection(source, current / 'export', following, tag)
+                        if dirty_bytes is None:
+                            self.assertFalse(dirty.exists())
+                        else:
+                            self.assertEqual(dirty.read_bytes(), dirty_bytes)
+            self.assert_vendor_baseline_unchanged(source, baseline)
 
     def test_verified_vendor_bytes_still_pass_the_global_sensitive_scan(self):
         with tempfile.TemporaryDirectory(prefix='cedar-vendor-sensitive-') as directory:

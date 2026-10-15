@@ -1,17 +1,18 @@
 # Public source checkpoint
 
-This is the source-only public export of uncompiled candidate awaiting CI `phase78-0.78.0-close-barrier-scope-r3-uncompiled-candidate`.
+This is the source-only public export of uncompiled candidate awaiting CI `phase78-0.78.0-close-barrier-fixture-r4-uncompiled-candidate`.
 It is an independent Rust IDE project, not a complete IntelliJ IDEA replacement.
 Public commits preserve the phase-by-phase development sequence, but their hashes
 differ from the private build checkpoints because generated evidence is omitted.
 
-Candidate status at publication: UNCOMPILED. This revision only qualifies one
-existing test-observer path with crate::. Direct rustfmt checking and static
-review passed; compilation and tests have not run for this revision. The prior
-candidate passed packaging checks but failed Clippy compilation on both
-platforms. Both prior failed runs remain part of the record. This candidate
-awaits the original CI gates on its exact public commit; it is not a release
-or a verified fix of the previously unattributed native zombie. Native close
+Candidate status at publication: UNCOMPILED. This revision changes only synthetic
+export-test fixture setup. All 21 methods in that Python suite passed locally
+once; Rust compilation, Rust tests and Windows execution have not run for this
+revision. The prior candidate passed its Linux subset but failed Windows fixture
+Git timeouts. Those original failures remain part of the record; existing gate
+timeouts and negative assertions are retained. This candidate awaits the original
+CI gates on its exact public commit. It is not a release, a proven Windows timeout
+fix or a verified fix of the previously unattributed native zombie. Native close
 validation remains separate from CI.
 
 ## Verification evidence
