@@ -2,6 +2,7 @@
 //! built, marked synthetic stdio peer. No SSH, workspace trust or binary
 //! resolution override is involved. Process cases are explicit acceptance tests.
 use super::*;
+use crate::close_transport::{OwnerLedger, OwnerOutcome, OwnerTicket};
 use cedar_protocol::Request;
 use std::{
     fs,
@@ -59,9 +60,11 @@ fn assert_draft(app: &CedarApp) {
 
 fn recorded_workspace() -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
-    let (worker, commands) = Worker::recording();
-    app.worker = Some(worker);
     app.generation = 7;
+    let owner = app.owner_ledger.register(app.generation).unwrap();
+    app.active_owner = Some(owner);
+    let (worker, commands) = Worker::recording_with_owner(owner);
+    app.worker = Some(worker);
     app.workspace_key = Some(form().key());
     app.active_form = Some(form());
     app.root = ROOT.into();
@@ -111,7 +114,9 @@ fn cancel_connecting_invalidates_generation_and_preserves_unknown_save() {
     assert_draft(&app);
 
     // A fresh accepted connection keeps the existing interrupted-save guard.
-    let (worker, commands) = Worker::recording();
+    let owner = app.owner_ledger.register(app.generation).unwrap();
+    app.active_owner = Some(owner);
+    let (worker, commands) = Worker::recording_with_owner(owner);
     app.worker = Some(worker);
     app.state = ConnectionState::Connecting;
     app.connecting_form = Some(form());
@@ -138,7 +143,9 @@ fn cancel_connecting_invalidates_generation_and_preserves_unknown_save() {
 #[test]
 fn first_connection_cancel_returns_to_idle() {
     let mut app = CedarApp::empty();
-    let (worker, commands) = Worker::recording();
+    let owner = app.owner_ledger.register(app.generation).unwrap();
+    app.active_owner = Some(owner);
+    let (worker, commands) = Worker::recording_with_owner(owner);
     app.worker = Some(worker);
     app.state = ConnectionState::Connecting;
     app.connecting_form = Some(form());
@@ -279,6 +286,7 @@ fn next_event(app: &CedarApp) -> Event {
 fn response(event: WorkerEvent) -> Event {
     match event {
         WorkerEvent::Response(event) => event,
+        WorkerEvent::OwnerSettled(_) => panic!("unexpected owner receipt before response"),
         WorkerEvent::TransportLost { message, .. } => panic!("unexpected idle loss: {message}"),
         WorkerEvent::Closed { .. } => panic!("unexpected cleanup receipt before response"),
         WorkerEvent::AttemptCleanupUnverified { .. } => {
@@ -287,20 +295,51 @@ fn response(event: WorkerEvent) -> Event {
     }
 }
 
-fn start_fixture(app: &mut CedarApp, root: &Path) {
+fn start_fixture(app: &mut CedarApp, root: &Path) -> OwnerTicket {
     assert!(app.worker.is_none());
     app.generation += 1;
     app.pending.clear();
     app.agent_info = None;
     app.state = ConnectionState::Connecting;
     app.connecting_form = Some(form());
-    app.worker = Some(Worker::spawn_agent(
-        peer_binary(),
-        root.into(),
-        app.generation,
-        app.result_tx.clone(),
-        app.editor_ctx.clone(),
-    ));
+    let owner = app.owner_ledger.register(app.generation).unwrap();
+    app.active_owner = Some(owner);
+    app.worker = Some(
+        Worker::spawn_agent(
+            peer_binary(),
+            root.into(),
+            owner,
+            app.result_tx.clone(),
+            app.editor_ctx.clone(),
+        )
+        .unwrap(),
+    );
+    owner
+}
+
+fn apply_verified_owner(app: &mut CedarApp, owner: OwnerTicket) {
+    let event = app
+        .result_rx
+        .recv_timeout(WAIT)
+        .expect("owner receipt missing");
+    assert!(matches!(&event, WorkerEvent::OwnerSettled(receipt)
+        if receipt.ticket == owner && receipt.outcome == OwnerOutcome::Verified));
+    app.apply_worker_event(event);
+}
+
+fn settle_verified_owner(
+    rx: &Receiver<WorkerEvent>,
+    ledger: &mut OwnerLedger,
+    owner: OwnerTicket,
+    timeout: Duration,
+) {
+    let WorkerEvent::OwnerSettled(receipt) = rx.recv_timeout(timeout).unwrap() else {
+        panic!("owner receipt must precede legacy Closed")
+    };
+    assert_eq!(receipt.ticket, owner);
+    assert_eq!(receipt.outcome, OwnerOutcome::Verified);
+    assert!(ledger.apply(receipt));
+    assert!(ledger.all_verified());
 }
 
 fn accept_fixture(app: &mut CedarApp) {
@@ -320,11 +359,11 @@ fn accept_fixture(app: &mut CedarApp) {
 #[ignore = "requires CEDAR_CONNECTION_CANCEL_PEER_BIN; explicit process acceptance"]
 fn stalled_hello_cancel_is_bounded_and_retains_drafts() {
     let (mut app, _) = recorded_workspace();
-    app.worker = None;
+    app.retire_current_worker();
     // Each retry gets its own token. Cancellation cannot leak to the next one.
     for _ in 0..2 {
         let root = fixture("stalled_hello");
-        start_fixture(&mut app, root.path());
+        let owner = start_fixture(&mut app, root.path());
         let old_generation = app.generation;
         assert!(matches!(ready_request(root.path(), 1).op, Operation::Hello));
         let start = Instant::now();
@@ -349,6 +388,13 @@ fn stalled_hello_cancel_is_bounded_and_retains_drafts() {
         assert_draft(&app);
         wait_marker(root.path(), "eof");
         assert_operations(root.path(), &["hello"]);
+        apply_verified_owner(&mut app, owner);
+        let closed = app.result_rx.recv_timeout(WAIT).unwrap();
+        assert!(
+            matches!(&closed, WorkerEvent::Closed { generation, result: Ok(()) }
+            if *generation == old_generation)
+        );
+        app.apply_worker_event(closed);
     }
 }
 
@@ -358,7 +404,7 @@ fn stalled_read_cancels_queued_list_and_replacement_stays_connected() {
     let old_root = fixture("stalled_read");
     let new_root = fixture("capability_peer");
     let mut app = CedarApp::empty();
-    start_fixture(&mut app, old_root.path());
+    let old_owner = start_fixture(&mut app, old_root.path());
     accept_fixture(&mut app);
     retain_draft(&mut app);
     let old_generation = app.generation;
@@ -372,7 +418,7 @@ fn stalled_read_cancels_queued_list_and_replacement_stays_connected() {
     assert_eq!(app.pending.len(), 2);
 
     let start = Instant::now();
-    app.worker = None;
+    app.retire_current_worker();
     let cancelled = response(
         app.result_rx
             .recv_timeout(CANCEL_BOUND)
@@ -389,10 +435,13 @@ fn stalled_read_cancels_queued_list_and_replacement_stays_connected() {
         .starts_with("transport_cancelled:"));
     wait_marker(old_root.path(), "eof");
     assert_operations(old_root.path(), &["hello", "list", "read"]);
-    assert!(matches!(app.result_rx.recv_timeout(WAIT).unwrap(),
-        WorkerEvent::Closed { generation, result: Ok(()) } if generation == old_generation));
+    apply_verified_owner(&mut app, old_owner);
+    let closed = app.result_rx.recv_timeout(WAIT).unwrap();
+    assert!(matches!(&closed,
+        WorkerEvent::Closed { generation, result: Ok(()) } if *generation == old_generation));
+    app.apply_worker_event(closed);
 
-    start_fixture(&mut app, new_root.path());
+    let new_owner = start_fixture(&mut app, new_root.path());
     accept_fixture(&mut app);
     app.apply_event(cancelled);
     assert!(app.ready());
@@ -408,9 +457,16 @@ fn stalled_read_cancels_queued_list_and_replacement_stays_connected() {
     app.save();
     assert!(app.error.as_deref().unwrap().contains("interrupted save"));
     assert_draft(&app);
-    app.worker = None;
+    app.retire_current_worker();
     wait_marker(new_root.path(), "eof");
     assert_operations(new_root.path(), &["hello", "list", "list"]);
+    apply_verified_owner(&mut app, new_owner);
+    let closed = app.result_rx.recv_timeout(WAIT).unwrap();
+    assert!(
+        matches!(&closed, WorkerEvent::Closed { generation, result: Ok(()) }
+        if *generation == new_owner.generation)
+    );
+    app.apply_worker_event(closed);
 }
 
 #[test]
@@ -418,13 +474,16 @@ fn stalled_read_cancels_queued_list_and_replacement_stays_connected() {
 fn dropped_worker_drains_sent_write_reply_and_suppresses_queued_list() {
     let root = fixture("held_reply");
     let (tx, rx) = mpsc::channel();
+    let mut ledger = OwnerLedger::default();
+    let owner = ledger.register(17).unwrap();
     let worker = Worker::spawn_agent(
         peer_binary(),
         root.path().into(),
-        17,
+        owner,
         tx,
         egui::Context::default(),
-    );
+    )
+    .unwrap();
     let hello = response(rx.recv_timeout(WAIT).unwrap());
     assert!(hello.connected);
     worker
@@ -466,6 +525,7 @@ fn dropped_worker_drains_sent_write_reply_and_suppresses_queued_list() {
     );
     wait_marker(root.path(), "eof");
     assert_operations(root.path(), &["hello", "write"]);
+    settle_verified_owner(&rx, &mut ledger, owner, WAIT);
     assert!(matches!(
         rx.recv_timeout(WAIT).unwrap(),
         WorkerEvent::Closed {
@@ -490,7 +550,10 @@ fn idle_worker_observes_terminal_reader_events_without_sending_requests() {
         ctx.set_request_repaint_callback(move |_| {
             let _ = repaint_tx.send(());
         });
-        let worker = Worker::spawn_agent(peer_binary(), root.path().into(), 23, tx, ctx.clone());
+        let mut ledger = OwnerLedger::default();
+        let owner = ledger.register(23).unwrap();
+        let worker =
+            Worker::spawn_agent(peer_binary(), root.path().into(), owner, tx, ctx.clone()).unwrap();
         let hello = response(rx.recv_timeout(WAIT).unwrap());
         assert!(hello.connected);
         repaint_rx
@@ -530,6 +593,7 @@ fn idle_worker_observes_terminal_reader_events_without_sending_requests() {
         };
         assert!(message.starts_with(prefix), "{message}");
         assert_operations(root.path(), &["hello"]);
+        settle_verified_owner(&rx, &mut ledger, owner, WAIT);
         assert!(matches!(
             rx.recv_timeout(WAIT).unwrap(),
             WorkerEvent::Closed {
@@ -550,13 +614,16 @@ fn idle_worker_observes_terminal_reader_events_without_sending_requests() {
 fn worker_publishes_completed_write_ack_before_immediate_eof() {
     let root = fixture("held_reply_eof");
     let (tx, rx) = mpsc::channel();
+    let mut ledger = OwnerLedger::default();
+    let owner = ledger.register(29).unwrap();
     let worker = Worker::spawn_agent(
         peer_binary(),
         root.path().into(),
-        29,
+        owner,
         tx,
         egui::Context::default(),
-    );
+    )
+    .unwrap();
     assert!(response(rx.recv_timeout(WAIT).unwrap()).connected);
     worker
         .tx
@@ -587,6 +654,7 @@ fn worker_publishes_completed_write_ack_before_immediate_eof() {
         WorkerEvent::TransportLost { generation: 29, .. }
     ));
     assert_operations(root.path(), &["hello", "write"]);
+    settle_verified_owner(&rx, &mut ledger, owner, WAIT);
     assert!(matches!(
         rx.recv_timeout(WAIT).unwrap(),
         WorkerEvent::Closed {
@@ -605,15 +673,19 @@ fn worker_publishes_completed_write_ack_before_immediate_eof() {
 fn dropping_healthy_idle_worker_closes_mailbox_and_process() {
     let root = fixture("capability_peer");
     let (tx, rx) = mpsc::channel();
+    let mut ledger = OwnerLedger::default();
+    let owner = ledger.register(31).unwrap();
     let worker = Worker::spawn_agent(
         peer_binary(),
         root.path().into(),
-        31,
+        owner,
         tx,
         egui::Context::default(),
-    );
+    )
+    .unwrap();
     assert!(response(rx.recv_timeout(WAIT).unwrap()).connected);
     drop(worker);
+    settle_verified_owner(&rx, &mut ledger, owner, CANCEL_BOUND);
     assert!(matches!(
         rx.recv_timeout(CANCEL_BOUND).unwrap(),
         WorkerEvent::Closed {

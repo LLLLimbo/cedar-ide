@@ -1055,15 +1055,20 @@ mod tests {
             // requires the fixed sibling and is exercised by the bundled case.
             app.state = ConnectionState::Connecting;
             app.connecting_form = Some(form);
-            app.worker = Some(crate::Worker::spawn(
-                cedar_client::ConnectionSpec::Local {
-                    root: temp.path().to_path_buf(),
-                    allow_run: true,
-                },
-                app.generation,
-                app.result_tx.clone(),
-                ctx,
-            ));
+            let owner = app.owner_ledger.register(app.generation).unwrap();
+            app.active_owner = Some(owner);
+            app.worker = Some(
+                crate::Worker::spawn(
+                    cedar_client::ConnectionSpec::Local {
+                        root: temp.path().to_path_buf(),
+                        allow_run: true,
+                    },
+                    owner,
+                    app.result_tx.clone(),
+                    ctx,
+                )
+                .unwrap(),
+            );
         }
         wait(&mut app, |app| {
             app.state == ConnectionState::Ready && app.pending.is_empty()
@@ -1130,6 +1135,7 @@ mod tests {
         app.disconnect_idle();
         wait(&mut app, |app| app.state == ConnectionState::Disconnected);
         assert!(!app.unverified_local_close);
+        assert!(app.owner_ledger.all_verified());
     }
     #[test]
     fn command_panel_and_transition_dialog_layout() {

@@ -2,6 +2,7 @@
 //! Only the explicitly selected normal agent and generated workspace are used.
 //! SSH rejection claims describe this implementation path, not an OS-wide audit.
 use super::*;
+use crate::close_transport::{OwnerOutcome, OwnerTicket};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -94,6 +95,8 @@ struct Harness {
     root: Option<tempfile::TempDir>,
     started: Instant,
     generation: u64,
+    owner: OwnerTicket,
+    owner_received: bool,
     accepted_root: String,
     accepted_key: WorkspaceKey,
     accepted_info: AgentInfo,
@@ -106,18 +109,39 @@ impl Drop for Harness {
     fn drop(&mut self) {
         // Failure still releases only this test's owned worker. The success
         // path separately requires its consuming close/reaper receipt.
-        self.app.worker = None;
+        self.app.retire_current_worker();
         if !self.closed {
             let deadline = Instant::now() + WAIT;
+            let mut legacy_closed = false;
             while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
                 match self.app.result_rx.recv_timeout(remaining) {
-                    Ok(WorkerEvent::Closed { generation, .. }) if generation == self.generation => {
-                        break;
+                    Ok(WorkerEvent::OwnerSettled(receipt)) => {
+                        if receipt.ticket == self.owner {
+                            self.owner_received = true;
+                            self.app
+                                .apply_worker_event(WorkerEvent::OwnerSettled(receipt));
+                        }
                     }
-                    Ok(_) => {}
+                    Ok(WorkerEvent::Closed { generation, result }) => {
+                        if generation == self.generation {
+                            legacy_closed = true;
+                            self.app
+                                .apply_worker_event(WorkerEvent::Closed { generation, result });
+                        }
+                    }
+                    // The failure cleanup drain can encounter a pending reply
+                    // or loss first. Neither is a direct-child cleanup receipt.
+                    Ok(WorkerEvent::Response(_))
+                    | Ok(WorkerEvent::TransportLost { .. })
+                    | Ok(WorkerEvent::AttemptCleanupUnverified { .. }) => {}
                     Err(_) => break,
                 }
+                if self.owner_received && legacy_closed {
+                    break;
+                }
             }
+            // Missing events/EOF do not set closed or certify cleanup. Only
+            // disconnect's exact Verified receipt and successful Closed do so.
         }
     }
 }
@@ -167,19 +191,29 @@ impl Harness {
         app.connecting_form = Some(connection);
         let generation = app.generation;
         // Never pass an SSH ConnectionSpec to the test's process startup.
-        app.worker = Some(Worker::spawn_agent(
-            agent,
-            root.path().to_owned(),
-            generation,
-            app.result_tx.clone(),
-            app.editor_ctx.clone(),
-        ));
+        let owner = app
+            .owner_ledger
+            .register(generation)
+            .map_err(|_| "owner registration failed")?;
+        app.active_owner = Some(owner);
+        app.worker = Some(
+            Worker::spawn_agent(
+                agent,
+                root.path().to_owned(),
+                owner,
+                app.result_tx.clone(),
+                app.editor_ctx.clone(),
+            )
+            .map_err(|_| "normal-agent worker could not start")?,
+        );
         // Establish failure cleanup before awaiting even the first response.
         let mut h = Self {
             app,
             root: Some(root),
             started,
             generation,
+            owner,
+            owner_received: false,
             accepted_root: String::new(),
             accepted_key,
             accepted_info: AgentInfo {
@@ -369,6 +403,22 @@ impl Harness {
                 && self.app.pending.is_empty(),
             "explicit Disconnect did not release the owned worker",
         )?;
+        let owner_event = self
+            .app
+            .result_rx
+            .recv_timeout(self.wait()?)
+            .map_err(|_| "owned normal-agent owner receipt timed out")?;
+        require(
+            matches!(&owner_event, WorkerEvent::OwnerSettled(receipt)
+                if receipt.ticket == self.owner && receipt.outcome == OwnerOutcome::Verified),
+            "owned normal-agent owner cleanup was not verified",
+        )?;
+        self.owner_received = true;
+        self.app.apply_worker_event(owner_event);
+        require(
+            self.app.owner_ledger.all_verified(),
+            "local owner ledger was not settled",
+        )?;
         let event = self
             .app
             .result_rx
@@ -379,8 +429,8 @@ impl Harness {
                 if *generation == self.generation),
             "owned normal-agent cleanup was not verified",
         )?;
-        // Worker publishes this only after Client::close_and_wait consumes
-        // the direct child and observes its authoritative reaper result.
+        // The exact OwnerSettled above carries the consuming direct-child
+        // proof. Closed independently preserves the legacy terminal UI oracle.
         self.closed = true;
         self.app.apply_worker_event(event);
         require(

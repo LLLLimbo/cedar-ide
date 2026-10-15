@@ -1,6 +1,7 @@
 //! Trust-off normal-agent acceptance for explicit draft-only merge. All disk
 //! mutations are generated fixture setup or separately requested Save actions.
 use super::*;
+use crate::close_transport::OwnerOutcome;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -72,6 +73,7 @@ fn assert_no_writes(root: &Path) {
 }
 
 fn close(app: &mut CedarApp, root: &Path) {
+    let owner = app.active_owner.expect("fixture owner was registered");
     let pid = String::from_utf8(wait_file(root, "relay-agent-started"))
         .unwrap()
         .trim()
@@ -101,6 +103,13 @@ fn close(app: &mut CedarApp, root: &Path) {
     assert_eq!(receipt["process_id"], pid);
     assert_eq!(receipt["cleanup_verified"], true);
     assert_eq!(receipt["exit_success"], true);
+    let owner_event = app
+        .result_rx
+        .recv_timeout(WAIT)
+        .expect("local owner receipt missing");
+    assert!(matches!(&owner_event, WorkerEvent::OwnerSettled(receipt)
+        if receipt.ticket == owner && receipt.outcome == OwnerOutcome::Verified));
+    app.apply_worker_event(owner_event);
     let closed = app
         .result_rx
         .recv_timeout(WAIT)
@@ -175,13 +184,18 @@ fn normal_agent_merge_is_read_only_until_explicit_save_and_keeps_revision_confli
             allow_run: false,
             ..Default::default()
         });
-        app.worker = Some(Worker::spawn_agent(
-            peer.clone(),
-            root.clone(),
-            app.generation,
-            app.result_tx.clone(),
-            app.editor_ctx.clone(),
-        ));
+        let owner = app.owner_ledger.register(app.generation).unwrap();
+        app.active_owner = Some(owner);
+        app.worker = Some(
+            Worker::spawn_agent(
+                peer.clone(),
+                root.clone(),
+                owner,
+                app.result_tx.clone(),
+                app.editor_ctx.clone(),
+            )
+            .unwrap(),
+        );
         response(&mut app, true);
         response(&mut app, true);
         assert!(app.ready() && !app.execution_trusted());

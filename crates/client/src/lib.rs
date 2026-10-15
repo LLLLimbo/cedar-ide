@@ -63,8 +63,8 @@ fn cancellation_error() -> String {
 
 #[cfg(target_os = "linux")]
 mod bundled_linux;
-#[cfg(target_os = "linux")]
-pub use bundled_linux::{ConnectionFailure, ConnectionOwnership};
+mod connection_failure;
+pub use connection_failure::{ConnectionFailure, ConnectionOwnership};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionSpec {
@@ -131,20 +131,7 @@ impl Client {
                 }
                 #[cfg(not(windows))]
                 {
-                    let mut workspace = Workspace::open(root).map_err(|e| e.to_string())?;
-                    workspace.set_allow_run(allow_run);
-                    let handshake = workspace
-                        .handle(Operation::Hello)
-                        .map_err(|e| e.to_string())?;
-                    validate_handshake(&handshake)?;
-                    if cancellation_requested(&cancellation) {
-                        return Err(cancellation_error());
-                    }
-                    Ok(Self {
-                        backend: Backend::Local(Box::new(workspace)),
-                        cancellation,
-                        handshake,
-                    })
+                    Self::connect_embedded(root, allow_run, cancellation)
                 }
             }
             ConnectionSpec::Ssh {
@@ -154,12 +141,33 @@ impl Client {
                 agent_path,
                 allow_run,
             } => {
-                let args = ssh_arguments(&host, port, &root, &agent_path, allow_run)?;
-                let mut cmd = Command::new("ssh");
-                cmd.args(args);
+                let cmd = ssh_command(&host, port, &root, &agent_path, allow_run)?;
                 Self::from_command_with_cancellation(cmd, cancellation)
             }
         }
+    }
+    // This constructor never acquires a transport child. Its complete error
+    // boundary is therefore safe to classify as NoChild in the typed API.
+    #[cfg(not(windows))]
+    fn connect_embedded(
+        root: PathBuf,
+        allow_run: bool,
+        cancellation: Option<ConnectionCancellation>,
+    ) -> Result<Self, String> {
+        let mut workspace = Workspace::open(root).map_err(|e| e.to_string())?;
+        workspace.set_allow_run(allow_run);
+        let handshake = workspace
+            .handle(Operation::Hello)
+            .map_err(|e| e.to_string())?;
+        validate_handshake(&handshake)?;
+        if cancellation_requested(&cancellation) {
+            return Err(cancellation_error());
+        }
+        Ok(Self {
+            backend: Backend::Local(Box::new(workspace)),
+            cancellation,
+            handshake,
+        })
     }
     #[cfg(windows)]
     fn connect_bundled_windows_agent(
@@ -167,32 +175,9 @@ impl Client {
         allow_run: bool,
         cancellation: Option<ConnectionCancellation>,
     ) -> Result<Self, String> {
-        let executable = std::env::current_exe().map_err(|e| {
-            format!("bundled_agent_missing: cannot locate this executable's bundled cedar-agent.exe: {e}")
-        })?;
-        let agent = bundled_windows_agent_path(&executable)?;
-        if !agent.is_file() {
-            return Err(format!(
-                "bundled_agent_missing: bundled cedar-agent.exe is missing at {}; restore it beside this executable",
-                agent.display()
-            ));
-        }
-        let mut cmd = Command::new(&agent);
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        cmd.arg("--root").arg(root);
-        if allow_run {
-            cmd.arg("--allow-run");
-        }
+        let (cmd, agent) = bundled_windows_agent_command(root, allow_run)?;
         let process = ProcessClient::spawn_bundled_agent(cmd, cancellation)?;
-        Self::from_process(process).map_err(|e| {
-            if e.starts_with("transport_cancelled:") {
-                return e;
-            }
-            format!(
-                "bundled_agent_start_failed: bundled cedar-agent.exe at {} could not establish a workspace connection: {e}",
-                agent.display()
-            )
-        })
+        Self::from_process(process).map_err(|e| bundled_windows_connection_error(&agent, e))
     }
     /// Use a separately deployed local agent, also useful for process-isolated integration tests.
     pub fn spawn_agent(agent: &Path, root: &Path, allow_run: bool) -> Result<Self, String> {
@@ -212,11 +197,7 @@ impl Client {
         allow_run: bool,
         cancellation: Option<ConnectionCancellation>,
     ) -> Result<Self, String> {
-        let mut cmd = Command::new(agent);
-        cmd.arg("--root").arg(root);
-        if allow_run {
-            cmd.arg("--allow-run");
-        }
+        let cmd = agent_command(agent, root, allow_run);
         Self::from_command_with_cancellation(cmd, cancellation)
     }
     fn from_command_with_cancellation(
@@ -469,6 +450,69 @@ impl Client {
     }
 }
 
+fn agent_command(agent: &Path, root: &Path, allow_run: bool) -> Command {
+    let mut command = Command::new(agent);
+    command.arg("--root").arg(root);
+    if allow_run {
+        command.arg("--allow-run");
+    }
+    command
+}
+
+fn ssh_command(
+    host: &str,
+    port: u16,
+    root: &str,
+    agent: &str,
+    allow_run: bool,
+) -> Result<Command, String> {
+    let args = ssh_arguments(host, port, root, agent, allow_run)?;
+    let mut command = Command::new("ssh");
+    command.args(args);
+    Ok(command)
+}
+
+#[cfg(windows)]
+fn bundled_windows_agent_command(
+    root: &Path,
+    allow_run: bool,
+) -> Result<(Command, PathBuf), String> {
+    let executable = std::env::current_exe().map_err(|e| {
+        format!(
+            "bundled_agent_missing: cannot locate this executable's bundled cedar-agent.exe: {e}"
+        )
+    })?;
+    let agent = bundled_windows_agent_file(&executable)?;
+    let mut command = agent_command(&agent, root, allow_run);
+    command.creation_flags(CREATE_NO_WINDOW);
+    Ok((command, agent))
+}
+
+#[cfg(windows)]
+fn bundled_windows_connection_error(agent: &Path, error: String) -> String {
+    if error.starts_with("transport_cancelled:") {
+        return error;
+    }
+    format!(
+        "bundled_agent_start_failed: bundled cedar-agent.exe at {} could not establish a workspace connection: {error}",
+        agent.display()
+    )
+}
+
+// This preflight is shared by both Windows APIs and cannot spawn a process.
+// Unit tests may supply synthetic executable paths on every platform.
+#[cfg(any(windows, test))]
+fn bundled_windows_agent_file(executable: &Path) -> Result<PathBuf, String> {
+    let agent = bundled_windows_agent_path(executable)?;
+    if !agent.is_file() {
+        return Err(format!(
+            "bundled_agent_missing: bundled cedar-agent.exe is missing at {}; restore it beside this executable",
+            agent.display()
+        ));
+    }
+    Ok(agent)
+}
+
 // Derive exactly one candidate. No PATH, cwd, environment override, build-tree
 // search or fallback may move Windows Local into a different spawning host.
 #[cfg(any(windows, test))]
@@ -608,6 +652,7 @@ fn posix_quote(value: &str) -> String {
 }
 
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
+const CONNECT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 const REAP_INTERVAL: Duration = Duration::from_millis(10);
 const CANCELLATION_INTERVAL: Duration = Duration::from_millis(50);
 const STDERR_TAIL_BYTES: usize = 4096;
@@ -985,9 +1030,7 @@ impl ProcessClient {
         grace: Duration,
         cancellation: Option<ConnectionCancellation>,
     ) -> Result<Self, String> {
-        Self::spawn_with_grace_and_error(cmd, grace, cancellation, |e| {
-            format!("spawn_failed: {e}. Install OpenSSH and deploy cedar-agent first.")
-        })
+        Self::spawn_with_grace_and_error(cmd, grace, cancellation, process_spawn_error)
     }
     #[cfg(windows)]
     fn spawn_bundled_agent(
@@ -1018,8 +1061,8 @@ impl ProcessClient {
             |error| error,
         )
     }
-    // Keep the historical String errors for existing routes. The fixed Linux
-    // route additionally distinguishes pre-spawn errors from setup failures
+    // Keep the historical String errors for existing routes. Detailed APIs
+    // additionally distinguish pre-spawn errors from setup failures
     // after a child was created; that provenance never comes from peer output.
     fn spawn_with_grace_and_setup_error<E>(
         mut cmd: Command,
@@ -1390,6 +1433,11 @@ impl ProcessClient {
             })
     }
 }
+
+fn process_spawn_error(error: io::Error) -> String {
+    format!("spawn_failed: {error}. Install OpenSSH and deploy cedar-agent first.")
+}
+
 impl Drop for ProcessClient {
     fn drop(&mut self) {
         self.close();
@@ -1552,6 +1600,8 @@ fn reap_after_close(
     owned.terminate_and_reap()
 }
 
+#[cfg(test)]
+mod connection_test_support;
 #[cfg(test)]
 mod transport_tests;
 

@@ -28,8 +28,8 @@ The polling interval is not a wall-clock guarantee: scheduling, process creation
 filesystem calls and kernel cleanup may take longer. Embedded Unix workspace
 operations remain synchronous and cannot be interrupted inside Workspace::handle.
 
-Cancellation releases the caller before asynchronous child cleanup necessarily
-finishes. Client::close_and_wait separately verifies the direct owned child's
+The legacy String-returning cancellation APIs release the caller before
+asynchronous child cleanup necessarily finishes. Client::close_and_wait separately verifies the direct owned child's
 reaper result. The transport still has detached pipe threads; this API does not
 claim those threads are joined or that arbitrary descendants holding inherited
 pipes have exited. Tests distinguish caller cancellation, direct-child reaping
@@ -47,3 +47,20 @@ Separate app tests exercise actual cancellation and generation handling without
 enabling GUI execution trust. An isolated test process measures repeated cycles
 after warmup and exact reaper completion. These tests do not authenticate to SSH
 or replace native GUI acceptance.
+
+## Typed failure evidence (0.78 candidate)
+
+The app opts into `Client::connect_with_cancellation_detailed`; separately deployed
+agent callers can use `Client::spawn_agent_with_cancellation_detailed`. Their
+`ConnectionFailure` separates the original message from locally produced
+`ConnectionOwnership`. Proven preflight/no-child boundaries report `NoChild`.
+After a process owner is installed, a failed Hello, validation or cancellation
+observes that same owner for up to three additional seconds. A setup error without
+a reaper acknowledgement, timeout, wait failure or unwinding worker remains
+unverified. Peer strings never manufacture ownership proof.
+
+The existing two-second process grace and the legacy String API error timing are
+unchanged. These new APIs do not join detached pipe threads or certify SSH remote
+cleanup. The app's lifetime ledger retains retired owners and sticky uncertainty
+across reconnect and Keep editing; see [window close](WINDOW_CLOSE.md).
+This candidate API and its new tests have not been compiled or executed locally.

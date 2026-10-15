@@ -52,10 +52,13 @@ local cleanup was unverified, a persistent warning remains even after reconnect;
 a new successful connection does not certify the old process's exit. No request,
 write, command or language startup is replayed automatically.
 
-The warning describes observed cleanup failures from this explicit workflow and
-unexpected worker exits while connected. It is not a complete historical audit
-of every passive transport failure. Actual authenticated SSH and remote network
-loss remain separate, unverified acceptance boundaries.
+The current-connection UI warning remains distinct from the 0.78 candidate's
+app-lifetime owner ledger. The ledger also retains retired connection owners and
+sticky uncertainty independently of current UI generation, so reconnect success
+cannot authorize window exit while an old owner remains pending or unverified.
+It is not an OS-wide process audit. See [window close](WINDOW_CLOSE.md).
+Actual authenticated SSH and remote network loss remain separate, unverified
+acceptance boundaries.
 
 ## Validation scope
 

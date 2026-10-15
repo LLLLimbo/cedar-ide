@@ -1,9 +1,15 @@
 # Public source checkpoint
 
-This is the source-only public export of tested development stage `phase77-0.77.0-project-context-r3-export-candidate`.
+This is the source-only public export of uncompiled candidate awaiting CI `phase78-0.78.0-close-barrier-uncompiled-candidate`.
 It is an independent Rust IDE project, not a complete IntelliJ IDEA replacement.
 Public commits preserve the phase-by-phase development sequence, but their hashes
 differ from the private build checkpoints because generated evidence is omitted.
+
+Candidate status at publication: UNCOMPILED / UNRUN. Compilation, tests, Clippy,
+release builds and canonical acceptance have not yet run for this candidate.
+This candidate is awaiting the original CI gates on its exact public commit; it
+is not a release or a verified fix of the previously unattributed native zombie.
+Native close validation remains separate from headless CI.
 
 ## Verification evidence
 

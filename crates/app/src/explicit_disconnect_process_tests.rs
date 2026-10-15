@@ -1,6 +1,9 @@
 //! Opt-in explicit Disconnect acceptance through owned, bounded stdio peers.
 //! Generated fixtures only: no SSH, execution permission, network, or user files.
 use super::*;
+use crate::close_transport::OwnerOutcome;
+#[cfg(any(target_os = "linux", windows))]
+use crate::close_transport::OwnerTicket;
 use cedar_recovery::{record_id, Store};
 use sha2::{Digest, Sha256};
 use std::{
@@ -122,23 +125,28 @@ fn start(
     app.connecting_form = Some(connection);
     app.pending.clear();
     app.agent_info = None;
-    app.worker = Some(match close_timeout {
-        Some(timeout) => Worker::spawn_agent_with_close_timeout(
-            peer.into(),
-            root.into(),
-            app.generation,
-            app.result_tx.clone(),
-            app.editor_ctx.clone(),
-            timeout,
-        ),
-        None => Worker::spawn_agent(
-            peer.into(),
-            root.into(),
-            app.generation,
-            app.result_tx.clone(),
-            app.editor_ctx.clone(),
-        ),
-    });
+    let owner = app.owner_ledger.register(app.generation).unwrap();
+    app.active_owner = Some(owner);
+    app.worker = Some(
+        match close_timeout {
+            Some(timeout) => Worker::spawn_agent_with_close_timeout(
+                peer.into(),
+                root.into(),
+                owner,
+                app.result_tx.clone(),
+                app.editor_ctx.clone(),
+                timeout,
+            ),
+            None => Worker::spawn_agent(
+                peer.into(),
+                root.into(),
+                owner,
+                app.result_tx.clone(),
+                app.editor_ctx.clone(),
+            ),
+        }
+        .unwrap(),
+    );
     response(app); // Hello schedules the ordinary initial List.
     response(app);
     assert!(app.ready() && app.pending.is_empty());
@@ -161,6 +169,17 @@ fn begin_disconnect(app: &mut CedarApp) {
 }
 
 fn finish_disconnect(app: &mut CedarApp) {
+    let owner_event = app
+        .result_rx
+        .recv_timeout(WAIT)
+        .expect("owner close receipt timed out");
+    let WorkerEvent::OwnerSettled(receipt) = owner_event else {
+        panic!("owner receipt must precede legacy Closed")
+    };
+    assert_eq!(receipt.ticket.generation, app.generation);
+    assert_eq!(receipt.outcome, OwnerOutcome::Verified);
+    // Applying to the ledger also verifies the exact registered owner identity.
+    assert!(app.owner_ledger.apply(receipt));
     let event = app
         .result_rx
         .recv_timeout(WAIT)
@@ -661,7 +680,17 @@ fn explicit_disconnect_close_timeout_keeps_warning_after_replacement() {
     retain_unknown_draft(&mut app);
     let old_generation = app.generation;
     let began = Instant::now();
+    let owner = app.active_owner.expect("fixture owner was registered");
     begin_disconnect(&mut app);
+    let owner_event = app
+        .result_rx
+        .recv_timeout(CANCEL_BOUND)
+        .expect("owner close observation did not finish");
+    assert!(matches!(&owner_event, WorkerEvent::OwnerSettled(receipt)
+        if receipt.ticket == owner
+            && matches!(&receipt.outcome, OwnerOutcome::Unverified(error) if error.starts_with("transport_close:"))));
+    app.apply_worker_event(owner_event);
+    assert!(!app.owner_ledger.all_verified());
     let event = app
         .result_rx
         .recv_timeout(CANCEL_BOUND)
@@ -722,4 +751,449 @@ fn explicit_disconnect_close_timeout_keeps_warning_after_replacement() {
     drop(app);
     temp.close().unwrap();
     println!("explicit_disconnect_timeout_acceptance close_observation_ms=20 no_premature_success=true cleanup_verified=false timed_out_peer_exit_observed=true warning_retained_after_replacement=true replacement_close_verified=true unknown_save_retained=true no_write_run_or_replay=true source_hashes_unchanged=true fixture_removed=true");
+}
+
+// These opt-in cases reuse the already-supervised relay and close-timeout
+// modes. Holding their real local events on the test side makes the frame
+// boundary deterministic; it never fabricates or upgrades an owner receipt.
+#[cfg(any(target_os = "linux", windows))]
+struct NativeCloseProcess {
+    app: CedarApp,
+    worker_tx: mpsc::Sender<WorkerEvent>,
+    worker_rx: Receiver<WorkerEvent>,
+    owner: Option<OwnerTicket>,
+    owner_received: bool,
+    closed_received: bool,
+    legacy_closed_required: bool,
+    observed: Option<ProcessObservation>,
+    _hold_font_probe: Box<dyn FnOnce()>,
+}
+
+#[cfg(any(target_os = "linux", windows))]
+impl NativeCloseProcess {
+    fn new() -> Self {
+        let mut app = CedarApp::empty();
+        let (fonts, hold_font_probe) = system_fonts::SystemFonts::pending_failure_for_test();
+        app.system_fonts = fonts;
+        app.open_form = false;
+        assert!(!app.recovery.enabled);
+        let (worker_tx, worker_rx) = mpsc::channel();
+        Self {
+            app,
+            worker_tx,
+            worker_rx,
+            owner: None,
+            owner_received: false,
+            closed_received: false,
+            legacy_closed_required: true,
+            observed: None,
+            _hold_font_probe: Box::new(hold_font_probe),
+        }
+    }
+
+    fn start(
+        &mut self,
+        root: &Path,
+        peer: &Path,
+        connection: ConnectForm,
+        close_timeout: Option<Duration>,
+    ) -> OwnerTicket {
+        assert!(self.app.worker.is_none() && self.owner.is_none());
+        self.app.generation = self.app.generation.checked_add(1).unwrap();
+        self.app.state = ConnectionState::Connecting;
+        self.app.connecting_form = Some(connection);
+        let owner = self.app.owner_ledger.register(self.app.generation).unwrap();
+        self.app.active_owner = Some(owner);
+        // Install failure cleanup before starting the Worker or awaiting Hello.
+        self.owner = Some(owner);
+        self.app.worker = Some(
+            match close_timeout {
+                Some(timeout) => Worker::spawn_agent_with_close_timeout(
+                    peer.into(),
+                    root.into(),
+                    owner,
+                    self.worker_tx.clone(),
+                    self.app.editor_ctx.clone(),
+                    timeout,
+                ),
+                None => Worker::spawn_agent(
+                    peer.into(),
+                    root.into(),
+                    owner,
+                    self.worker_tx.clone(),
+                    self.app.editor_ctx.clone(),
+                ),
+            }
+            .unwrap(),
+        );
+        owner
+    }
+
+    fn note_terminal(&mut self, event: &WorkerEvent) {
+        match event {
+            WorkerEvent::OwnerSettled(receipt) if Some(receipt.ticket) == self.owner => {
+                self.owner_received = true;
+                // Typed NoChild has no established-client Closed event. This
+                // records that branch's contract, without pretending it arrived.
+                self.legacy_closed_required = !matches!(&receipt.outcome, OwnerOutcome::NoChild);
+            }
+            WorkerEvent::Closed { generation, .. }
+                if self
+                    .owner
+                    .is_some_and(|owner| owner.generation == *generation) =>
+            {
+                self.closed_received = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn receive(&mut self) -> WorkerEvent {
+        let event = self
+            .worker_rx
+            .recv_timeout(WAIT)
+            .expect("real Worker event timed out");
+        self.note_terminal(&event);
+        event
+    }
+
+    fn accept_response(&mut self) {
+        let event = self.receive();
+        assert!(matches!(&event, WorkerEvent::Response(reply)
+            if reply.generation == self.app.generation && reply.connected && reply.result.is_ok()));
+        self.app.apply_worker_event(event);
+    }
+
+    fn forward(&self, event: WorkerEvent) {
+        self.app.result_tx.send(event).unwrap();
+    }
+
+    fn frame(&mut self, close: bool) -> egui::FullOutput {
+        let ctx = self.app.editor_ctx.clone();
+        let mut input = egui::RawInput {
+            time: Some(ctx.cumulative_pass_nr() as f64 * 0.25),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 960.0),
+            )),
+            ..Default::default()
+        };
+        if close {
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .events
+                .push(egui::ViewportEvent::Close);
+        }
+        eframe::App::raw_input_hook(&mut self.app, &ctx, &mut input);
+        let mut native = eframe::Frame::_new_kittest();
+        ctx.run(input, |ctx| {
+            eframe::App::update(&mut self.app, ctx, &mut native)
+        })
+    }
+
+    fn warm(&mut self) {
+        for _ in 0..3 {
+            let output = self.frame(false);
+            assert!(!self.app.allow_close);
+            assert_eq!(native_close_commands(&output), 0);
+        }
+    }
+
+    fn assert_waiting(&self, output: &egui::FullOutput) {
+        assert!(!self.app.allow_close);
+        assert_eq!(native_close_commands(output), 0);
+        assert!(self.app.state == ConnectionState::ClosingTransport);
+        assert!(self.app.transport_close.is_some() && self.app.recovery.visible);
+        assert!(self.app.worker.is_none() && self.app.active_owner.is_none());
+        assert!(!self.app.owner_ledger.all_verified());
+        assert!(output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&egui::ViewportCommand::CancelClose));
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+impl Drop for NativeCloseProcess {
+    fn drop(&mut self) {
+        self.app.retire_current_worker();
+        let deadline = Instant::now() + WAIT;
+        while self.owner.is_some()
+            && !(self.owner_received && (!self.legacy_closed_required || self.closed_received))
+        {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            let Ok(event) = self.worker_rx.recv_timeout(remaining) else {
+                break;
+            };
+            self.note_terminal(&event);
+            match event {
+                WorkerEvent::OwnerSettled(receipt) => {
+                    if Some(receipt.ticket) == self.owner {
+                        self.app
+                            .apply_worker_event(WorkerEvent::OwnerSettled(receipt));
+                    }
+                }
+                WorkerEvent::Closed { generation, result } => {
+                    if self
+                        .owner
+                        .is_some_and(|owner| owner.generation == generation)
+                    {
+                        self.app
+                            .apply_worker_event(WorkerEvent::Closed { generation, result });
+                    }
+                }
+                // Failure cleanup may encounter an in-flight response first.
+                // These events do not mark either terminal observation above.
+                WorkerEvent::Response(_)
+                | WorkerEvent::TransportLost { .. }
+                | WorkerEvent::AttemptCleanupUnverified { .. } => {}
+            }
+        }
+        if let Some(observed) = &self.observed {
+            // Supplementary bounded fixture cleanup only, never reaping proof.
+            // Keep assertion unwinds from producing a second panic in Drop.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observed.wait_exit()));
+        }
+        // The existing Client reaper remains the direct-child owner on missing
+        // receipts. Neither timeout, channel loss nor this Drop certifies exit.
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn native_close_commands(output: &egui::FullOutput) -> usize {
+    output.viewport_output[&egui::ViewportId::ROOT]
+        .commands
+        .iter()
+        .filter(|command| **command == egui::ViewportCommand::Close)
+        .count()
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+#[ignore = "requires explicit normal agent and peer binaries; bounded native-close acceptance"]
+fn native_close_waits_for_real_worker_receipt_before_closing() {
+    let agent = binary("CEDAR_EXPLICIT_DISCONNECT_AGENT_BIN");
+    let peer = binary("CEDAR_EXPLICIT_DISCONNECT_PEER_BIN");
+    for mode in ["normal_agent_disconnect_relay", "disconnect_close_timeout"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join(mode);
+        fixture(&root, mode);
+        let normal = mode == "normal_agent_disconnect_relay";
+        let connection = if normal {
+            fs::write(root.join("relay-agent-path"), agent.to_str().unwrap()).unwrap();
+            form(root.to_str().unwrap())
+        } else {
+            form(SYNTHETIC_ROOT)
+        };
+        let source_hash = revision(&fs::read(root.join(PATH)).unwrap());
+        let mut h = NativeCloseProcess::new();
+        // Both cases use the production 3s observation and unchanged 2s grace.
+        let owner = h.start(&root, &peer, connection, None);
+        h.accept_response();
+        h.accept_response();
+        assert!(h.app.ready() && h.app.pending.is_empty() && !h.app.execution_trusted());
+        let agent_pid = normal.then(|| pid(&root, "relay-agent-started"));
+        if !normal {
+            wait_file(&root, "close-timeout-ready");
+        }
+        h.observed = Some(ProcessObservation::open(pid(&root, "started")));
+        h.warm();
+        let first = h.frame(true);
+        h.assert_waiting(&first);
+        assert_eq!(h.app.generation, owner.generation);
+        let owner_event = h.receive();
+        assert!(matches!(&owner_event, WorkerEvent::OwnerSettled(receipt)
+            if receipt.ticket == owner && receipt.outcome == OwnerOutcome::Verified));
+        // Even after the actual reaper result exists, the App still lacks it.
+        // Repeated native Close cannot infer success from Worker absence/EOF.
+        let still_waiting = h.frame(true);
+        h.assert_waiting(&still_waiting);
+        let closed = h.receive();
+        assert!(
+            matches!(&closed, WorkerEvent::Closed { generation, result: Ok(()) }
+            if *generation == owner.generation)
+        );
+        h.forward(owner_event);
+        let finished = h.frame(false);
+        assert!(h.app.allow_close && h.app.owner_ledger.all_verified());
+        assert!(h.app.transport_close.is_none());
+        assert_eq!(native_close_commands(&finished), 1);
+        h.forward(closed);
+        for close_again in [false, true, false] {
+            assert_eq!(native_close_commands(&h.frame(close_again)), 0);
+        }
+        h.observed.as_ref().unwrap().wait_exit();
+        if let Some(agent_pid) = agent_pid {
+            normal_agent_receipt(&root, agent_pid);
+        }
+        assert_eq!(operations(&root), ["hello", "list"]);
+        assert!(!root.join("safety-expired").exists());
+        assert_eq!(revision(&fs::read(root.join(PATH)).unwrap()), source_hash);
+        drop(h);
+        temp.close().unwrap();
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+#[ignore = "requires CEDAR_EXPLICIT_DISCONNECT_PEER_BIN; bounded native-close timeout contract"]
+fn native_close_timeout_remains_unverified_after_exact_peer_exit() {
+    let peer = binary("CEDAR_EXPLICIT_DISCONNECT_PEER_BIN");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("native-close-observation-timeout");
+    fixture(&root, "disconnect_close_timeout");
+    let mut h = NativeCloseProcess::new();
+    // Only the observation window is shortened. Production grace stays 2s.
+    let owner = h.start(
+        &root,
+        &peer,
+        form(SYNTHETIC_ROOT),
+        Some(Duration::from_millis(20)),
+    );
+    h.accept_response();
+    h.accept_response();
+    wait_file(&root, "close-timeout-ready");
+    h.observed = Some(ProcessObservation::open(pid(&root, "started")));
+    h.warm();
+    let first = h.frame(true);
+    h.assert_waiting(&first);
+    let owner_event = h.receive();
+    assert!(matches!(&owner_event, WorkerEvent::OwnerSettled(receipt)
+        if receipt.ticket == owner && matches!(&receipt.outcome,
+            OwnerOutcome::Unverified(error) if error.starts_with("transport_close:"))));
+    assert!(
+        !h.observed.as_ref().unwrap().exited(),
+        "short observation must precede actual peer exit"
+    );
+    let closed = h.receive();
+    assert!(
+        matches!(&closed, WorkerEvent::Closed { generation, result: Err(error) }
+        if *generation == owner.generation && error.starts_with("transport_close:"))
+    );
+    h.forward(owner_event);
+    h.forward(closed);
+    let blocked = h.frame(false);
+    h.assert_waiting(&blocked);
+    assert!(h.app.unverified_local_close);
+    assert!(h.app.transport_close_message().contains("unverified"));
+    h.observed.as_ref().unwrap().wait_exit();
+    // Exact process exit observation cannot replace the consumed owner receipt.
+    let after_exit = h.frame(true);
+    h.assert_waiting(&after_exit);
+    let ctx = h.app.editor_ctx.clone();
+    h.app.keep_editing_recovery(&ctx);
+    let editing = h.frame(false);
+    assert_eq!(native_close_commands(&editing), 0);
+    assert!(!h.app.allow_close && h.app.transport_close.is_none());
+    let retried = h.frame(true);
+    h.assert_waiting(&retried);
+    assert_eq!(operations(&root), ["hello", "list"]);
+    assert!(!root.join("eof").exists() && !root.join("safety-expired").exists());
+    drop(h);
+    temp.close().unwrap();
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+#[ignore = "requires CEDAR_EXPLICIT_DISCONNECT_PEER_BIN; bounded detailed-Hello failure acceptance"]
+fn native_close_after_failed_hello_uses_typed_owned_cleanup() {
+    let peer = binary("CEDAR_EXPLICIT_DISCONNECT_PEER_BIN");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("invalid-hello-owned-cleanup");
+    // This existing mode has its lifetime watchdog armed before reading Hello.
+    // Invalid Hello closes stdin before its initial-List stall is entered.
+    fixture(&root, "disconnect_close_timeout");
+    let hello_path = root.join("hello.json");
+    let mut hello: serde_json::Value =
+        serde_json::from_slice(&fs::read(&hello_path).unwrap()).unwrap();
+    hello["protocol"] = serde_json::json!(cedar_protocol::PROTOCOL_VERSION + 1);
+    fs::write(hello_path, serde_json::to_vec(&hello).unwrap()).unwrap();
+    let mut h = NativeCloseProcess::new();
+    let owner = h.start(&root, &peer, form(SYNTHETIC_ROOT), None);
+    let failed = h.receive();
+    assert!(matches!(&failed, WorkerEvent::Response(reply)
+        if reply.generation == owner.generation && reply.id == 0 && !reply.connected
+            && reply.result.as_ref().is_err_and(|error| error.starts_with("protocol_mismatch:"))));
+    h.app.apply_worker_event(failed);
+    assert!(h.app.worker.is_none() && !h.app.owner_ledger.all_verified());
+    h.warm();
+    let first = h.frame(true);
+    h.assert_waiting(&first);
+    let owner_event = h.receive();
+    assert!(matches!(&owner_event, WorkerEvent::OwnerSettled(receipt)
+        if receipt.ticket == owner && receipt.outcome == OwnerOutcome::Verified));
+    let closed = h.receive();
+    assert!(
+        matches!(&closed, WorkerEvent::Closed { generation, result: Ok(()) }
+        if *generation == owner.generation)
+    );
+    h.forward(owner_event);
+    h.forward(closed);
+    let finished = h.frame(false);
+    assert!(h.app.allow_close && h.app.owner_ledger.all_verified());
+    assert_eq!(native_close_commands(&finished), 1);
+    assert_eq!(native_close_commands(&h.frame(false)), 0);
+    // Supplementary wire audit only. The actual OwnerSettled above is proof.
+    assert_ne!(pid(&root, "started"), 0);
+    wait_file(&root, "eof");
+    assert_eq!(operations(&root), ["hello"]);
+    assert!(!root.join("close-timeout-ready").exists());
+    assert!(!root.join("safety-expired").exists());
+    drop(h);
+    temp.close().unwrap();
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+#[ignore = "explicit real-Worker pre-spawn-failure native-close acceptance; no peer child"]
+fn native_close_after_spawn_failure_waits_for_real_nochild_receipt() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(temp.path()).unwrap();
+    let missing_agent = root.join(if cfg!(windows) {
+        "absent-native-close-peer.exe"
+    } else {
+        "absent-native-close-peer"
+    });
+    assert!(missing_agent.is_absolute() && !missing_agent.exists());
+    let mut h = NativeCloseProcess::new();
+    // This starts a real Worker and invokes the detailed public agent API.
+    // The exact absolute executable path is absent, so std spawn returns Err.
+    let owner = h.start(&root, &missing_agent, form(SYNTHETIC_ROOT), None);
+    let failed = h.receive();
+    assert!(matches!(&failed, WorkerEvent::Response(reply)
+        if reply.generation == owner.generation && reply.id == 0 && !reply.connected
+            && reply.result.as_ref().is_err_and(|error| error.starts_with("spawn_failed:"))));
+    h.app.apply_worker_event(failed);
+    assert!(h.app.worker.is_none() && !h.app.owner_ledger.all_verified());
+    h.warm();
+    let first = h.frame(true);
+    h.assert_waiting(&first);
+    let owner_event = h.receive();
+    assert!(matches!(&owner_event, WorkerEvent::OwnerSettled(receipt)
+        if receipt.ticket == owner && receipt.outcome == OwnerOutcome::NoChild));
+    assert!(h.owner_received && !h.legacy_closed_required && !h.closed_received);
+    // Release only the harness's extra sender and require actual channel end,
+    // proving there was no extra OwnerSettled or legacy Closed after NoChild.
+    // Channel end is an event-count oracle, never the App's ownership evidence.
+    let (unused_tx, unused_rx) = mpsc::channel();
+    drop(unused_rx);
+    drop(std::mem::replace(&mut h.worker_tx, unused_tx));
+    assert!(matches!(
+        h.worker_rx.recv_timeout(WAIT),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ));
+    let still_waiting = h.frame(true);
+    h.assert_waiting(&still_waiting);
+    h.forward(owner_event);
+    let finished = h.frame(false);
+    assert!(h.app.allow_close && h.app.owner_ledger.all_verified());
+    assert_eq!(native_close_commands(&finished), 1);
+    assert_eq!(native_close_commands(&h.frame(false)), 0);
+    assert!(!missing_agent.exists());
+    assert!(!root.join("started").exists() && !root.join("requests").exists());
+    drop(h);
+    temp.close().unwrap();
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::connection_test_support::synthetic_process;
 use cedar_protocol::{AgentInfo, RemoteError, AGENT_INFO_SCHEMA};
 use std::os::unix::{ffi::OsStringExt, fs::symlink};
 
@@ -146,6 +147,44 @@ fn root_preflight_canonicalizes_utf8_and_rejects_missing_file_and_lossy_paths() 
 }
 
 #[test]
+fn typed_linux_preflight_proves_nochild_for_sibling_elf_and_root_errors() {
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("renamed-client");
+    let agent = directory.path().join("cedar-agent");
+    let absent_root = directory.path().join("absent-root");
+    let check = |error: ConnectionFailure, prefix: &str| {
+        assert!(error.message.starts_with(prefix), "{}", error.message);
+        assert_eq!(error.ownership, ConnectionOwnership::NoChild);
+        assert_eq!(error.cleanup_error, None);
+    };
+    check(
+        bundled_linux_preflight(Path::new("relative-client"), directory.path()).unwrap_err(),
+        "bundled_agent_missing:",
+    );
+    check(
+        bundled_linux_preflight(&executable, directory.path()).unwrap_err(),
+        "bundled_agent_missing:",
+    );
+    fs::write(&agent, b"not a native ELF executable").unwrap();
+    fs::set_permissions(&agent, fs::Permissions::from_mode(0o700)).unwrap();
+    check(
+        bundled_linux_preflight(&executable, directory.path()).unwrap_err(),
+        "bundled_agent_invalid:",
+    );
+    fs::write(&agent, valid_header()).unwrap();
+    check(
+        bundled_linux_preflight(&executable, &absent_root).unwrap_err(),
+        "invalid_root:",
+    );
+    let (selected, root) = bundled_linux_preflight(&executable, directory.path()).unwrap();
+    assert_eq!(selected, agent);
+    assert_eq!(
+        root,
+        directory.path().canonicalize().unwrap().to_str().unwrap()
+    );
+}
+
+#[test]
 fn strict_hello_requires_metadata_exact_platform_version_and_root() {
     validate_bundled_linux_handshake(&hello("/workspace"), "/workspace").unwrap();
     assert!(
@@ -218,47 +257,6 @@ fn strict_hello_requires_metadata_exact_platform_version_and_root() {
         let error = validate_bundled_linux_handshake(&invalid, "/workspace").unwrap_err();
         assert!(error.starts_with(expected), "{key}: {error}");
     }
-}
-
-// Channel-only seam: no executable override, process creation, or runtime
-// fixture dependency is added to the production sibling selector.
-fn synthetic_process(
-    reply: Result<Response, String>,
-    reaped: Option<ReapResult>,
-    cancellation: Option<ConnectionCancellation>,
-) -> (ProcessClient, mpsc::Receiver<Request>, mpsc::Receiver<()>) {
-    let (requests, request_rx) = mpsc::sync_channel(1);
-    let (responses, response_rx) = mpsc::sync_channel(1);
-    let (observed, observed_rx) = mpsc::channel();
-    thread::spawn(move || {
-        if let Ok(request) = request_rx.recv() {
-            let _ = observed.send(request);
-            let _ = responses.send(reply);
-        }
-    });
-    let (shutdown, shutdown_rx) = mpsc::channel();
-    let (completion, completion_rx) = mpsc::channel();
-    if let Some(result) = reaped {
-        completion.send(result).unwrap();
-    }
-    (
-        ProcessClient {
-            cancellation,
-            requests: Some(requests),
-            responses: Some(response_rx),
-            observation: Arc::new(TransportObservation::default()),
-            shutdown: Some(shutdown),
-            reaped: completion_rx,
-            stderr: Arc::new(Mutex::new(Vec::new())),
-            lifecycle: None,
-            next_id: 0,
-            connected: true,
-            java_language_session: false,
-            java_startup: JavaStartupMode::default(),
-        },
-        observed_rx,
-        shutdown_rx,
-    )
 }
 
 fn response(payload: Payload) -> Result<Response, String> {

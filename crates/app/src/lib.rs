@@ -14,6 +14,9 @@ mod build_problem_process_tests;
 mod build_problem_ui_tests;
 mod build_problems;
 mod chrome;
+mod close_transport;
+#[cfg(test)]
+mod close_transport_tests;
 #[cfg(test)]
 mod column_navigation_process_tests;
 pub mod completion;
@@ -174,6 +177,7 @@ enum ConnectionState {
     Ready,
     Disconnected,
     Disconnecting,
+    ClosingTransport,
     CleanupUnverified,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -461,6 +465,13 @@ pub struct CedarApp {
     next_document: u64,
     navigation_epoch: u64,
     worker: Option<Worker>,
+    owner_ledger: close_transport::OwnerLedger,
+    active_owner: Option<close_transport::OwnerTicket>,
+    transport_close: Option<close_transport::CloseIntent>,
+    next_transport_close: u64,
+    connection_generation_exhausted: bool,
+    #[cfg(test)]
+    close_frame_mutation: Option<fn(&mut CedarApp, &egui::Context)>,
     result_tx: Sender<WorkerEvent>,
     result_rx: Receiver<WorkerEvent>,
     pending: HashMap<u64, Job>,
@@ -582,6 +593,13 @@ impl CedarApp {
             next_document: 1,
             navigation_epoch: 0,
             worker: None,
+            owner_ledger: close_transport::OwnerLedger::default(),
+            active_owner: None,
+            transport_close: None,
+            next_transport_close: 0,
+            connection_generation_exhausted: false,
+            #[cfg(test)]
+            close_frame_mutation: None,
             result_tx,
             result_rx,
             pending: HashMap::new(),
@@ -641,7 +659,7 @@ impl CedarApp {
     }
 
     fn ready(&self) -> bool {
-        self.state == ConnectionState::Ready
+        self.state == ConnectionState::Ready && !self.connection_generation_exhausted
     }
     fn dirty(&self) -> bool {
         self.profiles.dirty() || self.documents.iter().any(Document::dirty)
@@ -674,8 +692,8 @@ impl CedarApp {
     }
 
     fn connect(&mut self, ctx: &egui::Context, form: ConnectForm) {
-        if self.state == ConnectionState::Disconnecting {
-            self.error = Some(disconnect::WAITING.into());
+        if let Some(problem) = self.connection_admission_problem() {
+            self.error = Some(problem.into());
             return;
         }
         if !self.guard_run_transition(run_ui::Transition::Reconnect) {
@@ -697,17 +715,31 @@ impl CedarApp {
                 return;
             }
         };
+        // Reserve ownership before any Worker starts; admission failure does
+        // not retire the current connection or invent a new process owner.
+        let Some(next_generation) = self.generation.checked_add(1) else {
+            self.error =
+                Some("Connection generations are exhausted; no new connection was started".into());
+            return;
+        };
+        let owner = match self.owner_ledger.register(next_generation) {
+            Ok(owner) => owner,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
         self.recovery.restoring_generation = None;
         self.reset_git(self.workspace_key.as_ref() != Some(&form.key()));
         self.dismiss_disk_review();
         self.run_state.reset();
         self.test_report.clear();
         self.profiles.disconnected();
-        self.worker = None;
+        self.retire_current_worker();
         self.language.reset();
         self.search_state.retire();
         self.reset_recent_files();
-        self.generation += 1;
+        self.retire_ui_generation();
         self.location_history.clear();
         self.pending.clear();
         self.explorer.reset_connection();
@@ -723,12 +755,21 @@ impl CedarApp {
         self.notice = format!("Connecting to {}...", form.label());
         self.error = None;
         self.connecting_form = Some(form);
-        self.worker = Some(Worker::spawn(
-            spec,
-            self.generation,
-            self.result_tx.clone(),
-            ctx.clone(),
-        ));
+        self.active_owner = Some(owner);
+        match Worker::spawn(spec, owner, self.result_tx.clone(), ctx.clone()) {
+            Ok(worker) => self.worker = Some(worker),
+            Err(error) => {
+                // The captured guard reports Unverified; do not invent a second receipt.
+                self.retire_current_worker();
+                self.connecting_form = None;
+                self.state = if self.workspace_key.is_some() {
+                    ConnectionState::Disconnected
+                } else {
+                    ConnectionState::Idle
+                };
+                self.error = Some(error);
+            }
+        }
     }
 
     fn cancel_connection(&mut self) {
@@ -738,14 +779,14 @@ impl CedarApp {
         self.dismiss_disk_review();
         self.reset_git(false);
         self.test_report.clear();
-        self.worker = None;
+        self.retire_current_worker();
         self.disk_review.outstanding = None;
         self.agent_info = None;
         self.file_discovery = None;
         self.scoped_search = None;
         self.search_state.retire();
         self.reset_recent_files();
-        self.generation += 1;
+        self.retire_ui_generation();
         self.location_history.clear();
         self.explorer.reset_connection();
         self.connecting_form = None;
@@ -810,7 +851,7 @@ impl CedarApp {
         self.file_discovery = None;
         self.scoped_search = None;
         self.language.disconnected();
-        self.worker = None;
+        self.retire_current_worker();
         self.pending.clear();
         self.explorer.reset_connection();
         self.disk_review.outstanding = None;
@@ -1022,12 +1063,20 @@ impl CedarApp {
 
     fn poll_ready_navigation(&mut self, ctx: Option<&egui::Context>) {
         let newer_input = ctx.is_some_and(|ctx| self.history_newer_completion_input(ctx));
-        while let Ok(event) = self.result_rx.try_recv() {
+        loop {
+            let event = match self.result_rx.try_recv() {
+                Ok(event) => event,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.owner_channel_lost();
+                    break;
+                }
+            };
             // Keep worker response/transport-loss ordering intact. Only a ready,
             // connected reply that could still navigate is superseded by input
             // already queued for this frame; earlier caret/typing frames do not
             // cancel requests that have not replied yet.
-            if newer_input {
+            if newer_input && !self.ordinary_worker_ui_blocked() {
                 if let WorkerEvent::Response(reply) = &event {
                     let navigation = self.pending.get(&reply.id).and_then(|job| match job {
                         Job::Open { navigation, .. } => Some(*navigation),
@@ -1073,7 +1122,19 @@ impl CedarApp {
     }
 
     fn apply_worker_event(&mut self, event: WorkerEvent) {
+        // Owner evidence spans the App lifetime, including retired UI generations.
+        let event = match event {
+            WorkerEvent::OwnerSettled(receipt) => {
+                self.apply_owner_receipt(receipt);
+                return;
+            }
+            event => event,
+        };
+        if self.ordinary_worker_ui_blocked() {
+            return;
+        }
         match event {
+            WorkerEvent::OwnerSettled(_) => unreachable!("owner receipt already handled"),
             WorkerEvent::AttemptCleanupUnverified { generation } => {
                 if generation <= self.generation
                     && self
@@ -1108,7 +1169,10 @@ impl CedarApp {
     }
 
     fn apply_event_inner(&mut self, event: Event, defer_implementation: bool) {
-        if event.generation != self.generation || self.state == ConnectionState::Disconnecting {
+        if event.generation != self.generation
+            || self.state == ConnectionState::Disconnecting
+            || self.ordinary_worker_ui_blocked()
+        {
             return;
         }
         if event.id == 0 {
@@ -1960,6 +2024,13 @@ impl CedarApp {
     }
 
     fn request_window_close(&mut self, ctx: &egui::Context) {
+        if self.state == ConnectionState::ClosingTransport {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.recovery.visible = true;
+            self.notice = self.transport_close_message();
+            ctx.request_repaint();
+            return;
+        }
         if self.save_close_tab_busy() || self.save_close_write_pending() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.cancel_tab_close();
@@ -2007,6 +2078,10 @@ impl CedarApp {
     }
 
     fn begin_close(&mut self, ctx: &egui::Context) {
+        if self.state == ConnectionState::ClosingTransport {
+            self.request_window_close(ctx);
+            return;
+        }
         if self.save_close_tab_busy() || self.save_close_write_pending() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.cancel_tab_close();
@@ -2361,7 +2436,7 @@ impl CedarApp {
         workspace_access_tests::record(ui, "workspace_open", &open);
         if open.gained_focus() { open.scroll_to_me(None); }
         if open.clicked() { self.open_form = true; ui.close_menu(); }
-        let reconnect = ui.add_enabled(self.active_form.is_some() && !matches!(self.state, ConnectionState::Connecting | ConnectionState::Disconnecting) && !self.mutation_pending(), egui::Button::new("Reconnect"));
+        let reconnect = ui.add_enabled(self.active_form.is_some() && self.state != ConnectionState::Connecting && self.connection_admission_problem().is_none() && !self.mutation_pending(), egui::Button::new("Reconnect"));
         #[cfg(test)]
         workspace_access_tests::record(ui, "workspace_reconnect", &reconnect);
         if reconnect.gained_focus() { reconnect.scroll_to_me(None); }
@@ -2448,6 +2523,7 @@ impl CedarApp {
             ),
             ConnectionState::Disconnected => (RED, "Disconnected"),
             ConnectionState::Disconnecting => (AMBER, "Disconnecting"),
+            ConnectionState::ClosingTransport => (AMBER, "Closing connection"),
             ConnectionState::CleanupUnverified => (AMBER, "Cleanup unverified"),
         };
         let recovery = ui.small_button(RichText::new(if compact { "Recovery" } else { recovery_status }).size(12.0).color(if protected { MUTED } else { AMBER }))
@@ -2916,6 +2992,7 @@ impl CedarApp {
                                 ConnectionState::Ready => format!("Scope: /{scope}"),
                                 ConnectionState::Connecting => "Connecting…".into(),
                                 ConnectionState::Disconnecting => "Disconnecting…".into(),
+                                ConnectionState::ClosingTransport => "Waiting for local cleanup".into(),
                                 ConnectionState::CleanupUnverified => "Connection cleanup unverified".into(),
                                 ConnectionState::Idle | ConnectionState::Disconnected => "Not connected".into(),
                             };
@@ -3204,7 +3281,7 @@ impl CedarApp {
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
-                    !matches!(self.state, ConnectionState::Connecting | ConnectionState::Disconnecting) && !self.mutation_pending(),
+                    self.state != ConnectionState::Connecting && self.connection_admission_problem().is_none() && !self.mutation_pending(),
                     egui::Button::new(
                         RichText::new(if self.state == ConnectionState::Connecting {
                             "Connecting..."
@@ -4062,6 +4139,11 @@ impl eframe::App for CedarApp {
         self.finish_project_reveal_frame(ctx);
         self.finish_file_structure_frame(ctx);
         self.finish_file_find_frame(ctx);
+        #[cfg(test)]
+        if let Some(mutate) = self.close_frame_mutation.take() {
+            mutate(self, ctx);
+        }
+        self.finish_transport_close_frame(ctx);
     }
 }
 

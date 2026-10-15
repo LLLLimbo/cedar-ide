@@ -2,7 +2,9 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-当前 **0.77.0 Project 上下文展示候选**在工具栏下常态显示现有 Flat/Tree 模式与目录范围，并保留完整路径和 workspace 身份供悬停查看。目录范围独立于当前编辑文件；默认 Flat、显式 Tree 加载、Reveal、请求、权限与输入行为不变。此处是验证前的范围记录；本轮 focused 检查、完整 CI、发布包与原生 GUI 结果尚未记入此源码快照，不引用旧版本成绩替代。见[0.77 阶段范围](docs/TEST_REPORT_PHASE77_PROJECT_CONTEXT.md)。
+当前 **0.78.0 退出清理屏障候选**将本地连接所有者的清理回执与退出确认分离，等待当前及已退休连接的结果后才允许最终关闭窗口；Keep editing 保留草稿，不把超时或新连接成功当成旧进程退出证明。此源码阶段尚未本地编译、运行测试或发布，官方候选分支验证仍待授权；不借用旧验收成绩。见[退出边界](docs/WINDOW_CLOSE.md)及[0.78 阶段范围](docs/TEST_REPORT_PHASE78_CLOSE_BARRIER.md)。
+
+历史 **0.77.0 Project 上下文展示候选**在工具栏下常态显示现有 Flat/Tree 模式与目录范围，并保留完整路径和 workspace 身份供悬停查看。目录范围独立于当前编辑文件；默认 Flat、显式 Tree 加载、Reveal、请求、权限与输入行为不变。此处是验证前的范围记录；本轮 focused 检查、完整 CI、发布包与原生 GUI 结果尚未记入此源码快照，不引用旧版本成绩替代。见[0.77 阶段范围](docs/TEST_REPORT_PHASE77_PROJECT_CONTEXT.md)。
 
 历史 **0.76.0 Files 输入法接纳修复候选**在既有所有权、批次、epoch、焦点与暂停屏障之外，读取同一次原生 TextEdit 调用实际执行的 IME 分支；不再把原始 Commit、可见文字变化或焦点稳定单独当成提交已接纳的证明。由此覆盖同字段 caret 移动后原生拒绝 Commit 的接缝，并保留 0.75 的合法直接提交、独立 Text/Paste 与实际改字节的 Undo 行为。固定 250 毫秒停稳、单在途/最新替换及零自动 Read 不变。仍标为 0.75.0 的独立开发候选通过 318 项不同 Rust 检查（1 项既有忽略）、Python 153 通过/1 跳过、严格 app Clippy、导出检查和独立审查；不将这些重标为最终 0.76.0 全量或 CI 结果。最终源码封存后的全量验证、发布产物、精确公开源码 CI 与包验收另记；本地五个 canonical 驱动未运行，真实 OS 输入法和本次原生 GUI 未实测。见[0.76 阶段报告](docs/TEST_REPORT_PHASE76_IME_ACCEPTANCE.md)和[离线输入合同](docs/FIND_AND_RETURN.md#files-native-ime-acceptance-076-candidate)。
 

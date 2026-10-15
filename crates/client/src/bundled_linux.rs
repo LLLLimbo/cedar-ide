@@ -2,80 +2,13 @@
 //! not executable identity, a file-replacement defense, or execution permission.
 use super::*;
 use std::{
-    fmt,
     fs::{self, File},
     os::unix::fs::{MetadataExt, PermissionsExt},
 };
 
-const CONNECT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Direct-child ownership evidence for a failed bundled Linux connection.
-/// This never attests to descendant cleanup, pipe-thread completion, or a
-/// graceful language-server exit. Callers must not infer it from error text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionOwnership {
-    NoChild,
-    CleanupVerified,
-    CleanupUnverified,
-}
-
-/// The original connection error and separate direct-child cleanup evidence.
-/// An unwinding panic does not return this value; an owner catching one must
-/// conservatively retain uncertainty about an attempted process connection.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConnectionFailure {
-    pub message: String,
-    pub ownership: ConnectionOwnership,
-    pub cleanup_error: Option<String>,
-}
-
-impl ConnectionFailure {
-    fn no_child(message: String) -> Self {
-        Self {
-            message,
-            ownership: ConnectionOwnership::NoChild,
-            cleanup_error: None,
-        }
-    }
-
-    fn after_cleanup(message: String, cleanup: Result<(), String>) -> Self {
-        match cleanup {
-            Ok(()) => Self {
-                message,
-                ownership: ConnectionOwnership::CleanupVerified,
-                cleanup_error: None,
-            },
-            Err(error) => Self {
-                message,
-                ownership: ConnectionOwnership::CleanupUnverified,
-                cleanup_error: Some(error),
-            },
-        }
-    }
-
-    fn setup_unverified(message: String) -> Self {
-        Self::after_cleanup(
-            message,
-            Err("transport_cleanup_unverified: connection setup ended without a direct-child reaper acknowledgement".into()),
-        )
-    }
-}
-
-impl fmt::Display for ConnectionFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)?;
-        if let Some(error) = &self.cleanup_error {
-            write!(formatter, "; {error}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for ConnectionFailure {}
-
 impl Client {
     /// Open only this executable's fixed Linux agent sibling, retaining typed
-    /// failure ownership evidence. Local/SSH/Windows connection APIs are unchanged.
+    /// failure ownership evidence and the strict Linux bundle validator.
     pub fn connect_bundled_linux_detailed(
         root: PathBuf,
         allow_run: bool,
@@ -110,14 +43,8 @@ impl Client {
                 "bundled_agent_missing: cannot locate this executable's bundled cedar-agent: {error}"
             ))
         })?;
-        let agent = bundled_linux_agent_path(&executable).map_err(ConnectionFailure::no_child)?;
-        validate_linux_agent_file(&agent).map_err(ConnectionFailure::no_child)?;
-        let root = canonical_linux_root(&root).map_err(ConnectionFailure::no_child)?;
-        let mut command = Command::new(&agent);
-        command.arg("--root").arg(&root);
-        if allow_run {
-            command.arg("--allow-run");
-        }
+        let (agent, root) = bundled_linux_preflight(&executable, &root)?;
+        let command = agent_command(&agent, Path::new(&root), allow_run);
         let process = ProcessClient::spawn_with_grace_and_setup_error(
             command,
             CLOSE_GRACE,
@@ -135,31 +62,25 @@ impl Client {
     }
 
     fn from_bundled_linux_process(
-        mut process: ProcessClient,
+        process: ProcessClient,
         root: &str,
     ) -> Result<Self, ConnectionFailure> {
-        // Retain the ProcessClient until every Hello check and the final
-        // cancellation observation succeeds. A transport error may already
-        // initiate close, but the same owner still holds its reaper receiver.
-        let result = process.request(Operation::Hello).and_then(|handshake| {
-            validate_bundled_linux_handshake(&handshake, root)?;
-            if cancellation_requested(&process.cancellation) {
-                return Err(cancellation_error());
-            }
-            Ok(handshake)
-        });
-        match result {
-            Ok(handshake) => Ok(Self {
-                cancellation: process.cancellation.clone(),
-                backend: Backend::Process(process),
-                handshake,
-            }),
-            Err(message) => {
-                let cleanup = process.close_and_wait(CONNECT_CLEANUP_TIMEOUT);
-                Err(ConnectionFailure::after_cleanup(message, cleanup))
-            }
-        }
+        Self::from_process_detailed(process, |handshake| {
+            validate_bundled_linux_handshake(handshake, root)
+        })
     }
+}
+
+// All operations here precede Command::spawn. Keep this exact preparation
+// boundary available to tests without selecting or launching a fixture agent.
+fn bundled_linux_preflight(
+    executable: &Path,
+    root: &Path,
+) -> Result<(PathBuf, String), ConnectionFailure> {
+    let agent = bundled_linux_agent_path(executable).map_err(ConnectionFailure::no_child)?;
+    validate_linux_agent_file(&agent).map_err(ConnectionFailure::no_child)?;
+    let root = canonical_linux_root(root).map_err(ConnectionFailure::no_child)?;
+    Ok((agent, root))
 }
 
 // Production calls this only with current_exe. Synthetic paths let unit tests

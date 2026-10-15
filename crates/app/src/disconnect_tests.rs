@@ -18,9 +18,11 @@ fn app() -> (CedarApp, Receiver<Command>) {
         allow_run: false,
         ..Default::default()
     };
-    let (worker, commands) = Worker::recording();
-    app.worker = Some(worker);
     app.generation = 7;
+    let owner = app.owner_ledger.register(app.generation).unwrap();
+    app.active_owner = Some(owner);
+    let (worker, commands) = Worker::recording_with_owner(owner);
+    app.worker = Some(worker);
     app.workspace_key = Some(form.key());
     app.active_form = Some(form.clone());
     app.form = form;
@@ -498,7 +500,9 @@ fn cancelled_connecting_attempt_terminal_error_is_inert_for_offline_and_replacem
         Err(mpsc::TryRecvError::Disconnected)
     ));
 
-    let (worker, replacement) = Worker::recording();
+    let owner = app.owner_ledger.register(app.generation).unwrap();
+    app.active_owner = Some(owner);
+    let (worker, replacement) = Worker::recording_with_owner(owner);
     app.worker = Some(worker);
     app.state = ConnectionState::Connecting;
     app.connecting_form = app.active_form.clone();
@@ -548,9 +552,11 @@ fn cleanup_unverified_is_sticky_across_terminal_duplicates_and_replacement_hello
 
     // Replace the transport with a recording worker and deliver a normal Hello.
     // This is a frontend receipt test, not a production connection acceptance.
-    let (worker, replacement) = Worker::recording();
-    app.worker = Some(worker);
     app.generation += 1;
+    let owner = app.owner_ledger.register(app.generation).unwrap();
+    app.active_owner = Some(owner);
+    let (worker, replacement) = Worker::recording_with_owner(owner);
+    app.worker = Some(worker);
     app.state = ConnectionState::Connecting;
     app.connecting_form = app.active_form.clone();
     reply(

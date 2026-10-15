@@ -48,6 +48,7 @@ fn app_at(path: &std::path::Path) -> CedarApp {
 fn tick(app: &mut CedarApp) {
     app.recovery_tick(&egui::Context::default());
     app.finish_recovery_close_frame(&egui::Context::default());
+    app.finish_transport_close_frame(&egui::Context::default());
 }
 fn wait(app: &mut CedarApp, done: impl Fn(&CedarApp) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);

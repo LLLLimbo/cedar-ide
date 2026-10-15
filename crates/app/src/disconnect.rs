@@ -8,6 +8,9 @@ pub(super) const UNVERIFIED: &str = "An earlier local connection cleanup was not
 
 impl CedarApp {
     pub(super) fn disconnect_problem(&self) -> Option<&'static str> {
+        if self.state == ConnectionState::ClosingTransport {
+            return Some(close_transport::WAITING);
+        }
         if self.save_close_tab_busy() || self.save_close_write_pending() {
             return Some(
                 "Finish the tab close or Keep editing and wait for its save before disconnecting.",
@@ -95,11 +98,11 @@ impl CedarApp {
         self.notice = WAITING.into();
         // The existing worker owns Client and its eventual cleanup receipt.
         // None here means cancellation was handed off, never that cleanup passed.
-        self.worker = None;
+        self.retire_current_worker();
     }
 
     pub(super) fn connection_closed(&mut self, generation: u64, result: Result<(), String>) {
-        if generation != self.generation {
+        if generation != self.generation || self.ordinary_worker_ui_blocked() {
             return;
         }
         if self.state == ConnectionState::Disconnecting {

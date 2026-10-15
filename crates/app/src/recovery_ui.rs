@@ -94,6 +94,9 @@ impl CedarApp {
         )
     }
     pub(crate) fn keep_editing_recovery(&mut self, ctx: &egui::Context) {
+        // Revoke exit authority before resuming recovery or retiring UI generation.
+        let transport_retired = self.transport_close.take().is_some()
+            || self.state == ConnectionState::ClosingTransport;
         self.cancel_tab_close();
         self.recovery.keep_editing();
         self.allow_close = false;
@@ -101,7 +104,25 @@ impl CedarApp {
         self.close_after_language_stop = false;
         self.close_snapshot = None;
         self.recovery.language_close_guard = None;
+        if transport_retired {
+            self.retire_current_worker();
+            self.retire_ui_generation();
+            self.pending.clear();
+            self.navigation_changed();
+            self.connecting_form = None;
+            self.recovery.restoring_generation = None;
+            self.agent_info = None;
+            self.file_discovery = None;
+            self.scoped_search = None;
+            self.state = if self.workspace_key.is_some() {
+                ConnectionState::Disconnected
+            } else {
+                ConnectionState::Idle
+            };
+            self.notice = "Close canceled · connection released · drafts retained. Reconnect explicitly to use the workspace.".into();
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        ctx.request_repaint();
     }
     pub(crate) fn recovery_tick(&mut self, ctx: &egui::Context) {
         if let Some(draft) = self.recovery.poll() {
@@ -170,7 +191,7 @@ impl CedarApp {
             }
         }
     }
-    /// Commit only after every input handler; a proof does not authorize new text.
+    /// Advance recovery proof only; final exit follows every frame finisher.
     pub(crate) fn finish_recovery_close_frame(&mut self, ctx: &egui::Context) {
         let Some(close) = &self.recovery.closing else {
             return;
@@ -192,13 +213,6 @@ impl CedarApp {
         ) && self.recovery.removals_finished()
         {
             self.recovery.begin_quiescence(false);
-        }
-        if matches!(
-            self.recovery.closing.as_ref().map(|close| close.phase),
-            Some(ClosePhase::Confirmed { .. })
-        ) {
-            self.allow_close = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
     pub(crate) fn install_recovered(&mut self, draft: Draft) -> Result<(), String> {
@@ -243,7 +257,11 @@ impl CedarApp {
         );
         Ok(())
     }
-    fn begin_restore(&mut self, ctx: &egui::Context) {
+    pub(crate) fn begin_restore(&mut self, ctx: &egui::Context) {
+        if let Some(problem) = self.connection_admission_problem() {
+            self.recovery.error = Some(problem.into());
+            return;
+        }
         if self.save_close_tab_busy() || self.save_close_write_pending() {
             self.recovery.error = Some("Finish the tab close or Keep editing and wait for its save before restoring a draft".into());
             return;
@@ -285,12 +303,32 @@ impl CedarApp {
             self.recovery.restoring_generation = Some(self.generation);
         }
     }
+    pub(crate) fn cancel_recovery_restore_connection(&mut self) {
+        self.retire_current_worker();
+        self.retire_ui_generation();
+        self.pending.clear();
+        self.navigation_changed();
+        self.connecting_form = None;
+    }
     pub(crate) fn recovery_window(&mut self, ctx: &egui::Context) {
         if !self.recovery.visible {
             return;
         }
         let mut visible = true;
         egui::Window::new("Private draft recovery").open(&mut visible).default_width(700.0).default_height(430.0).resizable(true).show(ctx, |ui| {
+            if self.state == ConnectionState::ClosingTransport {
+                ui.heading("Waiting for local connection cleanup");
+                // Cancellation stays reachable even when an error detail is long.
+                let keep = ui.button("Keep editing");
+                #[cfg(test)]
+                workspace_access_tests::record(ui, "transport_keep_editing", &keep);
+                if keep.clicked() { self.keep_editing_recovery(ctx); }
+                egui::ScrollArea::vertical().id_salt("transport_close_status").max_height(220.0).show(ui, |ui| {
+                    ui.colored_label(AMBER, self.transport_close_message());
+                    if self.active_form.as_ref().is_some_and(|form| form.ssh) { ui.label("This waits for the local SSH connection owner only; remote process cleanup is not verified."); }
+                });
+                return;
+            }
             ui.label("Unsaved text, including SSH drafts, is copied only to this frontend computer. Workspace files change only when you choose Save.");
             ui.label(RichText::new(if cfg!(windows) {
                 "Local recovery is on by default. Windows folder permissions are inherited: protect the recovery folder's access. Copies are not encrypted; draft text may contain secrets. No login credentials or tool-trust settings are saved."
@@ -352,10 +390,10 @@ impl CedarApp {
                 ui.label(project(&draft.workspace));
                 ui.label("This explicitly connects to the displayed workspace if needed, with trust OFF. The agent root must match. The draft will stay unsaved with its original base revision; external changes produce a normal save conflict.");
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(!matches!(self.state, ConnectionState::Connecting | ConnectionState::Disconnecting) && !self.mutation_pending(), egui::Button::new("Connect with trust off and restore")).clicked() { self.begin_restore(ctx); }
+                    if ui.add_enabled(self.state != ConnectionState::Connecting && self.connection_admission_problem().is_none() && !self.mutation_pending(), egui::Button::new("Connect with trust off and restore")).clicked() { self.begin_restore(ctx); }
                     if ui.button("Cancel restore").clicked() {
                         if self.recovery.restoring_generation == Some(self.generation) {
-                            self.worker = None; self.generation += 1; self.connecting_form = None;
+                            self.cancel_recovery_restore_connection();
                             self.state = if self.workspace_key.is_some() { ConnectionState::Disconnected } else { ConnectionState::Idle };
                         }
                         self.recovery.pending_restore = None;
@@ -459,6 +497,7 @@ mod tests {
             |ctx| {
                 app.recovery_window(ctx);
                 app.finish_recovery_close_frame(ctx);
+                app.finish_transport_close_frame(ctx);
             },
         )
     }

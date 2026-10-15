@@ -117,7 +117,9 @@ impl CedarApp {
     fn copy_draft_transition_problem(&self) -> Option<&'static str> {
         if matches!(
             self.state,
-            ConnectionState::Connecting | ConnectionState::Disconnecting
+            ConnectionState::Connecting
+                | ConnectionState::Disconnecting
+                | ConnectionState::ClosingTransport
         ) {
             Some("Wait for the connection transition before copying a draft")
         } else if self.save_all_busy() {

@@ -1,6 +1,7 @@
 //! Explicit trust-off acceptance through a normal agent and a controlled pipe.
 //! The relay closes only the owned agent's stdin; no SSH or network is used.
 use super::*;
+use crate::close_transport::OwnerOutcome;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -70,13 +71,18 @@ fn start(app: &mut CedarApp, root: &Path, peer: &Path) {
         allow_run: false,
         ..Default::default()
     });
-    app.worker = Some(Worker::spawn_agent(
-        peer.into(),
-        root.into(),
-        app.generation,
-        app.result_tx.clone(),
-        app.editor_ctx.clone(),
-    ));
+    let owner = app.owner_ledger.register(app.generation).unwrap();
+    app.active_owner = Some(owner);
+    app.worker = Some(
+        Worker::spawn_agent(
+            peer.into(),
+            root.into(),
+            owner,
+            app.result_tx.clone(),
+            app.editor_ctx.clone(),
+        )
+        .unwrap(),
+    );
     response(app); // Hello schedules the ordinary initial List.
     response(app);
     assert!(app.ready() && app.pending.is_empty());
@@ -85,6 +91,7 @@ fn start(app: &mut CedarApp, root: &Path, peer: &Path) {
 }
 
 fn close_peer(app: &mut CedarApp, root: &Path) {
+    let owner = app.active_owner.expect("fixture owner was registered");
     let owned_pid = String::from_utf8(wait_file(root, "relay-agent-started"))
         .unwrap()
         .trim()
@@ -115,6 +122,13 @@ fn close_peer(app: &mut CedarApp, root: &Path) {
     assert_eq!(receipt["process_id"], owned_pid);
     assert_eq!(receipt["cleanup_verified"], true);
     assert_eq!(receipt["exit_success"], true);
+    let owner_event = app
+        .result_rx
+        .recv_timeout(WAIT)
+        .expect("local owner receipt missing");
+    assert!(matches!(&owner_event, WorkerEvent::OwnerSettled(receipt)
+        if receipt.ticket == owner && receipt.outcome == OwnerOutcome::Verified));
+    app.apply_worker_event(owner_event);
     let closed = app
         .result_rx
         .recv_timeout(WAIT)

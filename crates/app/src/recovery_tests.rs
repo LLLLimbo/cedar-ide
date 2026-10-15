@@ -45,6 +45,7 @@ fn wait(app: &mut CedarApp, done: impl Fn(&CedarApp) -> bool) {
     loop {
         app.recovery_tick(&egui::Context::default());
         app.finish_recovery_close_frame(&egui::Context::default());
+        app.finish_transport_close_frame(&egui::Context::default());
         if done(app) {
             return;
         }
@@ -721,6 +722,7 @@ fn removal_ack_before_frame_input_cannot_close_over_new_typing() {
     app.documents[0].edit_version += 1;
     app.recovery_tick(&egui::Context::default());
     app.finish_recovery_close_frame(&egui::Context::default());
+    app.finish_transport_close_frame(&egui::Context::default());
     assert!(!app.allow_close);
     assert!(app.recovery.closing.is_none());
     assert!(matches!(app.confirm, Some(Confirm::CloseWindow)));
@@ -741,6 +743,7 @@ fn save_started_during_recovery_close_cancels_final_close() {
         },
     );
     app.finish_recovery_close_frame(&egui::Context::default());
+    app.finish_transport_close_frame(&egui::Context::default());
     assert!(!app.allow_close);
     assert!(app.recovery.closing.is_none());
     assert_eq!(app.documents[0].text, "current draft");
