@@ -54,6 +54,8 @@ SOURCE_FILES = {
     "docs/LOCATION_HISTORY.md": "LOCATION_HISTORY.md",
     "docs/INTERRUPTED_SAVES.md": "INTERRUPTED_SAVES.md",
     "docs/EXPLICIT_DISCONNECT.md": "EXPLICIT_DISCONNECT.md",
+    "docs/WINDOW_CLOSE.md": "WINDOW_CLOSE.md",
+    "docs/CONNECTION_CANCELLATION.md": "CONNECTION_CANCELLATION.md",
     "docs/SAVE_ALL.md": "SAVE_ALL.md",
 }
 # Exact notice names currently collected by collect_licenses.py. Adding a new

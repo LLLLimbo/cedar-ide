@@ -544,11 +544,35 @@ class LinuxDesktopBundleTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         payload = dict(self.payload)
         self.assertEqual(bundle.SOURCE_FILES["docs/RECENT_FILES.md"], "RECENT_FILES.md")
+        self.assertEqual(bundle.SOURCE_FILES["docs/EXPLICIT_DISCONNECT.md"], "EXPLICIT_DISCONNECT.md")
+        self.assertEqual(bundle.SOURCE_FILES["docs/WINDOW_CLOSE.md"], "WINDOW_CLOSE.md")
+        self.assertEqual(bundle.SOURCE_FILES["docs/CONNECTION_CANCELLATION.md"], "CONNECTION_CANCELLATION.md")
         for source, target in bundle.SOURCE_FILES.items():
             if source.startswith("docs/"):
                 payload[target] = (root / source).read_bytes()
         manifest = bundle.make_manifest("0.41.0", COMMIT, RUN_URL, payload)
-        bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+        _, verified = bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+        for name in ("EXPLICIT_DISCONNECT.md", "WINDOW_CLOSE.md", "CONNECTION_CANCELLATION.md"):
+            self.assertEqual(verified[name], (root / "docs" / name).read_bytes())
+        self.assertIn(b"](WINDOW_CLOSE.md)", payload["LINUX_DESKTOP_QUICKSTART.zh-CN.md"])
+        self.assertIn(b"](WINDOW_CLOSE.md)", payload["EXPLICIT_DISCONNECT.md"])
+        self.assertIn(b"](CONNECTION_CANCELLATION.md)", payload["WINDOW_CLOSE.md"])
+        self.assertIn(b"](EXPLICIT_DISCONNECT.md)", payload["WINDOW_CLOSE.md"])
+        self.assertIn(b"](WINDOW_CLOSE.md)", payload["CONNECTION_CANCELLATION.md"])
+
+    def test_close_lifecycle_guides_are_required_and_hash_bound(self):
+        for name in ("EXPLICIT_DISCONNECT.md", "WINDOW_CLOSE.md", "CONNECTION_CANCELLATION.md"):
+            with self.subTest(name=name):
+                payload = dict(self.payload)
+                del payload[name]
+                manifest = copy.deepcopy(self.manifest)
+                manifest["files"] = [item for item in manifest["files"] if item["path"] != name]
+                with self.assertRaisesRegex(bundle.BundleError, "required payload"):
+                    bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+                payload = dict(self.payload)
+                payload[name] = b"X" + payload[name][1:]
+                with self.assertRaisesRegex(bundle.BundleError, "SHA256 mismatch: " + name):
+                    bundle.verify_bytes(bundle.archive_bytes(payload, self.manifest))
 
     def test_explorer_guide_is_required_even_with_matching_reduced_inventory(self):
         payload = dict(self.payload)

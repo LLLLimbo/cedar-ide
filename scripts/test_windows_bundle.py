@@ -202,6 +202,8 @@ class WindowsBundleTests(unittest.TestCase):
     def test_current_entry_guides_link_only_to_packaged_local_targets(self):
         self.assertEqual(bundle.SOURCE_FILES["docs/FIND_AND_RETURN.md"], "FIND_AND_RETURN.md")
         self.assertEqual(bundle.SOURCE_FILES["docs/RECENT_FILES.md"], "RECENT_FILES.md")
+        self.assertEqual(bundle.SOURCE_FILES["docs/WINDOW_CLOSE.md"], "WINDOW_CLOSE.md")
+        self.assertEqual(bundle.SOURCE_FILES["docs/CONNECTION_CANCELLATION.md"], "CONNECTION_CANCELLATION.md")
         self.assertEqual(bundle.SOURCE_FILES["docs/SCOPED_PROJECT_TEXT.md"], "SCOPED_PROJECT_TEXT.md")
         self.assertEqual(bundle.SOURCE_FILES["docs/JAVA_IMPLEMENTATIONS.md"],
                          "JAVA_IMPLEMENTATIONS.md")
@@ -230,6 +232,27 @@ class WindowsBundleTests(unittest.TestCase):
         self.assertEqual(verified["INTERRUPTED_SAVES.md"], payload["INTERRUPTED_SAVES.md"])
         self.assertEqual(verified["EXPLICIT_DISCONNECT.md"], payload["EXPLICIT_DISCONNECT.md"])
         self.assertEqual(verified["SAVE_ALL.md"], payload["SAVE_ALL.md"])
+        for name in ("WINDOW_CLOSE.md", "CONNECTION_CANCELLATION.md"):
+            self.assertEqual(verified[name], (root / "docs" / name).read_bytes())
+        self.assertIn(b"](EXPLICIT_DISCONNECT.md)", payload["WINDOWS_QUICKSTART.zh-CN.md"])
+        self.assertIn(b"](WINDOW_CLOSE.md)", payload["EXPLICIT_DISCONNECT.md"])
+        self.assertIn(b"](CONNECTION_CANCELLATION.md)", payload["WINDOW_CLOSE.md"])
+        self.assertIn(b"](EXPLICIT_DISCONNECT.md)", payload["WINDOW_CLOSE.md"])
+        self.assertIn(b"](WINDOW_CLOSE.md)", payload["CONNECTION_CANCELLATION.md"])
+
+    def test_close_lifecycle_guides_are_required_and_hash_bound(self):
+        for name in ("WINDOW_CLOSE.md", "CONNECTION_CANCELLATION.md"):
+            with self.subTest(name=name):
+                payload = dict(self.payload)
+                del payload[name]
+                manifest = copy.deepcopy(self.manifest)
+                manifest["files"] = [item for item in manifest["files"] if item["path"] != name]
+                with self.assertRaisesRegex(bundle.BundleError, "required payload"):
+                    bundle.verify_bytes(bundle.archive_bytes(payload, manifest))
+                payload = dict(self.payload)
+                payload[name] = b"X" + payload[name][1:]
+                with self.assertRaisesRegex(bundle.BundleError, "SHA256 mismatch: " + name):
+                    bundle.verify_bytes(bundle.archive_bytes(payload, self.manifest))
 
     def test_consistent_hashes_cannot_hide_broken_entry_guide_links(self):
         for name in ("WINDOWS_QUICKSTART.zh-CN.md", "JAVA_IMPLEMENTATIONS.md"):
