@@ -46,7 +46,7 @@ pub(super) fn assert_recorded(app: &CedarApp, expected: &str) {
     assert_eq!(observed(app).text, expected);
 }
 
-fn fixture(width: f32, font: f32) -> (CedarApp, Receiver<Command>) {
+fn fixture(width: f32, font: f32) -> (CedarApp, Receiver<Command>, impl FnOnce()) {
     let mut app = CedarApp::empty();
     app.state = ConnectionState::Ready;
     app.open_form = false;
@@ -59,6 +59,11 @@ fn fixture(width: f32, font: f32) -> (CedarApp, Receiver<Command>) {
     app.active_form = Some(form);
     app.root = "/workspace/project".into();
     app.editor_ctx.set_fonts(system_fonts::base_fonts());
+    // This fixture fixes the bundled-font environment without warming up a UI
+    // frame. Hold the controlled sender for the entire case: dropping it early
+    // would deliver a disconnected-worker error through the production tick.
+    let (fonts, hold_font_probe) = system_fonts::SystemFonts::pending_failure_for_test();
+    app.system_fonts = fonts;
     app.editor_ctx.style_mut(|style| {
         style.spacing.item_spacing = egui::vec2(6.0, 4.0);
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
@@ -77,7 +82,7 @@ fn fixture(width: f32, font: f32) -> (CedarApp, Receiver<Command>) {
     set_width(&app, width);
     let (worker, commands) = Worker::recording();
     app.worker = Some(worker);
-    (app, commands)
+    (app, commands, hold_font_probe)
 }
 
 fn set_width(app: &CedarApp, width: f32) {
@@ -239,7 +244,7 @@ fn context_first_visible_and_settled_geometry_uses_production_fonts() {
             for font in [13.0, 18.0] {
                 for scope in &scopes {
                     for mode in [Mode::Flat, Mode::Tree] {
-                        let (mut app, commands) = fixture(width, font);
+                        let (mut app, commands, _hold_font_probe) = fixture(width, font);
                         if mode == Mode::Flat {
                             app.list(scope.clone());
                             listed(&mut app, &commands, scope, vec![]);
@@ -259,6 +264,9 @@ fn context_first_visible_and_settled_geometry_uses_production_fonts() {
                             app.explorer_select(&parent);
                         }
                         let before = ledger(&app);
+                        let notice = app.notice.clone();
+                        assert_eq!(app.system_fonts.probe_state_for_test(), "loading");
+                        assert!(app.error.is_none());
                         let expected = format!("{mode:?} · Scope: /{scope}");
                         let first = frame(&mut app, size, vec![]);
                         assert_context(&app, &first, &expected);
@@ -277,6 +285,9 @@ fn context_first_visible_and_settled_geometry_uses_production_fonts() {
                         }
                         assert_eq!(before, ledger(&app));
                         assert!(commands.try_recv().is_err());
+                        assert_eq!(app.system_fonts.probe_state_for_test(), "loading");
+                        assert!(app.error.is_none());
+                        assert_eq!(app.notice, notice);
                     }
                 }
             }
@@ -286,7 +297,7 @@ fn context_first_visible_and_settled_geometry_uses_production_fonts() {
 
 #[test]
 fn context_root_empty_unloaded_and_connection_states_remain_distinct() {
-    let (mut app, commands) = fixture(246.0, 13.0);
+    let (mut app, commands, _hold_font_probe) = fixture(246.0, 13.0);
     assert_eq!(app.explorer.mode, Mode::Flat);
     let output = settle(&mut app, NORMAL);
     assert_context(&app, &output, "Flat · Scope: /");
@@ -327,7 +338,7 @@ fn context_root_empty_unloaded_and_connection_states_remain_distinct() {
 
 #[test]
 fn context_flat_loading_and_failed_navigation_keep_accepted_scope() {
-    let (mut app, commands) = fixture(246.0, 13.0);
+    let (mut app, commands, _hold_font_probe) = fixture(246.0, 13.0);
     app.list("other".into());
     listed(
         &mut app,
@@ -364,7 +375,7 @@ fn context_flat_loading_and_failed_navigation_keep_accepted_scope() {
 
 #[test]
 fn context_tree_loading_and_stale_error_keep_selected_scope_and_retry_visible() {
-    let (mut app, commands) = fixture(180.0, 18.0);
+    let (mut app, commands, _hold_font_probe) = fixture(180.0, 18.0);
     app.explorer_set_mode(Mode::Tree);
     app.explorer_expand("");
     listed(&mut app, &commands, "", vec![entry("other", true)]);
@@ -408,7 +419,7 @@ fn context_tree_loading_and_stale_error_keep_selected_scope_and_retry_visible() 
 
 #[test]
 fn context_tree_follows_selected_directory_or_file_parent_and_collapse() {
-    let (mut app, commands) = fixture(246.0, 13.0);
+    let (mut app, commands, _hold_font_probe) = fixture(246.0, 13.0);
     app.explorer_set_mode(Mode::Tree);
     assert!(commands.try_recv().is_err(), "switch itself must not load");
     let output = settle(&mut app, NORMAL);
@@ -466,7 +477,7 @@ fn context_tree_follows_selected_directory_or_file_parent_and_collapse() {
 
 #[test]
 fn context_full_hover_and_native_label_preserve_original_scope_and_workspace() {
-    let (mut app, commands) = fixture(180.0, 18.0);
+    let (mut app, commands, _hold_font_probe) = fixture(180.0, 18.0);
     app.directory = format!("同名/{}/终点", "完整目录/".repeat(12));
     let expected = format!("Flat · Scope: /{}", app.directory);
     let output = settle(&mut app, NORMAL);
@@ -535,7 +546,7 @@ fn draft_witness(app: &CedarApp) -> (u64, String) {
 
 #[test]
 fn context_hover_repaint_resize_preserve_editor_focus_dirty_selection_and_undo() {
-    let (mut app, commands) = fixture(246.0, 13.0);
+    let (mut app, commands, _hold_font_probe) = fixture(246.0, 13.0);
     app.directory = "other".into();
     app.documents.push(Document::new(
         1,
@@ -597,7 +608,7 @@ fn assert_single_full_scope_tooltip(mode: Mode) {
                     String::new(),
                     format!("同名/{}终点", "完整目录/".repeat(12)),
                 ] {
-                    let (mut app, commands) = fixture(width, font);
+                    let (mut app, commands, _hold_font_probe) = fixture(width, font);
                     if mode == Mode::Flat {
                         app.list(scope.clone());
                         listed(&mut app, &commands, &scope, vec![]);
@@ -692,7 +703,7 @@ struct LabelParityFrame {
 }
 
 fn label_parity_frames(case: LabelParityCase, native: bool) -> Vec<LabelParityFrame> {
-    let (app, _) = fixture(case.width, case.font);
+    let (app, _, _hold_font_probe) = fixture(case.width, case.font);
     let ctx = &app.editor_ctx;
     ctx.style_mut(|style| {
         style.interaction.selectable_labels = case.selectable_labels;
@@ -852,7 +863,7 @@ fn context_label_matches_native_layout_paint_focus_and_widget_events() {
 
 #[test]
 fn context_is_inert_and_stable_across_scope_mode_and_native_tabs() {
-    let (mut app, commands) = fixture(246.0, 13.0);
+    let (mut app, commands, _hold_font_probe) = fixture(246.0, 13.0);
     settle(&mut app, NORMAL);
     let context_id = observed(&app).id;
     let heading = workspace_access_tests::recorded_response(&app, "project_heading").id;
@@ -892,4 +903,209 @@ fn context_is_inert_and_stable_across_scope_mode_and_native_tabs() {
     }
     assert_eq!(before, ledger(&app));
     assert!(commands.try_recv().is_err());
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FontGeometry {
+    row: egui::Rect,
+    heading: egui::Rect,
+    explorer: egui::Rect,
+    viewport: egui::Rect,
+    witness_advance: Option<f32>,
+}
+
+fn font_tree_scope(app: &mut CedarApp, commands: &Receiver<Command>, scope: &str) {
+    app.explorer_set_mode(Mode::Tree);
+    let mut parent = String::new();
+    for segment in scope.split('/') {
+        let child = if parent.is_empty() {
+            segment.into()
+        } else {
+            format!("{parent}/{segment}")
+        };
+        app.explorer_expand(&parent);
+        listed(app, commands, &parent, vec![entry(&child, true)]);
+        parent = child;
+    }
+    app.explorer_select(&parent);
+    assert!(app.cjk_seen);
+    assert!(commands.try_recv().is_err());
+}
+
+fn font_frame(app: &mut CedarApp, expected: &str) -> (FontGeometry, egui::FullOutput) {
+    let output = frame(app, [780.0, 540.0], vec![]);
+    assert_context(app, &output, expected);
+    let row = texts(&output)
+        .into_iter()
+        .find(|text| text.galley.text() == expected)
+        .unwrap();
+    let geometry = FontGeometry {
+        row: observed(app).rect,
+        heading: workspace_access_tests::recorded_rect(app, "project_heading"),
+        explorer: sidebar_layout_tests::explorer_geometry(app).0,
+        viewport: observed(app).viewport,
+        witness_advance: row.galley.rows[0]
+            .glyphs
+            .iter()
+            .find(|glyph| glyph.chr == 'ℂ')
+            .map(|glyph| glyph.advance_width),
+    };
+    (geometry, output)
+}
+
+fn font_reference(width: f32, font: f32, scope: &str) -> FontGeometry {
+    let (mut app, commands, _hold_font_probe) = fixture(width, font);
+    font_tree_scope(&mut app, &commands, scope);
+    let (geometry, _) = font_frame(&mut app, &format!("Tree · Scope: /{scope}"));
+    assert!(!app
+        .editor_ctx
+        .fonts(|fonts| { fonts.has_glyphs(&FontId::proportional(font), "ℂ") }));
+    assert_eq!(app.system_fonts.probe_state_for_test(), "loading");
+    geometry
+}
+
+fn font_transition_focus(app: &CedarApp, before_first: bool) -> Option<egui::Id> {
+    if !before_first {
+        let heading = workspace_access_tests::recorded_response(app, "project_heading").id;
+        app.editor_ctx
+            .memory_mut(|memory| memory.request_focus(heading));
+        assert_eq!(
+            app.editor_ctx.memory(|memory| memory.focused()),
+            Some(heading)
+        );
+    }
+    app.editor_ctx.memory(|memory| memory.focused())
+}
+
+fn font_after_state_is_stable(app: &mut CedarApp, expected: &str, focus: Option<egui::Id>) {
+    // Bounded native settling, not a retry-until-green loop. Every transition
+    // frame must already be visible, then all three exact-rect checks must pass.
+    let mut settled = None;
+    for _ in 0..4 {
+        settled = Some(font_frame(app, expected).0.row);
+        assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), focus);
+    }
+    let settled = settled.unwrap();
+    for _ in 0..3 {
+        assert_eq!(font_frame(app, expected).0.row, settled);
+        assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), focus);
+    }
+}
+
+#[test]
+fn context_controlled_font_failure_moves_with_the_actual_error_panel() {
+    let scope = format!("中文/{}同名", "深层/".repeat(20));
+    let expected = format!("Tree · Scope: /{scope}");
+    for font in [13.0, 18.0] {
+        for before_first in [true, false] {
+            let (mut app, commands, deliver) = fixture(180.0, font);
+            font_tree_scope(&mut app, &commands, &scope);
+            let before = if before_first {
+                font_reference(180.0, font, &scope)
+            } else {
+                font_frame(&mut app, &expected).0
+            };
+            let requests = ledger(&app);
+            let focus = font_transition_focus(&app, before_first);
+            let notice = app.notice.clone();
+            assert!(app.error.is_none());
+            assert_eq!(app.system_fonts.probe_state_for_test(), "loading");
+            deliver();
+            let (after, output) = font_frame(&mut app, &expected);
+            assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), focus);
+            assert_eq!(app.system_fonts.probe_state_for_test(), "finished");
+            let error = app.error.as_ref().unwrap();
+            assert!(error.starts_with("No supported installed CJK font"));
+            assert!(texts(&output)
+                .iter()
+                .any(|text| text.galley.text() == error));
+            let panel =
+                egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("error"))
+                    .unwrap()
+                    .rect;
+            assert!(panel.is_positive());
+            let delta = egui::vec2(0.0, panel.height());
+            assert_eq!(after.row.min, before.row.min + delta);
+            assert_eq!(after.row.height(), before.row.height());
+            assert_eq!(after.heading, before.heading.translate(delta));
+            assert_eq!(after.viewport.top(), before.viewport.top() + delta.y);
+            assert_eq!(after.viewport.bottom(), before.viewport.bottom());
+            assert_eq!(after.explorer.top(), before.explorer.top() + delta.y);
+            for label in ["error_status", "error_dismiss"] {
+                assert!(workspace_access_tests::recorded_clip(&app, label)
+                    .contains_rect(workspace_access_tests::recorded_rect(&app, label)));
+            }
+            eprintln!("CONTROLLED_FONT_FAILURE font={font} before_first={before_first} panel={panel:?} before={before:?} after={after:?}");
+            font_after_state_is_stable(&mut app, &expected, focus);
+            assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), focus);
+            assert_eq!(app.notice, notice);
+            assert_eq!(ledger(&app), requests);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn context_controlled_font_success_reflows_a_visible_fallback_glyph() {
+    // The existing success helper installs the bundled JetBrains font, not a
+    // CJK face. ℂ is absent from every bundled proportional base face but present
+    // in JetBrains. Keep it early enough to paint before the long scope elides.
+    // The unprefixed scope retains the exact failed Windows case as a control;
+    // neither control claims to identify that runner's unrecorded host font.
+    for witness in [false, true] {
+        let prefix = if witness { "ℂ" } else { "" };
+        let scope = format!("{prefix}中文/{}同名", "深层/".repeat(20));
+        let expected = format!("Tree · Scope: /{scope}");
+        for before_first in [true, false] {
+            let (mut app, commands, _hold_font_probe) = fixture(246.0, 18.0);
+            let (fonts, deliver) = system_fonts::SystemFonts::pending_success_for_test();
+            app.system_fonts = fonts;
+            font_tree_scope(&mut app, &commands, &scope);
+            let before = font_reference(246.0, 18.0, &scope);
+            if !before_first {
+                // Match the Windows observation window: first, settled, and
+                // two more stable frames, then deliberately deliver success.
+                let first = font_frame(&mut app, &expected).0;
+                let output = settle(&mut app, [780.0, 540.0]);
+                assert_context(&app, &output, &expected);
+                let settled = observed(&app).rect;
+                assert_eq!(first.row.min, settled.min);
+                assert_eq!(first.row.height(), settled.height());
+                for _ in 0..2 {
+                    assert_eq!(font_frame(&mut app, &expected).0.row, settled);
+                }
+            }
+            let requests = ledger(&app);
+            let focus = font_transition_focus(&app, before_first);
+            assert_eq!(app.system_fonts.probe_state_for_test(), "loading");
+            deliver();
+            // set_fonts takes effect on the next egui frame. Both the receiving
+            // frame and the first reflowed frame must satisfy the screen oracle.
+            font_frame(&mut app, &expected);
+            assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), focus);
+            assert_eq!(app.system_fonts.probe_state_for_test(), "finished");
+            let (after, _) = font_frame(&mut app, &expected);
+            assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), focus);
+            assert!(app.error.is_none());
+            assert!(app.notice.starts_with("CJK fallback: Test fallback"));
+            assert!(app
+                .editor_ctx
+                .fonts(|fonts| { fonts.has_glyphs(&FontId::proportional(18.0), "ℂ") }));
+            if witness {
+                assert_ne!(
+                    before.witness_advance.unwrap(),
+                    after.witness_advance.unwrap()
+                );
+                assert_ne!(
+                    before.row, after.row,
+                    "visible fallback must cause real re-layout"
+                );
+            }
+            eprintln!("CONTROLLED_FONT_SUCCESS witness={witness} before_first={before_first} before={before:?} after={after:?}");
+            font_after_state_is_stable(&mut app, &expected, focus);
+            assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), focus);
+            assert_eq!(ledger(&app), requests);
+            assert!(commands.try_recv().is_err());
+        }
+    }
 }
