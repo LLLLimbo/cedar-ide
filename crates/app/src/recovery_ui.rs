@@ -321,7 +321,7 @@ impl CedarApp {
                 // Cancellation stays reachable even when an error detail is long.
                 let keep = ui.button("Keep editing");
                 #[cfg(test)]
-                workspace_access_tests::record(ui, "transport_keep_editing", &keep);
+                crate::workspace_access_tests::record(ui, "transport_keep_editing", &keep);
                 if keep.clicked() { self.keep_editing_recovery(ctx); }
                 egui::ScrollArea::vertical().id_salt("transport_close_status").max_height(220.0).show(ui, |ui| {
                     ui.colored_label(AMBER, self.transport_close_message());
