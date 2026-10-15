@@ -9,6 +9,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+
+import export_public_checkpoints as exporter
+import vendored_egui
 
 EXPORTER = Path(__file__).with_name('export_public_checkpoints.py')
 FONT_ROOT = Path('crates/app/assets/fonts')
@@ -38,9 +42,10 @@ def tagged_blob(root, path):
 
 
 class PublicExportTests(unittest.TestCase):
-    def fixture(self, root, published, fonts=False, mutate=None, crlf_checkout=False):
+    def fixture(self, root, published, fonts=False, mutate=None, crlf_checkout=False, vendor=False):
         (root / 'scripts').mkdir(parents=True)
         shutil.copyfile(EXPORTER, root / 'scripts/export_public_checkpoints.py')
+        shutil.copyfile(EXPORTER.with_name('vendored_egui.py'), root / 'scripts/vendored_egui.py')
         (root / 'docs').mkdir()
         (root / 'docs/run.txt').write_text('synthetic omitted evidence\n')
         note = ('\n> Public-source note: existing note.\n' if published else '')
@@ -52,6 +57,15 @@ class PublicExportTests(unittest.TestCase):
             shutil.copytree(FONT_SOURCE, root / FONT_ROOT)
             shutil.copyfile(EXPORTER.parent.parent / 'THIRD_PARTY_NOTICES.md',
                             root / 'THIRD_PARTY_NOTICES.md')
+        if vendor:
+            shutil.copytree(EXPORTER.parent.parent / vendored_egui.ROOT, root / vendored_egui.ROOT)
+            shutil.copytree(EXPORTER.parent.parent / 'third-party-licenses/egui-0.31.1',
+                            root / 'third-party-licenses/egui-0.31.1')
+            shutil.copyfile(EXPORTER.parent.parent / 'THIRD_PARTY_NOTICES.md',
+                            root / 'THIRD_PARTY_NOTICES.md')
+            shutil.copyfile(EXPORTER.parent.parent / '.gitattributes', root / '.gitattributes')
+            (root / 'Cargo.toml').write_text(
+                '[patch.crates-io]\negui = { path = "vendor/egui-0.31.1" }\n')
         if crlf_checkout:
             (root / 'checkout-control.txt').write_bytes(b'first\nsecond\n')
         if mutate:
@@ -288,6 +302,119 @@ class PublicExportTests(unittest.TestCase):
             self.run_export(source, destination)
             stage = json.loads((destination / 'publish-manifest.json').read_text())['stages'][0]
             self.assert_font_export(source, stage)
+
+
+    def assert_vendor_export(self, source, stage):
+        exported = Path(stage['directory'])
+        files = {item['path']: item for item in stage['files']}
+        paths = [path.relative_to(source).as_posix()
+                 for path in (source / vendored_egui.ROOT).rglob('*') if path.is_file()]
+        paths += ['third-party-licenses/egui-0.31.1/' + name
+                  for name in vendored_egui.LICENSE_HASHES]
+        self.assertEqual(len(paths), 100)  # 92 upstream + six additions + two bundle copies.
+        for path in paths:
+            data = tagged_blob(source, path)
+            self.assertEqual((exported / path).read_bytes(), data, path)
+            self.assertEqual(files[path]['sha256'], hashlib.sha256(data).hexdigest(), path)
+            self.assertNotIn('encoding', files[path])  # No new binary transport exception.
+        self.assertEqual((exported / 'THIRD_PARTY_NOTICES.md').read_text().count('| egui | 0.31.1 |'), 1)
+
+    def test_complete_vendor_source_patch_and_provenance_export_exact_tagged_bytes(self):
+        for published, fonts in ((False, False), (True, True)):
+            with self.subTest(published=published, fonts=fonts), tempfile.TemporaryDirectory(prefix='cedar-export-vendor-') as directory:
+                base = Path(directory)
+                source = base / 'source'
+                self.fixture(source, published, fonts=fonts, vendor=True)
+                destination = base / 'export'
+                self.run_export(source, destination)
+                stage = json.loads((destination / 'publish-manifest.json').read_text())['stages'][0]
+                self.assert_vendor_export(source, stage)
+                if fonts:
+                    self.assert_font_export(source, stage)
+                git(Path(stage['directory']), 'init', '-q')
+                git(Path(stage['directory']), 'add', '.')
+                self.assertEqual(git(Path(stage['directory']), 'write-tree').decode().strip(), stage['expected_tree_sha'])
+
+    def test_vendor_autocrlf_checkout_and_uncommitted_changes_cannot_change_tagged_export(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-vendor-checkout-') as directory:
+            base = Path(directory)
+            source = base / 'source'
+            self.fixture(source, False, vendor=True)
+            paths = [path.relative_to(source).as_posix()
+                     for path in (source / vendored_egui.ROOT).rglob('*') if path.is_file()]
+            paths += ['third-party-licenses/egui-0.31.1/' + name for name in vendored_egui.LICENSE_HASHES]
+            for path in paths:
+                (source / path).unlink()
+            git(source, 'checkout-index', '--all')
+            for path in paths:
+                self.assertEqual((source / path).read_bytes(), tagged_blob(source, path), path)
+            # Checkouts are never the source byte oracle for immutable-tag export.
+            (source / vendored_egui.ROOT / 'README.md').write_text('uncommitted change\n')
+            destination = base / 'export'
+            self.run_export(source, destination)
+            stage = json.loads((destination / 'publish-manifest.json').read_text())['stages'][0]
+            self.assert_vendor_export(source, stage)
+
+    def test_vendor_rejects_missing_changed_extra_or_unapproved_files(self):
+        cases = [
+            ('source', 'unapproved bytes'), ('license', 'unapproved bytes'),
+            ('provenance', 'unapproved bytes'), ('patch', 'unapproved bytes'),
+            ('extra-binary', 'unexpected or missing source file set'),
+            ('missing-source', 'unexpected or missing source file set'),
+            ('missing-license', 'missing approved file'),
+            ('missing-bundle-license', 'missing or invalid vendor bundle file'),
+            ('wrong-bundle-license', 'missing or unapproved bundled license'),
+            ('wrong-patch', 'unapproved Cargo patch identity/path'),
+            ('missing-patch', 'vendor source has no exact Cargo patch'),
+            ('duplicate-notice', 'missing or duplicate dependency/modification notice'),
+        ]
+        for change, message in cases:
+            with self.subTest(change=change), tempfile.TemporaryDirectory(prefix='cedar-vendor-export-reject-') as directory:
+                base = Path(directory)
+                source = base / 'source'
+                def mutate(root):
+                    vendor = root / vendored_egui.ROOT
+                    if change in ('source', 'license', 'provenance', 'patch'):
+                        name = {'source': 'src/lib.rs', 'license': 'LICENSE-MIT',
+                                'provenance': 'vendor-upstream.json', 'patch': 'egui-observation.patch'}[change]
+                        with (vendor / name).open('ab') as output:
+                            output.write(b' ')
+                    elif change == 'extra-binary':
+                        (vendor / 'extra.bin').write_bytes(b'\x00\xff')
+                    elif change == 'missing-source':
+                        (vendor / 'src/lib.rs').unlink()
+                    elif change == 'missing-license':
+                        (vendor / 'LICENSE-MIT').unlink()
+                    elif change == 'missing-bundle-license':
+                        (root / 'third-party-licenses/egui-0.31.1/LICENSE-MIT').unlink()
+                    elif change == 'wrong-bundle-license':
+                        (root / 'third-party-licenses/egui-0.31.1/LICENSE-MIT').write_bytes(b'wrong license')
+                    elif change == 'wrong-patch':
+                        (root / 'Cargo.toml').write_text('[patch.crates-io]\negui = { path = "elsewhere" }\n')
+                    elif change == 'missing-patch':
+                        (root / 'Cargo.toml').unlink()
+                    else:
+                        with (root / 'THIRD_PARTY_NOTICES.md').open('a') as output:
+                            output.write('| egui | 0.31.1 | MIT OR Apache-2.0 | https://github.com/emilk/egui |\n')
+                self.fixture(source, False, vendor=True, mutate=mutate)
+                destination = base / 'export'
+                result = self.run_export(source, destination, check=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(message, result.stderr)
+                self.assertFalse((destination / 'publish-manifest.json').exists())
+
+    def test_verified_vendor_bytes_still_pass_the_global_sensitive_scan(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-vendor-sensitive-') as directory:
+            base = Path(directory)
+            source = base / 'source'
+            self.fixture(source, False, vendor=True)
+            destination = base / 'export'
+            with mock.patch.object(exporter, '__file__', str(source / 'scripts/export_public_checkpoints.py')):
+                with mock.patch.object(sys, 'argv', ['export', '--destination', str(destination), '--tags', 'test-stage']):
+                    with mock.patch.dict(exporter.SENSITIVE_PATTERNS, {'vendor canary': rb'Cedar receipt prototype'}):
+                        with self.assertRaisesRegex(RuntimeError, 'vendor canary in vendor/egui-0.31.1/'):
+                            exporter.main()
+            self.assertFalse((destination / 'publish-manifest.json').exists())
 
 
 if __name__ == '__main__':

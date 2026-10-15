@@ -2,7 +2,22 @@
 
 Design decision, 2026-10-12, with delivery status updated on 2026-10-13 for the accepted 0.69.0 bounded baseline and the 0.70 stale-navigation candidate. This roadmap does not itself establish a new release or acceptance.
 
-## Current 0.75 fix checkpoint
+## Current 0.76 fix checkpoint
+
+The 0.76 candidate adds actual per-invocation native IME acceptance to Files'
+existing ownership, lifecycle and pause-barrier checks, covering same-field
+caret-move rejection while preserving 075 direct-edit and ordinary Undo semantics.
+It adds no provider, protocol operation or automatic Read. The pinned egui 0.31.1
+observation patch does not alter native text/event behavior. Focused development
+checks and independent review passed on a still-0.75.0 source; final-version full
+validation, shipping artifacts, exact public-source CI and package audits require
+separate evidence. The five original canonical drivers are NOT RUN locally;
+original official CI on the exact public source owns their pending acceptance.
+Real OS IME and a new native GUI journey remain untested. See the
+[phase 76 report](TEST_REPORT_PHASE76_IME_ACCEPTANCE.md) and
+[offline contract](FIND_AND_RETURN.md#files-native-ime-acceptance-076-candidate).
+
+## Prior 0.75 fix checkpoint
 
 The 0.75 candidate fixes Files query/Directory IME focus-handoff ownership and a
 bounded cancelled-terminal barrier, without changing product direction, protocol

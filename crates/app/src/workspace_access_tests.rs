@@ -21,6 +21,23 @@ struct Widget {
     observation: serde_json::Value,
 }
 
+// Test-only trace of the same output consumed by production admission.
+pub(super) fn record_text_edit_receipts(ui: &egui::Ui, output: &egui::text_edit::TextEditOutput) {
+    let receipts: Vec<_> = output
+        .ime_receipts
+        .iter()
+        .map(|receipt| {
+            serde_json::json!({
+                "input_event_index": receipt.input_event_index,
+                "processing_order": receipt.processing_order,
+                "outcome": format!("{:?}", receipt.outcome),
+            })
+        })
+        .collect();
+    let key = output.response.id.with("experimental_native_ime_receipts");
+    ui.ctx().data_mut(|data| data.insert_temp(key, receipts));
+}
+
 pub(super) fn begin(ctx: &egui::Context) {
     ctx.data_mut(|data| data.insert_temp(egui::Id::new(PROBE), HashMap::<String, Widget>::new()));
 }
@@ -39,6 +56,12 @@ pub(super) fn record(ui: &egui::Ui, name: &str, response: &egui::Response) {
             "gained_focus": response.gained_focus(),
             "lost_focus": response.lost_focus(),
             "sizing_pass": ui.is_sizing_pass(),
+            "ime_receipts": ui.ctx().data(|data| data.get_temp::<Vec<serde_json::Value>>(
+                response.id.with("experimental_native_ime_receipts")
+            )).unwrap_or_default(),
+            "cursor_indices": egui::TextEdit::load_state(ui.ctx(), response.id)
+                .and_then(|state| state.cursor.char_range())
+                .map(|range| [range.primary.index, range.secondary.index]),
             "cursor": egui::TextEdit::load_state(ui.ctx(), response.id)
                 .and_then(|state| state.cursor.char_range())
                 .map(|range| format!("{range:?}")),

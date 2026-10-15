@@ -3,7 +3,7 @@ members = ["crates/protocol", "crates/workspace", "crates/agent", "crates/client
 resolver = "2"
 
 [workspace.package]
-version = "0.75.0"
+version = "0.76.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 rust-version = "1.99"
@@ -19,3 +19,8 @@ tempfile = "3.14"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Pinned egui 0.31.1 with the narrow Cedar IME branch-receipt patch.
+# See vendor/egui-0.31.1/CEDAR-NOTICE.md for upstream identity and licenses.
+[patch.crates-io]
+egui = { path = "vendor/egui-0.31.1" }

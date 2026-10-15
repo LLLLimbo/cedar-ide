@@ -1,8 +1,10 @@
-# 功能矩阵与后续验收 · 0.75 Files 输入法转焦修复候选
+# 功能矩阵与后续验收 · 0.76 Files 输入法接纳修复候选
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 
-当前 0.75 候选只修 Files query/Directory 的输入法转焦所有权与有限暂停屏障，保留合法提交后的 250 毫秒间隔，不新增搜索提供者、协议或自动读取。开发版 focused 检查及独审已通过；最终 0.75 全量、精确 CI/分发包结果由单独证据确认，真实 OS 输入法未实测。见[阶段报告](TEST_REPORT_PHASE75_IME_FOCUS_HANDOFF.md)与[离线合同](FIND_AND_RETURN.md#files-ime-focus-handoff-075-candidate)。下列既有验收状态保留其历史归属。
+当前 0.76 候选为 Files 原生 TextEdit 的实际 IME 分支补充接纳证明，保留所有权、批次、epoch、焦点与暂停屏障，以及 0.75 的合法直接提交和独立普通编辑/Undo 语义。同字段 caret 接缝得到合成事件覆盖；不新增 provider、协议或自动 Read。独立开发源码仍标为 0.75.0，其 focused 检查和独审通过，不代替最终 0.76.0 的全量、发布产物、精确公开源码 CI 或三种包验收。本地五个 canonical 驱动未运行，只由精确公开源码的原始官方 CI 验收；真实 OS 输入法及本次 GUI 未实测。见[0.76 阶段报告](TEST_REPORT_PHASE76_IME_ACCEPTANCE.md)和[离线合同](FIND_AND_RETURN.md#files-native-ime-acceptance-076-candidate)。
+
+历史 0.75 候选只修 Files query/Directory 的输入法转焦所有权与有限暂停屏障，保留合法提交后的 250 毫秒间隔，不新增搜索提供者、协议或自动读取。开发版 focused 检查及独审已通过；最终 0.75 全量、精确 CI/分发包结果由单独证据确认，真实 OS 输入法未实测。见[阶段报告](TEST_REPORT_PHASE75_IME_FOCUS_HANDOFF.md)与[离线合同](FIND_AND_RETURN.md#files-ime-focus-handoff-075-candidate)。下列既有验收状态保留其历史归属。
 
 历史记录：**0.70 过期导航定位加固候选当时尚未验收**。普通 Open 的 Read 晚到后仍可缓存准确的非活动文件字节；新文档只有在导航仍有效且不属于语言导航目标时才保存普通行跳转。之后 Files/Recent 普通打开不得继承已取消的 Text 行号，应与同字节的新普通打开光标一致。有效后台跳转、脏稿、Undo 和历史必须保留；旧 0.69 生产帧负向对照不等于既往原生 GUI 缺陷。0.70.0 本地 Rust **2,203/0/71（50 套件）**、Python **806 项/10 跳过/零失败套件（29 套件）**、格式与严格 Clippy 通过；当前产物 Browse v7 **74/17**、Structure **45/11**、Scoped Search **57/10**、Search **57/12** 进程证明通过。最初的 schema、编译及 Back 观察器失败继续保留；精确 CI、三种包和原生仍待完成，各层验证见[0.70 报告](TEST_REPORT_PHASE70_STALE_NAVIGATION.md)。
 

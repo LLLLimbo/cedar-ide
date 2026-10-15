@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-agent"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "cedar-protocol",
  "cedar-workspace",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-app"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "ab_glyph",
  "cedar-client",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-client"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "cedar-protocol",
  "cedar-tasks",
@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-debugger"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "cedar-language",
  "serde",
@@ -335,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-language"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "cedar-winprocess",
  "libc",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-protocol"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-recovery"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "libc",
  "serde",
@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-tasks"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "cedar-winprocess",
  "libc",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-winprocess"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-workspace"
-version = "0.75.0"
+version = "0.76.0"
 dependencies = [
  "cedar-language",
  "cedar-protocol",
@@ -667,8 +667,6 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.31.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25dd34cec49ab55d85ebf70139cb1ccd29c977ef6b6ba4fe85489d6877ee9ef3"
 dependencies = [
  "ahash",
  "bitflags 2.13.2",

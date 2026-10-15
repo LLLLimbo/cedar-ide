@@ -10,6 +10,9 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import tomllib
+
+import vendored_egui
 
 STAGES = ('phase1-0.1.0', 'phase2-0.2.0', 'phase3-0.3.0')
 REQUIRED_FIXTURE = 'crates/language/tests/evidence/jdtls-1.61.0-completion-resolve.jsonl'
@@ -93,6 +96,35 @@ def verified_font_assets(root, items):
     return fonts
 
 
+
+def verified_vendor_assets(root, items):
+    """Validate only the pinned local egui tree, reading immutable tagged blobs."""
+    blobs = {path: (mode, oid) for path, mode, oid in items}
+
+    def required(path):
+        if path not in blobs or blobs[path][0] != '100644' or omitted(path):
+            raise RuntimeError(f'Blocked export: missing or invalid vendor bundle file {path}')
+        return git(root, 'cat-file', 'blob', blobs[path][1])
+
+    cargo = tomllib.loads(required('Cargo.toml').decode('utf-8')) if 'Cargo.toml' in blobs else {}
+    selected = vendored_egui.patch_selected(cargo)
+    prefix = vendored_egui.ROOT + '/'
+    paths = {path[len(prefix):] for path in blobs if path.startswith(prefix)}
+    if not paths and not selected:
+        return {}  # Historical checkpoints retain their original source-only policy.
+    vendored_egui.require(selected, 'vendor source has no exact Cargo patch')
+    vendor = vendored_egui.validated_bytes(paths, lambda name: required(prefix + name))
+    licenses = {'third-party-licenses/egui-0.31.1/' + name:
+                required('third-party-licenses/egui-0.31.1/' + name)
+                for name in vendored_egui.LICENSE_HASHES}
+    vendored_egui.validate_package_licenses(cargo, licenses)
+    notices = required('THIRD_PARTY_NOTICES.md').decode('utf-8')
+    row = '| egui | 0.31.1 | MIT OR Apache-2.0 | https://github.com/emilk/egui |'
+    vendored_egui.require(notices.count(row) == 1 and vendored_egui.NOTICE_SECTION in notices,
+                         'missing or duplicate dependency/modification notice')
+    return {prefix + name: data for name, data in vendor.items()}
+
+
 def expected_tree_sha(files):
     root = {}
     for item in files:
@@ -142,6 +174,7 @@ def main():
             assert not PurePosixPath(path).is_absolute() and '..' not in PurePosixPath(path).parts
             items.append((path, mode, oid))
         fonts = verified_font_assets(root, items)
+        vendor = verified_vendor_assets(root, items)
         excluded = {path for path, _, _ in items if omitted(path)}
         stage = destination / tag
         stage.mkdir()
@@ -154,7 +187,7 @@ def main():
             if path in fonts:
                 data = fonts[path]  # Preserve approved TTF bytes, never decode/re-encode.
             else:
-                data = git(root, 'cat-file', 'blob', oid)
+                data = vendor[path] if path in vendor else git(root, 'cat-file', 'blob', oid)
                 text = data.decode('utf-8')  # Fail closed for any unexpected binary.
                 if '\0' in text:
                     raise RuntimeError(f'Blocked export: unexpected binary in {path}')
@@ -167,10 +200,10 @@ def main():
                     text = json.dumps(records[0], ensure_ascii=False, separators=(',', ':')) + '\n'
                 # Source code contains no environment-specific path; these replacements
                 # apply only to historical prose such as measured JVM command examples.
-                if path.endswith('.md'):
+                if path.endswith('.md') and path not in vendor:
                     text = re.sub(r'/workspace/scratch/[a-f0-9]{8,}/', '/path/to/', text)
                     text = text.replace('/workspace/' + 'shared/', '/path/to/shared/')
-                if path.endswith('.md'):
+                if path.endswith('.md') and path not in vendor:
                     note_link = ('../' * len(PurePosixPath(path).parts[:-1])) + 'PUBLICATION.md'
                     mentioned = any(raw in text or Path(raw).name in text for raw in excluded)
                     # Retain descriptions of measurements, without dangling hyperlinks.
@@ -190,7 +223,9 @@ def main():
                     footer = 'Public source history and omitted machine-specific evidence are described in [PUBLICATION.md](PUBLICATION.md).'
                     if footer not in text:
                         text += '\n' + footer + '\n'
-                data = text.encode()
+                # Verified vendor files are still decoded/scanned, but their upstream
+                # README/license/provenance/patch bytes must never be rewritten.
+                data = vendor[path] if path in vendor else text.encode()
             for description, pattern in SENSITIVE_PATTERNS.items():
                 if re.search(pattern, data):
                     raise RuntimeError(f'Blocked export: {description} in {path}')
@@ -227,8 +262,10 @@ Run the documented test commands to produce fresh evidence on your own machine.
 
 No prebuilt executables, JDK, Java/Kotlin language-server distributions, debug
 adapters, credentials, private user projects or tool caches are included.
-The 343 locked upstream dependencies keep their respective licenses; bundled
+The locked upstream dependencies keep their respective licenses; bundled
 license texts may contain their upstream authors' public copyright information.
+When present, the pinned egui 0.31.1 source, exact observation patch and complete
+upstream/license provenance are retained byte-for-byte as one dependency.
 Java/Kotlin servers still need separate installation and any applicable license.
 Native Windows/macOS GUI, authenticated SSH interoperability, full refactoring, integrated
 debugging and IntelliJ plugin compatibility are not claimed by this checkpoint.

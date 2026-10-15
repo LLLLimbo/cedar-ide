@@ -4,7 +4,29 @@
 
 Cedar is a native Rust application using `eframe`/`egui` 0.31.1 and the Glow renderer. It does not embed a browser or a JVM. The remote workspace agent and optional language server run separately from the UI.
 
-## Current baseline and Files search-as-you-type candidate
+## Current 0.76.0 Files native IME acceptance candidate
+
+Files now requires actual per-invocation native TextEdit acceptance alongside
+its existing owner, lifecycle, batch, epoch, focus and cancellation barriers.
+Same-field caret movement can produce a rejected native Commit despite stable
+focus; raw notifications and changed bytes alone do not establish acceptance.
+The existing 250 ms interval, direct-Commit/ordinary-edit semantics, single flight,
+latest replacement and zero automatic Reads remain. The pinned egui 0.31.1 copy
+adds observational receipts only; [upstream provenance and licenses](../../THIRD_PARTY_NOTICES.md#vendored-egui-0311)
+remain part of source and bundle accounting.
+
+See the [complete offline contract](../../docs/FIND_AND_RETURN.md#files-native-ime-acceptance-076-candidate)
+and [phase 76 report](../../docs/TEST_REPORT_PHASE76_IME_ACCEPTANCE.md). Focused
+validation belongs to the separate still-0.75.0 development candidate. Final
+0.76.0 aggregate, shipping, exact-public-source CI and package evidence are pending
+at source seal and recorded externally afterward. The five original canonical
+drivers are NOT RUN locally. Real OS IME and new native GUI behavior are untested.
+
+## Historical 0.68 baseline and 0.69 Files search-as-you-type candidate
+
+The following records the earlier checkpoint; it does not set the current
+candidate's verification status. Later bounded acceptance is recorded in the
+[current report](../../docs/TEST_REPORT.md).
 
 The latest accepted baseline is **0.68.0 current-file Find**. All four jobs in
 [exact dual-platform CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/38444382093)

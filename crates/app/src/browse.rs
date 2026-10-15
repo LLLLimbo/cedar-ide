@@ -365,6 +365,10 @@ struct Input {
     files_ime_cancel: bool,
     files_ime_owner_stable: bool,
     files_ime_batch: bool,
+    // Raw ownership is an additional gate, never an event-index mapping.
+    files_ime_token: Option<Token>,
+    files_ime_observed: bool,
+    files_native_commit: bool,
     files_plain_edit: bool,
     files_edit: Option<Target>,
     key: Option<KeyIntent>,
@@ -463,6 +467,8 @@ impl Browse {
             "input_composing": self.input.composing,
             "raw_commit": self.input.files_ime_commit,
             "raw_cancel": self.input.files_ime_cancel,
+            "native_commit": self.input.files_native_commit,
+            "native_observed": self.input.files_ime_observed,
             "settlement": self.files_settlement.as_ref().map(|s| serde_json::json!({
                 "deadline": s.deadline, "last_seen": s.last_seen,
                 "epoch": s.epoch, "query": s.query, "scope": s.scope,
@@ -984,6 +990,67 @@ impl CedarApp {
         }
     }
 
+    // Receipts belong only to this invocation's output and widget-local
+    // InputState snapshot. Consume their actual processing order directly;
+    // input_event_index is deliberately never interpreted as a raw-batch index.
+    fn observe_files_ime_receipts(
+        &mut self,
+        target: Target,
+        response: &egui::Response,
+        receipts: &[egui::text_edit::TextEditImeReceipt],
+    ) -> bool {
+        if self.browse.input.files_ime_observed
+            || !self.browse_input_current(&self.editor_ctx)
+            || !self.browse_current()
+            || self.browse.input.files_ime_token.as_ref()
+                != Some(&self.browse.token(target.clone()))
+            || response.id != self.browse.id(&target)
+        {
+            // Native text can change before an unowned/stale raw intent is
+            // rejected here. Do not let those IME bytes re-enter admission via
+            // the ordinary changed-bytes route. A separate owned Text/Paste
+            // intent below may still release the existing barrier.
+            if self.browse.files_composition.is_none()
+                && receipts.iter().any(|receipt| {
+                    matches!(
+                        receipt.outcome,
+                        egui::text_edit::ImeEventOutcome::CommitAccepted { .. }
+                            | egui::text_edit::ImeEventOutcome::PreeditApplied
+                    )
+                })
+            {
+                self.browse.files_handoff_barrier = true;
+            }
+            return false;
+        }
+        // Even absence is consumed for this owner/batch. An extra layout pass
+        // cannot reinterpret the original raw intent or reuse a past receipt.
+        self.browse.input.files_ime_observed = true;
+        let mut committed = false;
+        let mut accepted_direct = false;
+        for receipt in receipts {
+            use egui::text_edit::ImeEventOutcome::*;
+            match receipt.outcome {
+                Enabled | PreeditApplied | CommitEmpty | CommitIgnoredLineBreak => {
+                    committed = false
+                }
+                CommitAccepted { .. } => {
+                    committed = true;
+                    accepted_direct = true;
+                }
+                // A rejected duplicate is not a second successful completion,
+                // nor does it erase an earlier success in the same lifecycle.
+                CommitRejectedAnchor | Disabled | PreeditIgnoredLineBreak => {}
+            }
+        }
+        self.browse.input.files_native_commit = committed;
+        // Preserve the existing direct-edit contract: without a composition,
+        // an actually accepted Commit is a fresh edit, including when a later
+        // empty/rejected terminal does not insert. Composition cancellation
+        // remains governed by the latest lifecycle's completion above.
+        self.browse.files_composition.is_none() && accepted_direct
+    }
+
     fn finish_files_composition(&mut self) {
         // A later-rendered control may have taken focus after the owner's
         // response was observed. Reconcile against the final native focus.
@@ -1005,6 +1072,7 @@ impl CedarApp {
         {
             let composition = self.browse.files_composition.take().unwrap();
             if self.browse.input.files_ime_commit
+                && self.browse.input.files_native_commit
                 && composition.valid
                 && self.browse.input.files_ime_owner_stable
             {
@@ -1013,8 +1081,7 @@ impl CedarApp {
                 // transfers cannot cancel this already completed composition.
                 self.browse_query_changed();
             } else {
-                self.browse.files_handoff_barrier |=
-                    !composition.valid || !self.browse.input.files_ime_owner_stable;
+                self.browse.files_handoff_barrier = true;
                 // Disabled, empty Commit and ambiguous endings do not prove
                 // the final String committed. Preserve it exactly; only a new
                 // committed edit or explicit Find may admit these bytes.
@@ -1810,6 +1877,9 @@ impl CedarApp {
         self.browse.input.files_ime_commit = false;
         self.browse.input.files_ime_cancel = false;
         self.browse.input.files_ime_owner_stable = false;
+        self.browse.input.files_ime_token = None;
+        self.browse.input.files_ime_observed = false;
+        self.browse.input.files_native_commit = false;
         self.browse.input.files_ime_batch =
             raw.events.iter().any(|e| matches!(e, egui::Event::Ime(_)));
         self.browse.input.files_plain_edit = false;
@@ -1907,6 +1977,12 @@ impl CedarApp {
                     self.browse.input.files_ime_cancel = true;
                 }
             }
+        }
+        if allowed && self.browse.provider == Provider::Files {
+            self.browse.input.files_ime_token = [Target::Query, Target::Scope]
+                .into_iter()
+                .find(|target| focused == Some(self.browse.id(target)))
+                .map(|target| self.browse.token(target));
         }
         let input = &mut self.browse.input;
         input.completed_row = prior_row.clone();
@@ -3244,7 +3320,8 @@ impl CedarApp {
             ui.memory_mut(|memory| memory.request_focus(query_id));
         }
         let previous_query = self.browse.query.clone();
-        let query = ui.put(
+        let (query, receipts) = put_files_text_edit(
+            ui,
             query_rect,
             egui::TextEdit::singleline(&mut self.browse.query)
                 .id(query_id)
@@ -3252,8 +3329,10 @@ impl CedarApp {
                 .desired_width(f32::INFINITY)
                 .hint_text("Type a filename"),
         );
+        let native_commit = self.observe_files_ime_receipts(Target::Query, &query, &receipts);
         self.observe_files_composition_focus(Target::Query, &query);
-        let edit_intent = self.browse.input.files_edit == Some(Target::Query);
+        let edit_intent = self.browse.input.files_edit == Some(Target::Query)
+            && (self.browse.input.files_plain_edit || native_commit);
         if edit_intent {
             self.browse.input.files_edit = None;
         }
@@ -3290,10 +3369,20 @@ impl CedarApp {
             );
             let id = self.browse.id(&Target::Scope);
             let previous_scope = self.browse.scope.clone();
-            let scope = ui.put(scope_rect, egui::TextEdit::singleline(&mut self.browse.scope).id(id).char_limit(4096).desired_width(f32::INFINITY).hint_text("Whole workspace"))
-                .on_hover_text(format!("Exact workspace-relative directory; empty searches workspace. Excluded directories: {}. Literal matching uses Unicode lowercase, without normalization.", cedar_protocol::FILE_DISCOVERY_EXCLUDED_DIRECTORIES.join(", ")));
+            let (scope, receipts) = put_files_text_edit(
+                ui,
+                scope_rect,
+                egui::TextEdit::singleline(&mut self.browse.scope)
+                    .id(id)
+                    .char_limit(4096)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Whole workspace"),
+            );
+            let scope = scope.on_hover_text(format!("Exact workspace-relative directory; empty searches workspace. Excluded directories: {}. Literal matching uses Unicode lowercase, without normalization.", cedar_protocol::FILE_DISCOVERY_EXCLUDED_DIRECTORIES.join(", ")));
+            let native_commit = self.observe_files_ime_receipts(Target::Scope, &scope, &receipts);
             self.observe_files_composition_focus(Target::Scope, &scope);
-            let edit_intent = self.browse.input.files_edit == Some(Target::Scope);
+            let edit_intent = self.browse.input.files_edit == Some(Target::Scope)
+                && (self.browse.input.files_plain_edit || native_commit);
             if edit_intent {
                 self.browse.input.files_edit = None;
             }
@@ -4567,3 +4656,26 @@ fn record_context_scroll(
         )
     });
 }
+
+// TextEdit's Widget implementation is show(ui).response. Keep the existing
+// ui.put allocation/layout and return that very Response; only retain the
+// local observational receipts alongside it.
+fn put_files_text_edit(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    edit: egui::TextEdit<'_>,
+) -> (egui::Response, Vec<egui::text_edit::TextEditImeReceipt>) {
+    let mut receipts = Vec::new();
+    let response = ui.put(rect, |ui: &mut egui::Ui| {
+        let output = edit.show(ui);
+        #[cfg(test)]
+        crate::workspace_access_tests::record_text_edit_receipts(ui, &output);
+        receipts = output.ime_receipts;
+        output.response
+    });
+    (response, receipts)
+}
+
+#[cfg(test)]
+#[path = "files_ime_widget_tests.rs"]
+mod files_ime_widget_tests;

@@ -34,6 +34,7 @@ from package_windows_bundle import (
     MAX_TEXT_BYTES, REPOSITORY, RUN_URL, VERSION, blob_hash, canonical_json,
     checked_path, clean_commit, exact_keys, git, is_notice, no_duplicate_keys,
     read_regular, require, safe_name, source_bytes, validate_packaged_guide_links,
+    validate_vendored_egui_licenses,
 )
 
 MANIFEST = "BUNDLE_MANIFEST.json"
@@ -397,6 +398,7 @@ def verify_source(root, manifest, payload):
         content = source_bytes(root, name, object_id)
         if name == "Cargo.toml":
             cargo = tomllib.loads(content.decode("utf-8"))
+            validate_vendored_egui_licenses(cargo, payload)
             require(cargo.get("workspace", {}).get("package", {}).get("version") == manifest["version"],
                     "Source Cargo version differs from manifest")
         else:
@@ -475,6 +477,7 @@ def build(root, binary_dir, output, source_commit, ci_run_url):
     version = cargo.get("workspace", {}).get("package", {}).get("version")
     payload = {SOURCE_FILES.get(name, name): source_bytes(root, name, object_id)
                for name, object_id in sorted(sources.items()) if name != "Cargo.toml"}
+    validate_vendored_egui_licenses(cargo, payload)
     for name in BINARIES:
         path = checked_path(Path(binary_dir) / name)
         info = path.lstat()

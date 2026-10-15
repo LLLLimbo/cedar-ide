@@ -3,3 +3,8 @@
 
 # Preserve the exact upstream producer-fixture bytes on Windows checkout.
 crates/app/tests/fixtures/surefire-3.5.4/enclosed-error.xml -text
+
+# Preserve hash-pinned egui upstream, observation patch, provenance and licenses.
+/vendor/egui-0.31.1/** -text
+/third-party-licenses/egui-0.31.1/LICENSE-MIT -text
+/third-party-licenses/egui-0.31.1/LICENSE-APACHE -text

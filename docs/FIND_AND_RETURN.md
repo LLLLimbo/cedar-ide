@@ -4,7 +4,14 @@ Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
 
-The **0.75.0 Files IME focus-handoff candidate** preserves the existing search
+The **0.76.0 Files native IME acceptance candidate** requires an actual native
+TextEdit acceptance observation in addition to the existing ownership and
+cancellation rules. Its self-contained offline interaction boundary is
+[below](#files-native-ime-acceptance-076-candidate). Final-version verification,
+exact-source public CI and package acceptance remain separate pending gates;
+real OS IME and new native GUI behavior are untested.
+
+The earlier **0.75.0 Files IME focus-handoff candidate** preserves the existing search
 contract while preventing cancelled or unaccepted composition from resuming
 automatic search across query/Directory focus transfer. The complete offline
 interaction boundary is [below](#files-ime-focus-handoff-075-candidate).
@@ -51,7 +58,56 @@ symbols, real-JDT popup behavior and native Ctrl+F12 remain unmeasured. The
 preserved in the
 [phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
 
+## Files native IME acceptance (0.76 candidate)
+
+Files query and Directory keep their native single-line String editors. A Commit
+notification alone cannot prove that the focused editor accepted it: native egui
+may reject it after a caret/selection change within that same field. The frontend
+now reads payload-free IME branch observations returned by that exact TextEdit
+invocation, while retaining the original owner, current batch/epoch, continuous
+owner focus, final focus and pause-barrier checks. Missing observations mean the
+branch was not observed; they do not mean native rejection or permission to search.
+An extra layout pass cannot replay the earlier observation or restart its timer.
+
+For an owned composition, accepted Commit completes the latest native lifecycle;
+a later Enabled/Preedit starts another, and empty or standalone CR/LF Commit
+cancels completion under the existing conservative rule. A rejected duplicate or
+Disabled alone does not erase an already accepted completion in that lifecycle.
+An accepted, valid completion starts the full **250 ms** interval. Acceptance
+means the actual native insertion branch ran; it does not promise changed bytes
+or full insertion. Same-value input and native character-limit truncation retain
+their real result, and the existing UTF-8 query/scope validation still applies.
+
+Outside a composition, a genuinely accepted direct Commit remains an independent
+edit as in 0.75, including when a later empty/ignored/rejected direct terminal
+follows. The existing ownership and pause barrier still apply. Ordinary owned
+Text/Paste intent and genuine native byte-changing edits, including Undo, keep
+their separate recovery paths. A native IME mutation under a stale epoch or wrong
+raw owner cannot bypass the barrier merely because visible bytes changed.
+
+After rejected or cancelled composition, the exact native query and Directory
+remain visible and automatic search pauses. Clean fresh edits, a valid fresh
+composition, or an actually executed clean Find/Enter can resume it. Pointer or
+caret movement, idle, selection-only Undo and old late terminals do not suffice.
+A commit already completed before a later focus transfer retains its original
+250 ms deadline. Closing or switching the provider clears the local pause state.
+
+The single physical FindFiles flight, latest replacement, stale-reply isolation,
+literal matching and validation limits are unchanged. Automatic search does not
+Read, preview, Open, activate, save, retry or poll. Project Text remains explicit.
+The same-version egui 0.31.1 modification observes native branches; it does not
+replace native input handling. Its source provenance and MIT/Apache-2.0 notices
+are described in the package's THIRD_PARTY_NOTICES.md, under Vendored egui 0.31.1.
+
+The development evidence uses synthetic events through real egui controls and
+production fonts. Real OS input methods, a new GUI journey and Windows/macOS GUI
+are unverified. The source-only report is docs/TEST_REPORT_PHASE76_IME_ACCEPTANCE.md;
+this packaged interaction guide does not require that report to be present.
+
 ## Files IME focus handoff (0.75 candidate)
+
+The following is the historical 0.75 scope. The 0.76 section above adds actual
+native acceptance checks for the same-field seam it originally left unverified.
 
 Files keeps the original composing query or Directory control as the owner.
 If focus transfers before that control completes its composition, an old terminal

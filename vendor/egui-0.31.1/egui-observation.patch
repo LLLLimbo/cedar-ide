@@ -1,0 +1,232 @@
+--- a/src/widgets/text_edit/builder.rs
++++ b/src/widgets/text_edit/builder.rs
+@@ -1,3 +1,4 @@
++// Cedar receipt prototype, 2026-10-15: observational additions to egui 0.31.1.
+ use std::sync::Arc;
+ 
+ use emath::{Rect, TSTransform};
+@@ -19,7 +20,7 @@
+     TextStyle, TextWrapMode, Ui, Vec2, Widget, WidgetInfo, WidgetText, WidgetWithState,
+ };
+ 
+-use super::{TextEditOutput, TextEditState};
++use super::{ImeEventOutcome, TextEditImeReceipt, TextEditOutput, TextEditState};
+ 
+ /// A text region that the user can edit the contents of.
+ ///
+@@ -620,6 +621,7 @@
+         }
+ 
+         let mut cursor_range = None;
++        let mut ime_receipts = Vec::new();
+         let prev_cursor_range = state.cursor.range(&galley);
+         if interactive && ui.memory(|mem| mem.has_focus(id)) {
+             ui.memory_mut(|mem| mem.set_focus_lock_filter(id, event_filter));
+@@ -644,6 +646,7 @@
+                 char_limit,
+                 event_filter,
+                 return_key,
++                &mut ime_receipts,
+             );
+ 
+             if changed {
+@@ -857,6 +860,7 @@
+             galley,
+             galley_pos,
+             text_clip_rect,
++            ime_receipts,
+             state,
+             cursor_range,
+         }
+@@ -895,6 +899,7 @@
+     char_limit: usize,
+     event_filter: EventFilter,
+     return_key: Option<KeyboardShortcut>,
++    ime_receipts: &mut Vec<TextEditImeReceipt>,
+ ) -> (bool, CursorRange) {
+     let os = ui.ctx().os();
+ 
+@@ -915,15 +920,30 @@
+ 
+     let mut any_change = false;
+ 
+-    let mut events = ui.input(|i| i.filtered_events(&event_filter));
++    // Preserve the original event identity before the same filtering and stable sort.
++    let mut events = ui.input(|i| {
++        i.events
++            .iter()
++            .enumerate()
++            .filter(|(_, event)| event_filter.matches(event))
++            .map(|(index, event)| (index, event.clone()))
++            .collect()
++    });
+ 
+     if state.ime_enabled {
+         remove_ime_incompatible_events(&mut events);
+         // Process IME events first:
+-        events.sort_by_key(|e| !matches!(e, Event::Ime(_)));
+-    }
+-
+-    for event in &events {
++        events.sort_by_key(|(_, e)| !matches!(e, Event::Ime(_)));
++    }
++
++    for (processing_order, (input_event_index, event)) in events.iter().enumerate() {
++        let mut record_ime = |outcome| {
++            ime_receipts.push(TextEditImeReceipt {
++                input_event_index: *input_event_index,
++                processing_order,
++                outcome,
++            });
++        };
+         let did_mutate_text = match event {
+             // First handle events that only changes the selection cursor, not the text:
+             event if cursor_range.on_event(os, event, galley, id) => None,
+@@ -1052,10 +1072,12 @@
+                 ImeEvent::Enabled => {
+                     state.ime_enabled = true;
+                     state.ime_cursor_range = cursor_range;
++                    record_ime(ImeEventOutcome::Enabled);
+                     None
+                 }
+                 ImeEvent::Preedit(text_mark) => {
+                     if text_mark == "\n" || text_mark == "\r" {
++                        record_ime(ImeEventOutcome::PreeditIgnoredLineBreak);
+                         None
+                     } else {
+                         // Empty prediction can be produced when user press backspace
+@@ -1066,11 +1088,13 @@
+                             text.insert_text_at(&mut ccursor, text_mark, char_limit);
+                         }
+                         state.ime_cursor_range = cursor_range;
++                        record_ime(ImeEventOutcome::PreeditApplied);
+                         Some(CCursorRange::two(start_cursor, ccursor))
+                     }
+                 }
+                 ImeEvent::Commit(prediction) => {
+                     if prediction == "\n" || prediction == "\r" {
++                        record_ime(ImeEventOutcome::CommitIgnoredLineBreak);
+                         None
+                     } else {
+                         state.ime_enabled = false;
+@@ -1080,16 +1104,27 @@
+                                 == state.ime_cursor_range.secondary.ccursor.index
+                         {
+                             let mut ccursor = text.delete_selected(&cursor_range);
++                            let insertion_start = ccursor.index;
+                             text.insert_text_at(&mut ccursor, prediction, char_limit);
++                            record_ime(ImeEventOutcome::CommitAccepted {
++                                insertion_start,
++                                insertion_end: ccursor.index,
++                            });
+                             Some(CCursorRange::one(ccursor))
+                         } else {
+                             let ccursor = cursor_range.primary.ccursor;
++                            record_ime(if prediction.is_empty() {
++                                ImeEventOutcome::CommitEmpty
++                            } else {
++                                ImeEventOutcome::CommitRejectedAnchor
++                            });
+                             Some(CCursorRange::one(ccursor))
+                         }
+                     }
+                 }
+                 ImeEvent::Disabled => {
+                     state.ime_enabled = false;
++                    record_ime(ImeEventOutcome::Disabled);
+                     None
+                 }
+             },
+@@ -1123,10 +1158,10 @@
+ 
+ // ----------------------------------------------------------------------------
+ 
+-fn remove_ime_incompatible_events(events: &mut Vec<Event>) {
++fn remove_ime_incompatible_events(events: &mut Vec<(usize, Event)>) {
+     // Remove key events which cause problems while 'IME' is being used.
+     // See https://github.com/emilk/egui/pull/4509
+-    events.retain(|event| {
++    events.retain(|(_, event)| {
+         !matches!(
+             event,
+             Event::Key { repeat: true, .. }
+--- a/src/widgets/text_edit/mod.rs
++++ b/src/widgets/text_edit/mod.rs
+@@ -1,9 +1,13 @@
++// Cedar receipt prototype, 2026-10-15: observational additions to egui 0.31.1.
+ mod builder;
+ mod output;
+ mod state;
+ mod text_buffer;
+ 
+ pub use {
+-    crate::text_selection::TextCursorState, builder::TextEdit, output::TextEditOutput,
+-    state::TextEditState, text_buffer::TextBuffer,
++    crate::text_selection::TextCursorState,
++    builder::TextEdit,
++    output::{ImeEventOutcome, TextEditImeReceipt, TextEditOutput},
++    state::TextEditState,
++    text_buffer::TextBuffer,
+ };
+--- a/src/widgets/text_edit/output.rs
++++ b/src/widgets/text_edit/output.rs
+@@ -1,3 +1,4 @@
++// Cedar receipt prototype, 2026-10-15: observational additions to egui 0.31.1.
+ use std::sync::Arc;
+ 
+ use crate::text::CursorRange;
+@@ -19,6 +20,11 @@
+     /// The state we stored after the run.
+     pub state: super::TextEditState,
+ 
++    /// IME branches actually reached by this invocation, in native processing order.
++    /// Empty means no branch was observed, not that a Commit was rejected.
++    /// This is transient: it is never stored in `TextEditState` or replayed.
++    pub ime_receipts: Vec<TextEditImeReceipt>,
++
+     /// Where the text cursor is.
+     pub cursor_range: Option<CursorRange>,
+ }
+@@ -31,3 +37,42 @@
+ }
+ 
+ // TODO(emilk): add `output.paint` and `output.store` and split out that code from `TextEdit::show`.
++
++/// A transient observation of an actual native IME branch, without payload text.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct TextEditImeReceipt {
++    /// Index in this TextEdit's InputState.events snapshot, before filtering/sorting.
++    /// Other widgets may have removed events already; this is NOT a RawInput index.
++    pub input_event_index: usize,
++    /// Position in the actual filtered/sorted event loop, including non-IME events.
++    pub processing_order: usize,
++    /// The branch actually executed, not inferred from the final buffer or cursor.
++    pub outcome: ImeEventOutcome,
++}
++
++/// Observed native IME branch. Acceptance does not imply text changed or full insertion.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum ImeEventOutcome {
++    /// Native IME state enabled and its cursor saved.
++    Enabled,
++    /// Native Preedit replacement branch ran (possibly empty).
++    PreeditApplied,
++    /// Native Preedit ignored a standalone CR or LF.
++    PreeditIgnoredLineBreak,
++    /// The actual nonempty Commit insertion branch ran, even if truncated to zero.
++    CommitAccepted {
++        /// Character index after deletion, before the actual insertion.
++        insertion_start: usize,
++        /// Cursor character index after the actual insertion helper returned.
++        /// A custom TextBuffer may define its own cursor-update behavior.
++        insertion_end: usize,
++    },
++    /// Empty Commit collapsed selection but did not insert.
++    CommitEmpty,
++    /// Native Commit ignored a standalone CR or LF.
++    CommitIgnoredLineBreak,
++    /// Nonempty Commit failed the native secondary-anchor check.
++    CommitRejectedAnchor,
++    /// Native IME state disabled.
++    Disabled,
++}

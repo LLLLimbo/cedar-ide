@@ -15,6 +15,8 @@ import unittest
 from unittest import mock
 import zlib
 
+import vendored_egui
+
 import package_linux_agent_bundle as agent_bundle
 import package_linux_desktop_bundle as bundle
 
@@ -94,6 +96,55 @@ def custom_archive(entries, trailer=bytes(1024)):
 
 
 class LinuxDesktopBundleTests(unittest.TestCase):
+    @POSIX_ONLY
+    def test_vendored_egui_adds_only_two_pinned_licenses_to_existing_bundle_inventory(self):
+        root, binary_dir, _ = self.source_fixture()
+        with (root / 'Cargo.toml').open('a') as output:
+            output.write('[patch.crates-io]\negui = { path = "vendor/egui-0.31.1" }\n')
+        original = Path(__file__).resolve().parent.parent
+        paths = ['third-party-licenses/egui-0.31.1/' + name for name in vendored_egui.LICENSE_HASHES]
+        for name in paths:
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_bytes((original / name).read_bytes())
+        self.git(root, 'add', '.')
+        self.git(root, '-c', 'user.name=Bundle test', '-c', 'user.email=test@localhost',
+                 'commit', '-qm', 'Pinned local egui license fixture')
+        commit = self.git(root, 'rev-parse', 'HEAD').decode('ascii').strip()
+        output = self.base / 'vendor-bundle.tar.gz'
+        with mock.patch.object(bundle, 'require_build_host'):
+            bundle.build(root, binary_dir, output, commit, RUN_URL)
+        _, payload = bundle.verify_bytes(output.read_bytes(), commit, RUN_URL)
+        self.assertEqual(set(payload), set(self.payload) | set(paths) | {bundle.MANIFEST})
+        for name in paths:
+            self.assertEqual(payload[name], (original / name).read_bytes())
+        self.assertFalse(any(name.startswith('vendor/') for name in payload))
+
+    @POSIX_ONLY
+    def test_selected_vendor_rejects_missing_corrupt_license_before_writing_bundle(self):
+        root, binary_dir, _ = self.source_fixture()
+        with (root / 'Cargo.toml').open('a') as output:
+            output.write('[patch.crates-io]\negui = { path = "vendor/egui-0.31.1" }\n')
+        original = Path(__file__).resolve().parent.parent
+        paths = ['third-party-licenses/egui-0.31.1/' + name for name in vendored_egui.LICENSE_HASHES]
+        for index, name in enumerate(paths):
+            for corrupt in (False, True):
+                for path in paths:
+                    (root / path).parent.mkdir(parents=True, exist_ok=True)
+                    (root / path).write_bytes((original / path).read_bytes())
+                if corrupt:
+                    (root / name).write_bytes(b'unapproved replacement license')
+                else:
+                    (root / name).unlink()
+                self.git(root, 'add', '.')
+                self.git(root, '-c', 'user.name=Bundle test', '-c', 'user.email=test@localhost',
+                         'commit', '-qm', 'Incomplete local egui license fixture')
+                commit = self.git(root, 'rev-parse', 'HEAD').decode('ascii').strip()
+                output = self.base / f'rejected-{index}-{corrupt}.tar.gz'
+                with self.subTest(name=name, corrupt=corrupt), mock.patch.object(bundle, 'require_build_host'):
+                    with self.assertRaisesRegex(bundle.BundleError, 'missing or unapproved bundled license'):
+                        bundle.build(root, binary_dir, output, commit, RUN_URL)
+                self.assertFalse(output.exists())
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="cedar-linux-desktop-test-")
         self.addCleanup(self.temporary.cleanup)

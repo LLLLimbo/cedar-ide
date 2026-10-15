@@ -2242,3 +2242,678 @@ fn files_live_ime_focus_handoff_late_commit_with_backspace_stays_paused() {
         }
     }
 }
+
+// Same-field caret investigation. These tests drive the unchanged native
+// TextEdit through raw_input_hook and full App::update; no OS IME is exercised.
+#[derive(Clone, Copy, Debug)]
+enum ImeCaretEnding {
+    Unmoved,
+    SameValueAfterPrimary,
+    AcceptedThenInterior,
+    SameValue,
+    HoverAtPrimary,
+    AnchorClickSameBatch,
+    PrimaryClickSameBatch,
+    InteriorClickSameBatch,
+    InteriorClickNextBatch,
+    InteriorCommitBeforePointer,
+    ArrowThenCommit,
+    EndThenCommit,
+    EndSameBatchCommit,
+    CancelAfterInterior,
+    DisabledAfterInterior,
+}
+
+fn ime_caret_range(app: &CedarApp, origin: &str) -> (usize, usize) {
+    let id = recorded_response(app, origin).id;
+    let state = egui::TextEdit::load_state(&app.editor_ctx, id).expect("native TextEdit state");
+    let range = state.cursor.char_range().expect("native cursor range");
+    (range.primary.index, range.secondary.index)
+}
+
+fn ime_caret_events(pos: egui::Pos2) -> Vec<egui::Event> {
+    let mut events = vec![egui::Event::PointerMoved(pos)];
+    events.extend(pointer(pos, true));
+    events.extend(pointer(pos, false));
+    events
+}
+
+fn ime_caret_case(origin: &str, ending: ImeCaretEnding, discard: bool, recovery: Option<bool>) {
+    use ImeCaretEnding::*;
+    let (mut app, commands, mut ledger) = ime_focus_extra_start(origin, "preedit");
+    let departure = selection_signature(selection(&app));
+    let undo = undo_texts(&app);
+    let history = (
+        app.location_history.back.len(),
+        app.location_history.forward.len(),
+    );
+    let id = recorded_response(&app, origin).id;
+    let pre_cursor = ime_caret_range(&app, origin);
+    assert_eq!(pre_cursor, (7, 0), "fixture: native selected preedit");
+    let rect = recorded_response(&app, origin).rect;
+    let anchor = egui::pos2(rect.left() + 1.0, rect.center().y);
+    let primary = egui::pos2(rect.right() - 5.0, rect.center().y);
+    // A real pointer in the text interior. Read its resulting cursor below;
+    // this test never writes a cursor or private native IME state.
+    let interior = egui::pos2(rect.left() + 18.0, rect.center().y);
+    eprintln!(
+        "IME_CARET_CASE {}",
+        serde_json::json!({"origin": origin, "ending": format!("{ending:?}"), "discard": discard, "recovery_paste": recovery, "pre_cursor": pre_cursor, "rect": format!("{rect:?}"), "anchor": format!("{anchor:?}"), "primary": format!("{primary:?}"), "interior": format!("{interior:?}")})
+    );
+
+    let mut before_terminal = Vec::new();
+    if matches!(
+        ending,
+        InteriorClickNextBatch | CancelAfterInterior | DisabledAfterInterior
+    ) {
+        before_terminal = ime_caret_events(interior);
+    } else if matches!(ending, ArrowThenCommit) {
+        before_terminal = key(egui::Key::ArrowRight);
+    } else if matches!(ending, EndThenCommit) {
+        before_terminal = key(egui::Key::End);
+    }
+    if !before_terminal.is_empty() {
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "caret_before_terminal",
+            t,
+            before_terminal,
+            false,
+        );
+        assert_eq!(focused(&app), Some(id));
+        let moved = ime_caret_range(&app, origin);
+        if matches!(ending, ArrowThenCommit) {
+            assert_eq!(moved, pre_cursor, "native IME filters ArrowRight");
+        } else if matches!(ending, EndThenCommit) {
+            assert_eq!(moved, (7, 7), "native End really collapses to the end");
+        } else {
+            assert!(
+                moved.0 > 0 && moved.0 < 7 && moved.0 == moved.1,
+                "native interior pointer must move the caret: {moved:?}"
+            );
+        }
+        assert!(ledger.is_empty(), "caret-only action cannot search preedit");
+    }
+    let terminal = if matches!(ending, DisabledAfterInterior) {
+        vec![egui::Event::Ime(egui::ImeEvent::Disabled)]
+    } else if matches!(ending, CancelAfterInterior) {
+        vec![
+            egui::Event::Ime(egui::ImeEvent::Preedit(String::new())),
+            egui::Event::Ime(egui::ImeEvent::Disabled),
+        ]
+    } else {
+        vec![
+            egui::Event::Ime(egui::ImeEvent::Commit(
+                if matches!(ending, SameValue | SameValueAfterPrimary) {
+                    "preedit"
+                } else {
+                    "final"
+                }
+                .into(),
+            )),
+            egui::Event::Ime(egui::ImeEvent::Disabled),
+        ]
+    };
+    let mut events = match ending {
+        AnchorClickSameBatch => ime_caret_events(anchor),
+        PrimaryClickSameBatch | SameValueAfterPrimary => ime_caret_events(primary),
+        InteriorClickSameBatch => ime_caret_events(interior),
+        HoverAtPrimary => vec![egui::Event::PointerMoved(primary)],
+        EndSameBatchCommit => key(egui::Key::End),
+        _ => vec![],
+    };
+    events.extend(terminal);
+    if matches!(ending, InteriorCommitBeforePointer) {
+        events.extend(ime_caret_events(interior));
+    }
+    let terminal_time = now(&app) + 0.001;
+    let passes = ime_focus_frame(
+        &mut app,
+        &commands,
+        &mut ledger,
+        "caret_terminal_first_visible",
+        terminal_time,
+        events,
+        discard,
+    );
+    if matches!(ending, AcceptedThenInterior) {
+        let original_deadline =
+            app.browse.ime_focus_observation()["settlement"]["deadline"].clone();
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "caret_after_accepted_commit",
+            terminal_time + 0.1,
+            ime_caret_events(interior),
+            false,
+        );
+        assert_eq!(focused(&app), Some(id));
+        let moved = ime_caret_range(&app, origin);
+        assert!(
+            moved.0 > 0 && moved.0 < 5 && moved.0 == moved.1,
+            "real same-field movement after acceptance: {moved:?}"
+        );
+        assert_eq!(
+            app.browse.ime_focus_observation()["settlement"]["deadline"],
+            original_deadline,
+            "later caret movement must retain accepted deadline"
+        );
+        assert!(ledger.is_empty());
+    }
+    let first = &passes[0];
+    let field = if origin == "browse_query" {
+        "query"
+    } else {
+        "scope"
+    };
+    let response = if origin == "browse_query" {
+        "query_response"
+    } else {
+        "scope_response"
+    };
+    assert_eq!(first["focus"], format!("Some({id:?})"));
+    for pass in &passes {
+        assert_eq!(pass[response]["has_focus"], true);
+        assert_eq!(pass[response]["gained_focus"], false);
+        assert_eq!(pass[response]["lost_focus"], false);
+    }
+    let first_cursor = first[response]["cursor_indices"]
+        .as_array()
+        .expect("first pass numeric native cursor");
+    assert_eq!(first_cursor.len(), 2);
+    assert_eq!(
+        first_cursor[0], first_cursor[1],
+        "terminal collapses native selection"
+    );
+    if matches!(
+        ending,
+        PrimaryClickSameBatch | SameValueAfterPrimary | EndThenCommit | SameValue
+    ) {
+        assert_eq!(
+            first_cursor,
+            &vec![serde_json::json!(7), serde_json::json!(7)]
+        );
+    } else if matches!(
+        ending,
+        InteriorClickSameBatch
+            | InteriorClickNextBatch
+            | InteriorCommitBeforePointer
+            | CancelAfterInterior
+            | DisabledAfterInterior
+    ) {
+        assert!(first_cursor[0].as_u64().is_some_and(|i| i > 0 && i < 7));
+    } else {
+        assert_eq!(
+            first_cursor,
+            &vec![serde_json::json!(5), serde_json::json!(5)]
+        );
+    }
+    if discard {
+        assert_eq!(passes.len(), 2, "real requested extra pass");
+        assert_eq!(
+            passes[1][response]["cursor_indices"],
+            first[response]["cursor_indices"]
+        );
+    }
+    let rejected = matches!(
+        ending,
+        PrimaryClickSameBatch
+            | SameValueAfterPrimary
+            | InteriorClickSameBatch
+            | InteriorClickNextBatch
+            | InteriorCommitBeforePointer
+            | EndThenCommit
+    );
+    let cancelled = matches!(ending, CancelAfterInterior | DisabledAfterInterior);
+    let should_search = !rejected && !cancelled;
+    let expected_text =
+        if rejected || cancelled || matches!(ending, SameValue | SameValueAfterPrimary) {
+            "preedit"
+        } else if matches!(ending, AnchorClickSameBatch) {
+            "finalpreedit"
+        } else {
+            "final"
+        };
+    assert_eq!(first[field], expected_text, "first visible native outcome");
+    let final_query = app.browse.query().to_owned();
+    let final_scope = app.browse.scope().to_owned();
+    assert_eq!(
+        if origin == "browse_query" {
+            final_query.as_str()
+        } else {
+            final_scope.as_str()
+        },
+        expected_text
+    );
+    assert_eq!(
+        if origin == "browse_query" {
+            final_scope.as_str()
+        } else {
+            final_query.as_str()
+        },
+        if origin == "browse_query" {
+            "src"
+        } else {
+            "stable"
+        }
+    );
+    if rejected {
+        assert_eq!(
+            first[response]["changed"], true,
+            "egui reports changed even when the distinct Commit is rejected"
+        );
+        let cursor = ime_caret_range(&app, origin);
+        assert!(
+            cursor.0 > 0 && cursor.0 == cursor.1,
+            "rejection's real collapsed cursor: {cursor:?}"
+        );
+    }
+    if matches!(ending, SameValue | SameValueAfterPrimary) {
+        assert_eq!(
+            ime_caret_range(&app, origin),
+            (7, 7),
+            "accepted same-value commit collapses selection"
+        );
+    }
+    let mut failures = Vec::new();
+    if !ledger.is_empty() {
+        failures.push("command before full interval".to_owned());
+    }
+    ime_focus_frame(
+        &mut app,
+        &commands,
+        &mut ledger,
+        "caret_terminal_249ms",
+        terminal_time + 0.249,
+        vec![],
+        false,
+    );
+    if !ledger.is_empty() {
+        failures.push("command before 250ms".to_owned());
+    }
+    ime_focus_frame(
+        &mut app,
+        &commands,
+        &mut ledger,
+        "caret_terminal_250ms",
+        terminal_time + 0.250,
+        vec![],
+        false,
+    );
+    if ledger.len() != usize::from(should_search) {
+        failures.push(format!(
+            "automatic commands={}, expected={}",
+            ledger.len(),
+            usize::from(should_search)
+        ));
+    }
+    let at_deadline = ledger.len();
+    ime_focus_frame(
+        &mut app,
+        &commands,
+        &mut ledger,
+        "caret_terminal_idle",
+        terminal_time + 2.0,
+        vec![],
+        false,
+    );
+    if ledger.len() != at_deadline {
+        failures.push("extra idle command".to_owned());
+    }
+    for command in &ledger {
+        if !matches!(&command.op, Operation::FindFiles { query, scope, limit } if should_search && query == &final_query && scope == &final_scope && *limit == cedar_protocol::DEFAULT_FILE_DISCOVERY_RESULTS)
+        {
+            failures.push(format!(
+                "unauthorized operation id={} op={:?}",
+                command.id, command.op
+            ));
+        }
+    }
+    assert_eq!(
+        (app.browse.query(), app.browse.scope()),
+        (final_query.as_str(), final_scope.as_str())
+    );
+    assert_eq!(focused(&app), Some(id));
+    assert!(app.browse.paths().is_empty() && !app.browse.preview_visible());
+    assert_eq!(app.documents.len(), 1);
+    assert_eq!(
+        history,
+        (
+            app.location_history.back.len(),
+            app.location_history.forward.len()
+        )
+    );
+    assert_draft(&app, departure, &undo);
+    eprintln!(
+        "IME_CARET_RESULT {}",
+        serde_json::json!({"origin": origin, "ending": format!("{ending:?}"), "discard": discard, "recovery_paste": recovery, "native_rejected": rejected, "cancelled": cancelled, "expected_search": should_search, "query": final_query, "scope": final_scope, "cursor": ime_caret_range(&app, origin), "terminal_first_pass": first, "automatic_count": ledger.len(), "failures": failures})
+    );
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+    if let Some(paste) = recovery {
+        assert!(cancelled && ledger.is_empty());
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "caret_recovery_select",
+            t,
+            modified_key(egui::Key::A, command_modifiers()),
+            false,
+        );
+        assert!(ledger.is_empty());
+        let t = now(&app) + 0.001;
+        ime_focus_frame(
+            &mut app,
+            &commands,
+            &mut ledger,
+            "caret_recovery_fresh",
+            t,
+            vec![if paste {
+                egui::Event::Paste("fresh".into())
+            } else {
+                egui::Event::Text("fresh".into())
+            }],
+            false,
+        );
+        let query = app.browse.query().to_owned();
+        let scope = app.browse.scope().to_owned();
+        assert_eq!(
+            if origin == "browse_query" {
+                &query
+            } else {
+                &scope
+            },
+            "fresh"
+        );
+        ime_focus_extra_expect_one(&mut app, &commands, &mut ledger, t, &query, &scope);
+        assert_draft(&app, departure, &undo);
+        eprintln!(
+            "IME_CARET_RECOVERY {}",
+            serde_json::json!({"origin": origin, "ending": format!("{ending:?}"), "paste": paste, "query": query, "scope": scope, "count": ledger.len()})
+        );
+    }
+}
+
+macro_rules! ime_caret_test {
+    ($name:ident, $origin:literal, $ending:ident) => {
+        #[test]
+        fn $name() {
+            ime_caret_case($origin, ImeCaretEnding::$ending, false, None);
+        }
+    };
+}
+
+ime_caret_test!(files_live_ime_caret_query_unmoved, "browse_query", Unmoved);
+
+ime_caret_test!(
+    files_live_ime_caret_query_same_value,
+    "browse_query",
+    SameValue
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_hover_at_primary,
+    "browse_query",
+    HoverAtPrimary
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_anchor_click_same_batch,
+    "browse_query",
+    AnchorClickSameBatch
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_primary_click_same_batch,
+    "browse_query",
+    PrimaryClickSameBatch
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_interior_click_same_batch,
+    "browse_query",
+    InteriorClickSameBatch
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_interior_click_next_batch,
+    "browse_query",
+    InteriorClickNextBatch
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_interior_commit_before_pointer,
+    "browse_query",
+    InteriorCommitBeforePointer
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_arrow_then_commit,
+    "browse_query",
+    ArrowThenCommit
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_end_then_commit,
+    "browse_query",
+    EndThenCommit
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_end_same_batch_commit,
+    "browse_query",
+    EndSameBatchCommit
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_cancel_after_interior,
+    "browse_query",
+    CancelAfterInterior
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_disabled_after_interior,
+    "browse_query",
+    DisabledAfterInterior
+);
+
+#[test]
+fn files_live_ime_caret_query_interior_requested_discard() {
+    ime_caret_case(
+        "browse_query",
+        ImeCaretEnding::InteriorClickSameBatch,
+        true,
+        None,
+    );
+}
+
+#[test]
+fn files_live_ime_caret_query_cancel_after_interior_fresh_text() {
+    ime_caret_case(
+        "browse_query",
+        ImeCaretEnding::CancelAfterInterior,
+        false,
+        Some(false),
+    );
+}
+
+#[test]
+fn files_live_ime_caret_query_cancel_after_interior_fresh_paste() {
+    ime_caret_case(
+        "browse_query",
+        ImeCaretEnding::CancelAfterInterior,
+        false,
+        Some(true),
+    );
+}
+
+#[test]
+fn files_live_ime_caret_query_disabled_after_interior_fresh_text() {
+    ime_caret_case(
+        "browse_query",
+        ImeCaretEnding::DisabledAfterInterior,
+        false,
+        Some(false),
+    );
+}
+
+#[test]
+fn files_live_ime_caret_query_disabled_after_interior_fresh_paste() {
+    ime_caret_case(
+        "browse_query",
+        ImeCaretEnding::DisabledAfterInterior,
+        false,
+        Some(true),
+    );
+}
+
+ime_caret_test!(files_live_ime_caret_scope_unmoved, "browse_scope", Unmoved);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_same_value,
+    "browse_scope",
+    SameValue
+);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_hover_at_primary,
+    "browse_scope",
+    HoverAtPrimary
+);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_anchor_click_same_batch,
+    "browse_scope",
+    AnchorClickSameBatch
+);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_primary_click_same_batch,
+    "browse_scope",
+    PrimaryClickSameBatch
+);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_interior_click_same_batch,
+    "browse_scope",
+    InteriorClickSameBatch
+);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_interior_click_next_batch,
+    "browse_scope",
+    InteriorClickNextBatch
+);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_interior_commit_before_pointer,
+    "browse_scope",
+    InteriorCommitBeforePointer
+);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_arrow_then_commit,
+    "browse_scope",
+    ArrowThenCommit
+);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_end_then_commit,
+    "browse_scope",
+    EndThenCommit
+);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_end_same_batch_commit,
+    "browse_scope",
+    EndSameBatchCommit
+);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_cancel_after_interior,
+    "browse_scope",
+    CancelAfterInterior
+);
+
+ime_caret_test!(
+    files_live_ime_caret_scope_disabled_after_interior,
+    "browse_scope",
+    DisabledAfterInterior
+);
+
+#[test]
+fn files_live_ime_caret_scope_interior_requested_discard() {
+    ime_caret_case(
+        "browse_scope",
+        ImeCaretEnding::InteriorClickSameBatch,
+        true,
+        None,
+    );
+}
+
+#[test]
+fn files_live_ime_caret_scope_cancel_after_interior_fresh_text() {
+    ime_caret_case(
+        "browse_scope",
+        ImeCaretEnding::CancelAfterInterior,
+        false,
+        Some(false),
+    );
+}
+
+#[test]
+fn files_live_ime_caret_scope_cancel_after_interior_fresh_paste() {
+    ime_caret_case(
+        "browse_scope",
+        ImeCaretEnding::CancelAfterInterior,
+        false,
+        Some(true),
+    );
+}
+
+#[test]
+fn files_live_ime_caret_scope_disabled_after_interior_fresh_text() {
+    ime_caret_case(
+        "browse_scope",
+        ImeCaretEnding::DisabledAfterInterior,
+        false,
+        Some(false),
+    );
+}
+
+#[test]
+fn files_live_ime_caret_scope_disabled_after_interior_fresh_paste() {
+    ime_caret_case(
+        "browse_scope",
+        ImeCaretEnding::DisabledAfterInterior,
+        false,
+        Some(true),
+    );
+}
+
+ime_caret_test!(
+    files_live_ime_caret_query_accepted_then_interior,
+    "browse_query",
+    AcceptedThenInterior
+);
+ime_caret_test!(
+    files_live_ime_caret_scope_accepted_then_interior,
+    "browse_scope",
+    AcceptedThenInterior
+);
+
+ime_caret_test!(
+    files_live_ime_caret_query_same_value_after_primary,
+    "browse_query",
+    SameValueAfterPrimary
+);
+ime_caret_test!(
+    files_live_ime_caret_scope_same_value_after_primary,
+    "browse_scope",
+    SameValueAfterPrimary
+);

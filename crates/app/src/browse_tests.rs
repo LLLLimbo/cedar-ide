@@ -4413,6 +4413,9 @@ fn browse_retained_preview_serial_exhaustion_refuses_new_intent_and_drains_old_f
 #[path = "files_live_tests.rs"]
 mod files_live;
 
+#[path = "files_ime_acceptance_tests.rs"]
+mod files_ime_acceptance;
+
 const NORMAL_TARGET: &str = "untouched/deep/Needle.rs";
 const NORMAL_TARGET_TEXT: &str = "first\nneedle target\nlast\n";
 const NORMAL_ACTIVE: std::time::Duration = std::time::Duration::from_secs(240);

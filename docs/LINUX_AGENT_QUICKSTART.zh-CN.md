@@ -2,9 +2,11 @@
 
 这是 Cedar 的无界面 `cedar-agent`，供已有 SSH 工作区使用。它不是完整桌面 IDE、安装器、系统服务或通用 Linux 静态二进制。包未签名；哈希可核对文件完整性，不等于发布者签名，也不证明可复现构建。
 
-## 0.75 Files 输入法转焦修复候选
+## 0.76 Files 输入法接纳修复候选
 
-前端保留查询或 Directory 原控件的输入法 composition 所有权；转焦后的旧终结事件不会把未确认的可见预编辑文字自动搜索。先合法提交、后转焦仍保留 250 毫秒间隔；明确的新编辑或干净的 Find 可恢复暂停。完整离线边界见同目录 [Files 输入法转焦合同](FIND_AND_RETURN.md#files-ime-focus-handoff-075-candidate)。真实 OS 输入法与 Windows/macOS GUI 未因此获得实测结论。
+Files 查询和 Directory 现在结合同一次原生 TextEdit 实际执行的 IME 分支与既有所有权、批次、epoch、焦点和暂停屏障判断提交；同字段移动 caret 后被原生拒绝的 Commit 不再凭原始通知或可见字节自动搜索。保留 0.75 的合法直接提交、独立 Text/Paste、实际改字节的 Undo 和固定 250 毫秒间隔。拒绝或取消后保留原生可见文字，新的有效编辑、新 composition 或干净的 Find 可恢复。完整离线边界见同目录 [Files 原生 IME 接纳合同](FIND_AND_RETURN.md#files-native-ime-acceptance-076-candidate)。
+
+egui 保持 0.31.1，带有只观察分支的窄补丁；包保留原有内容边界并附两份完整上游许可证，见包内 THIRD_PARTY_NOTICES.md 的 Vendored egui 0.31.1 节。开发 focused 证据不等于最终 0.76.0 全量、精确公开源码 CI 或包验收；本地五个 canonical 驱动未运行。真实 OS 输入法和本次原生 GUI 未实测，Windows/macOS GUI 结论不扩展。
 
 这是前端行为修复，agent 和协议合同未改；本 agent-only 包不含前端，也不新增 SSH 验收结论。
 

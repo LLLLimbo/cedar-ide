@@ -1,6 +1,37 @@
-# Verification checkpoint — 0.75.0 Files IME focus-handoff fix candidate
+# Verification checkpoint — 0.76.0 Files native IME acceptance fix candidate
 
-## Current 0.75.0 Files IME focus-handoff fix candidate
+## Current 0.76.0 Files native IME acceptance fix candidate
+
+The [phase 76 report](TEST_REPORT_PHASE76_IME_ACCEPTANCE.md) records an actual
+per-invocation native TextEdit branch observation, added to the existing Files
+owner, lifecycle, batch, epoch, focus and cancellation gates. Same-field caret
+movement can leave focus stable while native Commit is rejected; raw Commit,
+changed bytes and cursor equality alone are no longer acceptance evidence.
+The same-version vendored egui 0.31.1 patch observes branches without changing
+native event order, acceptance, text/cursor mutation or Undo behavior.
+
+The separate sealed development candidate still reports version 0.75.0. Its
+unchanged original 40-case investigation matrix, 18 new product tests and
+23 native supplemental tests passed twice. One bridge-parity test, 48 retained
+Files tests and the retained input suite (212 pass / one existing ignored, with
+24 overlapping Files tests) bring the union to **318 distinct passing Rust tests
+and one existing ignored test**. Python integration recorded **153 passed and
+one existing host-dependent skip**. Formatting, strict app all-targets/all-features
+Clippy, actual source-export smoke and independent review passed. These are
+focused development results, not final-version full-workspace or platform results.
+Original red evidence, corrected new-fixture mistakes and the excluded stale-build
+control remain recorded separately; no original oracle was relaxed.
+
+This source report is a pre-seal snapshot. Final 0.76.0 full Rust/Python,
+strict workspace Clippy, all-features release, last default shipping release,
+exact executable pins and post-seal source/export checks require external
+source-bound receipts. **The five original canonical drivers are NOT RUN locally.**
+Their pending acceptance must come from original official CI on the exact public
+source, not a substituted runner or focused process test. Public CI and all three
+package audits remain separate pending gates. Real OS IME and a new native GUI
+journey remain untested; synthetic egui events do not prove either.
+
+## Prior 0.75.0 Files IME focus-handoff fix candidate
 
 The [phase 75 report](TEST_REPORT_PHASE75_IME_FOCUS_HANDOFF.md) records a Files-only
 composition-owner and bounded handoff-cancellation fix. The unchanged original

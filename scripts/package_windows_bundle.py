@@ -22,6 +22,8 @@ import tomllib
 import zipfile
 import zlib
 
+import vendored_egui
+
 
 REPOSITORY = "https://github.com/LLLLimbo/cedar-ide"
 TARGET = "x86_64-pc-windows-msvc"
@@ -156,6 +158,13 @@ def is_notice(name):
     return parts[2] in NOTICE_NAMES or (
         parts[1].startswith("epaint_default_fonts-")
         and parts[2] in FONT_NOTICE_NAMES)
+
+
+def validate_vendored_egui_licenses(cargo, payload):
+    try:
+        vendored_egui.validate_package_licenses(cargo, payload)
+    except ValueError as error:
+        raise BundleError(str(error)) from error
 
 
 def allowed_payload(name):
@@ -556,6 +565,7 @@ def build(root, binary_dir, output, source_commit, ci_run_url):
     for relative, object_id in sorted(sources.items()):
         if relative != "Cargo.toml":
             payload[SOURCE_FILES.get(relative, relative)] = source_bytes(root, relative, object_id)
+    validate_vendored_egui_licenses(cargo, payload)
     for name in BINARIES:
         content = read_regular(Path(binary_dir) / name, MAX_BINARY_BYTES)
         validate_pe(content, name)

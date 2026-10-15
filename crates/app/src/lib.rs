@@ -52,6 +52,8 @@ mod git_ui;
 mod idle_disconnect_process_tests;
 #[cfg(test)]
 mod idle_transport_tests;
+#[cfg(test)]
+mod ime_receipt_tests;
 mod interrupted_save;
 #[cfg(test)]
 mod interrupted_save_process_tests;

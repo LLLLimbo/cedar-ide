@@ -1,6 +1,6 @@
 # Third-party dependencies
 
-Generated from the exact Cargo.lock dependency graph. Includes target-specific and optional packages; not all are linked on every platform. Each dependency retains its upstream license. Font notices from epaint_default_fonts are included. No third-party source code, server distribution, or JDK is vendored here.
+Generated from the exact Cargo.lock dependency graph. Includes target-specific and optional packages; not all are linked on every platform. Each dependency retains its upstream license. Font notices from epaint_default_fonts are included. The source tree vendors the pinned egui 0.31.1 crate described below; no language-server distribution or JDK is vendored.
 
 | Package | Version | License expression | Repository |
 |---|---|---|---|
@@ -347,6 +347,20 @@ Generated from the exact Cargo.lock dependency graph. Includes target-specific a
 | zmij | 1.0.23 | MIT | https://github.com/dtolnay/zmij |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg |
+
+## Vendored egui 0.31.1
+
+The source tree vendors the complete official egui 0.31.1 crate with a narrow
+Cedar IME branch-receipt observation patch, under MIT OR Apache-2.0. This is the
+same egui dependency listed above, not a second package or a version upgrade.
+Upstream tag: 0.31.1; archive VCS commit: 1669e52a7ccfc3489c1b0999b9ed48894a0b3887.
+Archive SHA-256: 25dd34cec49ab55d85ebf70139cb1ccd29c977ef6b6ba4fe85489d6877ee9ef3.
+The source export retains all 92 archive members, the exact three-file patch,
+upstream member hashes, modification notice and official license provenance in
+`vendor/egui-0.31.1/`. The two unmodified upstream license texts are also included
+once under `third-party-licenses/egui-0.31.1/` in the existing bundle inventory.
+No language-server distribution or JDK is vendored.
+
 
 ## Apache Maven Surefire report fixture
 
