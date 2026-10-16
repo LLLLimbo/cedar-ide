@@ -2333,6 +2333,11 @@ impl CedarApp {
                     ctx.data_mut(|data| data.insert_temp(HeaderMenus::key(), header));
                     tools.on_hover_text("File Structure, Git, commands, language and test results");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let types = self.java_type_entry(ui);
+                        #[cfg(test)]
+                        workspace_access_tests::record(ui, "java_type_entry", &types);
+                        #[cfg(not(test))]
+                        let _ = types;
                         let text = ui
                             .add_enabled(
                                 self.workspace_key.is_some(),

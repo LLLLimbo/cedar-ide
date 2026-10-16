@@ -2,10 +2,11 @@
 //! Pointer / native Tab activation uses the rendered responses, never injected focus.
 use super::*;
 
-const ESSENTIAL: [&str; 5] = [
+const ESSENTIAL: [&str; 6] = [
     "workspace_menu",
     "browse_entry",
     "project_text_entry",
+    "java_type_entry",
     "find_results_entry",
     "tools_menu",
 ];

@@ -1,6 +1,11 @@
 # Find Java type
 
-The Language panel can explicitly search the index of an already running, trusted
+Use **Find Java type** in the common header, beside Files and Project Text, to open
+the existing Language-panel type search and focus its query. The entry stays
+visible when unavailable; hover it for the connection, trust, session or provider
+reason. The Language panel retains the same entry and availability checks.
+
+Type search explicitly queries the index of an already running, trusted
 Java language session. Enter a type name or qualified-name pattern and press Search
 (or Enter in the query field). The agent must advertise `language_workspace_symbols`
 and the server must advertise `workspaceSymbolProvider`.
@@ -10,6 +15,10 @@ source types, including nested types, with its own pattern/camel-case matching.
 Cedar does not start a server, save files, scan directories or issue repeated searches
 when the query changes. Search results are an **unversioned index snapshot** and
 can lag unsaved editor changes. An empty result does not prove that no such type exists.
+Opening or reopening the view sends no search or startup request, retains the query
+text and preserves editor drafts and Undo. Dismiss or Escape uses the existing
+Language-panel dismissal behavior. Java types still use their existing result view;
+they are not combined with Files or Project Text rows in the shared Find window.
 
 Queries are nonempty, at most 256 UTF-8 bytes and contain no control characters.
 Responses are bounded to 256 complete locations with per-field and total text

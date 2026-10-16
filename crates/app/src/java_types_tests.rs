@@ -568,10 +568,36 @@ fn label(output: &egui::FullOutput, wanted: &str) -> Option<egui::Pos2> {
         .iter()
         .find_map(|shape| find(&shape.shape, wanted))
 }
+
+fn language_entry_center(app: &CedarApp, output: &egui::FullOutput) -> egui::Pos2 {
+    let rect = crate::workspace_access_tests::recorded_rect(app, "java_type_language_entry");
+    let clip = crate::workspace_access_tests::recorded_clip(app, "java_type_language_entry");
+    let visible = rect.intersect(clip);
+    output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::epaint::Shape::Text(text)
+                if text.galley.job.text == "Find Java type"
+                    && visible.contains(text.visual_bounding_rect().center()) =>
+            {
+                Some(text.visual_bounding_rect().center())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("Lower type entry is not painted at {rect:?} / {clip:?}"))
+}
+
 fn click(app: &mut CedarApp, time: f64, wanted: &str) {
     frame(app, time, vec![]);
     let output = frame(app, time + 0.01, vec![]);
-    let at = label(&output, wanted).unwrap_or_else(|| panic!("Missing label: {wanted}"));
+    let at = if wanted == "Find Java type" {
+        // Keep the original Language-panel tests on their original control,
+        // independently of the identically labelled common header entry.
+        language_entry_center(app, &output)
+    } else {
+        label(&output, wanted).unwrap_or_else(|| panic!("Missing label: {wanted}"))
+    };
     for (offset, pressed) in [true, false].into_iter().enumerate() {
         frame(
             app,
@@ -592,7 +618,7 @@ fn click(app: &mut CedarApp, time: f64, wanted: &str) {
 fn hover_type_control(app: &mut CedarApp) -> (egui::FullOutput, egui::FullOutput) {
     frame(app, 0.0, vec![]);
     let output = frame(app, 0.01, vec![]);
-    let at = label(&output, "Find Java type").expect("Java type control is visible");
+    let at = language_entry_center(app, &output);
     let delay = f64::from(app.editor_ctx.style().interaction.tooltip_delay);
     assert!(delay > 0.0);
     frame(app, 0.1, vec![egui::Event::PointerMoved(at)]);
@@ -754,6 +780,263 @@ fn actual_frames_result_click_dispatches_only_the_confined_uri_resolver() {
     assert!(matches!(&command.op, Operation::LanguageResolveUri { uri } if uri == URI));
     assert!(commands.try_recv().is_err());
     assert!(app.documents.is_empty());
+}
+
+// The common header is exercised through the complete production raw-input
+// hook and update, with pointer coordinates from its actual rendered response.
+fn entry_frame(app: &mut CedarApp, events: Vec<egui::Event>) -> egui::FullOutput {
+    let ctx = app.editor_ctx.clone();
+    let mut input = egui::RawInput {
+        time: Some(ctx.input(|input| input.time) + 0.1),
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1320.0, 880.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let mut native = eframe::Frame::_new_kittest();
+    ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native))
+}
+
+fn entry_click(app: &mut CedarApp) {
+    for _ in 0..3 {
+        entry_frame(app, vec![]);
+    }
+    let response = crate::workspace_access_tests::recorded_response(app, "java_type_entry");
+    let clip = crate::workspace_access_tests::recorded_clip(app, "java_type_entry");
+    assert!(clip.contains_rect(response.rect));
+    let at = response.rect.center();
+    entry_frame(app, vec![egui::Event::PointerMoved(at)]);
+    for pressed in [true, false] {
+        entry_frame(
+            app,
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+    }
+}
+
+fn closed_type_app() -> (CedarApp, Receiver<Command>) {
+    let (mut app, commands) = type_app();
+    app.tools_open = false;
+    app.tool = crate::Tool::Search;
+    app.language.view = View::Problems;
+    (app, commands)
+}
+
+#[test]
+fn common_java_type_entry_is_visible_disabled_and_explained_for_every_service_gate() {
+    for gate in 0..9 {
+        let (mut app, commands) = closed_type_app();
+        match gate {
+            0 => app.state = crate::ConnectionState::Disconnected,
+            1 => app.language.running = false,
+            2 => app.active_form.as_mut().unwrap().allow_run = false,
+            3 => app.language.mode = ServerMode::Generic,
+            4 => app.language.diagnostics_exited = true,
+            5 => app.language.capabilities = json!({"workspaceSymbolProvider":false}),
+            6 => app.language.capabilities = json!({"workspaceSymbolProvider":"true"}),
+            7 => app
+                .agent_info
+                .as_mut()
+                .unwrap()
+                .capabilities
+                .retain(|name| name != "language_workspace_symbols"),
+            8 => app.close_after_language_stop = true,
+            _ => unreachable!(),
+        }
+        let reason = app.java_types_problem().unwrap();
+        let unhovered = entry_frame(&mut app, vec![]);
+        assert!(label(&unhovered, "Find Java type").is_some());
+        let response = crate::workspace_access_tests::recorded_response(&app, "java_type_entry");
+        assert!(!response.enabled(), "gate {gate}");
+        assert!(label(&unhovered, &reason).is_none());
+        entry_frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(response.rect.center())],
+        );
+        let delay = f64::from(app.editor_ctx.style().interaction.tooltip_delay);
+        for _ in 0..((delay / 0.1).ceil() as usize + 12) {
+            entry_frame(&mut app, vec![]);
+        }
+        let hovered = entry_frame(&mut app, vec![]);
+        assert!(label(&hovered, &reason).is_some(), "reason for gate {gate}");
+        entry_click(&mut app);
+        assert!(!app.tools_open);
+        assert!(app.tool == crate::Tool::Search);
+        assert!(app.language.view == View::Problems);
+        assert!(app.language.types.pending.is_none());
+        assert!(commands.try_recv().is_err(), "gate {gate} dispatched work");
+    }
+}
+
+#[test]
+fn common_java_type_entry_focuses_query_and_reopens_without_search_or_draft_mutation() {
+    let (mut app, commands) = closed_type_app();
+    let draft = "class Target { int draft; }\n";
+    let mut doc = Document::new(1, "Target.java".into(), SOURCE.into(), "r".into());
+    crate::editor_state::commit(&app.editor_ctx, &mut doc, draft.into(), 8);
+    app.documents.push(doc);
+    app.active_document = Some(1);
+    entry_frame(&mut app, vec![]);
+    let selection = egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 1_u64)))
+        .unwrap()
+        .cursor
+        .char_range();
+    let version = app.documents[0].edit_version;
+    for _ in 0..2 {
+        entry_click(&mut app);
+        assert!(app.tools_open && app.tool == crate::Tool::Language);
+        assert!(app.language.view == View::JavaTypes);
+        assert!(app
+            .editor_ctx
+            .memory(|memory| memory.has_focus(egui::Id::new(QUERY_INPUT))));
+        assert_eq!(app.language.types.query, "Target");
+        assert!(app.language.types.pending.is_none());
+        assert!(commands.try_recv().is_err());
+        entry_frame(&mut app, key(egui::Key::Escape, egui::Modifiers::NONE));
+        assert!(app.language.view == View::Problems);
+    }
+    entry_click(&mut app);
+    // Typing is the very next raw frame, without another query-focus click.
+    entry_frame(&mut app, vec![egui::Event::Text("X".into())]);
+    assert!(app.language.types.query.contains('X'));
+    assert!(commands.try_recv().is_err());
+    assert_eq!(app.documents[0].text, draft);
+    assert_eq!(app.documents[0].saved_text, SOURCE);
+    assert_eq!(app.documents[0].edit_version, version);
+    assert_eq!(app.active_document, Some(1));
+    assert_eq!(
+        egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 1_u64)))
+            .unwrap()
+            .cursor
+            .char_range(),
+        selection
+    );
+    assert!(!app.language.automatic);
+    assert!(app.language.sync.opened.is_empty());
+    entry_frame(&mut app, key(egui::Key::Enter, egui::Modifiers::NONE));
+    assert!(matches!(commands.try_recv().unwrap().op,
+        Operation::LanguageWorkspaceSymbols { query } if query == app.language.types.query));
+    assert!(commands.try_recv().is_err());
+
+    let state =
+        egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 1_u64))).unwrap();
+    let mut history = state.undoer();
+    let current = (state.cursor.char_range().unwrap(), draft.to_owned());
+    let previous = history.undo(&current).unwrap().clone();
+    assert_eq!(previous.1, SOURCE);
+    assert_eq!(history.redo(&previous).unwrap().1, draft);
+}
+
+#[test]
+fn common_java_type_reopen_retires_hidden_pending_queries_before_they_can_revive() {
+    for hidden in 0..3 {
+        for fail in [false, true] {
+            let (mut app, commands) = type_app();
+            app.request_java_types();
+            let command = commands.try_recv().unwrap();
+            match hidden {
+                0 => app.tools_open = false,
+                1 => app.tool = crate::Tool::Search,
+                2 => app.language.view = View::Problems,
+                _ => unreachable!(),
+            }
+            // No idle invalidation frame between hiding and reopening.
+            app.show_java_types(&app.editor_ctx.clone());
+            assert!(app.language.types.pending.is_none());
+            reply(
+                &mut app,
+                &command,
+                if fail {
+                    Err("obsolete type search failure".into())
+                } else {
+                    Ok(Payload::Language { value: symbols() })
+                },
+            );
+            assert!(app.language.types.snapshot.is_none());
+            assert!(app.language.types.error.is_none());
+            assert!(app.error.is_none());
+            assert_eq!(app.language.types.query, "Target");
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn common_java_type_entry_preserves_a_current_snapshot_without_repeating_search() {
+    let (mut app, commands) = type_app();
+    search(&mut app, &commands, symbols());
+    let sequence = app.language.types.sequence;
+    entry_click(&mut app);
+    assert_eq!(app.language.types.sequence, sequence);
+    assert_eq!(app.language.types.snapshot.as_ref().unwrap().rows.len(), 1);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn common_java_type_keyboard_entry_does_not_submit_its_activation_key() {
+    for activation in [egui::Key::Enter, egui::Key::Space] {
+        let (mut app, commands) = closed_type_app();
+        entry_frame(&mut app, vec![]);
+        let id = crate::workspace_access_tests::recorded_response(&app, "java_type_entry").id;
+        for _ in 0..80 {
+            if app.editor_ctx.memory(|memory| memory.has_focus(id)) {
+                break;
+            }
+            entry_frame(&mut app, key(egui::Key::Tab, egui::Modifiers::NONE));
+        }
+        assert!(app.editor_ctx.memory(|memory| memory.has_focus(id)));
+        let mut events = key(activation, egui::Modifiers::NONE);
+        if activation == egui::Key::Space {
+            events.insert(1, egui::Event::Text(" ".into()));
+        }
+        entry_frame(&mut app, events);
+        assert!(app.tools_open && app.tool == crate::Tool::Language);
+        assert!(app.language.view == View::JavaTypes);
+        assert!(
+            commands.try_recv().is_err(),
+            "activation dispatched a query"
+        );
+        assert_eq!(app.language.types.query, "Target");
+        assert!(app
+            .editor_ctx
+            .memory(|memory| memory.has_focus(egui::Id::new(QUERY_INPUT))));
+        entry_frame(&mut app, vec![egui::Event::Text("Z".into())]);
+        assert!(app.language.types.query.contains('Z'));
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn common_java_type_entry_cannot_bypass_modal_or_new_service_unavailability() {
+    for blocked in ["modal", "trust", "provider"] {
+        let (mut app, commands) = closed_type_app();
+        let focus = egui::Id::new("another owner");
+        app.editor_ctx
+            .memory_mut(|memory| memory.request_focus(focus));
+        match blocked {
+            "modal" => app.confirm = Some(crate::Confirm::CloseWindow),
+            "trust" => app.active_form.as_mut().unwrap().allow_run = false,
+            "provider" => app.language.capabilities = Value::Null,
+            _ => unreachable!(),
+        }
+        app.show_java_types(&app.editor_ctx.clone());
+        assert!(!app.tools_open);
+        assert!(app.tool == crate::Tool::Search);
+        assert!(app.language.view == View::Problems);
+        assert_eq!(
+            app.editor_ctx.memory(|memory| memory.focused()),
+            Some(focus)
+        );
+        assert!(commands.try_recv().is_err());
+    }
 }
 
 impl CedarApp {

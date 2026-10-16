@@ -22,6 +22,7 @@ struct Snapshot {
 #[derive(Default)]
 pub(super) struct TypeSearch {
     query: String,
+    focus_query: bool,
     sequence: u64,
     pending: Option<TypeContext>,
     snapshot: Option<Snapshot>,
@@ -31,6 +32,7 @@ pub(super) struct TypeSearch {
 impl TypeSearch {
     pub(super) fn reset(&mut self) {
         self.sequence = self.sequence.wrapping_add(1);
+        self.focus_query = false;
         self.pending = None;
         self.snapshot = None;
         self.error = None;
@@ -82,10 +84,14 @@ impl CedarApp {
 
     pub(super) fn invalidate_java_types(&mut self) {
         let state = &self.language.types;
-        if state
-            .pending
-            .as_ref()
-            .is_some_and(|context| !self.java_type_context_current(context))
+        if (state.focus_query
+            && (!self.tools_open
+                || self.tool != crate::Tool::Language
+                || self.language.view != View::JavaTypes))
+            || state
+                .pending
+                .as_ref()
+                .is_some_and(|context| !self.java_type_context_current(context))
             || state
                 .snapshot
                 .as_ref()
@@ -221,24 +227,56 @@ impl CedarApp {
         }
     }
 
-    pub(super) fn java_type_controls(&mut self, ui: &mut egui::Ui) {
-        if self.language.mode != ServerMode::Java {
+    fn show_java_types(&mut self, ctx: &egui::Context) {
+        if self.java_types_problem().is_some() || self.foreign_modal_owns_input(ctx) {
             return;
         }
+        // Retire a hidden view before making it current again. Reopening must
+        // not revive an outstanding query or a previously invalid snapshot.
+        self.invalidate_java_types();
+        self.dismiss_navigation();
+        self.navigation.restore_focus = false;
+        self.tools_open = true;
+        self.tool = crate::Tool::Language;
+        self.language.view = View::JavaTypes;
+        self.language.completion_popup = false;
+        // The native button's Enter/Space (and Space text companion) still
+        // belongs to that button. Transfer focus only after the query widget
+        // processes this pass, so opening cannot submit or edit the query.
+        self.language.types.focus_query = true;
+        ctx.request_repaint();
+    }
+
+    // Shared by the common browsing header and the existing Language panel.
+    // Opening the view is local: Search/Enter retains sole query authority.
+    pub(crate) fn java_type_entry(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let problem = self.java_types_problem();
         let response = ui.add_enabled(
             problem.is_none(),
-            egui::Button::new("Find Java type").selected(self.language.view == View::JavaTypes),
+            egui::Button::new("Find Java type").selected(
+                self.tools_open
+                    && self.tool == crate::Tool::Language
+                    && self.language.view == View::JavaTypes,
+            ),
         );
         let response = if let Some(problem) = problem {
             response.on_disabled_hover_text(problem)
         } else {
-            response
+            response.on_hover_text("Open Java type search in the running Java / JDT LS session")
         };
         if response.clicked() {
-            self.language.view = View::JavaTypes;
-            self.language.completion_popup = false;
-            ui.memory_mut(|memory| memory.request_focus(egui::Id::new(QUERY_INPUT)));
+            self.show_java_types(ui.ctx());
+        }
+        response
+    }
+
+    pub(super) fn java_type_controls(&mut self, ui: &mut egui::Ui) {
+        if self.language.mode == ServerMode::Java {
+            let response = self.java_type_entry(ui);
+            #[cfg(test)]
+            crate::workspace_access_tests::record(ui, "java_type_language_entry", &response);
+            #[cfg(not(test))]
+            let _ = response;
         }
     }
 
@@ -269,6 +307,7 @@ impl CedarApp {
         }
         let mut search = false;
         let mut dismiss = false;
+        let focus_query = self.language.types.focus_query;
         ui.horizontal_wrapped(|ui| {
             let input = ui.add(
                 egui::TextEdit::singleline(&mut self.language.types.query)
@@ -277,6 +316,10 @@ impl CedarApp {
                     .hint_text("Type name (case follows the Java server)")
                     .desired_width(260.0),
             );
+            if focus_query && !ui.is_sizing_pass() {
+                input.request_focus();
+                self.language.types.focus_query = false;
+            }
             if input.changed() {
                 self.language.types.reset();
                 self.language.cjk_seen |=
@@ -289,7 +332,8 @@ impl CedarApp {
             search = ui
                 .add_enabled(enabled, egui::Button::new("Search"))
                 .clicked()
-                || (enabled
+                || (!focus_query
+                    && enabled
                     && input.lost_focus()
                     && ui.input(|input| input.key_pressed(egui::Key::Enter)));
             dismiss = ui.button("Dismiss").clicked();
