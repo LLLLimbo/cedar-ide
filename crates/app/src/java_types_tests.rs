@@ -831,13 +831,85 @@ fn closed_type_app() -> (CedarApp, Receiver<Command>) {
 }
 
 #[test]
+fn common_java_type_reason_checks_connection_and_closing_before_trust_or_session() {
+    use crate::ConnectionState;
+
+    for (state, exhausted) in [
+        (ConnectionState::Idle, false),
+        (ConnectionState::Disconnected, false),
+        (ConnectionState::Connecting, false),
+        (ConnectionState::Disconnecting, false),
+        (ConnectionState::ClosingTransport, false),
+        (ConnectionState::CleanupUnverified, false),
+        (ConnectionState::Ready, true),
+    ] {
+        let (mut app, commands) = closed_type_app();
+        app.state = state;
+        app.connection_generation_exhausted = exhausted;
+        app.active_form = None;
+        app.language.running = false;
+        app.language.mode = ServerMode::Generic;
+        app.close_after_language_stop = true;
+        let expected = "Find Java type requires a ready workspace connection";
+        assert_eq!(app.java_types_problem().as_deref(), Some(expected));
+        app.request_java_types();
+        assert_eq!(app.error.as_deref(), Some(expected));
+        assert!(commands.try_recv().is_err());
+        assert!(app.language.types.pending.is_none());
+    }
+
+    for recovery_close in [false, true] {
+        let (mut app, commands) = closed_type_app();
+        app.active_form.as_mut().unwrap().allow_run = false;
+        app.language.running = false;
+        app.language.mode = ServerMode::Generic;
+        if recovery_close {
+            app.recovery.begin_close(crate::recovery::CloseGuard::new(
+                &[],
+                None,
+                app.generation,
+                0,
+            ));
+        } else {
+            app.close_after_language_stop = true;
+        }
+        let expected = "Finish closing the current session first";
+        assert_eq!(app.java_types_problem().as_deref(), Some(expected));
+        app.request_java_types();
+        assert_eq!(app.error.as_deref(), Some(expected));
+        assert!(commands.try_recv().is_err());
+        assert!(app.language.types.pending.is_none());
+    }
+    let (app, commands) = closed_type_app();
+    assert!(app.java_types_problem().is_none());
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
 fn common_java_type_entry_is_visible_disabled_and_explained_for_every_service_gate() {
-    for gate in 0..9 {
+    for gate in 0..11 {
         let (mut app, commands) = closed_type_app();
         match gate {
-            0 => app.state = crate::ConnectionState::Disconnected,
+            0 | 9 => {
+                app.state = if gate == 0 {
+                    crate::ConnectionState::Disconnected
+                } else {
+                    crate::ConnectionState::Idle
+                };
+                app.active_form = None;
+                app.language.running = false;
+                app.language.mode = ServerMode::Generic;
+            }
             1 => app.language.running = false,
-            2 => app.active_form.as_mut().unwrap().allow_run = false,
+            2 | 10 => {
+                if gate == 2 {
+                    app.active_form.as_mut().unwrap().allow_run = false;
+                } else {
+                    app.active_form = None;
+                }
+                app.language.running = false;
+                app.language.mode = ServerMode::Generic;
+            }
             3 => app.language.mode = ServerMode::Generic,
             4 => app.language.diagnostics_exited = true,
             5 => app.language.capabilities = json!({"workspaceSymbolProvider":false}),
@@ -851,7 +923,23 @@ fn common_java_type_entry_is_visible_disabled_and_explained_for_every_service_ga
             8 => app.close_after_language_stop = true,
             _ => unreachable!(),
         }
-        let reason = app.java_types_problem().unwrap();
+        // Explicit expectations catch prerequisite precedence, rather than
+        // accepting whatever reason the implementation happens to return.
+        let reason = match gate {
+            0 | 9 => "Find Java type requires a ready workspace connection".into(),
+            1 | 4 => "Start a Java / JDT LS session for this connection first".into(),
+            2 | 10 => "Find Java type requires trusted tool permission for this connection".into(),
+            3 => "Find Java type requires a typed Java / JDT LS session".into(),
+            5 | 6 => "The running Java server does not advertise workspace symbol search".into(),
+            7 => app.unsupported_message("language_workspace_symbols"),
+            8 => "Finish closing the current session first".into(),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            app.java_types_problem(),
+            Some(reason.clone()),
+            "gate {gate}"
+        );
         let unhovered = entry_frame(&mut app, vec![]);
         assert!(label(&unhovered, "Find Java type").is_some());
         let response = crate::workspace_access_tests::recorded_response(&app, "java_type_entry");

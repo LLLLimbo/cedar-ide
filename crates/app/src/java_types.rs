@@ -41,13 +41,19 @@ impl TypeSearch {
 
 impl CedarApp {
     fn java_types_problem(&self) -> Option<String> {
-        if !self.ready() || !self.language.running || self.language.diagnostics_exited {
-            return Some("Start a Java / JDT LS session for this connection first".into());
+        if !self.ready() {
+            return Some("Find Java type requires a ready workspace connection".into());
+        }
+        if self.close_after_language_stop || self.recovery.closing.is_some() {
+            return Some("Finish closing the current session first".into());
         }
         if !self.execution_trusted() {
             return Some(
                 "Find Java type requires trusted tool permission for this connection".into(),
             );
+        }
+        if !self.language.running || self.language.diagnostics_exited {
+            return Some("Start a Java / JDT LS session for this connection first".into());
         }
         if self.language.mode != ServerMode::Java {
             return Some("Find Java type requires a typed Java / JDT LS session".into());
@@ -59,9 +65,6 @@ impl CedarApp {
             return Some(
                 "The running Java server does not advertise workspace symbol search".into(),
             );
-        }
-        if self.close_after_language_stop || self.recovery.closing.is_some() {
-            return Some("Finish closing the current session first".into());
         }
         None
     }
