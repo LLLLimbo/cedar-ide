@@ -145,6 +145,8 @@ mod tools_resize;
 mod tools_resize_tests;
 #[cfg(test)]
 mod unavailable_recovery_process_tests;
+#[cfg(test)]
+mod welcome_layout_tests;
 mod worker;
 mod workspace_access;
 #[cfg(test)]
@@ -3328,7 +3330,14 @@ impl CedarApp {
     }
 
     fn welcome(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        // Keep overflow discoverable even when the pointer is elsewhere. Apply
+        // this only to welcome; the rest of the shell keeps its own scroll style.
+        let scroll_style = ui.spacing().scroll;
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+        #[cfg(test)]
+        let viewport = ui.available_rect_before_wrap();
+        let scroll_area = egui::ScrollArea::vertical().min_scrolled_height(0.0);
+        let scroll = scroll_area.show(ui, |ui| {
             ui.add_space((ui.available_height() * 0.10).clamp(16.0, 70.0));
             let width = ui.available_width().min(600.0);
             ui.horizontal(|ui| {
@@ -3358,13 +3367,22 @@ impl CedarApp {
                             let files = ui.button(label);
                             #[cfg(test)]
                             workspace_access_tests::record(ui, "welcome_files", &files);
+                            if files.gained_focus() { files.scroll_to_me(None); }
                             if files.clicked() {
                                 self.show_browse(browse::Provider::Files);
                             }
-                            if ui.button("Search project text").clicked() {
+                            let text = ui.button("Search project text");
+                            #[cfg(test)]
+                            workspace_access_tests::record(ui, "welcome_text", &text);
+                            if text.gained_focus() { text.scroll_to_me(None); }
+                            if text.clicked() {
                                 self.show_browse(browse::Provider::ProjectText);
                             }
-                            if ui.button("New file").clicked() {
+                            let new_file = ui.button("New file");
+                            #[cfg(test)]
+                            workspace_access_tests::record(ui, "welcome_new", &new_file);
+                            if new_file.gained_focus() { new_file.scroll_to_me(None); }
+                            if new_file.clicked() {
                                 self.explorer_new_file();
                             }
                         });
@@ -3394,16 +3412,25 @@ impl CedarApp {
                         .size(12.0)
                         .color(MUTED),
                     );
-                    ui.label(
+                    let footer = ui.label(
                         RichText::new(
                             "Independent open-source prototype. Not affiliated with JetBrains.",
                         )
                         .size(11.0)
                         .color(MUTED),
                     );
+                    #[cfg(test)]
+                    workspace_access_tests::record(ui, "welcome_footer", &footer);
+                    #[cfg(not(test))]
+                    let _ = footer;
                 });
             });
         });
+        ui.spacing_mut().scroll = scroll_style;
+        #[cfg(test)]
+        welcome_layout_tests::record(ui, viewport, &scroll);
+        #[cfg(not(test))]
+        let _ = scroll;
     }
 
     fn find_bar(&mut self, ui: &mut egui::Ui) {
