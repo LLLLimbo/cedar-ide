@@ -1,4 +1,24 @@
-# Public source checkpoint
+# Public source development checkpoint candidate
+
+This source snapshot identifies **0.79.0 DEVELOPMENT CANDIDATE**. It consolidates
+the version and current documentation on the exact tested development parent
+[`817c341eacc54645ce9376f3b6dfa0359782efb5`](https://github.com/LLLLimbo/cedar-ide/commit/817c341eacc54645ce9376f3b6dfa0359782efb5).
+The parent's [four-job CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/39124400977)
+and bounded cloud-Linux native evidence still belong to version 0.78.0.
+
+At source sealing, final 0.79.0 aggregate checks, exact-public-commit CI, package
+acceptance and the final-pair native check are **PENDING**. Later results require
+a separate source/commit/package-bound receipt; they are not implied by this
+file. See the [checkpoint report](docs/TEST_REPORT_PHASE79_DEVELOPMENT_CHECKPOINT.md).
+This is an independent Rust IDE development candidate, not a release, main-branch
+promotion, complete IntelliJ IDEA replacement or platform-wide native guarantee.
+
+## Historical 0.78 export note (superseded status)
+
+The following retained note describes the earlier source export at its own
+publication time. Its UNCOMPILED status does not describe the subsequently
+verified parent commit or establish any final 0.79.0 result. Historical failures
+and the unattributed native-zombie limitation remain in the record.
 
 This is the source-only public export of uncompiled candidate awaiting CI `phase78-0.78.0-close-barrier-fixture-r4-uncompiled-candidate`.
 It is an independent Rust IDE project, not a complete IntelliJ IDEA replacement.

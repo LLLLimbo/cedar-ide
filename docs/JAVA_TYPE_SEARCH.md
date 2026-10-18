@@ -25,6 +25,14 @@ existing Language-panel dismissal behavior, retiring the result snapshot without
 stopping the server or sending a new request. Java types still use their existing result view;
 they are not combined with Files or Project Text rows in the shared Find window.
 
+In the focused view, automatic tool-panel height measures the query controls,
+visible warnings and result content, aiming to show up to three complete
+title/container/location entries when the available window space permits. It
+does not promise three visible entries in every small window, font scale or
+warning combination. Dragging the tool-panel divider sets an explicit height
+that remains across query replies; **Automatic height** clears that preference
+and restores measured sizing. These layout actions send no search or file read.
+
 Queries are nonempty, at most 256 UTF-8 bytes and contain no control characters.
 Responses are bounded to 256 complete locations with per-field and total text
 limits. This version supports standard symbol kinds 1–26. Its 1 MiB serialized

@@ -1,7 +1,14 @@
-# Window close and local connection cleanup (0.78 candidate)
+# Window close and local connection cleanup
 
-This source-only candidate has not been compiled, tested, published or accepted
-in a native GUI. The following describes its intended contract, not validation.
+This contract was introduced in the 0.78 candidate and is unchanged by the 0.79.0
+version/documentation checkpoint. The exact development parent
+[`817c341`](https://github.com/LLLLimbo/cedar-ide/commit/817c341eacc54645ce9376f3b6dfa0359782efb5)
+has [passing four-job CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/39124400977)
+and bounded cloud-Linux native runs; it is no longer an uncompiled source stage.
+Those observations do not establish a comprehensive native close/cleanup matrix
+or a fix for the historical unattributed zombie. Final 0.79.0 results remain
+pending at source sealing and require their own external receipt. The following
+describes the contract, not a platform-wide validation guarantee.
 
 Native window Close keeps the existing task, language, mutation and exact draft
 recovery guards. Once those approvals are confirmed, the app retires its current

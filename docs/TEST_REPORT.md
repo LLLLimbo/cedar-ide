@@ -1,6 +1,26 @@
-# Verification checkpoint — 0.76.0 Files native IME acceptance fix candidate
+# Verification checkpoint — 0.79.0 development candidate
 
-## Current 0.76.0 Files native IME acceptance fix candidate
+## Current 0.79.0 development checkpoint candidate
+
+The [phase 79 report](TEST_REPORT_PHASE79_DEVELOPMENT_CHECKPOINT.md) consolidates
+the exact inherited Java keyboard, welcome overflow, focused type-search and
+measured-result-height work. This checkpoint changes version identity,
+exact-version test/driver literals and documentation only.
+
+The parent [`817c341`](https://github.com/LLLLimbo/cedar-ide/commit/817c341eacc54645ce9376f3b6dfa0359782efb5)
+passed [all four CI jobs](https://github.com/LLLLimbo/cedar-ide/actions/runs/39124400977),
+with its own package verification and bounded cloud-Linux native observations.
+Those artifacts still identify 0.78.0. They are prior evidence, not final 0.79.0
+acceptance. At this source seal, final-version aggregate checks, exact-source CI,
+three packages and final-pair native verification are **PENDING**; their outcomes
+require separate source-bound receipts.
+
+Windows native GUI, macOS GUI, broad native IME/geometry coverage and authenticated
+SSH remain unverified. Historical reports below retain their original scope and
+status; they do not override the current parent's exact evidence or supply
+missing final-version results.
+
+## Prior 0.76.0 Files native IME acceptance fix candidate
 
 The [phase 76 report](TEST_REPORT_PHASE76_IME_ACCEPTANCE.md) records an actual
 per-invocation native TextEdit branch observation, added to the existing Files

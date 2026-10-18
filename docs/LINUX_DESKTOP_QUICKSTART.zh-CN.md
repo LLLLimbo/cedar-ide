@@ -2,7 +2,11 @@
 
 本包把正常默认特性的 `cedar` 原生桌面前端和匹配的 `cedar-agent` 放在同一个目录中，面向 **Ubuntu 24.04 amd64 / x86_64（glibc）**。它是未签名的开发包，不是安装器、系统服务、通用 Linux 静态程序或完整 Java 开发环境。独立的 Linux agent-only 归档仍是另一个产品包，不能替代本包的桌面前端。
 
-## 0.76 Files 输入法接纳修复候选
+## 当前 0.79.0 开发检查点候选
+
+本轮汇总 Java 类型键盘导航、欢迎页溢出提示、专注类型搜索入口与测量式结果自动高度，仅更新版本和说明，不增加生产行为。源码封存时，最终 0.79.0 的检查、CI、开发包与最终包原生复核仍待独立回执确认；应核对包内 BUNDLE_MANIFEST.json 的 version、精确 source.commit 与 ci.run_url，再查看[项目对应提交和 CI](https://github.com/LLLLimbo/cedar-ide)。父提交 817c341 的通过结果仍属于 0.78.0，Windows CI 不代表 Windows 原生 GUI 验收。下文历史版本段落保留原状态，不是最终 0.79.0 的新成绩。
+
+## 历史 0.76 Files 输入法接纳修复候选
 
 Files 查询和 Directory 现在结合同一次原生 TextEdit 实际执行的 IME 分支与既有所有权、批次、epoch、焦点和暂停屏障判断提交；同字段移动 caret 后被原生拒绝的 Commit 不再凭原始通知或可见字节自动搜索。保留 0.75 的合法直接提交、独立 Text/Paste、实际改字节的 Undo 和固定 250 毫秒间隔。拒绝或取消后保留原生可见文字，新的有效编辑、新 composition 或干净的 Find 可恢复。完整离线边界见同目录 [Files 原生 IME 接纳合同](FIND_AND_RETURN.md#files-native-ime-acceptance-076-candidate)。
 
