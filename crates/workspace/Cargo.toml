@@ -17,6 +17,7 @@ cedar-tasks = { path = "../tasks" }
 serde_json.workspace = true
 url = "2.5"
 quick-xml = "=0.41.0"
+regex = { version = "=1.13.1", default-features = false, features = ["std", "unicode-case", "perf-literal", "perf-dfa"] }
 cedar-protocol = { path = "../protocol" }
 sha2.workspace = true
 tempfile.workspace = true
