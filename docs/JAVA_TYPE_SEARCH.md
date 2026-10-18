@@ -1,9 +1,13 @@
 # Find Java type
 
 Use **Find Java type** in the common header, beside Files and Project Text, to open
-the existing Language-panel type search and focus its query. The entry stays
-visible when unavailable; hover it for the connection, trust, session or provider
-reason. The Language panel retains the same entry and availability checks.
+a focused type-search view in the Language panel and focus its query. Server
+configuration, unrelated language actions and other result tabs stay in the full
+Language controls. Choose **Language tools** or press Escape to return to those
+controls. Session-busy, paused-sync and cleanup warnings remain visible. Active
+server startup retains its existing lifecycle controls. The entry stays visible
+when unavailable; hover it for the connection, trust, session or provider reason.
+The full Language panel retains the same entry and availability checks.
 
 Type search explicitly queries the index of an already running, trusted
 Java language session. Enter a type name or qualified-name pattern and press Search
@@ -16,8 +20,9 @@ Cedar does not start a server, save files, scan directories or issue repeated se
 when the query changes. Search results are an **unversioned index snapshot** and
 can lag unsaved editor changes. An empty result does not prove that no such type exists.
 Opening or reopening the view sends no search or startup request, retains the query
-text and preserves editor drafts and Undo. Dismiss or Escape uses the existing
-Language-panel dismissal behavior. Java types still use their existing result view;
+text and preserves editor drafts and Undo. Language tools or Escape uses the
+existing Language-panel dismissal behavior, retiring the result snapshot without
+stopping the server or sending a new request. Java types still use their existing result view;
 they are not combined with Files or Project Text rows in the shared Find window.
 
 Queries are nonempty, at most 256 UTF-8 bytes and contain no control characters.

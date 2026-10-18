@@ -1511,6 +1511,22 @@ impl CedarApp {
         }
     }
 
+    fn language_session_warnings(&self, ui: &mut egui::Ui, busy: bool, starting: bool) {
+        if busy && !starting {
+            ui.label(RichText::new("This synchronous language request blocks queued workspace requests until it finishes. Stop becomes available afterward.").small().color(MUTED));
+        }
+        if self.language.mode == ServerMode::Java
+            && !self.backend_java_startup_supported()
+            && !self.language.maven.enabled
+            && !self.language.running
+        {
+            ui.label(RichText::new("This agent uses blocking Java startup. Stop becomes available after startup finishes.").small().color(MUTED));
+        }
+        if self.language.restart_blocked {
+            ui.colored_label(AMBER, CLEANUP_RECONNECT_GUIDANCE);
+        }
+    }
+
     pub(super) fn language_panel(&mut self, ui: &mut egui::Ui) {
         let trusted = self.execution_trusted();
         let busy = self.language_busy();
@@ -1524,6 +1540,17 @@ impl CedarApp {
         }
         if !trusted {
             ui.colored_label(AMBER, "Language servers require trusted tool permission. Enable it in Open workspace and reconnect.");
+        }
+        // Type lookup keeps the existing Language view lifetime and input
+        // ownership, but does not put unrelated server/editor actions before
+        // its query. Active startup still uses the ordinary lifecycle UI.
+        if self.language.view == View::JavaTypes && !starting {
+            self.language_session_warnings(ui, busy, starting);
+            if let Some(reason) = &self.language.paused_reason {
+                ui.colored_label(AMBER, reason);
+            }
+            self.java_types_view(ui);
+            return;
         }
         let generic_supported = self.backend_generic_language_supported();
         let java_supported = self.backend_java_language_supported();
@@ -1557,19 +1584,7 @@ impl CedarApp {
             ui.label(RichText::new("One explicitly started server per workspace. The server and JDK must be installed on the workspace host.").small().color(MUTED));
         });
         self.java_startup_controls(ui);
-        if busy && !starting {
-            ui.label(RichText::new("This synchronous language request blocks queued workspace requests until it finishes. Stop becomes available afterward.").small().color(MUTED));
-        }
-        if self.language.mode == ServerMode::Java
-            && !self.backend_java_startup_supported()
-            && !self.language.maven.enabled
-            && !self.language.running
-        {
-            ui.label(RichText::new("This agent uses blocking Java startup. Stop becomes available after startup finishes.").small().color(MUTED));
-        }
-        if self.language.restart_blocked {
-            ui.colored_label(AMBER, CLEANUP_RECONNECT_GUIDANCE);
-        }
+        self.language_session_warnings(ui, busy, starting);
         self.maven_model_controls(ui);
         self.maven_dependencies_controls(ui);
         if self.language.running {

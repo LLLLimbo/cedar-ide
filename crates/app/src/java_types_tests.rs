@@ -759,7 +759,7 @@ fn actual_frames_dismiss_disabled_provider_and_inert_uri_rows() {
     assert!(label(&output, INDEX_NOTICE).is_some());
     click(&mut app, 0.1, "External · Class");
     assert!(commands.try_recv().is_err());
-    click(&mut app, 0.2, "Dismiss");
+    click(&mut app, 0.2, "Language tools");
     assert!(app.language.types.snapshot.is_none());
     assert!(app.language.view == View::Problems);
     app.language.capabilities = json!({"workspaceSymbolProvider":false});
@@ -784,12 +784,20 @@ fn actual_frames_result_click_dispatches_only_the_confined_uri_resolver() {
 // The common header is exercised through the complete production raw-input
 // hook and update, with pointer coordinates from its actual rendered response.
 fn entry_frame(app: &mut CedarApp, events: Vec<egui::Event>) -> egui::FullOutput {
+    entry_frame_at(app, [1320.0, 880.0], events)
+}
+
+fn entry_frame_at(
+    app: &mut CedarApp,
+    pixels: [f32; 2],
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
     let ctx = app.editor_ctx.clone();
     let mut input = egui::RawInput {
         time: Some(ctx.input(|input| input.time) + 0.1),
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
-            egui::vec2(1320.0, 880.0),
+            egui::Vec2::from(pixels) / ctx.zoom_factor(),
         )),
         events,
         ..Default::default()
@@ -1754,6 +1762,330 @@ fn keyboard_type_dirty_buffer_reuse_preserves_text_selection_and_undo() {
     assert_eq!(app.documents[0].text, draft);
     entry_frame(&mut app, enter);
     assert_ne!(app.documents[0].text, draft, "fresh editor Enter must work");
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn focused_type_frames_show_query_results_and_return_without_unrelated_controls() {
+    for (pixels, zoom) in [
+        ([1180.0, 812.0], 1.0),
+        ([780.0, 880.0], 1.0),
+        ([780.0, 880.0], 1.4),
+    ] {
+        let values: Vec<_> = (0..20)
+            .map(|index| symbol(&format!("Type{index:02}"), URI))
+            .collect();
+        let (mut app, commands) = type_app();
+        let (fonts, hold_fonts) = crate::system_fonts::SystemFonts::pending_failure_for_test();
+        app.system_fonts = fonts;
+        app.editor_ctx.set_fonts(crate::system_fonts::base_fonts());
+        app.editor_ctx.set_zoom_factor(zoom);
+        search(&mut app, &commands, json!(values));
+        app.show_java_types(&app.editor_ctx.clone());
+        for _ in 0..5 {
+            entry_frame_at(&mut app, pixels, vec![]);
+        }
+        let output = entry_frame_at(&mut app, pixels, vec![]);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::from(pixels) / zoom);
+        for name in [
+            "java_type_query",
+            "java_type_search",
+            "java_type_return",
+            "java_type_row_0",
+        ] {
+            let rect = crate::workspace_access_tests::recorded_rect(&app, name);
+            let clip = crate::workspace_access_tests::recorded_clip(&app, name);
+            assert!(
+                screen.contains_rect(rect),
+                "{name} outside {pixels:?}/{zoom}: {rect:?}"
+            );
+            assert!(
+                clip.contains_rect(rect),
+                "{name} clipped at {pixels:?}/{zoom}: {rect:?}/{clip:?}"
+            );
+        }
+        assert!(label(&output, INDEX_NOTICE).is_some());
+        for unrelated in [
+            "Server configuration",
+            "Stop server",
+            "Sync now",
+            "Complete",
+            "Definition",
+            "Hover",
+            "Organize imports",
+            "Format preview",
+            "Session activity",
+            "Problems (0)",
+        ] {
+            assert!(
+                label(&output, unrelated).is_none(),
+                "unrelated control {unrelated}"
+            );
+        }
+        assert!(app
+            .editor_ctx
+            .memory(|memory| memory.has_focus(egui::Id::new(QUERY_INPUT))));
+        entry_frame_at(
+            &mut app,
+            pixels,
+            key(egui::Key::ArrowDown, egui::Modifiers::NONE),
+        );
+        entry_frame_at(&mut app, pixels, key(egui::Key::End, egui::Modifiers::NONE));
+        for _ in 0..12 {
+            entry_frame_at(&mut app, pixels, vec![]);
+        }
+        assert_type_result_focus(&app, 19);
+        let row = crate::workspace_access_tests::recorded_rect(&app, "java_type_row_19");
+        let clip = crate::workspace_access_tests::recorded_clip(&app, "java_type_row_19");
+        assert!(
+            clip.contains_rect(row),
+            "selected final row clipped at {pixels:?}/{zoom}"
+        );
+        assert!(commands.try_recv().is_err());
+        drop(hold_fonts);
+    }
+}
+
+// Use real pointer coordinates or native Tab navigation to reach the return
+// control. Its focus is never injected, including while a request is pending.
+fn return_to_language_tools(app: &mut CedarApp, activation: Option<egui::Key>) {
+    for _ in 0..6 {
+        entry_frame(app, vec![]);
+    }
+    let response = crate::workspace_access_tests::recorded_response(app, "java_type_return");
+    let clip = crate::workspace_access_tests::recorded_clip(app, "java_type_return");
+    assert!(
+        clip.contains_rect(response.rect),
+        "return clipped: {:?} / {clip:?}",
+        response.rect
+    );
+    if let Some(key_code) = activation {
+        for _ in 0..16 {
+            if app
+                .editor_ctx
+                .memory(|memory| memory.has_focus(response.id))
+            {
+                break;
+            }
+            entry_frame(app, key(egui::Key::Tab, egui::Modifiers::NONE));
+        }
+        assert!(app
+            .editor_ctx
+            .memory(|memory| memory.has_focus(response.id)));
+        // Keep the activation held across the transition, then probe both an
+        // ordinary held key and an OS-repeat event against restored controls.
+        let events = key(key_code, egui::Modifiers::NONE);
+        entry_frame(app, vec![events[0].clone()]);
+        assert!(app.language.view == View::Problems);
+        for repeat in [false, true] {
+            let mut held = events[0].clone();
+            if let egui::Event::Key { repeat: value, .. } = &mut held {
+                *value = repeat;
+            }
+            entry_frame(app, vec![held]);
+        }
+        entry_frame(app, vec![events[1].clone()]);
+    } else {
+        let at = response.rect.center();
+        entry_frame(app, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            entry_frame(
+                app,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+    }
+    assert!(
+        app.language.view == View::Problems,
+        "return failed: {activation:?}, rect {:?}, focus {:?}",
+        response.rect,
+        app.editor_ctx.memory(|memory| memory.focused())
+    );
+}
+
+#[test]
+fn focused_type_return_pointer_tab_enter_and_space_restore_controls_and_preserve_drafts() {
+    for activation in [None, Some(egui::Key::Enter), Some(egui::Key::Space)] {
+        let (mut app, commands) = type_app();
+        let draft = "class Origin { int unsaved; }\n";
+        let mut doc = Document::new(1, "Origin.java".into(), SOURCE.into(), "r".into());
+        crate::editor_state::commit(&app.editor_ctx, &mut doc, draft.into(), 8);
+        app.documents.push(doc);
+        app.active_document = Some(1);
+        search(&mut app, &commands, symbols());
+        app.show_java_types(&app.editor_ctx.clone());
+        entry_frame(&mut app, vec![]);
+        let editor = egui::Id::new(("editor", 1_u64));
+        let selection = egui::TextEdit::load_state(&app.editor_ctx, editor)
+            .unwrap()
+            .cursor
+            .char_range();
+        let version = app.documents[0].edit_version;
+        return_to_language_tools(&mut app, activation);
+        let output = entry_frame(&mut app, vec![]);
+        assert!(label(&output, "Server configuration").is_some());
+        assert!(label(&output, "Stop server").is_some());
+        assert!(app.language.running);
+        assert!(!app.language.automatic);
+        assert_eq!(app.language.types.query, "Target");
+        assert!(app.language.types.snapshot.is_none());
+        assert!(app.language.types.selected.is_none());
+        assert_eq!(app.active_document, Some(1));
+        assert_eq!(app.documents[0].text, draft);
+        assert_eq!(app.documents[0].saved_text, SOURCE);
+        assert_eq!(app.documents[0].edit_version, version);
+        assert_eq!(
+            egui::TextEdit::load_state(&app.editor_ctx, editor)
+                .unwrap()
+                .cursor
+                .char_range(),
+            selection
+        );
+        assert!(
+            commands.try_recv().is_err(),
+            "return/held key dispatched work: {activation:?}"
+        );
+        entry_click(&mut app);
+        assert!(app.language.view == View::JavaTypes);
+        assert!(app
+            .editor_ctx
+            .memory(|memory| memory.has_focus(egui::Id::new(QUERY_INPUT))));
+        assert_eq!(app.language.types.query, "Target");
+        assert!(app.language.types.snapshot.is_none());
+        assert!(commands.try_recv().is_err(), "reopen dispatched work");
+        // The untouched editor's native Undo/Redo history also survives return.
+        app.editor_ctx
+            .memory_mut(|memory| memory.request_focus(editor));
+        entry_frame(&mut app, key(egui::Key::Z, egui::Modifiers::COMMAND));
+        assert_eq!(app.documents[0].text, SOURCE);
+        entry_frame(&mut app, key(egui::Key::Y, egui::Modifiers::COMMAND));
+        assert_eq!(app.documents[0].text, draft);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn focused_type_return_retires_late_query_resolve_and_read_success_or_error() {
+    for activation in [None, Some(egui::Key::Enter)] {
+        for stage in 0..3 {
+            for fail in [false, true] {
+                let (mut app, commands) = type_app();
+                app.documents.push(Document::new(
+                    1,
+                    "Origin.java".into(),
+                    "draft".into(),
+                    "r".into(),
+                ));
+                app.active_document = Some(1);
+                let command = if stage == 0 {
+                    app.request_java_types();
+                    commands.try_recv().unwrap()
+                } else {
+                    search(&mut app, &commands, symbols());
+                    app.select_java_type(0);
+                    let resolve = commands.try_recv().unwrap();
+                    if stage == 1 {
+                        resolve
+                    } else {
+                        reply(
+                            &mut app,
+                            &resolve,
+                            Ok(Payload::Language {
+                                value: json!({"path":"Target.java"}),
+                            }),
+                        );
+                        commands.try_recv().unwrap()
+                    }
+                };
+                assert!(matches!(
+                    (&command.op, stage),
+                    (Operation::LanguageWorkspaceSymbols { .. }, 0)
+                        | (Operation::LanguageResolveUri { .. }, 1)
+                        | (Operation::Read { .. }, 2)
+                ));
+                app.show_java_types(&app.editor_ctx.clone());
+                entry_frame(&mut app, vec![]);
+                return_to_language_tools(&mut app, activation);
+                let result = if fail {
+                    Err("obsolete type request failure".into())
+                } else {
+                    Ok(match stage {
+                        0 => Payload::Language { value: symbols() },
+                        1 => Payload::Language {
+                            value: json!({"path":"Target.java"}),
+                        },
+                        2 => Payload::File {
+                            path: "Target.java".into(),
+                            text: SOURCE.into(),
+                            revision: "r".into(),
+                        },
+                        _ => unreachable!(),
+                    })
+                };
+                let focus = app.editor_ctx.memory(|memory| memory.focused());
+                app.result_tx
+                    .send(crate::worker::WorkerEvent::Response(Event {
+                        generation: app.generation,
+                        id: command.id,
+                        connected: true,
+                        result,
+                    }))
+                    .unwrap();
+                entry_frame(&mut app, vec![]);
+                assert!(app.language.view == View::Problems);
+                assert!(app.language.types.snapshot.is_none());
+                assert!(app.language.types.pending.is_none());
+                assert!(app.error.is_none(), "old error surfaced at stage {stage}");
+                assert_eq!(app.documents.len(), 1, "late open at stage {stage}");
+                assert_eq!(app.active_document, Some(1));
+                assert_eq!(app.documents[0].text, "draft");
+                assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), focus);
+                assert!(
+                    commands.try_recv().is_err(),
+                    "late request at stage {stage}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn focused_type_frames_keep_session_warnings_and_unavailable_reason() {
+    let (mut app, commands) = type_app();
+    app.language.paused_reason = Some("Automatic synchronization paused for this draft".into());
+    app.language.restart_blocked = true;
+    app.request_java_types();
+    let pending = commands.try_recv().unwrap();
+    assert!(matches!(
+        pending.op,
+        Operation::LanguageWorkspaceSymbols { .. }
+    ));
+    let output = entry_frame(&mut app, vec![]);
+    for warning in [
+        "This synchronous language request blocks queued workspace requests until it finishes. Stop becomes available afterward.",
+        "Automatic synchronization paused for this draft",
+        CLEANUP_RECONNECT_GUIDANCE,
+        INDEX_NOTICE,
+    ] {
+        assert!(label(&output, warning).is_some(), "missing warning {warning}");
+    }
+    assert!(label(&output, "Stop server").is_none());
+    assert!(label(&output, "Language tools").is_some());
+    assert!(commands.try_recv().is_err());
+    app.language.capabilities = Value::Null;
+    let output = entry_frame(&mut app, vec![]);
+    assert!(label(
+        &output,
+        "The running Java server does not advertise workspace symbol search"
+    )
+    .is_some());
+    let search = crate::workspace_access_tests::recorded_response(&app, "java_type_search");
+    assert!(!search.enabled());
     assert!(commands.try_recv().is_err());
 }
 

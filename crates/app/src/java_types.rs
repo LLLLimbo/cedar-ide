@@ -605,6 +605,7 @@ impl CedarApp {
 
     pub(super) fn java_types_view(&mut self, ui: &mut egui::Ui) {
         self.invalidate_java_types();
+        ui.label(RichText::new("Find Java type").strong());
         ui.label(RichText::new(INDEX_NOTICE).small().color(AMBER));
         let problem = self.java_types_problem();
         if let Some(problem) = &problem {
@@ -623,6 +624,8 @@ impl CedarApp {
                     .hint_text("Type name (case follows the Java server)")
                     .desired_width(260.0),
             );
+            #[cfg(test)]
+            crate::workspace_access_tests::record(ui, "java_type_query", &input);
             if focus_query && !ui.is_sizing_pass() {
                 input.request_focus();
                 self.language.types.focus_query = false;
@@ -637,15 +640,24 @@ impl CedarApp {
                 language_navigation_results::validate_workspace_query(&self.language.types.query)
                     .is_ok();
             let enabled = problem.is_none() && valid && !self.language_busy();
-            search = ui
-                .add_enabled(enabled, egui::Button::new("Search"))
-                .clicked()
+            let search_response = ui.add_enabled(enabled, egui::Button::new("Search"));
+            #[cfg(test)]
+            crate::workspace_access_tests::record(ui, "java_type_search", &search_response);
+            search = search_response.clicked()
                 || (!focus_query
                     && submit_query
                     && enabled
                     && input.lost_focus()
                     && ui.input(|input| input.key_pressed(egui::Key::Enter)));
-            dismiss = ui.button("Dismiss").clicked();
+            // Keep dismissal focus distinct from the controls that return in
+            // the next frame; a held Enter/Space must not activate one of them.
+            let dismiss_response = ui
+                .push_id("java_type_return", |ui| ui.button("Language tools"))
+                .inner
+                .on_hover_text("Leave type search and return to the Language controls · Escape");
+            #[cfg(test)]
+            crate::workspace_access_tests::record(ui, "java_type_return", &dismiss_response);
+            dismiss = dismiss_response.clicked();
         });
         if dismiss {
             self.language.types.reset();
