@@ -2786,7 +2786,11 @@ fn project_name_search_context_cancellation_prevents_stale_activation() {
                 _ => {
                     app.list(String::new());
                     let request = commands.try_recv().unwrap();
-                    reply(app, request, vec![entry("other.rs", false)]);
+                    reply(
+                        app,
+                        request,
+                        vec![entry("a.rs", false), entry("zeta.rs", false)],
+                    );
                 }
             },
         );
@@ -2920,34 +2924,18 @@ fn project_name_search_query_scalar_and_admitted_row_limits_are_exact() {
 
 #[test]
 fn project_name_search_mixed_pointer_batches_preserve_release_and_fresh_click() {
-    for mixed_press in [false, true] {
-        let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
-        flat_focus(&mut app, "zeta.rs");
-        let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
-            .rect
-            .center();
-        for pressed in [true, false] {
-            let mut events = vec![
-                egui::Event::PointerMoved(at),
-                egui::Event::PointerButton {
-                    pos: at,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ];
-            if pressed == mixed_press {
-                events.push(egui::Event::Text("zet".into()));
+    for active_query in [false, true] {
+        for mixed_press in [false, true] {
+            let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+            flat_focus(&mut app, "zeta.rs");
+            if active_query {
+                name_type(&mut app, egui::Key::Z, "zet");
             }
-            frame(&mut app, events);
-        }
-        assert!(!app.editor_ctx.input(|input| input.pointer.any_down()));
-        assert!(commands.try_recv().is_err());
-        assert!(app.project_name_observation().is_none());
-        for pressed in [true, false] {
-            frame(
-                &mut app,
-                vec![
+            let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
+                .rect
+                .center();
+            for pressed in [true, false] {
+                let mut events = vec![
                     egui::Event::PointerMoved(at),
                     egui::Event::PointerButton {
                         pos: at,
@@ -2955,12 +2943,33 @@ fn project_name_search_mixed_pointer_batches_preserve_release_and_fresh_click() 
                         pressed,
                         modifiers: egui::Modifiers::NONE,
                     },
-                ],
+                ];
+                if pressed == mixed_press {
+                    events.push(egui::Event::Text("zet".into()));
+                }
+                frame(&mut app, events);
+            }
+            assert!(!app.editor_ctx.input(|input| input.pointer.any_down()));
+            assert!(commands.try_recv().is_err());
+            assert!(app.project_name_observation().is_none());
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            assert!(
+                matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "zeta.rs")
             );
         }
-        assert!(
-            matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "zeta.rs")
-        );
     }
 }
 
@@ -3020,4 +3029,145 @@ fn project_name_search_same_pass_pointer_focus_loss_fences_native_keys() {
         );
         assert!(commands.try_recv().is_err());
     }
+}
+
+#[test]
+fn project_name_search_mixed_text_enter_requires_new_gesture() {
+    let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+    name_open_button(&mut app);
+    frame(
+        &mut app,
+        vec![
+            egui::Event::Text("zet".into()),
+            key_event(egui::Key::Enter, false),
+        ],
+    );
+    assert!(commands.try_recv().is_err());
+    assert!(app.project_name_observation().unwrap().1.is_empty());
+    frame(&mut app, vec![egui::Event::Text("zet".into())]);
+    assert_eq!(app.project_name_observation().unwrap().1, ["zeta.rs"]);
+    frame(&mut app, vec![key_event(egui::Key::Enter, false)]);
+    assert!(
+        matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "zeta.rs")
+    );
+}
+
+#[test]
+fn project_name_search_enter_directory_keeps_flat_list_and_tree_toggle() {
+    for tree in [false, true] {
+        let (mut app, commands) = fixture();
+        if tree {
+            root(&mut app, &commands, vec![entry("target", true)]);
+        } else {
+            app.list(String::new());
+            reply(
+                &mut app,
+                commands.try_recv().unwrap(),
+                vec![entry("target", true)],
+            );
+            settle(&mut app);
+        }
+        flat_focus(&mut app, "target");
+        name_type(&mut app, egui::Key::T, "target");
+        assert!(commands.try_recv().is_err());
+        frame(&mut app, vec![key_event(egui::Key::Enter, false)]);
+        let request = commands.try_recv().unwrap();
+        assert!(matches!(&request.op, Operation::List { path } if path == "target"));
+        reply(&mut app, request, vec![entry("target/child.rs", false)]);
+        settle(&mut app);
+        if tree {
+            focus(&mut app, "target");
+            name_type(&mut app, egui::Key::T, "target");
+            frame(&mut app, vec![key_event(egui::Key::Enter, false)]);
+            assert!(!row(&app, "target").expanded);
+        }
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn project_name_search_preserves_current_file_find_shortcut() {
+    let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+    app.documents.push(Document::new(
+        1,
+        "zeta.rs".into(),
+        "saved text".into(),
+        "r".into(),
+    ));
+    app.active_document = Some(1);
+    for _ in 0..3 {
+        name_actual_frame(&mut app, vec![], |_| {});
+    }
+    flat_focus(&mut app, "zeta.rs");
+    name_actual_frame(
+        &mut app,
+        vec![
+            key_event(egui::Key::Z, false),
+            egui::Event::Text("zet".into()),
+        ],
+        |_| {},
+    );
+    name_actual_frame(&mut app, vec![released(egui::Key::Z)], |_| {});
+    name_actual_frame(
+        &mut app,
+        vec![name_modified(egui::Key::F, egui::Modifiers::COMMAND)],
+        |_| {},
+    );
+    assert!(app.find_open);
+    assert!(app.project_name_observation().is_none());
+    assert_eq!(app.documents[0].text, "saved text");
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn project_name_search_window_loss_releases_rejected_pointer_lifetime() {
+    let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+    flat_focus(&mut app, "zeta.rs");
+    let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
+        .rect
+        .center();
+    frame(
+        &mut app,
+        vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Text("zet".into()),
+        ],
+    );
+    frame(&mut app, vec![egui::Event::WindowFocused(false)]);
+    frame(
+        &mut app,
+        vec![
+            egui::Event::WindowFocused(true),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    assert!(commands.try_recv().is_err());
+    for pressed in [true, false] {
+        frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    assert!(
+        matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "zeta.rs")
+    );
 }

@@ -1869,7 +1869,7 @@ impl CedarApp {
             {
                 if !pressed {
                     self.explorer.name_search.rejected_pointer = false;
-                } else if row_text_batch {
+                } else if row_text_batch || (query_owned && !pointer_clean) {
                     self.explorer.name_search.rejected_pointer = true;
                 }
             }
@@ -2408,11 +2408,11 @@ impl CedarApp {
         let status = if session.composing {
             "Composing · loaded rows only".into()
         } else if session.paused {
-            "Search paused · edit the query to resume".into()
+            "Search paused · loaded rows only".into()
         } else if session.query.is_empty() {
             "Type a name · loaded rows only".into()
         } else if !name_query_valid(&session.query) {
-            "Use a single-line name without control characters".into()
+            "Invalid query · loaded rows only".into()
         } else {
             format!(
                 "{} {} · loaded rows only",
@@ -2424,7 +2424,7 @@ impl CedarApp {
                 }
             )
         };
-        ui.label(RichText::new(status).small().color(MUTED)).on_hover_text("Literal, case-sensitive names in this Flat directory or expanded Tree rows. Collapsed/unloaded directories are not searched. Typing sends no requests. Enter opens the selected exact path.");
+        ui.label(RichText::new(status).small().color(MUTED)).on_hover_text("Literal, case-sensitive names in this Flat directory or expanded Tree rows. Collapsed/unloaded directories are not searched. Typing sends no requests. Enter opens the selected exact path. A paused query needs a fresh edit; use a single-line name without control characters.");
     }
 
     #[cfg(test)]
