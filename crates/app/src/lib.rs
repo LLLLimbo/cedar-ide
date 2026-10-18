@@ -4180,6 +4180,7 @@ impl eframe::App for CedarApp {
         #[cfg(test)]
         workspace_access_tests::begin(ctx);
         self.poll_ready_navigation(Some(ctx));
+        self.guard_project_name_input(ctx);
         self.consume_file_find_keys(ctx);
         self.begin_navigation_frame(ctx);
         self.recovery_tick(ctx);

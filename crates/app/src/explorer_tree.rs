@@ -421,6 +421,8 @@ impl Explorer {
         let held_keys = std::mem::take(&mut self.held_keys);
         let claimed_keys = std::mem::take(&mut self.claimed_keys);
         let flat_input = std::mem::take(&mut self.flat_input);
+        let mut name_search = std::mem::take(&mut self.name_search);
+        name_search.cancel();
         // Connection reset also clears pending jobs. Generation + request IDs
         // exclude every prior connection reply, allowing fresh local epochs.
         *self = Self {
@@ -428,6 +430,7 @@ impl Explorer {
             held_keys,
             claimed_keys,
             flat_input,
+            name_search,
             ..Self::default()
         };
     }
@@ -728,6 +731,7 @@ impl CedarApp {
         self.explorer.key_intent = None;
         self.explorer.key_reveal = None;
         self.explorer.pointer_blocked = original.pointer_blocked;
+        self.capture_project_name_input(ctx, input, consumed);
         let flat_clear = self.explorer.flat_input.capture(input);
         if !input.focused
             || input
@@ -1572,6 +1576,161 @@ impl CedarApp {
                     self.list(path);
                 }
             }
+        }
+    }
+}
+
+impl NameSearch {
+    fn cancel(&mut self) {
+        if self.session.take().is_some_and(|session| session.composing || session.paused) {
+            self.ime_barrier = true;
+        }
+        self.press = None;
+    }
+}
+
+fn name_command(key: egui::Key) -> bool {
+    matches!(key, egui::Key::ArrowUp | egui::Key::ArrowDown | egui::Key::Enter | egui::Key::Escape)
+}
+fn name_text_event(event: &egui::Event) -> bool {
+    matches!(event, egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Ime(_) | egui::Event::Copy | egui::Event::Cut)
+}
+fn name_printable_key(key: egui::Key) -> bool {
+    // Explicit contiguous printable groups in pinned egui 0.31.1.
+    key == egui::Key::Space
+        || (egui::Key::Colon..=egui::Key::Quote).contains(&key)
+        || (egui::Key::Num0..=egui::Key::Num9).contains(&key)
+        || (egui::Key::A..=egui::Key::Z).contains(&key)
+}
+
+impl CedarApp {
+    fn project_name_context(&self) -> NameContext {
+        NameContext {
+            generation: self.generation,
+            mode: self.explorer.mode,
+            mode_epoch: self.explorer.mode_epoch,
+            epoch: self.explorer.epoch,
+            directory: self.directory.clone(),
+            directory_request: self.directory_request,
+            flat_admission: self.explorer.flat_admission.clone(),
+            navigation: self.navigation_epoch,
+        }
+    }
+
+    fn project_name_entries(&self) -> Vec<Entry> {
+        if !self.ready() { return Vec::new(); }
+        if self.explorer.mode == Mode::Flat {
+            if !self.project_focus_row_current("") { return Vec::new(); }
+            self.entries.clone()
+        } else {
+            self.explorer.visible_rows().into_iter().map(|row| row.entry).collect()
+        }
+    }
+
+    fn project_name_row_id(&self, path: &str) -> Option<egui::Id> {
+        if self.explorer.mode == Mode::Tree {
+            Some(row_id(path))
+        } else {
+            self.explorer.flat_row_scope.map(|scope| scope.with(("flat_entry", path)))
+        }
+    }
+
+    pub(crate) fn cancel_project_name_search(&mut self) {
+        self.explorer.name_search.cancel();
+    }
+
+    fn capture_project_name_input(&mut self, ctx: &egui::Context, raw: &egui::RawInput, consumed: &mut [bool]) {
+        let context = self.project_name_context();
+        let focused = ctx.memory(|memory| memory.focused());
+        let window = raw.focused && !raw.events.iter().any(|event| matches!(event, egui::Event::WindowFocused(false)));
+        let allowed = !self.project_row_input_blocked(ctx) && !self.file_structure_open() && !ctx.memory(|memory| memory.any_popup_open());
+        let query_owned = self.explorer.name_search.session.as_ref().is_some_and(|session| Some(session.id()) == focused);
+        let owner = self.explorer.name_search.session.as_ref().map(|session| (session.serial, session.revision));
+        let selected = self.explorer.name_search.session.as_ref().and_then(|session| session.selected.and_then(|index| session.matches.get(index).cloned()));
+        let row_owned = allowed && window && self.project_name_entries().iter().any(|entry| self.project_name_row_id(&entry.path) == focused);
+        let clear = self.explorer.flat_input.keys.is_empty() && !self.explorer.flat_input.pointers.iter().any(|pressed| *pressed) && !self.explorer.flat_input.composing;
+        let was_composing = self.explorer.flat_input.composing || self.explorer.name_search.session.as_ref().is_some_and(|session| session.composing);
+        let had_ime = raw.events.iter().any(|event| matches!(event, egui::Event::Ime(_)));
+        let actions: Vec<_> = raw.events.iter().filter(|event| actionable(event)).collect();
+        let clean_key = if let [egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }] = actions.as_slice() {
+            modifiers.is_none().then_some(*key)
+        } else { None };
+        let pointer_clean = !actions.is_empty() && actions.iter().all(|event| matches!(event, egui::Event::PointerButton { button: egui::PointerButton::Primary, .. }));
+        let button_owned = allowed && window && focused.is_some() && focused == self.explorer.name_search.button_id;
+        let button_key = if button_owned && clear {
+            match actions.as_slice() {
+                [egui::Event::Key { key: egui::Key::Enter | egui::Key::Space, pressed: true, repeat: false, modifiers, .. }] if modifiers.is_none() => clean_key,
+                [egui::Event::Key { key: egui::Key::Space, pressed: true, repeat: false, modifiers, .. }, egui::Event::Text(text)] if modifiers.is_none() && text.as_str() == " " => Some(egui::Key::Space),
+                _ => None,
+            }
+        } else { None };
+        let seed = if row_owned && clear {
+            match actions.as_slice() {
+                [egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }, egui::Event::Text(text)]
+                    if name_printable_key(*key) && !modifiers.ctrl && !modifiers.alt && !modifiers.command && !modifiers.mac_cmd => {
+                        let bounded: String = text.chars().take(MAX_NAME_QUERY_CHARS).collect();
+                        name_query_valid(&bounded).then_some(bounded)
+                    }
+                _ => None,
+            }
+        } else { None };
+        // Do not enumerate TextEdit's editing shortcuts here. Current-owner
+        // key/text batches reach native editing; ordinary global shortcuts keep
+        // their existing route. Our four commands and Tab are separate gestures.
+        let edit_owned = query_owned && allowed && window && actions.iter().all(|event| match event {
+            egui::Event::Key { key, modifiers, .. } => (!name_command(*key) && *key != egui::Key::Tab)
+                || (was_composing && had_ime && name_command(*key) && modifiers.is_none()),
+            event => name_text_event(event),
+        });
+        let row_text_batch = row_owned && raw.events.iter().any(name_text_event);
+        let mut command = None;
+        for (index, event) in raw.events.iter().enumerate() {
+            if (row_owned || (query_owned && !edit_owned) || button_key.is_some()) && name_text_event(event) {
+                consumed[index] = true;
+            }
+            // A mixed row Text+pointer batch must not become a clean click once
+            // its text is removed. Keep the original pointer lifetime metadata.
+            if row_text_batch && matches!(event, egui::Event::PointerButton { .. }) {
+                consumed[index] = true;
+            }
+            if let egui::Event::Key { key, pressed, repeat, .. } = event {
+                let claimed = self.explorer.name_search.claimed.contains(key);
+                if !pressed {
+                    consumed[index] |= self.explorer.name_search.claimed.remove(key);
+                } else if claimed || row_text_batch || button_key == Some(*key) || (query_owned && name_command(*key)) {
+                    consumed[index] = true;
+                    self.explorer.name_search.claimed.insert(*key);
+                    if query_owned && allowed && window && clear && !claimed && !repeat && clean_key == Some(*key) {
+                        command = Some(*key);
+                    }
+                }
+            }
+        }
+        if !window {
+            self.cancel_project_name_search();
+            self.explorer.name_search.claimed.clear();
+        }
+        self.explorer.name_search.frame = Some(NameFrame { context, focused, owner, selected, seed, command, button_key, pointer_clean, query_owned, edit_owned, had_ime, was_composing, observed: false });
+    }
+
+    // Run immediately after navigation replies, and before query/editor render.
+    // Every key from a stale query loses its authority, independent of native
+    // editing admission. In particular Ctrl+H/K/U and modified cursor movement
+    // must never replay into a newly focused dirty editor.
+    pub(crate) fn guard_project_name_input(&mut self, ctx: &egui::Context) {
+        let context = self.project_name_context();
+        let focused = ctx.memory(|memory| memory.focused());
+        let current = self.explorer.name_search.session.as_ref().is_some_and(|session| {
+            session.context == context && focused == Some(session.id())
+                && !self.project_row_input_blocked(ctx) && !self.file_structure_open()
+                && ctx.input(|input| input.focused) && !ctx.memory(|memory| memory.any_popup_open())
+        });
+        let stale_owned = self.explorer.name_search.frame.as_ref().is_some_and(|frame| frame.query_owned && (!current || frame.context != context || frame.focused != focused));
+        if stale_owned {
+            ctx.input_mut(|input| input.events.retain(|event| !name_text_event(event) && !matches!(event, egui::Event::Key { .. })));
+        }
+        if self.explorer.name_search.session.is_some() && !current {
+            self.cancel_project_name_search();
         }
     }
 }
