@@ -248,6 +248,7 @@ struct NameSearch {
     button_id: Option<egui::Id>,
     // A cancelled composition must not become a commit in a later query.
     ime_barrier: bool,
+    rejected_pointer: bool,
 }
 struct NameFrame {
     context: NameContext,
@@ -1856,6 +1857,23 @@ impl CedarApp {
                 event => name_text_event(event),
             });
         let row_text_batch = row_owned && raw.events.iter().any(name_text_event);
+        // Keep egui's native press/release lifetime intact. A rejected mixed
+        // press also owns its later release, even if that release is clean.
+        self.explorer.pointer_blocked |= self.explorer.name_search.rejected_pointer;
+        for event in &raw.events {
+            if let egui::Event::PointerButton {
+                button: egui::PointerButton::Primary,
+                pressed,
+                ..
+            } = event
+            {
+                if !pressed {
+                    self.explorer.name_search.rejected_pointer = false;
+                } else if row_text_batch {
+                    self.explorer.name_search.rejected_pointer = true;
+                }
+            }
+        }
         let mut command = None;
         for (index, event) in raw.events.iter().enumerate() {
             if (row_owned || (query_owned && !edit_owned) || button_key.is_some())
@@ -1896,6 +1914,7 @@ impl CedarApp {
         if !window {
             self.cancel_project_name_search();
             self.explorer.name_search.claimed.clear();
+            self.explorer.name_search.rejected_pointer = false;
         }
         self.explorer.name_search.frame = Some(NameFrame {
             context,

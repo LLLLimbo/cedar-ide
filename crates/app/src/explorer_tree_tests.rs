@@ -2524,3 +2524,500 @@ fn project_name_search_foreign_and_cancelled_compositions_cannot_retarget() {
         assert_eq!(app.project_name_observation().unwrap().1, ["雪.rs"]);
     }
 }
+
+fn name_sized_frame(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    events: Vec<egui::Event>,
+    discard: bool,
+) -> egui::FullOutput {
+    app.workspace_key = Some(WorkspaceKey::Local {
+        root: "name-search-test".into(),
+    });
+    let ctx = app.editor_ctx.clone();
+    let mut native = eframe::Frame::_new_kittest();
+    let mut input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let mut passes = 0;
+    let output = ctx.run(input, |ctx| {
+        eframe::App::update(app, ctx, &mut native);
+        if discard && passes == 0 {
+            ctx.request_discard("name search receipt test");
+        }
+        passes += 1;
+    });
+    if discard {
+        assert!(passes > 1);
+    }
+    output
+}
+
+#[test]
+fn project_name_search_query_close_scope_and_match_fit_widths_and_scales() {
+    for (size, width) in [
+        (egui::vec2(400.0, 340.0), 180.0),
+        (egui::vec2(780.0, 540.0), 180.0),
+        (egui::vec2(780.0, 540.0), 246.0),
+        (egui::vec2(980.0, 540.0), 460.0),
+    ] {
+        for font in [13.0_f32, 18.0] {
+            for scale in [1.0_f32, 1.5] {
+                let (mut app, commands) =
+                    flat_fixture(vec![entry("alpha.rs", false), entry("zeta.rs", false)]);
+                let mut style = (*app.editor_ctx.style()).clone();
+                for text_style in [egui::TextStyle::Body, egui::TextStyle::Button] {
+                    style
+                        .text_styles
+                        .insert(text_style, egui::FontId::proportional(font));
+                }
+                app.editor_ctx.set_style(style);
+                app.editor_ctx.set_pixels_per_point(scale);
+                app.editor_ctx.data_mut(|data| {
+                    data.insert_persisted(
+                        egui::Id::new("explorer"),
+                        egui::containers::panel::PanelState {
+                            rect: egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, size.y),
+                            ),
+                        },
+                    )
+                });
+                for _ in 0..3 {
+                    name_sized_frame(&mut app, size, vec![], false);
+                }
+                flat_focus(&mut app, "alpha.rs");
+                name_sized_frame(
+                    &mut app,
+                    size,
+                    vec![
+                        key_event(egui::Key::E, false),
+                        egui::Event::Text("eta".into()),
+                    ],
+                    false,
+                );
+                let output = name_sized_frame(&mut app, size, vec![released(egui::Key::E)], false);
+                let sidebar = egui::containers::panel::PanelState::load(
+                    &app.editor_ctx,
+                    egui::Id::new("explorer"),
+                )
+                .unwrap()
+                .rect;
+                for name in ["project_name_query", "project_name_close", "zeta.rs"] {
+                    let response = workspace_access_tests::recorded_response(&app, name);
+                    assert!(
+                        workspace_access_tests::recorded_clip(&app, name)
+                            .contains_rect(response.rect),
+                        "{name} clipped {size:?}/{width}/{font}/{scale}"
+                    );
+                    assert!(
+                        response.rect.right()
+                            <= sidebar.right() - f32::from(chrome::GAP) - 8.0 + 0.1,
+                        "{name} right overflow {size:?}/{width}/{font}/{scale}"
+                    );
+                }
+                let query = workspace_access_tests::recorded_response(&app, "project_name_query");
+                let close = workspace_access_tests::recorded_response(&app, "project_name_close");
+                assert!(query.rect.right() <= close.rect.left());
+                assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.text() == "1 match · loaded rows only" && shape.clip_rect.contains_rect(text.visual_bounding_rect()))));
+                assert!(commands.try_recv().is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn project_name_search_highlights_exact_substring_and_only_current_result() {
+    for tree in [false, true] {
+        let (mut app, commands) = fixture();
+        if tree {
+            root(
+                &mut app,
+                &commands,
+                vec![entry("alpha.rs", false), entry("雪zeta.rs", false)],
+            );
+        } else {
+            app.list(String::new());
+            reply(
+                &mut app,
+                commands.try_recv().unwrap(),
+                vec![entry("alpha.rs", false), entry("雪zeta.rs", false)],
+            );
+            settle(&mut app);
+        }
+        app.documents.push(Document::new(
+            1,
+            "alpha.rs".into(),
+            "saved".into(),
+            "r".into(),
+        ));
+        app.active_document = Some(1);
+        settle(&mut app);
+        flat_focus(&mut app, "alpha.rs");
+        name_type(&mut app, egui::Key::E, "eta");
+        let output = frame(&mut app, vec![]);
+        let selected = workspace_access_tests::recorded_response(&app, "雪zeta.rs").rect;
+        let ordinary = workspace_access_tests::recorded_response(&app, "alpha.rs").rect;
+        let painted = |rect| {
+            output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Rect(shape) if shape.rect == rect && shape.fill == chrome::SELECTED))
+        };
+        assert!(painted(selected));
+        assert!(!painted(ordinary));
+        let galley = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == "雪zeta.rs" => {
+                    Some(&text.galley)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(galley.job.sections.iter().any(|section| &galley.job.text
+            [section.byte_range.clone()]
+            == "eta"
+            && section.format.background == chrome::SELECTED));
+        name_replace(&mut app, "absent");
+        let empty = frame(&mut app, vec![]);
+        assert!(!empty.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Rect(shape) if (shape.rect == selected || shape.rect == ordinary) && shape.fill == chrome::SELECTED)));
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn project_name_search_tree_duplicate_paths_excludes_unloaded_and_delivers_open() {
+    let (mut app, commands) = fixture();
+    root(
+        &mut app,
+        &commands,
+        vec![entry("a", true), entry("b", true), entry("unloaded", true)],
+    );
+    for dir in ["a", "b"] {
+        app.explorer_expand(dir);
+        reply(
+            &mut app,
+            commands.try_recv().unwrap(),
+            vec![entry(&format!("{dir}/same.rs"), false)],
+        );
+    }
+    settle(&mut app);
+    focus(&mut app, "");
+    name_type(&mut app, egui::Key::S, "same");
+    assert_eq!(
+        app.project_name_observation().unwrap().1,
+        ["a/same.rs", "b/same.rs"]
+    );
+    frame(&mut app, vec![key_event(egui::Key::ArrowDown, false)]);
+    assert!(commands.try_recv().is_err());
+    name_actual_frame(&mut app, vec![key_event(egui::Key::Enter, false)], |_| {});
+    let read = commands.try_recv().unwrap();
+    assert!(matches!(&read.op, Operation::Read { path } if path == "b/same.rs"));
+    app.apply_event(Event {
+        generation: app.generation,
+        id: read.id,
+        connected: true,
+        result: Ok(Payload::File {
+            path: "b/same.rs".into(),
+            text: "loaded".into(),
+            revision: "r".into(),
+        }),
+    });
+    for _ in 0..3 {
+        name_actual_frame(&mut app, vec![key_event(egui::Key::Enter, false)], |_| {});
+    }
+    assert_eq!(app.active().unwrap().text, "loaded");
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn project_name_search_bounds_moves_reveals_and_escape() {
+    let (mut app, commands) = flat_fixture(
+        (0..100)
+            .map(|n| entry(&format!("file{n:03}.rs"), false))
+            .collect(),
+    );
+    flat_focus(&mut app, "file000.rs");
+    name_type(&mut app, egui::Key::F, "file099");
+    settle(&mut app);
+    let target = workspace_access_tests::recorded_response(&app, "file099.rs");
+    assert!(workspace_access_tests::recorded_clip(&app, "file099.rs").contains_rect(target.rect));
+    name_replace(&mut app, "file09");
+    held_frame(&mut app, vec![key_event(egui::Key::ArrowDown, false)]);
+    for _ in 0..4 {
+        held_frame(&mut app, vec![key_event(egui::Key::ArrowDown, false)]);
+    }
+    assert!(app.project_name_selected("file091.rs"));
+    held_frame(&mut app, vec![released(egui::Key::ArrowDown)]);
+    for _ in 0..12 {
+        frame(&mut app, vec![key_event(egui::Key::ArrowDown, false)]);
+    }
+    assert!(app.project_name_selected("file099.rs"));
+    frame(&mut app, vec![key_event(egui::Key::Escape, false)]);
+    assert!(app.project_name_observation().is_none());
+    assert_flat_focus(&app, "file099.rs");
+    name_type(&mut app, egui::Key::X, "missing");
+    frame(&mut app, vec![key_event(egui::Key::Escape, false)]);
+    assert_flat_focus(&app, "file099.rs");
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn project_name_search_context_cancellation_prevents_stale_activation() {
+    for change in 0..5 {
+        let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+        flat_focus(&mut app, "zeta.rs");
+        name_type(&mut app, egui::Key::Z, "zet");
+        name_actual_frame(
+            &mut app,
+            vec![key_event(egui::Key::Enter, false)],
+            |app| match change {
+                0 => {
+                    app.generation += 1;
+                }
+                1 => app.explorer.reset_connection(),
+                2 => {
+                    app.navigation_epoch += 1;
+                }
+                3 => app.explorer_set_mode(Mode::Tree),
+                _ => {
+                    app.list(String::new());
+                    let request = commands.try_recv().unwrap();
+                    reply(app, request, vec![entry("other.rs", false)]);
+                }
+            },
+        );
+        assert!(app.project_name_observation().is_none());
+        for command in commands.try_iter() {
+            assert!(!matches!(command.op, Operation::Read { .. }));
+        }
+    }
+    let (mut app, commands) = fixture();
+    root(&mut app, &commands, vec![entry("a", true)]);
+    app.explorer_expand("a");
+    reply(
+        &mut app,
+        commands.try_recv().unwrap(),
+        vec![entry("a/zeta.rs", false)],
+    );
+    settle(&mut app);
+    focus(&mut app, "a/zeta.rs");
+    name_type(&mut app, egui::Key::Z, "zet");
+    name_actual_frame(&mut app, vec![key_event(egui::Key::Enter, false)], |app| {
+        app.explorer_collapse("a")
+    });
+    assert!(app.project_name_observation().is_none());
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn project_name_search_window_loss_cancels_without_replay() {
+    let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+    flat_focus(&mut app, "zeta.rs");
+    name_type(&mut app, egui::Key::Z, "zet");
+    name_actual_frame(
+        &mut app,
+        vec![
+            egui::Event::WindowFocused(false),
+            egui::Event::Text("BAD".into()),
+            key_event(egui::Key::Enter, false),
+        ],
+        |_| {},
+    );
+    assert!(app.project_name_observation().is_none());
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn project_name_search_empty_rejected_and_linebreak_commits_pause() {
+    for kind in 0..3 {
+        let (mut app, commands) = flat_fixture(vec![entry("雪.rs", false)]);
+        name_open_button(&mut app);
+        frame(
+            &mut app,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Enabled),
+                egui::Event::Ime(egui::ImeEvent::Preedit("雪".into())),
+            ],
+        );
+        if kind == 1 {
+            let id = workspace_access_tests::recorded_response(&app, "project_name_query").id;
+            let mut state = egui::TextEdit::load_state(&app.editor_ctx, id).unwrap();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(1),
+                )));
+            state.store(&app.editor_ctx, id);
+        }
+        let (commit, outcome) = match kind {
+            0 => ("", "CommitEmpty"),
+            1 => ("雪", "CommitRejectedAnchor"),
+            _ => ("\n", "CommitIgnoredLineBreak"),
+        };
+        frame(
+            &mut app,
+            vec![egui::Event::Ime(egui::ImeEvent::Commit(commit.into()))],
+        );
+        assert!(name_receipts(&app)
+            .iter()
+            .any(|value| value["outcome"] == outcome));
+        assert!(app.project_name_observation().unwrap().1.is_empty());
+        frame(&mut app, vec![key_event(egui::Key::Enter, false)]);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn project_name_search_native_receipt_not_reapplied_across_passes() {
+    let (mut app, commands) = flat_fixture(vec![entry("雪.rs", false)]);
+    name_open_button(&mut app);
+    frame(
+        &mut app,
+        vec![
+            egui::Event::Ime(egui::ImeEvent::Enabled),
+            egui::Event::Ime(egui::ImeEvent::Preedit("雪".into())),
+        ],
+    );
+    name_sized_frame(
+        &mut app,
+        egui::vec2(780.0, 540.0),
+        vec![egui::Event::Ime(egui::ImeEvent::Commit("雪".into()))],
+        true,
+    );
+    assert_eq!(
+        app.project_name_observation().unwrap(),
+        ("雪".into(), vec!["雪.rs".into()], false, false)
+    );
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn project_name_search_query_scalar_and_admitted_row_limits_are_exact() {
+    let (mut app, commands) = flat_fixture(
+        (0..MAX_ROWS)
+            .map(|n| entry(&format!("match-{n:04}.rs"), false))
+            .collect(),
+    );
+    flat_focus(&mut app, "match-0000.rs");
+    name_type(&mut app, egui::Key::M, "match");
+    assert_eq!(app.project_name_observation().unwrap().1.len(), MAX_ROWS);
+    let output = frame(&mut app, vec![]);
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.text() == "4096 matches · loaded rows only")));
+    name_replace(&mut app, &"雪".repeat(5000));
+    assert_eq!(
+        app.project_name_observation().unwrap().0.chars().count(),
+        4096
+    );
+    name_replace(&mut app, "match\u{1}");
+    assert!(app.project_name_observation().unwrap().1.is_empty());
+    frame(&mut app, vec![key_event(egui::Key::Enter, false)]);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn project_name_search_mixed_pointer_batches_preserve_release_and_fresh_click() {
+    for mixed_press in [false, true] {
+        let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+        flat_focus(&mut app, "zeta.rs");
+        let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
+            .rect
+            .center();
+        for pressed in [true, false] {
+            let mut events = vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ];
+            if pressed == mixed_press {
+                events.push(egui::Event::Text("zet".into()));
+            }
+            frame(&mut app, events);
+        }
+        assert!(!app.editor_ctx.input(|input| input.pointer.any_down()));
+        assert!(commands.try_recv().is_err());
+        assert!(app.project_name_observation().is_none());
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(
+            matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "zeta.rs")
+        );
+    }
+}
+
+#[test]
+fn project_name_search_same_pass_pointer_focus_loss_fences_native_keys() {
+    for key in [egui::Key::H, egui::Key::K, egui::Key::U] {
+        let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+        app.documents.push(Document::new(
+            1,
+            "zeta.rs".into(),
+            "saved text".into(),
+            "r".into(),
+        ));
+        app.active_document = Some(1);
+        for _ in 0..3 {
+            name_actual_frame(&mut app, vec![], |_| {});
+        }
+        let editor = egui::Id::new(("editor", 1u64));
+        app.editor_ctx
+            .memory_mut(|memory| memory.request_focus(editor));
+        name_actual_frame(&mut app, vec![egui::Event::Text("dirty".into())], |_| {});
+        flat_focus(&mut app, "zeta.rs");
+        name_actual_frame(
+            &mut app,
+            vec![
+                key_event(egui::Key::Z, false),
+                egui::Event::Text("zet".into()),
+            ],
+            |_| {},
+        );
+        name_actual_frame(&mut app, vec![released(egui::Key::Z)], |_| {});
+        let before = (app.documents[0].text.clone(), app.documents[0].edit_version);
+        let rect = workspace_access_tests::recorded_response(&app, "editor").rect;
+        let at = rect.left_top() + egui::vec2(20.0, 10.0);
+        name_actual_frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                name_modified(key, egui::Modifiers::CTRL),
+            ],
+            |_| {},
+        );
+        assert_eq!(
+            app.editor_ctx.memory(|memory| memory.focused()),
+            Some(editor)
+        );
+        assert_eq!(
+            (app.documents[0].text.clone(), app.documents[0].edit_version),
+            before,
+            "{key:?}"
+        );
+        assert!(commands.try_recv().is_err());
+    }
+}

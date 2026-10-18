@@ -4229,6 +4229,9 @@ impl eframe::App for CedarApp {
         if self.workspace_key.is_some() {
             self.sidebar(ctx);
         }
+        // The query TextEdit can discover same-pass pointer focus loss during
+        // sidebar layout. Fence its original native keys before a new editor.
+        self.guard_project_name_input(ctx);
         egui::CentralPanel::default()
             .frame(chrome::island())
             .show(ctx, |ui| {
