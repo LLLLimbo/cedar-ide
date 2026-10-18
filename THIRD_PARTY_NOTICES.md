@@ -8,6 +8,7 @@ Generated from the exact Cargo.lock dependency graph. Includes target-specific a
 | ab_glyph_rasterizer | 0.1.10 | Apache-2.0 | https://github.com/alexheretic/ab-glyph |
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | https://github.com/oyvindln/adler2 |
 | ahash | 0.8.12 | MIT OR Apache-2.0 | https://github.com/tkaitchuck/ahash |
+| aho-corasick | 1.1.5 | Unlicense OR MIT | https://github.com/BurntSushi/aho-corasick |
 | android-activity | 0.6.1 | MIT OR Apache-2.0 | https://github.com/rust-mobile/android-activity |
 | android-properties | 0.2.2 | MIT | https://github.com/miklelappo/android-properties |
 | android_system_properties | 0.1.6 | MIT OR Apache-2.0 | https://github.com/nical/android_system_properties |
@@ -205,6 +206,9 @@ Generated from the exact Cargo.lock dependency graph. Includes target-specific a
 | redox_syscall | 0.4.1 | MIT | https://gitlab.redox-os.org/redox-os/syscall |
 | redox_syscall | 0.5.18 | MIT | https://gitlab.redox-os.org/redox-os/syscall |
 | redox_syscall | 0.9.4 | MIT | https://gitlab.redox-os.org/redox-os/kernel |
+| regex | 1.13.1 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex |
+| regex-automata | 0.4.18 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex |
+| regex-syntax | 0.8.11 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex |
 | renderdoc-sys | 1.1.0 | MIT OR Apache-2.0 | https://github.com/ebkalderon/renderdoc-rs |
 | rustc-hash | 1.1.0 | Apache-2.0/MIT | https://github.com/rust-lang-nursery/rustc-hash |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT | https://github.com/rust-lang/rustc-hash |
@@ -347,6 +351,16 @@ Generated from the exact Cargo.lock dependency graph. Includes target-specific a
 | zmij | 1.0.23 | MIT | https://github.com/dtolnay/zmij |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg |
+
+## Unicode-derived data
+
+The regex-syntax 0.8.11 dependency includes Unicode-derived data, including the
+Unicode 16.0.0 simple case-folding table used by Cedar's case-only matcher.
+Its additional upstream data/software notice is retained unchanged from
+`src/unicode_tables/LICENSE-UNICODE` in the reviewed crate at
+`third-party-licenses/regex-syntax-0.8.11/LICENSE-UNICODE`.
+Notice SHA-256: 74db5baf44a41b1000312c673544b3374e4198af5605c7f9080a402cec42cfa3.
+
 
 ## Vendored egui 0.31.1
 

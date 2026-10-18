@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Notice regeneration must retain non-Cargo fixtures and approved font licenses."""
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -15,6 +16,166 @@ import collect_licenses as collector
 import vendored_egui
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+class UnicodeNoticeCollectionTests(unittest.TestCase):
+    def fixture(self, root):
+        (root / 'Cargo.toml').write_text('[workspace]\nmembers = []\n')
+        fonts = root / 'crates/app/assets/fonts'
+        fonts.mkdir(parents=True)
+        for name in ('manifest.json', 'Inter-LICENSE.txt', 'JetBrainsMono-OFL.txt'):
+            shutil.copyfile(ROOT / 'crates/app/assets/fonts' / name, fonts / name)
+        base = root / 'registry/regex-syntax-0.8.11'
+        base.mkdir(parents=True)
+        (base / 'Cargo.toml').write_text('[package]\nname = "regex-syntax"\nversion = "0.8.11"\n')
+        (base / 'LICENSE-MIT').write_bytes(b'Synthetic crate MIT notice\n')
+        (base / 'LICENSE-APACHE').write_bytes(b'Synthetic crate Apache notice\n')
+        notice = base / collector.UNICODE_NOTICE_PATH
+        notice.parent.mkdir(parents=True)
+        content = (ROOT / 'third-party-licenses/regex-syntax-0.8.11/LICENSE-UNICODE').read_bytes()
+        self.assertEqual(len(content), 2847)
+        self.assertEqual(hashlib.sha256(content).hexdigest(),
+                         '74db5baf44a41b1000312c673544b3374e4198af5605c7f9080a402cec42cfa3')
+        notice.write_bytes(content)
+        package = {'name': 'regex-syntax', 'version': '0.8.11',
+                   'source': 'registry+https://github.com/rust-lang/crates.io-index',
+                   'manifest_path': str(base / 'Cargo.toml'),
+                   'license': 'MIT OR Apache-2.0', 'license_file': None,
+                   'repository': 'https://github.com/rust-lang/regex'}
+        return {'workspace_members': [], 'packages': [package]}, base, notice
+
+    def test_exact_nested_notice_is_preserved_once_and_regeneration_is_idempotent(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-unicode-notices-') as directory:
+            root = Path(directory).resolve()
+            metadata, base, notice = self.fixture(root)
+            # The rule must not recursively collect any other nested notice or source.
+            (notice.parent / 'LICENSE-UNREVIEWED').write_text('Must not be copied\n')
+            (notice.parent / 'case_folding_simple.rs').write_text('// Synthetic source\n')
+            before_source = {path.relative_to(base).as_posix(): path.read_bytes()
+                             for path in base.rglob('*') if path.is_file()}
+            previous = None
+            for _ in range(2):
+                self.assertEqual(collector.collect(root, metadata), 1)
+                out = root / 'third-party-licenses'
+                actual = {path.relative_to(out).as_posix(): path.read_bytes()
+                          for path in out.rglob('*') if path.is_file()}
+                self.assertEqual(set(actual), {'regex-syntax-0.8.11/LICENSE-MIT',
+                                               'regex-syntax-0.8.11/LICENSE-APACHE',
+                                               'regex-syntax-0.8.11/LICENSE-UNICODE'})
+                self.assertEqual(actual['regex-syntax-0.8.11/LICENSE-UNICODE'], notice.read_bytes())
+                notices = (root / 'THIRD_PARTY_NOTICES.md').read_bytes()
+                text = notices.decode()
+                self.assertEqual(text.count('| regex-syntax | 0.8.11 |'), 1)
+                self.assertEqual(text.count('## Unicode-derived data'), 1)
+                self.assertIn('Unicode 16.0.0 simple case-folding table', text)
+                self.assertIn('third-party-licenses/regex-syntax-0.8.11/LICENSE-UNICODE', text)
+                self.assertEqual(text.count('## Apache Maven Surefire report fixture'), 1)
+                self.assertEqual(text.count('## Embedded fonts'), 1)
+                if previous is not None:
+                    self.assertEqual((notices, actual), previous)
+                previous = notices, actual
+            self.assertEqual({path.relative_to(base).as_posix(): path.read_bytes()
+                              for path in base.rglob('*') if path.is_file()}, before_source)
+
+    def test_unreviewed_package_identity_is_rejected_before_any_output(self):
+        for change in ('version', 'source', 'repository', 'license', 'license_file', 'duplicate'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory(prefix='cedar-unicode-identity-') as directory:
+                root = Path(directory).resolve()
+                metadata, _, _ = self.fixture(root)
+                package = metadata['packages'][0]
+                if change == 'duplicate':
+                    metadata['packages'].append(dict(package))
+                elif change == 'license_file':
+                    package[change] = '../elsewhere/LICENSE-UNICODE'
+                else:
+                    package[change] = 'unreviewed'
+                with self.assertRaisesRegex(ValueError, 'regex-syntax Unicode notice:'):
+                    collector.collect(root, metadata)
+                self.assertFalse((root / 'third-party-licenses').exists())
+                self.assertFalse((root / 'THIRD_PARTY_NOTICES.md').exists())
+
+    def test_missing_unexpected_and_modified_notice_paths_fail_closed(self):
+        for change in ('missing', 'root-only', 'elsewhere-only', 'root-shadow', 'modified-bytes', 'modified-size',
+                       'manifest-name', 'manifest-missing', 'package-directory', 'notice-directory'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory(prefix='cedar-unicode-path-') as directory:
+                root = Path(directory).resolve()
+                metadata, base, notice = self.fixture(root)
+                package = metadata['packages'][0]
+                if change == 'missing':
+                    notice.unlink()
+                elif change == 'root-only':
+                    notice.rename(base / notice.name)
+                elif change == 'elsewhere-only':
+                    notice.rename(base / 'src' / notice.name)
+                elif change == 'root-shadow':
+                    shutil.copyfile(notice, base / notice.name)
+                elif change == 'modified-bytes':
+                    notice.write_bytes(b'X' + notice.read_bytes()[1:])
+                elif change == 'modified-size':
+                    notice.write_bytes(notice.read_bytes() + b' ')
+                elif change == 'manifest-name':
+                    renamed = base / 'Unexpected.toml'
+                    (base / 'Cargo.toml').rename(renamed)
+                    package['manifest_path'] = str(renamed)
+                elif change == 'manifest-missing':
+                    (base / 'Cargo.toml').unlink()
+                elif change == 'package-directory':
+                    renamed = base.with_name('unreviewed-package')
+                    base.rename(renamed)
+                    package['manifest_path'] = str(renamed / 'Cargo.toml')
+                else:
+                    notice.unlink()
+                    notice.mkdir()
+                with self.assertRaisesRegex(ValueError, 'regex-syntax Unicode notice:'):
+                    collector.collect(root, metadata)
+                self.assertFalse((root / 'third-party-licenses').exists())
+                self.assertFalse((root / 'THIRD_PARTY_NOTICES.md').exists())
+
+    def test_missing_source_cannot_be_masked_by_a_previously_collected_notice(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-unicode-stale-') as directory:
+            root = Path(directory).resolve()
+            metadata, _, notice = self.fixture(root)
+            collector.collect(root, metadata)
+            out = root / 'third-party-licenses'
+            before = {path.relative_to(out).as_posix(): path.read_bytes()
+                      for path in out.rglob('*') if path.is_file()}
+            before_notices = (root / 'THIRD_PARTY_NOTICES.md').read_bytes()
+            notice.unlink()
+            with self.assertRaisesRegex(ValueError, 'missing, unsafe or unexpected nested notice path'):
+                collector.collect(root, metadata)
+            self.assertEqual({path.relative_to(out).as_posix(): path.read_bytes()
+                              for path in out.rglob('*') if path.is_file()}, before)
+            self.assertEqual((root / 'THIRD_PARTY_NOTICES.md').read_bytes(), before_notices)
+
+    def test_symlinked_source_and_destination_paths_are_rejected(self):
+        for change in ('manifest', 'notice', 'notice-parent', 'package-parent',
+                       'destination', 'destination-parent'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory(prefix='cedar-unicode-symlink-') as directory:
+                root = Path(directory).resolve()
+                metadata, base, notice = self.fixture(root)
+                if change.startswith('destination'):
+                    original = root / 'third-party-licenses/regex-syntax-0.8.11/LICENSE-UNICODE'
+                    original.parent.mkdir(parents=True)
+                    original.write_bytes(b'Existing content must stay unchanged\n')
+                    if change == 'destination-parent':
+                        original = original.parent
+                else:
+                    original = {'manifest': base / 'Cargo.toml', 'notice': notice,
+                                'notice-parent': notice.parent, 'package-parent': base}[change]
+                target = root / 'linked-content'
+                original.rename(target)
+                try:
+                    original.symlink_to(target, target_is_directory=target.is_dir())
+                except OSError as error:
+                    self.skipTest('Symlink creation unavailable: ' + str(error))
+                before = {path.relative_to(target).as_posix(): path.read_bytes()
+                          for path in target.rglob('*') if path.is_file()} if target.is_dir() else target.read_bytes()
+                with self.assertRaisesRegex(ValueError, 'regex-syntax Unicode notice:'):
+                    collector.collect(root, metadata)
+                after = {path.relative_to(target).as_posix(): path.read_bytes()
+                         for path in target.rglob('*') if path.is_file()} if target.is_dir() else target.read_bytes()
+                self.assertEqual(after, before)
+                self.assertFalse((root / 'THIRD_PARTY_NOTICES.md').exists())
 
 
 class LicenseCollectionTests(unittest.TestCase):

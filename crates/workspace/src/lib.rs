@@ -10,8 +10,9 @@
 //! permissions, not merely workspace access.
 
 mod capabilities;
+mod case_matcher;
 #[cfg(test)]
-mod case_search_stage1_tests;
+mod case_search_tests;
 mod file_discovery;
 mod git_read;
 #[cfg(feature = "windows-java-gc-diagnostic")]
@@ -193,7 +194,7 @@ impl Workspace {
                 protocol: PROTOCOL_VERSION,
                 file_discovery: Some(cedar_protocol::FileDiscoveryDescriptor::V1),
                 scoped_search: Some(cedar_protocol::ScopedSearchDescriptor::V1),
-                case_search: None,
+                case_search: Some(cedar_protocol::CaseSearchDescriptor::V1),
                 root: self.root.to_string_lossy().into_owned(),
                 agent: Some({
                     let mut info = capabilities::agent_info(self.backend_mode);
@@ -212,12 +213,7 @@ impl Workspace {
             } => self.write(&path, &text, expected_revision.as_deref()),
             Operation::Search { query, limit } => self.search(&query, limit),
             Operation::SearchIn { request } => self.search_in(request),
-            // Inert Stage 1: reject before inspecting the request or touching
-            // any directory/content. Hello deliberately advertises no support.
-            Operation::SearchCase { .. } => Err(error(
-                "unsupported_operation",
-                "Case search is not implemented by this agent",
-            )),
+            Operation::SearchCase { request } => self.search_case(request),
             Operation::FindFiles {
                 query,
                 scope,
@@ -832,7 +828,15 @@ fn search_preview(line: &str, query: &str) -> String {
     if line.len() <= MAX_SEARCH_LINE_BYTES {
         return line.to_owned();
     }
-    let found = line.find(query).unwrap_or(0);
+    search_preview_at(line, line.find(query).unwrap_or(0))
+}
+
+// Callers supply a checked original-text UTF-8 offset. The old wrapper retains
+// its exact query lookup and fallback; SearchCase uses its original match span.
+fn search_preview_at(line: &str, found: usize) -> String {
+    if line.len() <= MAX_SEARCH_LINE_BYTES {
+        return line.to_owned();
+    }
     let mut start = found.saturating_sub(MAX_SEARCH_LINE_BYTES / 4);
     while !line.is_char_boundary(start) {
         start += 1;

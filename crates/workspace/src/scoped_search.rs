@@ -1,13 +1,15 @@
 //! True scoped text traversal. Ancestor checks narrow filesystem races; this is
 //! not a sandbox against a process concurrently replacing filesystem names.
+use crate::case_matcher::CaseMatcher;
 use crate::file_discovery::is_link_or_reparse;
-use crate::{error, search_preview, Workspace};
+use crate::{error, search_preview, search_preview_at, Workspace};
 use cedar_protocol::{
-    scoped_search_masks_match, valid_file_discovery_path, Payload, RemoteError,
-    ScopedSearchIncompleteReason as Reason, ScopedSearchRequest, ScopedSearchResult, SearchMatch,
-    FILE_DISCOVERY_EXCLUDED_DIRECTORIES, MAX_FILE_BYTES, MAX_SCOPED_SEARCH_DEPTH,
-    MAX_SCOPED_SEARCH_ENTRIES, MAX_SCOPED_SEARCH_PENDING_BYTES, MAX_SCOPED_SEARCH_PENDING_DIRS,
-    MAX_SCOPED_SEARCH_READ_BYTES, MAX_SCOPED_SEARCH_RESULT_BYTES,
+    scoped_search_masks_match, valid_file_discovery_path, CaseSearchMatch, CaseSearchRequest,
+    CaseSearchResult, Payload, RemoteError, ScopedSearchIncompleteReason as Reason,
+    ScopedSearchRequest, ScopedSearchResult, SearchMatch, FILE_DISCOVERY_EXCLUDED_DIRECTORIES,
+    MAX_FILE_BYTES, MAX_SCOPED_SEARCH_DEPTH, MAX_SCOPED_SEARCH_ENTRIES,
+    MAX_SCOPED_SEARCH_PENDING_BYTES, MAX_SCOPED_SEARCH_PENDING_DIRS, MAX_SCOPED_SEARCH_READ_BYTES,
+    MAX_SCOPED_SEARCH_RESULT_BYTES,
 };
 use std::collections::BTreeSet;
 use std::fs::{self, File};
@@ -43,6 +45,9 @@ impl Default for Budget {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TestEvent {
+    Compile,
+    Compiled,
+    Match,
     Directory,
     FileCheck,
     Open,
@@ -65,6 +70,136 @@ impl Workspace {
         &self,
         request: &ScopedSearchRequest,
         budget: Budget,
+        expired: impl FnMut() -> bool,
+        #[cfg(test)] event: impl FnMut(TestEvent, &str),
+    ) -> Result<ScopedSearchResult, RemoteError> {
+        self.search_with_matcher(
+            request,
+            budget,
+            None,
+            expired,
+            #[cfg(test)]
+            event,
+        )
+    }
+
+    pub(super) fn search_case(&self, request: CaseSearchRequest) -> Result<Payload, RemoteError> {
+        // One cooperative deadline includes compilation; no forced interruption
+        // of a compile, match, filesystem call or finalization is promised.
+        let started = Instant::now();
+        let result = self.search_case_with_budget(
+            &request,
+            Budget::default(),
+            || started.elapsed() >= MAX_DURATION,
+            #[cfg(test)]
+            |_, _| {},
+            #[cfg(test)]
+            None,
+        )?;
+        Ok(Payload::CaseMatches { result })
+    }
+
+    fn search_case_with_budget(
+        &self,
+        request: &CaseSearchRequest,
+        mut budget: Budget,
+        mut expired: impl FnMut() -> bool,
+        #[cfg(test)] mut event: impl FnMut(TestEvent, &str),
+        #[cfg(test)] nfa_limit: Option<usize>,
+    ) -> Result<CaseSearchResult, RemoteError> {
+        request.validate()?;
+        let mut empty = CaseSearchResult {
+            request: request.clone(),
+            matches: Vec::new(),
+            incomplete: false,
+            reasons: Vec::new(),
+            examined_entries: 0,
+            read_bytes: 0,
+        };
+        if expired() {
+            empty.incomplete = true;
+            empty.reasons.push(Reason::TimeLimit);
+            empty.validate_for(request)?;
+            return Ok(empty);
+        }
+        #[cfg(test)]
+        event(TestEvent::Compile, "");
+        #[cfg(test)]
+        let matcher = match nfa_limit {
+            Some(limit) => {
+                CaseMatcher::with_test_nfa_limit(&request.query, request.case_sensitive, limit)
+            }
+            None => CaseMatcher::new(&request.query, request.case_sensitive),
+        }?;
+        #[cfg(not(test))]
+        let matcher = CaseMatcher::new(&request.query, request.case_sensitive)?;
+        #[cfg(test)]
+        event(TestEvent::Compiled, "");
+        // A build error above wins over the post-build elapsed observation.
+        if expired() {
+            empty.incomplete = true;
+            empty.reasons.push(Reason::TimeLimit);
+            empty.validate_for(request)?;
+            return Ok(empty);
+        }
+        let scoped = ScopedSearchRequest {
+            query: request.query.clone(),
+            scope: request.scope.clone(),
+            masks: request.masks.clone(),
+            limit: request.limit,
+        };
+        // Rows/counters/reasons have identical JSON shapes. Derive the exact
+        // request-envelope overhead from serialization (including true/false),
+        // and reserve it before the unchanged scoped response prefix crop.
+        let scoped_empty = ScopedSearchResult {
+            request: scoped.clone(),
+            matches: Vec::new(),
+            incomplete: false,
+            reasons: Vec::new(),
+            examined_entries: 0,
+            read_bytes: 0,
+        };
+        let overhead = empty
+            .encoded_bytes()?
+            .checked_sub(scoped_empty.encoded_bytes()?)
+            .ok_or_else(case_metadata_error)?;
+        budget.result_bytes = budget
+            .result_bytes
+            .checked_sub(overhead)
+            .ok_or_else(case_metadata_error)?;
+        let result = self.search_with_matcher(
+            &scoped,
+            budget,
+            Some(&matcher),
+            expired,
+            #[cfg(test)]
+            event,
+        )?;
+        let result = CaseSearchResult {
+            request: request.clone(),
+            matches: result
+                .matches
+                .into_iter()
+                .map(|row| CaseSearchMatch {
+                    path: row.path,
+                    line: row.line,
+                    text: row.text,
+                })
+                .collect(),
+            incomplete: result.incomplete,
+            reasons: result.reasons,
+            examined_entries: result.examined_entries,
+            read_bytes: result.read_bytes,
+        };
+        result.validate_for(request)?;
+        Ok(result)
+    }
+
+    fn search_with_matcher(
+        &self,
+        request: &ScopedSearchRequest,
+        budget: Budget,
+        matcher: Option<&CaseMatcher>,
         mut expired: impl FnMut() -> bool,
         #[cfg(test)] mut event: impl FnMut(TestEvent, &str),
     ) -> Result<ScopedSearchResult, RemoteError> {
@@ -297,9 +432,32 @@ impl Workspace {
                         reasons.insert(Reason::TimeLimit);
                         break 'walk;
                     }
-                    if !value.contains(&request.query) {
-                        continue;
-                    }
+                    let span = if let Some(matcher) = matcher {
+                        let span = matcher.find(value);
+                        #[cfg(test)]
+                        event(TestEvent::Match, &path);
+                        // Include nonmatches and the final line in cooperative
+                        // elapsed checks; never expose a row from an overrun.
+                        if expired() {
+                            reasons.insert(Reason::TimeLimit);
+                            break 'walk;
+                        }
+                        let Some(span) = span else { continue };
+                        if value.get(span.clone()).is_none() {
+                            return Err(error(
+                                "case_search_matcher_error",
+                                "Invalid literal match span",
+                            ));
+                        }
+                        Some(span)
+                    } else {
+                        // Keep old SearchIn matching, preview lookup and timing
+                        // checks unchanged. Only SearchCase adds post-match checks.
+                        if !value.contains(&request.query) {
+                            continue;
+                        }
+                        None
+                    };
                     if result.matches.len() == limit {
                         reasons.insert(Reason::ResultLimit);
                         break 'walk;
@@ -307,7 +465,10 @@ impl Workspace {
                     result.matches.push(SearchMatch {
                         path: path.clone(),
                         line: line + 1,
-                        text: search_preview(value, &request.query),
+                        text: match span {
+                            Some(span) => search_preview_at(value, span.start),
+                            None => search_preview(value, &request.query),
+                        },
                     });
                 }
             }
@@ -354,6 +515,13 @@ impl Workspace {
         result.validate_for(request)?;
         Ok(result)
     }
+}
+
+fn case_metadata_error() -> RemoteError {
+    error(
+        "invalid_case_search",
+        "Case search result metadata exceeds its byte budget",
+    )
 }
 
 enum FileRead {
@@ -418,5 +586,7 @@ fn reason_for_error(failure: &RemoteError) -> Reason {
     }
 }
 
+#[cfg(test)]
+mod case_tests;
 #[cfg(test)]
 mod tests;

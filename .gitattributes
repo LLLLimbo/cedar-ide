@@ -11,3 +11,14 @@ crates/app/tests/fixtures/surefire-3.5.4/enclosed-error.xml -text
 
 # Preserve the exact pre-case-search protocol reader on every checkout.
 /crates/protocol/tests/fixtures/accepted_079/*.rs -text
+
+# Preserve the exact audited case-search dependency notices on every checkout.
+/third-party-licenses/aho-corasick-1.1.5/COPYING -text
+/third-party-licenses/aho-corasick-1.1.5/LICENSE-MIT -text
+/third-party-licenses/regex-1.13.1/LICENSE-APACHE -text
+/third-party-licenses/regex-1.13.1/LICENSE-MIT -text
+/third-party-licenses/regex-automata-0.4.18/LICENSE-APACHE -text
+/third-party-licenses/regex-automata-0.4.18/LICENSE-MIT -text
+/third-party-licenses/regex-syntax-0.8.11/LICENSE-APACHE -text
+/third-party-licenses/regex-syntax-0.8.11/LICENSE-MIT -text
+/third-party-licenses/regex-syntax-0.8.11/LICENSE-UNICODE -text

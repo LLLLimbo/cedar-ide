@@ -14,41 +14,36 @@ fn request(case_sensitive: bool) -> Operation {
 }
 
 #[test]
-fn case_search_is_unadvertised_and_unsupported_even_without_a_root() {
+fn case_search_advertises_v1_only_with_the_implemented_backend_and_stays_trust_off() {
     let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("text"), "needle\nNEEDLE\n").unwrap();
     let mut workspace = Workspace::open(root.path()).unwrap();
     let hello = workspace.handle(Operation::Hello).unwrap();
     assert!(
-        matches!(hello, Payload::Hello {case_search:None, scoped_search:Some(d), ..} if d.supported())
+        matches!(hello, Payload::Hello {case_search:Some(d), scoped_search:Some(s), ..} if d.supported() && s.supported())
     );
-    let wire = serde_json::to_value(hello).unwrap();
-    assert!(wire.get("case_search").is_none());
-    root.close().unwrap();
+    assert_eq!(
+        serde_json::to_value(hello).unwrap()["case_search"],
+        serde_json::json!({"version":1})
+    );
     for trust in [false, true] {
         workspace.set_allow_run(trust);
         for case_sensitive in [false, true] {
-            assert_eq!(
-                workspace.handle(request(case_sensitive)).unwrap_err().code,
-                "unsupported_operation"
-            );
+            let Payload::CaseMatches { result } =
+                workspace.handle(request(case_sensitive)).unwrap()
+            else {
+                panic!("case result");
+            };
+            assert_eq!(result.matches.len(), if case_sensitive { 1 } else { 2 });
+            assert_eq!(result.request.case_sensitive, case_sensitive);
+            assert!(!result.incomplete);
         }
-        let mut invalid = request(false);
-        let Operation::SearchCase { request } = &mut invalid else {
-            unreachable!()
-        };
-        request.query.clear();
-        request.scope = "../outside".into();
-        request.limit = 0;
-        assert_eq!(
-            workspace.handle(invalid).unwrap_err().code,
-            "unsupported_operation"
-        );
     }
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn case_search_stage1_produces_zero_directory_or_content_open_access_events() {
+fn invalid_case_requests_produce_zero_kernel_directory_or_content_open_events() {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
@@ -58,7 +53,7 @@ fn case_search_stage1_produces_zero_directory_or_content_open_access_events() {
     let mut workspace = Workspace::open(root.path()).unwrap();
     // Linux's kernel reports actual directory/content opens and accesses. Set
     // watches only after fixture/workspace construction, then make no test I/O
-    // until both unsupported requests have returned.
+    // until both invalid requests have returned.
     let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
     assert!(fd >= 0);
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
@@ -78,10 +73,11 @@ fn case_search_stage1_produces_zero_directory_or_content_open_access_events() {
         assert!(watch >= 0);
     }
     for case_sensitive in [false, true] {
-        assert_eq!(
-            workspace.handle(request(case_sensitive)).unwrap_err().code,
-            "unsupported_operation"
-        );
+        let Operation::SearchCase { mut request } = request(case_sensitive) else {
+            unreachable!()
+        };
+        request.scope = "../outside".into();
+        assert!(workspace.handle(Operation::SearchCase { request }).is_err());
     }
     let mut events = [0u8; 4096];
     let count = unsafe { libc::read(fd.as_raw_fd(), events.as_mut_ptr().cast(), events.len()) };

@@ -29,12 +29,19 @@ impl CaseMatcher {
         Self::build(query, case_sensitive, nfa_size_limit)
     }
 
-    fn build(query: &str, case_sensitive: bool, nfa_size_limit: usize) -> Result<Self, RemoteError> {
+    fn build(
+        query: &str,
+        case_sensitive: bool,
+        nfa_size_limit: usize,
+    ) -> Result<Self, RemoteError> {
         if query.is_empty()
             || query.len() > MAX_SCOPED_SEARCH_QUERY_BYTES
             || query.contains(['\r', '\n', '\0'])
         {
-            return Err(error("invalid_scoped_search", "Invalid literal search query"));
+            return Err(error(
+                "invalid_scoped_search",
+                "Invalid literal search query",
+            ));
         }
         // Escaping adds at most one ASCII backslash per input byte. Check this
         // conservative bound before allocation, and the actual pattern after.
@@ -59,7 +66,10 @@ impl CaseMatcher {
                 regex::Error::CompiledTooBig(_) => matcher_limit(),
                 // Never put a syntax/debug error (which can contain the query)
                 // into the response or logs. No fallback to another operation.
-                _ => error("case_search_matcher_error", "Cannot build literal search matcher"),
+                _ => error(
+                    "case_search_matcher_error",
+                    "Cannot build literal search matcher",
+                ),
             })
     }
 
@@ -69,7 +79,10 @@ impl CaseMatcher {
 }
 
 fn matcher_limit() -> RemoteError {
-    error("case_search_matcher_limit", "Literal search matcher exceeds its resource limit")
+    error(
+        "case_search_matcher_limit",
+        "Literal search matcher exceeds its resource limit",
+    )
 }
 
 #[cfg(test)]

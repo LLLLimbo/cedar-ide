@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Collect notices from Cargo's exact locked graph, including pinned local egui."""
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -8,6 +9,68 @@ import tomllib
 
 import vendored_egui
 
+
+REGEX_SYNTAX_NAME = 'regex-syntax'
+REGEX_SYNTAX_VERSION = '0.8.11'
+REGEX_SYNTAX_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index'
+UNICODE_NOTICE_PATH = Path('src/unicode_tables/LICENSE-UNICODE')
+UNICODE_NOTICE_BYTES = 2847
+UNICODE_NOTICE_SHA256 = '74db5baf44a41b1000312c673544b3374e4198af5605c7f9080a402cec42cfa3'
+UNICODE_NOTICE_SECTION = '''## Unicode-derived data
+
+The regex-syntax 0.8.11 dependency includes Unicode-derived data, including the
+Unicode 16.0.0 simple case-folding table used by Cedar's case-only matcher.
+Its additional upstream data/software notice is retained unchanged from
+`src/unicode_tables/LICENSE-UNICODE` in the reviewed crate at
+`third-party-licenses/regex-syntax-0.8.11/LICENSE-UNICODE`.
+Notice SHA-256: 74db5baf44a41b1000312c673544b3374e4198af5605c7f9080a402cec42cfa3.
+'''
+
+
+def reviewed_unicode_notice(root, packages):
+    """One reviewed nested notice, never a recursive package-file exemption."""
+    candidates = [package for package in packages if package['name'] == REGEX_SYNTAX_NAME]
+    if not candidates:
+        return None
+
+    def require(condition, message):
+        if not condition:
+            raise ValueError('regex-syntax Unicode notice: ' + message)
+
+    require(len(candidates) == 1, 'expected exactly one reviewed package')
+    package = candidates[0]
+    require(package['version'] == REGEX_SYNTAX_VERSION
+            and package['source'] == REGEX_SYNTAX_SOURCE
+            and package.get('license') == 'MIT OR Apache-2.0'
+            and package.get('license_file') is None
+            and package.get('repository') == 'https://github.com/rust-lang/regex',
+            'unreviewed package identity/version/source')
+    manifest = Path(package['manifest_path'])
+    base = manifest.parent
+    require(manifest.is_absolute() and manifest.name == 'Cargo.toml'
+            and base.name == REGEX_SYNTAX_NAME + '-' + REGEX_SYNTAX_VERSION
+            and manifest.is_file() and not manifest.is_symlink()
+            and manifest.resolve(strict=True) == manifest,
+            'unsafe or unexpected package manifest path')
+    notice = base / UNICODE_NOTICE_PATH
+    require(notice.is_file() and not notice.is_symlink()
+            and notice.resolve(strict=True) == notice,
+            'missing, unsafe or unexpected nested notice path')
+    # A root-level lookalike must not collide with the one approved nested file.
+    shadow = base / UNICODE_NOTICE_PATH.name
+    require(not shadow.exists() and not shadow.is_symlink(), 'unexpected root notice path')
+    require(notice.stat().st_size == UNICODE_NOTICE_BYTES, 'unreviewed nested notice size')
+    content = notice.read_bytes()
+    require(len(content) == UNICODE_NOTICE_BYTES
+            and hashlib.sha256(content).hexdigest() == UNICODE_NOTICE_SHA256,
+            'unreviewed nested notice bytes')
+    destination = (root / 'third-party-licenses'
+                   / (REGEX_SYNTAX_NAME + '-' + REGEX_SYNTAX_VERSION)
+                   / UNICODE_NOTICE_PATH.name)
+    require(not destination.is_symlink() and destination.resolve() == destination
+            and (not destination.exists() or destination.is_file()),
+            'unsafe notice destination')
+    return destination, content
 
 
 def workspace_identities(root, cargo):
@@ -79,6 +142,8 @@ def dependency_packages(root, metadata):
 
 def collect(root, metadata):
     packages, vendored = dependency_packages(root, metadata)
+    # Fail before creating output if the pinned data notice needs fresh review.
+    unicode_notice = reviewed_unicode_notice(root, packages)
     out = root / 'third-party-licenses'
     out.mkdir(exist_ok=True)
     description = ('Generated from the exact Cargo.lock dependency graph. Includes target-specific '
@@ -109,6 +174,11 @@ def collect(root, metadata):
             if item.is_file():
                 dest.mkdir(exist_ok=True)
                 shutil.copyfile(item, dest / item.name)
+    if unicode_notice is not None:
+        destination, content = unicode_notice
+        destination.parent.mkdir(exist_ok=True)
+        destination.write_bytes(content)
+        lines += ['', UNICODE_NOTICE_SECTION.rstrip(), '']
     if vendored:
         lines += ['', vendored_egui.NOTICE_SECTION.rstrip(), '']
     lines += ['', '## Apache Maven Surefire report fixture', '',
