@@ -3127,66 +3127,66 @@ fn project_name_search_preserves_current_file_find_shortcut() {
 
 #[test]
 fn project_name_search_window_loss_releases_rejected_pointer_lifetime() {
-    for contested in [false, true] {
-        for together in [false, true] {
-            for reset in [false, true] {
-                let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
-                flat_focus(&mut app, "zeta.rs");
-                let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
-                    .rect
-                    .center();
-                let mut press = vec![
-                    egui::Event::PointerMoved(at),
-                    egui::Event::PointerButton {
-                        pos: at,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ];
-                if contested {
-                    press.push(egui::Event::Text("zet".into()));
-                }
-                if together {
-                    press.push(egui::Event::WindowFocused(false));
-                }
-                frame(&mut app, press);
-                if !together {
-                    frame(&mut app, vec![egui::Event::WindowFocused(false)]);
-                }
-                if reset {
-                    app.explorer.reset_connection();
-                    app.list(String::new());
-                    reply(
-                        &mut app,
-                        commands.try_recv().unwrap(),
-                        vec![entry("zeta.rs", false)],
-                    );
-                    settle(&mut app);
-                }
-                frame(
-                    &mut app,
-                    vec![
-                        egui::Event::WindowFocused(true),
+    for combined_fresh in [false, true] {
+        for contested in [false, true] {
+            for together in [false, true] {
+                for reset in [false, true] {
+                    let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+                    flat_focus(&mut app, "zeta.rs");
+                    let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
+                        .rect
+                        .center();
+                    let mut press = vec![
+                        egui::Event::PointerMoved(at),
                         egui::Event::PointerButton {
                             pos: at,
                             button: egui::PointerButton::Primary,
-                            pressed: false,
+                            pressed: true,
                             modifiers: egui::Modifiers::NONE,
                         },
-                    ],
-                );
-                assert!(
-                    commands.try_recv().is_err(),
-                    "orphan release: {contested}/{together}/{reset}"
-                );
-                let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
-                    .rect
-                    .center();
-                for pressed in [true, false] {
+                    ];
+                    if contested {
+                        press.push(egui::Event::Text("zet".into()));
+                    }
+                    if together {
+                        press.push(egui::Event::WindowFocused(false));
+                    }
+                    frame(&mut app, press);
+                    if !together {
+                        frame(&mut app, vec![egui::Event::WindowFocused(false)]);
+                    }
+                    if reset {
+                        app.explorer.reset_connection();
+                        app.list(String::new());
+                        reply(
+                            &mut app,
+                            commands.try_recv().unwrap(),
+                            vec![entry("zeta.rs", false)],
+                        );
+                        settle(&mut app);
+                    }
                     frame(
                         &mut app,
                         vec![
+                            egui::Event::WindowFocused(true),
+                            egui::Event::PointerButton {
+                                pos: at,
+                                button: egui::PointerButton::Primary,
+                                pressed: false,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                    assert!(
+                        commands.try_recv().is_err(),
+                        "orphan release: {contested}/{together}/{reset}"
+                    );
+                    let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
+                        .rect
+                        .center();
+                    let mut fresh = Vec::new();
+                    for pressed in [true, false] {
+                        let events = vec![
                             egui::Event::PointerMoved(at),
                             egui::Event::PointerButton {
                                 pos: at,
@@ -3194,13 +3194,21 @@ fn project_name_search_window_loss_releases_rejected_pointer_lifetime() {
                                 pressed,
                                 modifiers: egui::Modifiers::NONE,
                             },
-                        ],
+                        ];
+                        if combined_fresh {
+                            fresh.extend(events);
+                        } else {
+                            frame(&mut app, events);
+                        }
+                    }
+                    if combined_fresh {
+                        frame(&mut app, fresh);
+                    }
+                    assert!(
+                        matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "zeta.rs"),
+                        "fresh click: {contested}/{together}/{reset}"
                     );
                 }
-                assert!(
-                    matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "zeta.rs"),
-                    "fresh click: {contested}/{together}/{reset}"
-                );
             }
         }
     }

@@ -1860,6 +1860,20 @@ impl CedarApp {
         let row_text_batch = row_owned && raw.events.iter().any(name_text_event);
         // Keep egui's native press/release lifetime intact. A rejected mixed
         // press also owns its later release, even if that release is clean.
+        // A fresh down/up may arrive together. Admit that click only when its
+        // press is the first primary event; a preceding orphan release makes
+        // the whole native batch inert rather than being reclassified later.
+        let first_primary = raw.events.iter().find_map(|event| match event {
+            egui::Event::PointerButton {
+                button: egui::PointerButton::Primary,
+                pressed,
+                ..
+            } => Some(*pressed),
+            _ => None,
+        });
+        if window && pointer_clean && first_primary == Some(true) {
+            self.explorer.name_search.pointer_needs_press = false;
+        }
         self.explorer.pointer_blocked |= self.explorer.name_search.rejected_pointer
             || self.explorer.name_search.pointer_needs_press;
         for event in &raw.events {
