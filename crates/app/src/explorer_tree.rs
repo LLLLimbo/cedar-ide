@@ -249,6 +249,7 @@ struct NameSearch {
     // A cancelled composition must not become a commit in a later query.
     ime_barrier: bool,
     rejected_pointer: bool,
+    pointer_needs_press: bool,
 }
 struct NameFrame {
     context: NameContext,
@@ -1859,7 +1860,8 @@ impl CedarApp {
         let row_text_batch = row_owned && raw.events.iter().any(name_text_event);
         // Keep egui's native press/release lifetime intact. A rejected mixed
         // press also owns its later release, even if that release is clean.
-        self.explorer.pointer_blocked |= self.explorer.name_search.rejected_pointer;
+        self.explorer.pointer_blocked |= self.explorer.name_search.rejected_pointer
+            || self.explorer.name_search.pointer_needs_press;
         for event in &raw.events {
             if let egui::Event::PointerButton {
                 button: egui::PointerButton::Primary,
@@ -1869,8 +1871,10 @@ impl CedarApp {
             {
                 if !pressed {
                     self.explorer.name_search.rejected_pointer = false;
-                } else if row_text_batch || (query_owned && !pointer_clean) {
-                    self.explorer.name_search.rejected_pointer = true;
+                } else {
+                    self.explorer.name_search.pointer_needs_press = false;
+                    self.explorer.name_search.rejected_pointer =
+                        row_text_batch || (query_owned && !pointer_clean);
                 }
             }
         }
@@ -1915,6 +1919,10 @@ impl CedarApp {
             self.cancel_project_name_search();
             self.explorer.name_search.claimed.clear();
             self.explorer.name_search.rejected_pointer = false;
+            // egui can retain the old native press across window focus loss.
+            // An orphan release is never a new click. A genuine new press
+            // clears this barrier, so its first clean release remains usable.
+            self.explorer.name_search.pointer_needs_press = true;
         }
         self.explorer.name_search.frame = Some(NameFrame {
             context,
