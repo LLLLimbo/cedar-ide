@@ -3138,22 +3138,114 @@ impl CedarApp {
             });
     }
 
+    fn java_types_tools_auto_height(&self, ctx: &egui::Context) -> Option<f32> {
+        if self.tools_height.is_some() || !self.focused_java_types() {
+            return None;
+        }
+        let available = ctx.available_rect();
+        let frame = chrome::island();
+        let margins = frame.total_margin().sum();
+        // This UI only measures shared galleys: it never creates widgets,
+        // reads input, or changes a search/focus owner.
+        let mut measure = egui::Ui::new(
+            ctx.clone(),
+            egui::Id::new("java_types_measure"),
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2((available.width() - margins.x).max(0.0), available.height()),
+            )),
+        );
+        let body_height = self.java_types_automatic_body_height(&measure);
+        let gap = measure.spacing().item_spacing.y;
+        measure.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+        measure.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+        let row_height = if egui::TextStyle::Button.resolve(measure.style()).size > 15.0 {
+            34.0
+        } else {
+            28.0
+        };
+        let title_width = egui::WidgetText::from(RichText::new("LANGUAGE").strong())
+            .into_galley(
+                &measure,
+                Some(egui::TextWrapMode::Wrap),
+                measure.available_width(),
+                egui::TextStyle::Body,
+            )
+            .size()
+            .x;
+        let controls_width = shell_button_width(&measure, "x", true)
+            + shell_button_width(&measure, "Automatic height", true)
+            + 8.0;
+        let header_height = if title_width + 8.0 + controls_width > measure.available_width() {
+            2.0 * row_height + 4.0
+        } else {
+            row_height
+        };
+        // 160 points remain for the editor whenever both it and the normal
+        // tools minimum fit. On a shorter screen, the available space wins.
+        let cap = (available.height() - 160.0)
+            .max(150.0)
+            .min(available.height())
+            .clamp(0.0, 500.0);
+        Some(
+            (margins.y + header_height + gap + 6.0 + gap + body_height)
+                .ceil()
+                .max(150.0)
+                .min(cap),
+        )
+    }
+
     fn tools(&mut self, ctx: &egui::Context) {
         if !self.tools_open {
             return;
         }
         let mut close_tools = None;
         let mut automatic_height = false;
+        let auto_height = self.java_types_tools_auto_height(ctx);
+        let available = ctx.available_rect();
+        #[cfg(test)]
+        if self.focused_java_types() {
+            ctx.data_mut(|data| {
+                data.insert_temp(
+                    egui::Id::new("java_types_tools_allocation"),
+                    (available, auto_height),
+                )
+            });
+        }
+        // Compute native drag ownership before supplying an automatic display
+        // allocation. This must not masquerade as a manual preference.
         let resize = tools_resize::prepare(ctx, self.tools_height, &self.tools_height_reset);
+        if let Some(height) = auto_height {
+            let mut rect = available;
+            rect.min.y = rect.max.y - height;
+            // Same PanelState mechanism as tools_resize's manual allocation;
+            // TopBottomPanel still applies its own native edge interaction.
+            ctx.data_mut(|data| {
+                data.insert_persisted(
+                    egui::Id::new("tools"),
+                    egui::containers::panel::PanelState { rect },
+                )
+            });
+        }
         let frame = chrome::island();
+        let minimum = if self.focused_java_types() {
+            (150.0 - f32::from(chrome::GAP))
+                .min(available.height() - f32::from(chrome::GAP))
+                .max(0.0)
+        } else {
+            150.0 - f32::from(chrome::GAP)
+        };
         egui::TopBottomPanel::bottom("tools")
             .default_height(245.0)
-            .height_range((150.0 - f32::from(chrome::GAP))..=500.0)
+            .height_range(minimum..=500.0)
             .resizable(true)
             .frame(frame)
             .show(ctx, |ui| {
                 if let Some(height) = resize.reserve_and_capture(ui, &frame) {
                     self.tools_height = Some(height);
+                }
+                if auto_height.is_some() && self.tools_height.is_none() {
+                    ui.set_min_height(ui.max_rect().height());
                 }
                 ui.scope(|ui| {
                     ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);

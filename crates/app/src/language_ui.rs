@@ -1511,19 +1511,27 @@ impl CedarApp {
         }
     }
 
-    fn language_session_warnings(&self, ui: &mut egui::Ui, busy: bool, starting: bool) {
+    fn language_session_warning_texts(&self, busy: bool, starting: bool) -> Vec<RichText> {
+        let mut warnings = Vec::new();
         if busy && !starting {
-            ui.label(RichText::new("This synchronous language request blocks queued workspace requests until it finishes. Stop becomes available afterward.").small().color(MUTED));
+            warnings.push(RichText::new("This synchronous language request blocks queued workspace requests until it finishes. Stop becomes available afterward.").small().color(MUTED));
         }
         if self.language.mode == ServerMode::Java
             && !self.backend_java_startup_supported()
             && !self.language.maven.enabled
             && !self.language.running
         {
-            ui.label(RichText::new("This agent uses blocking Java startup. Stop becomes available after startup finishes.").small().color(MUTED));
+            warnings.push(RichText::new("This agent uses blocking Java startup. Stop becomes available after startup finishes.").small().color(MUTED));
         }
         if self.language.restart_blocked {
-            ui.colored_label(AMBER, CLEANUP_RECONNECT_GUIDANCE);
+            warnings.push(RichText::new(CLEANUP_RECONNECT_GUIDANCE).color(AMBER));
+        }
+        warnings
+    }
+
+    fn language_session_warnings(&self, ui: &mut egui::Ui, busy: bool, starting: bool) {
+        for warning in self.language_session_warning_texts(busy, starting) {
+            ui.label(warning);
         }
     }
 
@@ -1532,6 +1540,12 @@ impl CedarApp {
         let busy = self.language_busy();
         let starting = self.language.startup_active();
         let supported = self.backend_language_supported();
+        // Focused type search owns its bounded status/warning region. Keep its
+        // query reachable even when a warning wraps in a short manual panel.
+        if self.language.view == View::JavaTypes && !starting {
+            self.java_types_view(ui);
+            return;
+        }
         if !supported {
             ui.colored_label(
                 AMBER,
@@ -1540,17 +1554,6 @@ impl CedarApp {
         }
         if !trusted {
             ui.colored_label(AMBER, "Language servers require trusted tool permission. Enable it in Open workspace and reconnect.");
-        }
-        // Type lookup keeps the existing Language view lifetime and input
-        // ownership, but does not put unrelated server/editor actions before
-        // its query. Active startup still uses the ordinary lifecycle UI.
-        if self.language.view == View::JavaTypes && !starting {
-            self.language_session_warnings(ui, busy, starting);
-            if let Some(reason) = &self.language.paused_reason {
-                ui.colored_label(AMBER, reason);
-            }
-            self.java_types_view(ui);
-            return;
         }
         let generic_supported = self.backend_generic_language_supported();
         let java_supported = self.backend_java_language_supported();

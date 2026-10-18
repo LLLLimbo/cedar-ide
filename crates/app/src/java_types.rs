@@ -6,6 +6,164 @@ const QUERY_INPUT: &str = "java_type_query";
 const INDEX_NOTICE: &str =
     "Unversioned index snapshot; results may lag unsaved edits or project indexing.";
 
+// Measurement and paint share these galleys. No sizing pass renders widgets,
+// consumes query input, changes focus, or starts a language request.
+type TypeGalley = std::sync::Arc<egui::Galley>;
+
+fn type_galley(ui: &egui::Ui, text: RichText, width: f32, style: egui::TextStyle) -> TypeGalley {
+    egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Wrap),
+        width.max(0.0),
+        style,
+    )
+}
+
+struct TypeControls {
+    rects: [egui::Rect; 3],
+    buttons: [TypeGalley; 2],
+    size: egui::Vec2,
+}
+
+impl TypeControls {
+    fn new(ui: &egui::Ui, width: f32, query: &str) -> Self {
+        let padding = ui.spacing().button_padding;
+        let buttons = ["Search", "Language tools"].map(|text| {
+            type_galley(
+                ui,
+                RichText::new(text),
+                (width - 2.0 * padding.x).max(0.0),
+                egui::TextStyle::Button,
+            )
+        });
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let query_height = ui.fonts(|fonts| {
+            fonts.row_height(&font).max(
+                fonts
+                    .layout_no_wrap(query.into(), font.clone(), crate::TEXT)
+                    .size()
+                    .y,
+            )
+        }) + 4.0;
+        let sizes = [
+            egui::vec2(268.0_f32.min(width), query_height),
+            egui::vec2(
+                buttons[0].size().x + 2.0 * padding.x,
+                (buttons[0].size().y + 2.0 * padding.y).max(ui.spacing().interact_size.y),
+            ),
+            egui::vec2(
+                buttons[1].size().x + 2.0 * padding.x,
+                (buttons[1].size().y + 2.0 * padding.y).max(ui.spacing().interact_size.y),
+            ),
+        ];
+        let mut rects = [egui::Rect::NOTHING; 3];
+        let mut cursor = egui::Pos2::ZERO;
+        let mut row_height = 0.0_f32;
+        for (index, size) in sizes.into_iter().enumerate() {
+            if cursor.x > 0.0 && cursor.x + size.x > width {
+                cursor.x = 0.0;
+                cursor.y += row_height + ui.spacing().item_spacing.y;
+                row_height = 0.0;
+            }
+            rects[index] = egui::Rect::from_min_size(cursor, size);
+            cursor.x += size.x + ui.spacing().item_spacing.x;
+            row_height = row_height.max(size.y);
+        }
+        Self {
+            rects,
+            buttons,
+            size: egui::vec2(width, cursor.y + row_height),
+        }
+    }
+}
+
+struct TypeRowLayout {
+    title: TypeGalley,
+    title_height: f32,
+    details: Vec<TypeGalley>,
+    height: f32,
+}
+
+impl TypeRowLayout {
+    fn new(ui: &egui::Ui, row: &WorkspaceSymbol, width: f32) -> Self {
+        let suffix = if row.deprecated { " · deprecated" } else { "" };
+        let label = format!("{} · {}{}", row.name, symbol_kind(row.kind), suffix);
+        let title = type_galley(
+            ui,
+            RichText::new(label),
+            width - 2.0 * ui.spacing().button_padding.x,
+            egui::TextStyle::Button,
+        );
+        let title_height = (title.size().y + 2.0 * ui.spacing().button_padding.y)
+            .max(ui.spacing().interact_size.y);
+        let mut text = Vec::new();
+        if !row.container.is_empty() {
+            text.push(row.container.clone());
+        }
+        text.push(format!(
+            "{}:{}:{}",
+            row.location.uri,
+            u64::from(row.location.range.start.line) + 1,
+            u64::from(row.location.range.start.character) + 1
+        ));
+        if !row.location.uri.starts_with("file:") {
+            text.push("Dependency archives and external URLs cannot be opened".into());
+        }
+        let details: Vec<_> = text
+            .into_iter()
+            .map(|text| {
+                type_galley(
+                    ui,
+                    RichText::new(text).small().color(MUTED),
+                    width,
+                    egui::TextStyle::Body,
+                )
+            })
+            .collect();
+        let height = title_height
+            + details
+                .iter()
+                .map(|galley| galley.size().y + ui.spacing().item_spacing.y)
+                .sum::<f32>();
+        Self {
+            title,
+            title_height,
+            details,
+            height,
+        }
+    }
+
+    fn title(&self, ui: &mut egui::Ui, id: egui::Id, selected: bool) -> egui::Response {
+        let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), self.title_height));
+        let response = ui.interact(rect, id, egui::Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::SelectableLabel,
+                ui.is_enabled(),
+                self.title.text(),
+            )
+        });
+        if ui.is_rect_visible(rect) {
+            let visuals = ui.style().interact_selectable(&response, selected);
+            if selected || response.hovered() || response.has_focus() {
+                ui.painter().rect(
+                    rect,
+                    visuals.corner_radius,
+                    visuals.weak_bg_fill,
+                    visuals.bg_stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+            ui.painter().galley(
+                rect.min + ui.spacing().button_padding,
+                self.title.clone(),
+                visuals.text_color(),
+            );
+        }
+        response
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TypeContext {
     generation: u64,
@@ -603,26 +761,131 @@ impl CedarApp {
         })
     }
 
+    pub(crate) fn focused_java_types(&self) -> bool {
+        self.tool == crate::Tool::Language
+            && self.language.view == View::JavaTypes
+            && !self.language.startup_active()
+    }
+
+    fn java_type_status_texts(&self) -> Vec<RichText> {
+        let mut text = vec![RichText::new(INDEX_NOTICE).small().color(AMBER)];
+        if !self.backend_language_supported() {
+            text.push(
+                RichText::new(self.unsupported_message("the complete language session lifecycle"))
+                    .color(AMBER),
+            );
+        }
+        if !self.execution_trusted() {
+            text.push(RichText::new("Language servers require trusted tool permission. Enable it in Open workspace and reconnect.").color(AMBER));
+        }
+        text.extend(self.language_session_warning_texts(self.language_busy(), false));
+        if let Some(reason) = &self.language.paused_reason {
+            text.push(RichText::new(reason).color(AMBER));
+        }
+        if let Some(problem) = self.java_types_problem() {
+            text.push(RichText::new(problem).color(AMBER));
+        }
+        if !self.language.types.query.is_empty() {
+            if let Err(error) =
+                language_navigation_results::validate_workspace_query(&self.language.types.query)
+            {
+                text.push(RichText::new(error).color(AMBER));
+            }
+        }
+        if let Some(error) = &self.language.types.error {
+            text.push(RichText::new(error).color(AMBER));
+        }
+        if self.language.types.pending.is_some() {
+            text.push(RichText::new("Searching the Java index…"));
+        }
+        if let Some(snapshot) = &self.language.types.snapshot {
+            text.push(RichText::new(format!(
+                "{} results for {:?}",
+                snapshot.rows.len(),
+                snapshot.context.query
+            )));
+            text.push(if snapshot.rows.is_empty() {
+                RichText::new("No indexed matches. Try a different query, or retry after indexing.")
+            } else {
+                RichText::new("Down from query selects a result · Up/Down/Home/End moves · Enter opens · Tab changes control").small().color(MUTED)
+            });
+        } else if self.language.types.pending.is_none() && self.language.types.error.is_none() {
+            text.push(RichText::new(
+                "Enter a type name, then press Search or Enter.",
+            ));
+        }
+        text
+    }
+
+    fn java_type_status_galleys(&self, ui: &egui::Ui, width: f32) -> Vec<TypeGalley> {
+        self.java_type_status_texts()
+            .into_iter()
+            .map(|text| type_galley(ui, text, width, egui::TextStyle::Body))
+            .collect()
+    }
+
+    pub(crate) fn java_types_automatic_body_height(&self, ui: &egui::Ui) -> f32 {
+        let width = ui.available_width();
+        let gap = ui.spacing().item_spacing.y;
+        let title = type_galley(
+            ui,
+            RichText::new("Find Java type").strong(),
+            width,
+            egui::TextStyle::Body,
+        );
+        let controls = TypeControls::new(ui, width, &self.language.types.query);
+        let content_width = (width - ui.spacing().scroll.allocated_width()).max(0.0);
+        let status = self.java_type_status_galleys(ui, content_width);
+        let status_height = status
+            .iter()
+            .map(|galley| galley.size().y + gap)
+            .sum::<f32>()
+            - gap;
+        let rows_height = self
+            .language
+            .types
+            .snapshot
+            .as_ref()
+            .map_or(0.0, |snapshot| {
+                snapshot
+                    .rows
+                    .iter()
+                    .take(3)
+                    .map(|row| TypeRowLayout::new(ui, row, content_width).height + gap)
+                    .sum::<f32>()
+            });
+        title.size().y + gap + controls.size.y + gap + status_height + rows_height
+    }
+
     pub(super) fn java_types_view(&mut self, ui: &mut egui::Ui) {
         self.invalidate_java_types();
-        ui.label(RichText::new("Find Java type").strong());
-        ui.label(RichText::new(INDEX_NOTICE).small().color(AMBER));
+        let title = type_galley(
+            ui,
+            RichText::new("Find Java type").strong(),
+            ui.available_width(),
+            egui::TextStyle::Body,
+        );
+        ui.label(title);
         let problem = self.java_types_problem();
-        if let Some(problem) = &problem {
-            ui.colored_label(AMBER, problem);
-        }
-        let mut search = false;
-        let mut dismiss = false;
-        let mut query_response = None;
+        let search;
+        let dismiss;
+        let query_response;
         let focus_query = self.language.types.focus_query;
         let submit_query = std::mem::take(&mut self.language.types.submit_query);
-        ui.horizontal_wrapped(|ui| {
-            let input = ui.add(
+        let controls = TypeControls::new(ui, ui.available_width(), &self.language.types.query);
+        let (controls_rect, _) = ui.allocate_exact_size(controls.size, egui::Sense::hover());
+        {
+            let mut query_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("java_type_query_control")
+                    .max_rect(controls.rects[0].translate(controls_rect.min.to_vec2())),
+            );
+            let input = query_ui.add(
                 egui::TextEdit::singleline(&mut self.language.types.query)
                     .id(egui::Id::new(QUERY_INPUT))
                     .char_limit(256)
                     .hint_text("Type name (case follows the Java server)")
-                    .desired_width(260.0),
+                    .desired_width((controls.rects[0].width() - 8.0).max(24.0)),
             );
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "java_type_query", &input);
@@ -640,7 +903,13 @@ impl CedarApp {
                 language_navigation_results::validate_workspace_query(&self.language.types.query)
                     .is_ok();
             let enabled = problem.is_none() && valid && !self.language_busy();
-            let search_response = ui.add_enabled(enabled, egui::Button::new("Search"));
+            let mut search_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("java_type_search_control")
+                    .max_rect(controls.rects[1].translate(controls_rect.min.to_vec2())),
+            );
+            let search_response =
+                search_ui.add_enabled(enabled, egui::Button::new(controls.buttons[0].clone()));
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "java_type_search", &search_response);
             search = search_response.clicked()
@@ -651,14 +920,18 @@ impl CedarApp {
                     && ui.input(|input| input.key_pressed(egui::Key::Enter)));
             // Keep dismissal focus distinct from the controls that return in
             // the next frame; a held Enter/Space must not activate one of them.
-            let dismiss_response = ui
-                .push_id("java_type_return", |ui| ui.button("Language tools"))
-                .inner
+            let mut return_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("java_type_return")
+                    .max_rect(controls.rects[2].translate(controls_rect.min.to_vec2())),
+            );
+            let dismiss_response = return_ui
+                .add(egui::Button::new(controls.buttons[1].clone()))
                 .on_hover_text("Leave type search and return to the Language controls · Escape");
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "java_type_return", &dismiss_response);
             dismiss = dismiss_response.clicked();
-        });
+        }
         if dismiss {
             self.language.types.reset();
             self.language.view = View::Problems;
@@ -673,19 +946,62 @@ impl CedarApp {
             }
             ui.ctx().request_repaint();
         }
-        if !self.language.types.query.is_empty() {
-            if let Err(error) =
-                language_navigation_results::validate_workspace_query(&self.language.types.query)
-            {
-                ui.colored_label(AMBER, error);
-            }
+        let content_width = (ui.available_width() - ui.spacing().scroll.allocated_width()).max(0.0);
+        let status = self.java_type_status_galleys(ui, content_width);
+        let gap = ui.spacing().item_spacing.y;
+        let natural_status = status
+            .iter()
+            .map(|galley| galley.size().y + gap)
+            .sum::<f32>()
+            - gap;
+        let has_rows = self
+            .language
+            .types
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.rows.is_empty());
+        let remaining = ui.available_height().max(0.0);
+        let first_rows = self
+            .language
+            .types
+            .snapshot
+            .as_ref()
+            .map_or(0.0, |snapshot| {
+                snapshot
+                    .rows
+                    .iter()
+                    .take(3)
+                    .map(|row| TypeRowLayout::new(ui, row, content_width).height + gap)
+                    .sum::<f32>()
+            });
+        let status_height = if has_rows && natural_status + first_rows > remaining {
+            natural_status.min(remaining * 0.45)
+        } else {
+            natural_status.min(remaining)
         }
-        if let Some(error) = &self.language.types.error {
-            ui.colored_label(AMBER, error);
-        }
-        if self.language.types.pending.is_some() {
-            ui.label("Searching the Java index…");
-        }
+        .max(0.0);
+        let status_scroll = egui::ScrollArea::vertical()
+            .id_salt("java_type_status")
+            .min_scrolled_height(0.0)
+            .max_height(status_height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (index, galley) in status.into_iter().enumerate() {
+                    let response = ui.label(galley);
+                    #[cfg(test)]
+                    crate::workspace_access_tests::record(
+                        ui,
+                        &format!("java_type_status_{index}"),
+                        &response,
+                    );
+                    #[cfg(not(test))]
+                    let _ = (index, response);
+                }
+            });
+        #[cfg(test)]
+        tests::record_viewport(ui.ctx(), "status", status_scroll.inner_rect);
+        #[cfg(not(test))]
+        let _ = status_scroll;
         let mut selected = None;
         let focus_result = if ui.is_sizing_pass() {
             None
@@ -693,27 +1009,26 @@ impl CedarApp {
             self.language.types.focus_result.take()
         };
         let mut focused_result = None;
-        if let Some(snapshot) = &self.language.types.snapshot {
-            ui.label(format!(
-                "{} results for {:?}",
-                snapshot.rows.len(),
-                snapshot.context.query
-            ));
-            if snapshot.rows.is_empty() {
-                ui.label("No indexed matches. Try a different query, or retry after indexing.");
-            } else {
-                ui.label(RichText::new("Down from query selects a result · Up/Down/Home/End moves · Enter opens · Tab changes control").small().color(MUTED));
-            }
+        if let Some(snapshot) = self
+            .language
+            .types
+            .snapshot
+            .as_ref()
+            .filter(|snapshot| !snapshot.rows.is_empty())
+        {
             let enabled = self.java_type_context_current(&snapshot.context)
                 && self.backend_supports("language_resolve_uri")
                 && self.backend_supports("read");
             let busy = self.language_busy();
-            egui::ScrollArea::vertical()
+            let results_height = ui.available_height().max(0.0);
+            let results_scroll = egui::ScrollArea::vertical()
                 .id_salt("java_type_results")
+                .min_scrolled_height(0.0)
+                .max_height(results_height)
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
                     for (index, row) in snapshot.rows.iter().enumerate() {
-                        let suffix = if row.deprecated { " · deprecated" } else { "" };
-                        let label = format!("{} · {}{}", row.name, symbol_kind(row.kind), suffix);
+                        let layout = TypeRowLayout::new(ui, row, content_width);
                         let supported = row.location.uri.starts_with("file:");
                         let id = result_id(&snapshot.context, index);
                         // Preserve the existing focus owner while resolving;
@@ -725,13 +1040,7 @@ impl CedarApp {
                                     && ui.memory(|memory| memory.has_focus(id))));
                         let response = ui
                             .add_enabled_ui(row_enabled, |ui| {
-                                crate::navigation::candidate_row(
-                                    ui,
-                                    id,
-                                    self.language.types.selected == Some(index),
-                                    &label,
-                                    true,
-                                )
+                                layout.title(ui, id, self.language.types.selected == Some(index))
                             })
                             .inner;
                         #[cfg(test)]
@@ -763,32 +1072,29 @@ impl CedarApp {
                                 )
                             });
                         }
-                        if !row.container.is_empty() {
-                            ui.label(RichText::new(&row.container).small().color(MUTED));
-                        }
-                        ui.label(
-                            RichText::new(format!(
-                                "{}:{}:{}",
-                                row.location.uri,
-                                u64::from(row.location.range.start.line) + 1,
-                                u64::from(row.location.range.start.character) + 1
-                            ))
-                            .small()
-                            .color(MUTED),
-                        );
-                        if !supported {
-                            ui.label(
-                                RichText::new(
-                                    "Dependency archives and external URLs cannot be opened",
-                                )
-                                .small()
-                                .color(MUTED),
+                        let mut full_rect = response.rect;
+                        for (detail_index, galley) in layout.details.into_iter().enumerate() {
+                            let detail = ui.label(galley);
+                            full_rect = full_rect.union(detail.rect);
+                            #[cfg(test)]
+                            crate::workspace_access_tests::record(
+                                ui,
+                                &format!("java_type_detail_{index}_{detail_index}"),
+                                &detail,
                             );
+                            #[cfg(not(test))]
+                            let _ = detail_index;
                         }
+                        #[cfg(test)]
+                        tests::record_entry(ui.ctx(), index, full_rect, ui.clip_rect());
+                        #[cfg(not(test))]
+                        let _ = full_rect;
                     }
                 });
-        } else if self.language.types.pending.is_none() && self.language.types.error.is_none() {
-            ui.label("Enter a type name, then press Search or Enter.");
+            #[cfg(test)]
+            tests::record_viewport(ui.ctx(), "results", results_scroll.inner_rect);
+            #[cfg(not(test))]
+            let _ = results_scroll;
         }
         if let Some(index) = focus_result.or(focused_result) {
             self.language.types.selected = Some(index);

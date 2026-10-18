@@ -4,8 +4,24 @@ use crate::{
     worker::{Command, Event, Worker},
     Payload,
 };
+use egui::emath::GuiRounding as _;
 use serde_json::json;
 use std::sync::mpsc::Receiver;
+
+pub(super) fn record_viewport(ctx: &egui::Context, name: &str, rect: egui::Rect) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(("java_types_viewport", name)), rect));
+}
+
+pub(super) fn record_entry(ctx: &egui::Context, index: usize, rect: egui::Rect, clip: egui::Rect) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(("java_types_entry", index)), (rect, clip)));
+}
+
+fn entry_geometry(app: &CedarApp, index: usize) -> (egui::Rect, egui::Rect) {
+    app.editor_ctx.data(|data| {
+        data.get_temp(egui::Id::new(("java_types_entry", index)))
+            .unwrap()
+    })
+}
 
 const URI: &str = "file:///workspace/Target.java";
 const SOURCE: &str = "class Target {}\n";
@@ -792,6 +808,15 @@ fn entry_frame_at(
     pixels: [f32; 2],
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
+    entry_frame_at_passes(app, pixels, events, false).0
+}
+
+fn entry_frame_at_passes(
+    app: &mut CedarApp,
+    pixels: [f32; 2],
+    events: Vec<egui::Event>,
+    discard_first: bool,
+) -> (egui::FullOutput, usize) {
     let ctx = app.editor_ctx.clone();
     let mut input = egui::RawInput {
         time: Some(ctx.input(|input| input.time) + 0.1),
@@ -804,7 +829,15 @@ fn entry_frame_at(
     };
     eframe::App::raw_input_hook(app, &ctx, &mut input);
     let mut native = eframe::Frame::_new_kittest();
-    ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native))
+    let mut passes = 0;
+    let output = ctx.run(input, |ctx| {
+        eframe::App::update(app, ctx, &mut native);
+        passes += 1;
+        if discard_first && passes == 1 {
+            ctx.request_discard("Java types height repeated production layout");
+        }
+    });
+    (output, passes)
 }
 
 fn entry_click(app: &mut CedarApp) {
@@ -1766,6 +1799,45 @@ fn keyboard_type_dirty_buffer_reuse_preserves_text_selection_and_undo() {
 }
 
 #[test]
+fn focused_type_automatic_height_shows_three_complete_result_titles() {
+    for (pixels, zoom) in [
+        ([1180.0, 812.0], 1.0),
+        ([780.0, 880.0], 1.0),
+        ([780.0, 880.0], 1.4),
+    ] {
+        let (mut app, commands) = type_app();
+        let (fonts, hold_fonts) = crate::system_fonts::SystemFonts::pending_failure_for_test();
+        app.system_fonts = fonts;
+        app.editor_ctx.set_fonts(crate::system_fonts::base_fonts());
+        app.editor_ctx.set_zoom_factor(zoom);
+        search(
+            &mut app,
+            &commands,
+            json!([
+                symbol("Type00", URI),
+                symbol("Type01", URI),
+                symbol("Type02", URI)
+            ]),
+        );
+        for _ in 0..6 {
+            entry_frame_at(&mut app, pixels, vec![]);
+        }
+        for index in 0..3 {
+            let name = format!("java_type_row_{index}");
+            let rect = crate::workspace_access_tests::recorded_rect(&app, &name);
+            let clip = crate::workspace_access_tests::recorded_clip(&app, &name);
+            assert!(
+                clip.contains_rect(rect),
+                "complete result {index} clipped at {pixels:?}/{zoom}: {rect:?}/{clip:?}"
+            );
+        }
+        assert_eq!(app.tools_height, None);
+        assert!(commands.try_recv().is_err());
+        drop(hold_fonts);
+    }
+}
+
+#[test]
 fn focused_type_frames_show_query_results_and_return_without_unrelated_controls() {
     for (pixels, zoom) in [
         ([1180.0, 812.0], 1.0),
@@ -2262,4 +2334,589 @@ fn java_type_location_history_admits_once_after_final_selection() {
     assert_eq!(app.location_history.back[0].document, 1);
     assert!(app.location_history.pending.is_none());
     assert_eq!(app.active_document, Some(2));
+}
+
+fn height_fixture(pixels: [f32; 2], zoom: f32) -> (CedarApp, Receiver<Command>, impl FnOnce()) {
+    let (mut app, commands) = type_app();
+    let (fonts, hold_fonts) = crate::system_fonts::SystemFonts::pending_failure_for_test();
+    app.system_fonts = fonts;
+    app.editor_ctx.set_fonts(crate::system_fonts::base_fonts());
+    app.editor_ctx.style_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(14.0));
+    });
+    // egui applies zoom using the previous native screen rectangle. Establish
+    // that rectangle before changing zoom, as the native application does.
+    entry_frame_at(&mut app, pixels, vec![]);
+    app.editor_ctx.set_zoom_factor(zoom);
+    entry_frame_at(&mut app, pixels, vec![]);
+    (app, commands, hold_fonts)
+}
+
+fn height_geometry(app: &CedarApp) -> (egui::Rect, egui::Rect, Option<f32>) {
+    let (available, automatic) = app.editor_ctx.data(|data| {
+        data.get_temp::<(egui::Rect, Option<f32>)>(egui::Id::new("java_types_tools_allocation"))
+            .unwrap()
+    });
+    let panel = egui::containers::panel::PanelState::load(&app.editor_ctx, egui::Id::new("tools"))
+        .unwrap()
+        .rect;
+    (available, panel, automatic)
+}
+
+fn assert_height_bounds(app: &CedarApp, pixels: [f32; 2], automatic: bool) -> f32 {
+    let (available, panel, target) = height_geometry(app);
+    // TopBottomPanel rounds its allocation to egui's 1/32-point grid.
+    // Compare the same exact coordinate contract, not a pixel-sized tolerance.
+    let available = available.round_ui();
+    let screen = egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::Vec2::from(pixels) / app.editor_ctx.zoom_factor(),
+    )
+    .round_ui();
+    assert!(
+        screen.contains_rect(panel),
+        "panel outside screen: {panel:?}/{screen:?}"
+    );
+    assert!(
+        available.contains_rect(panel),
+        "panel overflow: {panel:?}/{available:?}"
+    );
+    assert!(
+        (panel.bottom() - available.bottom()).abs() <= 1.0,
+        "bottom drift: {panel:?}/{available:?}"
+    );
+    assert!(panel.height() <= 500.5, "panel exceeds cap: {panel:?}");
+    if automatic {
+        assert_eq!(app.tools_height, None);
+        assert!(
+            (panel.height() - target.unwrap()).abs() <= 1.0,
+            "measured target differs: {panel:?}/{target:?}"
+        );
+        if available.height() >= 310.0 {
+            assert!(
+                panel.top() - available.top() >= 159.0,
+                "editor reserve lost: {panel:?}/{available:?}"
+            );
+        }
+    }
+    for name in [
+        "java_type_query",
+        "java_type_search",
+        "java_type_return",
+        "close_tools",
+        "tools_automatic_height",
+    ] {
+        let rect = crate::workspace_access_tests::recorded_rect(app, name);
+        let clip = crate::workspace_access_tests::recorded_clip(app, name);
+        assert!(
+            screen.contains_rect(rect) && clip.contains_rect(rect),
+            "{name} clipped: {rect:?}/{clip:?}"
+        );
+    }
+    panel.height()
+}
+
+fn assert_complete_entries(app: &CedarApp, count: usize) {
+    let viewport = app.editor_ctx.data(|data| {
+        data.get_temp::<egui::Rect>(egui::Id::new(("java_types_viewport", "results")))
+            .unwrap()
+    });
+    for index in 0..count {
+        let (entry, clip) = entry_geometry(app, index);
+        assert!(
+            viewport.contains_rect(entry) && clip.contains_rect(entry),
+            "complete entry {index}, including metadata, clipped: {entry:?}/{viewport:?}/{clip:?}"
+        );
+    }
+}
+
+fn height_settle(app: &mut CedarApp, pixels: [f32; 2]) -> f32 {
+    let mut height = 0.0;
+    for _ in 0..6 {
+        entry_frame_at(app, pixels, vec![]);
+        height = assert_height_bounds(app, pixels, app.tools_height.is_none());
+    }
+    height
+}
+
+fn height_click(app: &mut CedarApp, pixels: [f32; 2], name: &str) {
+    let at = crate::workspace_access_tests::recorded_rect(app, name).center();
+    entry_frame_at(app, pixels, vec![egui::Event::PointerMoved(at)]);
+    for pressed in [true, false] {
+        entry_frame_at(
+            app,
+            pixels,
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+    }
+}
+
+fn height_drag(app: &mut CedarApp, pixels: [f32; 2], height: f32) {
+    let id = crate::tools_resize::native_resize_id();
+    let origin = app.editor_ctx.read_response(id).unwrap().rect.center();
+    entry_frame_at(
+        app,
+        pixels,
+        vec![
+            egui::Event::PointerMoved(origin),
+            egui::Event::PointerButton {
+                pos: origin,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    let bottom = height_geometry(app).0.bottom();
+    let at = egui::pos2(origin.x, bottom - height);
+    entry_frame_at(app, pixels, vec![egui::Event::PointerMoved(at)]);
+    assert!(app
+        .editor_ctx
+        .read_response(id)
+        .unwrap()
+        .dragged_by(egui::PointerButton::Primary));
+    assert!((app.tools_height.unwrap() - height).abs() <= 1.0);
+    entry_frame_at(
+        app,
+        pixels,
+        vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+}
+
+#[test]
+fn focused_type_height_first_reply_and_steady_frames_show_three_complete_entries() {
+    for (pixels, zoom) in [
+        ([1180.0, 812.0], 1.0),
+        ([780.0, 880.0], 1.0),
+        ([780.0, 880.0], 1.4),
+    ] {
+        let (mut app, commands, hold_fonts) = height_fixture(pixels, zoom);
+        let empty = height_settle(&mut app, pixels);
+        app.request_java_types();
+        let request = commands.try_recv().unwrap();
+        height_settle(&mut app, pixels);
+        reply(
+            &mut app,
+            &request,
+            Ok(Payload::Language {
+                value: json!([
+                    symbol("Type00", URI),
+                    symbol("Type01", URI),
+                    symbol("Type02", URI)
+                ]),
+            }),
+        );
+        // No idle settling is allowed between the reply and this assertion.
+        entry_frame_at(&mut app, pixels, vec![]);
+        let first = assert_height_bounds(&app, pixels, true);
+        assert_complete_entries(&app, 3);
+        assert!(first > empty);
+        for _ in 0..20 {
+            entry_frame_at(&mut app, pixels, vec![]);
+            assert!((assert_height_bounds(&app, pixels, true) - first).abs() < 0.1);
+            assert_complete_entries(&app, 3);
+        }
+        assert!(commands.try_recv().is_err());
+        drop(hold_fonts);
+    }
+}
+
+#[test]
+fn focused_type_height_measures_wrapped_titles_locations_and_optional_metadata() {
+    for (pixels, zoom) in [
+        ([1180.0, 812.0], 1.0),
+        ([780.0, 880.0], 1.0),
+        ([780.0, 880.0], 1.4),
+    ] {
+        let (mut app, commands, hold_fonts) = height_fixture(pixels, zoom);
+        let mut no_container = symbol("BWithoutContainer", URI);
+        no_container["containerName"] = json!("");
+        let long_uri = format!(
+            "file:///workspace/{}/Long.java",
+            "nested-package/".repeat(7)
+        );
+        let rows = json!([
+            symbol(
+                "ATypeWithANameThatWrapsInACompactResultsViewportAndKeepsItsWholeTitle",
+                &long_uri
+            ),
+            no_container,
+            symbol(
+                "CDependency",
+                "jdt://contents/dependency.jar/CDependency.class"
+            )
+        ]);
+        search(&mut app, &commands, rows);
+        entry_frame_at(&mut app, pixels, vec![]);
+        assert_height_bounds(&app, pixels, true);
+        assert_complete_entries(&app, 3);
+        let long = entry_geometry(&app, 0).0;
+        let short = entry_geometry(&app, 1).0;
+        let dependency = entry_geometry(&app, 2).0;
+        assert!(long.height() > short.height());
+        assert!(dependency.height() > short.height());
+        assert!(commands.try_recv().is_err());
+        drop(hold_fonts);
+    }
+}
+
+#[test]
+fn focused_type_height_transitions_shrink_and_short_windows_keep_controls_bounded() {
+    for zoom in [1.0, 1.4] {
+        let pixels = [780.0, 880.0];
+        let (mut app, commands, hold_fonts) = height_fixture(pixels, zoom);
+        let empty = height_settle(&mut app, pixels);
+        let mut heights = Vec::new();
+        for count in [1, 3, 30, 0] {
+            search(
+                &mut app,
+                &commands,
+                json!((0..count)
+                    .map(|index| symbol(&format!("Type{index:02}"), URI))
+                    .collect::<Vec<_>>()),
+            );
+            entry_frame_at(&mut app, pixels, vec![]);
+            heights.push(assert_height_bounds(&app, pixels, true));
+            if count > 0 {
+                assert_complete_entries(&app, count.min(3));
+            }
+        }
+        assert!(heights[1] > heights[0]);
+        assert!(
+            (heights[2] - heights[1]).abs() <= 1.0,
+            "more than three results must not grow the target"
+        );
+        assert!(heights[3] < heights[1]);
+        app.language.types.reset();
+        app.language.types.error =
+            Some("An error with enough detail to wrap around this compact panel. ".repeat(6));
+        app.language.paused_reason =
+            Some("Synchronization paused while an unsaved document is changing. ".repeat(6));
+        for short in [[780.0, 420.0], [780.0, 360.0], [780.0, 880.0]] {
+            entry_frame_at(&mut app, short, vec![]);
+            assert_height_bounds(&app, short, true);
+            height_settle(&mut app, short);
+        }
+        app.language.paused_reason = None;
+        app.language.types.reset();
+        assert!((height_settle(&mut app, pixels) - empty).abs() <= 1.0);
+        assert!(commands.try_recv().is_err());
+        drop(hold_fonts);
+    }
+}
+
+#[test]
+fn focused_type_height_native_manual_preference_and_automatic_reset_survive_results() {
+    let pixels = [1180.0, 812.0];
+    let (mut app, commands, hold_fonts) = height_fixture(pixels, 1.0);
+    let mut doc = Document::new(1, "Origin.java".into(), SOURCE.into(), "r".into());
+    let draft = "class Origin { int unsaved; }\n";
+    crate::editor_state::commit(&app.editor_ctx, &mut doc, draft.into(), 8);
+    app.documents.push(doc);
+    app.active_document = Some(1);
+    height_settle(&mut app, pixels);
+    let editor = egui::Id::new(("editor", 1_u64));
+    let selection = egui::TextEdit::load_state(&app.editor_ctx, editor)
+        .unwrap()
+        .cursor
+        .char_range();
+    height_drag(&mut app, pixels, 180.0);
+    for count in [0, 1, 3, 30] {
+        search(
+            &mut app,
+            &commands,
+            json!((0..count)
+                .map(|index| symbol(&format!("Type{index:02}"), URI))
+                .collect::<Vec<_>>()),
+        );
+        entry_frame_at(&mut app, pixels, vec![]);
+        assert!((assert_height_bounds(&app, pixels, false) - 180.0).abs() <= 1.0);
+        assert_eq!(app.tools_height, Some(180.0));
+    }
+    height_click(&mut app, pixels, "tools_automatic_height");
+    assert_eq!(app.tools_height, None);
+    let automatic = height_settle(&mut app, pixels);
+    assert!(automatic > 180.0);
+    assert_complete_entries(&app, 3);
+    height_drag(&mut app, pixels, 430.0);
+    assert!((height_settle(&mut app, pixels) - 430.0).abs() <= 1.0);
+    assert_eq!(app.tools_height, Some(430.0));
+    height_click(&mut app, pixels, "tools_automatic_height");
+    assert!((height_settle(&mut app, pixels) - automatic).abs() <= 1.0);
+    assert_eq!(app.documents[0].text, draft);
+    assert_eq!(app.documents[0].saved_text, SOURCE);
+    assert_eq!(
+        egui::TextEdit::load_state(&app.editor_ctx, editor)
+            .unwrap()
+            .cursor
+            .char_range(),
+        selection
+    );
+    let state = egui::TextEdit::load_state(&app.editor_ctx, editor).unwrap();
+    let mut undo = state.undoer();
+    let current = (state.cursor.char_range().unwrap(), draft.to_owned());
+    assert_eq!(undo.undo(&current).unwrap().1, SOURCE);
+    assert!(commands.try_recv().is_err());
+    drop(hold_fonts);
+}
+
+#[test]
+fn focused_type_height_short_status_warnings_remain_scroll_accessible() {
+    let pixels = [780.0, 420.0];
+    for zoom in [1.0, 1.4] {
+        let (mut app, commands, hold_fonts) = height_fixture(pixels, zoom);
+        app.language.paused_reason =
+            Some("Synchronization paused while an unsaved document is changing. ".repeat(12));
+        app.language.types.error = Some("Java indexing failed; retry explicitly.".into());
+        height_settle(&mut app, pixels);
+        let last = app.java_type_status_texts().len() - 1;
+        let name = format!("java_type_status_{last}");
+        let viewport = app.editor_ctx.data(|data| {
+            data.get_temp::<egui::Rect>(egui::Id::new(("java_types_viewport", "status")))
+                .unwrap()
+        });
+        let before = crate::workspace_access_tests::recorded_rect(&app, &name);
+        assert!(
+            before.bottom() > viewport.bottom(),
+            "fixture must overflow the status viewport"
+        );
+        entry_frame_at(
+            &mut app,
+            pixels,
+            vec![
+                egui::Event::PointerMoved(viewport.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -3000.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        for _ in 0..20 {
+            entry_frame_at(&mut app, pixels, vec![]);
+        }
+        let after = crate::workspace_access_tests::recorded_rect(&app, &name);
+        assert!(
+            viewport.contains_rect(after),
+            "the real warning must be reachable by native scrolling: {after:?}/{viewport:?}"
+        );
+        assert_height_bounds(&app, pixels, true);
+        assert!(commands.try_recv().is_err());
+        drop(hold_fonts);
+    }
+}
+
+#[test]
+fn focused_type_height_query_edits_and_discarded_passes_recompute_without_growth_or_commands() {
+    let pixels = [780.0, 880.0];
+    let (mut app, commands, hold_fonts) = height_fixture(pixels, 1.4);
+    search(
+        &mut app,
+        &commands,
+        json!((0..30)
+            .map(|index| symbol(&format!("Type{index:02}"), URI))
+            .collect::<Vec<_>>()),
+    );
+    app.show_java_types(&app.editor_ctx.clone());
+    let populated = height_settle(&mut app, pixels);
+    app.editor_ctx
+        .options_mut(|options| options.max_passes = 2.try_into().unwrap());
+    let (_, passes) = entry_frame_at_passes(
+        &mut app,
+        pixels,
+        vec![egui::Event::Text("Changed".into())],
+        true,
+    );
+    assert_eq!(passes, 2);
+    assert!(app.language.types.snapshot.is_none());
+    assert!(app.language.types.query.contains("Changed"));
+    let changed = assert_height_bounds(&app, pixels, true);
+    assert!(changed < populated);
+    assert_eq!(
+        app.editor_ctx.memory(|memory| memory.focused()),
+        Some(egui::Id::new(QUERY_INPUT))
+    );
+    assert!((height_settle(&mut app, pixels) - changed).abs() <= 1.0);
+    assert!(commands.try_recv().is_err());
+    drop(hold_fonts);
+}
+
+#[test]
+fn focused_type_height_stationary_horizontal_and_nonprimary_edges_never_store_manual_height() {
+    let pixels = [1180.0, 812.0];
+    let (mut app, commands, hold_fonts) = height_fixture(pixels, 1.0);
+    search(
+        &mut app,
+        &commands,
+        json!([symbol("A", URI), symbol("B", URI), symbol("C", URI)]),
+    );
+    let baseline = height_settle(&mut app, pixels);
+    for (button, delta) in [
+        (egui::PointerButton::Primary, egui::vec2(80.0, 0.0)),
+        (egui::PointerButton::Secondary, egui::vec2(0.0, -50.0)),
+    ] {
+        let origin = app
+            .editor_ctx
+            .read_response(crate::tools_resize::native_resize_id())
+            .unwrap()
+            .rect
+            .center();
+        entry_frame_at(
+            &mut app,
+            pixels,
+            vec![
+                egui::Event::PointerMoved(origin),
+                egui::Event::PointerButton {
+                    pos: origin,
+                    button,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert_eq!(app.tools_height, None);
+        entry_frame_at(
+            &mut app,
+            pixels,
+            vec![egui::Event::PointerMoved(origin + delta)],
+        );
+        assert_eq!(app.tools_height, None);
+        entry_frame_at(
+            &mut app,
+            pixels,
+            vec![egui::Event::PointerButton {
+                pos: origin + delta,
+                button,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(app.tools_height, None);
+        assert!((height_settle(&mut app, pixels) - baseline).abs() <= 1.0);
+    }
+    assert!(commands.try_recv().is_err());
+    drop(hold_fonts);
+}
+
+#[test]
+fn focused_type_height_large_font_has_measured_entries_and_short_window_clamps() {
+    let pixels = [1180.0, 812.0];
+    let (mut app, commands, hold_fonts) = height_fixture(pixels, 1.0);
+    app.editor_ctx.style_mut(|style| {
+        for key in [egui::TextStyle::Body, egui::TextStyle::Button] {
+            style
+                .text_styles
+                .insert(key, egui::FontId::proportional(18.0));
+        }
+    });
+    search(
+        &mut app,
+        &commands,
+        json!([symbol("A", URI), symbol("B", URI), symbol("C", URI)]),
+    );
+    entry_frame_at(&mut app, pixels, vec![]);
+    assert_height_bounds(&app, pixels, true);
+    assert_complete_entries(&app, 3);
+    height_settle(&mut app, [780.0, 420.0]);
+    entry_frame_at(&mut app, pixels, vec![]);
+    assert_height_bounds(&app, pixels, true);
+    assert_complete_entries(&app, 3);
+    assert!(commands.try_recv().is_err());
+    drop(hold_fonts);
+}
+
+#[test]
+fn focused_type_height_reset_during_held_native_drag_does_not_recapture() {
+    let pixels = [1180.0, 812.0];
+    let (mut app, commands, hold_fonts) = height_fixture(pixels, 1.0);
+    search(
+        &mut app,
+        &commands,
+        json!([symbol("A", URI), symbol("B", URI), symbol("C", URI)]),
+    );
+    let baseline = height_settle(&mut app, pixels);
+    let origin = app
+        .editor_ctx
+        .read_response(crate::tools_resize::native_resize_id())
+        .unwrap()
+        .rect
+        .center();
+    entry_frame_at(
+        &mut app,
+        pixels,
+        vec![
+            egui::Event::PointerMoved(origin),
+            egui::Event::PointerButton {
+                pos: origin,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    let at = egui::pos2(origin.x, height_geometry(&app).0.bottom() - 430.0);
+    entry_frame_at(&mut app, pixels, vec![egui::Event::PointerMoved(at)]);
+    assert_eq!(app.tools_height, Some(430.0));
+    let automatic =
+        crate::workspace_access_tests::recorded_response(&app, "tools_automatic_height").id;
+    for _ in 0..48 {
+        if app.editor_ctx.memory(|memory| memory.focused()) == Some(automatic) {
+            break;
+        }
+        entry_frame_at(&mut app, pixels, key(egui::Key::Tab, egui::Modifiers::NONE));
+    }
+    assert_eq!(
+        app.editor_ctx.memory(|memory| memory.focused()),
+        Some(automatic)
+    );
+    entry_frame_at(
+        &mut app,
+        pixels,
+        key(egui::Key::Space, egui::Modifiers::NONE),
+    );
+    assert_eq!(app.tools_height, None);
+    assert!(!app.tools_height_reset.capture_allowed());
+    entry_frame_at(
+        &mut app,
+        pixels,
+        vec![egui::Event::PointerMoved(at + egui::vec2(0.0, 25.0))],
+    );
+    assert_eq!(app.tools_height, None);
+    assert!(!app.tools_height_reset.capture_allowed());
+    entry_frame_at(
+        &mut app,
+        pixels,
+        vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert_eq!(app.tools_height, None);
+    assert!((height_settle(&mut app, pixels) - baseline).abs() <= 1.0);
+    height_drag(&mut app, pixels, 180.0);
+    assert_eq!(app.tools_height, Some(180.0));
+    assert!(commands.try_recv().is_err());
+    drop(hold_fonts);
 }
