@@ -12,6 +12,551 @@ fn fixture() -> (CedarApp, Receiver<Command>) {
     app.worker = Some(worker);
     (app, commands)
 }
+
+#[test]
+fn flat_keyboard_home_end_select_exact_endpoints_without_requests() {
+    let (mut app, commands) = fixture();
+    app.list(String::new());
+    reply(
+        &mut app,
+        commands.try_recv().unwrap(),
+        vec![entry("z.rs", false), entry("a.rs", false)],
+    );
+    settle(&mut app);
+    let first = workspace_access_tests::recorded_response(&app, "a.rs").id;
+    let last = workspace_access_tests::recorded_response(&app, "z.rs").id;
+    app.editor_ctx
+        .memory_mut(|memory| memory.request_focus(first));
+    frame(&mut app, vec![key_event(egui::Key::End, false)]);
+    assert_eq!(app.editor_ctx.memory(|memory| memory.focused()), Some(last));
+    frame(&mut app, vec![key_event(egui::Key::Home, false)]);
+    assert_eq!(
+        app.editor_ctx.memory(|memory| memory.focused()),
+        Some(first)
+    );
+    assert!(commands.try_recv().is_err());
+}
+
+fn flat_fixture(entries: Vec<Entry>) -> (CedarApp, Receiver<Command>) {
+    let (mut app, commands) = fixture();
+    app.list(String::new());
+    reply(&mut app, commands.try_recv().unwrap(), entries);
+    settle(&mut app);
+    (app, commands)
+}
+
+fn flat_focus(app: &mut CedarApp, name: &str) -> egui::Id {
+    let id = workspace_access_tests::recorded_response(app, name).id;
+    app.editor_ctx.memory_mut(|memory| memory.request_focus(id));
+    id
+}
+
+fn assert_flat_focus(app: &CedarApp, name: &str) {
+    assert_eq!(
+        app.editor_ctx.memory(|memory| memory.focused()),
+        Some(workspace_access_tests::recorded_response(app, name).id),
+        "expected Flat row {name}"
+    );
+}
+
+fn released(key: egui::Key) -> egui::Event {
+    let mut event = key_event(key, false);
+    if let egui::Event::Key { pressed, .. } = &mut event {
+        *pressed = false;
+    }
+    event
+}
+
+#[test]
+fn flat_keyboard_sorted_order_first_key_and_boundary_clamps() {
+    let (mut app, commands) = flat_fixture(vec![
+        entry("z.rs", false),
+        entry("a.rs", false),
+        entry("folder", true),
+    ]);
+    flat_focus(&mut app, "folder");
+    // No intermediate layout: the raw hook must own the first key after focus.
+    for (key, expected) in [
+        (egui::Key::ArrowUp, "folder"),
+        (egui::Key::ArrowDown, "a.rs"),
+        (egui::Key::ArrowDown, "z.rs"),
+        (egui::Key::ArrowDown, "z.rs"),
+        (egui::Key::ArrowUp, "a.rs"),
+        (egui::Key::Home, "folder"),
+        (egui::Key::End, "z.rs"),
+    ] {
+        frame(&mut app, vec![key_event(key, false)]);
+        assert_flat_focus(&app, expected);
+    }
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn flat_keyboard_empty_and_single_row_are_bounded() {
+    for entries in [vec![], vec![entry("唯一.rs", false)]] {
+        let (mut app, commands) = flat_fixture(entries);
+        let name = if app.entries.is_empty() {
+            "project_heading"
+        } else {
+            "唯一.rs"
+        };
+        let initial = flat_focus(&mut app, name);
+        for key in [
+            egui::Key::ArrowUp,
+            egui::Key::ArrowDown,
+            egui::Key::Home,
+            egui::Key::End,
+        ] {
+            frame(&mut app, vec![key_event(key, false)]);
+            if !app.entries.is_empty() {
+                assert_eq!(
+                    app.editor_ctx.memory(|memory| memory.focused()),
+                    Some(initial)
+                );
+            }
+            assert!(commands.try_recv().is_err());
+            assert!(app.documents.is_empty());
+        }
+    }
+}
+
+#[test]
+fn flat_keyboard_long_unicode_end_reveals_again_only_on_explicit_key() {
+    let entries = (0..100)
+        .rev()
+        .map(|index| entry(&format!("file{index:03}-很长的项目文件名-🦀.rs"), false))
+        .collect();
+    let (mut app, commands) = flat_fixture(entries);
+    let first = app.entries.first().unwrap().name.clone();
+    let last = app.entries.last().unwrap().name.clone();
+    flat_focus(&mut app, &first);
+    frame(&mut app, vec![key_event(egui::Key::End, false)]);
+    settle(&mut app);
+    assert_flat_focus(&app, &last);
+    let response = workspace_access_tests::recorded_response(&app, &last);
+    assert!(workspace_access_tests::recorded_clip(&app, &last).contains_rect(response.rect));
+    frame(
+        &mut app,
+        vec![
+            egui::Event::PointerMoved(response.rect.center()),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 5000.0),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    for _ in 0..25 {
+        frame(&mut app, vec![]);
+    }
+    let response = workspace_access_tests::recorded_response(&app, &last);
+    assert!(
+        response.rect.top() > 540.0,
+        "idle must not undo wheel scrolling"
+    );
+    frame(&mut app, vec![key_event(egui::Key::End, false)]);
+    settle(&mut app);
+    let response = workspace_access_tests::recorded_response(&app, &last);
+    assert!(workspace_access_tests::recorded_clip(&app, &last).contains_rect(response.rect));
+    frame(&mut app, vec![key_event(egui::Key::Home, false)]);
+    settle(&mut app);
+    let response = workspace_access_tests::recorded_response(&app, &first);
+    assert!(workspace_access_tests::recorded_clip(&app, &first).contains_rect(response.rect));
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn flat_keyboard_held_repeat_and_release_keep_one_movement_per_gesture() {
+    let (mut app, commands) = flat_fixture(vec![
+        entry("a", false),
+        entry("b", false),
+        entry("c", false),
+    ]);
+    flat_focus(&mut app, "a");
+    held_frame(&mut app, vec![key_event(egui::Key::ArrowDown, false)]);
+    assert_flat_focus(&app, "b");
+    for repeat in [false, true, false] {
+        held_frame(&mut app, vec![key_event(egui::Key::ArrowDown, repeat)]);
+        assert_flat_focus(&app, "b");
+    }
+    held_frame(&mut app, vec![released(egui::Key::ArrowDown)]);
+    frame(&mut app, vec![key_event(egui::Key::ArrowDown, false)]);
+    assert_flat_focus(&app, "c");
+    flat_focus(&mut app, "a");
+    frame(&mut app, vec![key_event(egui::Key::End, true)]);
+    assert_flat_focus(&app, "a");
+    frame(&mut app, vec![key_event(egui::Key::End, false)]);
+    assert_flat_focus(&app, "c");
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn flat_keyboard_mixed_input_and_modified_keys_do_not_move() {
+    let pos = egui::pos2(500.0, 400.0);
+    for companion in [
+        egui::Event::Text("x".into()),
+        egui::Event::Paste("x".into()),
+        egui::Event::Ime(egui::ImeEvent::Preedit(String::new())),
+        egui::Event::Ime(egui::ImeEvent::Commit(String::new())),
+        key_event(egui::Key::Home, false),
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 1.0),
+            modifiers: egui::Modifiers::NONE,
+        },
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ] {
+        let (mut app, commands) = flat_fixture(vec![entry("a", false), entry("z", false)]);
+        flat_focus(&mut app, "a");
+        frame(&mut app, vec![key_event(egui::Key::End, false), companion]);
+        assert_ne!(
+            app.editor_ctx.memory(|memory| memory.focused()),
+            Some(workspace_access_tests::recorded_response(&app, "z").id)
+        );
+        assert!(commands.try_recv().is_err());
+    }
+    for modifiers in [
+        egui::Modifiers::SHIFT,
+        egui::Modifiers::CTRL,
+        egui::Modifiers::ALT,
+        egui::Modifiers::COMMAND,
+    ] {
+        let (mut app, commands) = flat_fixture(vec![entry("a", false), entry("z", false)]);
+        flat_focus(&mut app, "a");
+        let mut event = key_event(egui::Key::End, false);
+        if let egui::Event::Key {
+            modifiers: actual, ..
+        } = &mut event
+        {
+            *actual = modifiers;
+        }
+        frame(&mut app, vec![event]);
+        assert_flat_focus(&app, "a");
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn flat_keyboard_prior_composition_held_key_and_pointer_block_new_movement() {
+    for prior in [
+        egui::Event::Ime(egui::ImeEvent::Preedit("composition".into())),
+        key_event(egui::Key::A, false),
+        egui::Event::PointerButton {
+            pos: egui::pos2(600.0, 400.0),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ] {
+        let (mut app, commands) = flat_fixture(vec![entry("a", false), entry("z", false)]);
+        held_frame(&mut app, vec![prior]);
+        flat_focus(&mut app, "a");
+        frame(&mut app, vec![key_event(egui::Key::End, false)]);
+        assert_flat_focus(&app, "a");
+        held_frame(
+            &mut app,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Disabled),
+                released(egui::Key::A),
+                egui::Event::PointerButton {
+                    pos: egui::pos2(600.0, 400.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        flat_focus(&mut app, "a");
+        frame(&mut app, vec![key_event(egui::Key::End, false)]);
+        assert_flat_focus(&app, "z");
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn flat_keyboard_stale_admission_directory_mode_session_focus_and_modal_cancel_intent() {
+    for change in 0..7 {
+        let (mut app, commands) = flat_fixture(vec![entry("a", false), entry("z", false)]);
+        flat_focus(&mut app, "a");
+        let refresh = if change == 0 {
+            app.explorer_refresh("");
+            Some(commands.try_recv().unwrap())
+        } else {
+            None
+        };
+        let ctx = app.editor_ctx.clone();
+        let mut input = egui::RawInput {
+            events: vec![key_event(egui::Key::End, false)],
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+        match change {
+            0 => reply(
+                &mut app,
+                refresh.unwrap(),
+                vec![entry("a", false), entry("z", false)],
+            ),
+            1 => app.directory = "new-directory".into(),
+            2 => app.explorer_set_mode(Mode::Tree),
+            3 => app.generation += 1,
+            4 => ctx.memory_mut(|memory| memory.request_focus(egui::Id::new("newer-flat-focus"))),
+            5 => app.new_file = true,
+            6 => app.explorer.reset_connection(),
+            _ => unreachable!(),
+        }
+        let _ = ctx.run(input, |ctx| app.explorer_tree_shortcuts(ctx));
+        assert!(app.explorer.key_reveal.is_none(), "stale change {change}");
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn flat_keyboard_movement_preserves_dirty_selection_undo_and_location_history() {
+    let (mut app, commands) = flat_fixture(vec![entry("draft.rs", false), entry("z.rs", false)]);
+    app.documents.push(Document::new(
+        1,
+        "draft.rs".into(),
+        "saved".into(),
+        "r0".into(),
+    ));
+    app.active_document = Some(1);
+    settle(&mut app);
+    let editor = egui::Id::new(("editor", 1u64));
+    app.editor_ctx
+        .memory_mut(|memory| memory.request_focus(editor));
+    frame(&mut app, vec![egui::Event::Text("dirty".into())]);
+    settle(&mut app);
+    let selection =
+        egui::text::CCursorRange::two(egui::text::CCursor::new(1), egui::text::CCursor::new(4));
+    let mut state = egui::TextEdit::load_state(&app.editor_ctx, editor).unwrap();
+    state.cursor.set_char_range(Some(selection));
+    state.store(&app.editor_ctx, editor);
+    let location = app.history_departure().unwrap();
+    app.location_history.back.push(location);
+    app.location_history.forward.push(location);
+    let before = (
+        app.documents[0].text.clone(),
+        app.documents[0].saved_text.clone(),
+        app.documents[0].edit_version,
+        app.navigation_epoch,
+    );
+    flat_focus(&mut app, "draft.rs");
+    for key in [
+        egui::Key::End,
+        egui::Key::Home,
+        egui::Key::ArrowDown,
+        egui::Key::ArrowUp,
+    ] {
+        frame(&mut app, vec![key_event(key, false)]);
+        let current = egui::TextEdit::load_state(&app.editor_ctx, editor)
+            .unwrap()
+            .cursor
+            .char_range()
+            .unwrap();
+        assert!(location_history::same_selection(current, selection));
+        assert_eq!(
+            (
+                app.documents[0].text.clone(),
+                app.documents[0].saved_text.clone(),
+                app.documents[0].edit_version,
+                app.navigation_epoch
+            ),
+            before
+        );
+        for stack in [&app.location_history.back, &app.location_history.forward] {
+            assert_eq!(stack.len(), 1);
+            assert_eq!(stack[0].document, location.document);
+            assert_eq!(stack[0].edit_version, location.edit_version);
+            assert!(location_history::same_selection(
+                stack[0].selection,
+                location.selection
+            ));
+        }
+        assert!(commands.try_recv().is_err());
+    }
+    app.editor_ctx
+        .memory_mut(|memory| memory.request_focus(editor));
+    let mut undo = key_event(egui::Key::Z, false);
+    if let egui::Event::Key { modifiers, .. } = &mut undo {
+        *modifiers = egui::Modifiers::COMMAND;
+    }
+    frame(&mut app, vec![undo.clone()]);
+    assert_eq!(app.documents[0].text, "saved");
+    if let egui::Event::Key { modifiers, .. } = &mut undo {
+        *modifiers |= egui::Modifiers::SHIFT;
+    }
+    frame(&mut app, vec![undo]);
+    assert_eq!(app.documents[0].text, before.0);
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn flat_keyboard_does_not_claim_tab_enter_space_or_horizontal_arrows() {
+    for key in [
+        egui::Key::Tab,
+        egui::Key::Enter,
+        egui::Key::Space,
+        egui::Key::ArrowLeft,
+        egui::Key::ArrowRight,
+    ] {
+        let (mut app, commands) = flat_fixture(vec![entry("a", false), entry("z", false)]);
+        flat_focus(&mut app, "a");
+        let ctx = app.editor_ctx.clone();
+        let mut input = egui::RawInput {
+            events: vec![key_event(key, false)],
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+        assert!(input.events.iter().any(|event| matches!(event, egui::Event::Key { key: actual, pressed: true, .. } if *actual == key)), "must retain native {key:?}");
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn flat_keyboard_first_arrow_after_native_tab_uses_the_exact_neighbor() {
+    let (mut app, commands) = flat_fixture(vec![
+        entry("a", false),
+        entry("b", false),
+        entry("c", false),
+    ]);
+    flat_focus(&mut app, "a");
+    frame(&mut app, vec![key_event(egui::Key::Tab, false)]);
+    assert_flat_focus(&app, "b");
+    frame(&mut app, vec![key_event(egui::Key::ArrowDown, false)]);
+    assert_flat_focus(&app, "c");
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn flat_keyboard_modified_arrows_cannot_fall_back_to_spatial_focus() {
+    for after_movement in [false, true] {
+        for key in [egui::Key::ArrowUp, egui::Key::ArrowDown] {
+            for modifiers in [
+                egui::Modifiers::SHIFT,
+                egui::Modifiers::CTRL,
+                egui::Modifiers::ALT,
+                egui::Modifiers::COMMAND,
+            ] {
+                let (mut app, commands) = flat_fixture(vec![
+                    entry("a", false),
+                    entry("b", false),
+                    entry("c", false),
+                ]);
+                flat_focus(&mut app, "a");
+                if after_movement {
+                    held_frame(&mut app, vec![key_event(egui::Key::ArrowDown, false)]);
+                    assert_flat_focus(&app, "b");
+                }
+                let expected = if after_movement { "b" } else { "a" };
+                let mut event = key_event(key, false);
+                if let egui::Event::Key {
+                    modifiers: actual, ..
+                } = &mut event
+                {
+                    *actual = modifiers;
+                }
+                let mut events = if after_movement {
+                    vec![released(egui::Key::ArrowDown)]
+                } else {
+                    vec![]
+                };
+                events.push(event);
+                held_frame(&mut app, events);
+                assert_flat_focus(&app, expected);
+                assert!(commands.try_recv().is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn flat_keyboard_native_pointer_and_enter_keep_exact_directory_activation() {
+    for pointer in [false, true] {
+        let (mut app, commands) = flat_fixture(vec![entry("a", true), entry("z", true)]);
+        if pointer {
+            let pos = workspace_access_tests::recorded_response(&app, "z")
+                .rect
+                .center();
+            frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+        } else {
+            flat_focus(&mut app, "a");
+            frame(&mut app, vec![key_event(egui::Key::End, false)]);
+            frame(&mut app, vec![key_event(egui::Key::Enter, false)]);
+        }
+        assert!(matches!(commands.try_recv().unwrap().op, Operation::List { path } if path == "z"));
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn flat_keyboard_held_gesture_survives_mode_and_connection_reset_until_release() {
+    for reset_connection in [false, true] {
+        let entries = vec![entry("a", false), entry("b", false)];
+        let (mut app, commands) = flat_fixture(entries.clone());
+        flat_focus(&mut app, "a");
+        held_frame(&mut app, vec![key_event(egui::Key::ArrowDown, false)]);
+        assert_flat_focus(&app, "b");
+        if reset_connection {
+            app.generation += 1;
+            app.explorer.reset_connection();
+        } else {
+            app.explorer_set_mode(Mode::Tree);
+            app.explorer_set_mode(Mode::Flat);
+        }
+        app.list(String::new());
+        reply(&mut app, commands.try_recv().unwrap(), entries);
+        settle(&mut app);
+        flat_focus(&mut app, "a");
+        held_frame(&mut app, vec![key_event(egui::Key::ArrowDown, false)]);
+        assert_flat_focus(&app, "a");
+        held_frame(&mut app, vec![released(egui::Key::ArrowDown)]);
+        frame(&mut app, vec![key_event(egui::Key::ArrowDown, false)]);
+        assert_flat_focus(&app, "b");
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn flat_keyboard_window_focus_loss_clears_the_held_gesture() {
+    for window_event in [false, true] {
+        let (mut app, commands) = flat_fixture(vec![entry("a", false), entry("z", false)]);
+        flat_focus(&mut app, "a");
+        held_frame(&mut app, vec![key_event(egui::Key::End, false)]);
+        assert_flat_focus(&app, "z");
+        let ctx = app.editor_ctx.clone();
+        let mut input = egui::RawInput {
+            focused: window_event,
+            events: if window_event {
+                vec![egui::Event::WindowFocused(false)]
+            } else {
+                vec![]
+            },
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut input);
+        let _ = ctx.run(input, |ctx| app.sidebar(ctx));
+        flat_focus(&mut app, "a");
+        frame(&mut app, vec![key_event(egui::Key::End, false)]);
+        assert_flat_focus(&app, "z");
+        assert!(commands.try_recv().is_err());
+    }
+}
 fn entry(path: &str, is_dir: bool) -> Entry {
     Entry {
         name: path.rsplit('/').next().unwrap().into(),

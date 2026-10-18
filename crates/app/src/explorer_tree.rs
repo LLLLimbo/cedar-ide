@@ -58,6 +58,8 @@ pub(crate) struct Explorer {
     flat_admission: Option<(u64, String)>,
     flat_error: Option<String>,
     flat_failed_path: Option<String>,
+    flat_row_scope: Option<egui::Id>,
+    flat_input: FlatInput,
     key_intent: Option<KeyIntent>,
     pub(crate) key_reveal: Option<String>,
     pointer_blocked: bool,
@@ -121,6 +123,55 @@ struct KeyIntent {
     focused: egui::Id,
     selected: String,
     epoch: u64,
+    flat_identity: Option<FocusIdentity>,
+}
+
+/// Only input-lifetime metadata is retained, never composition or pasted text.
+/// Flat movement requires a fresh, otherwise unoccupied keyboard gesture.
+#[derive(Default)]
+struct FlatInput {
+    keys: HashSet<egui::Key>,
+    pointers: [bool; 5],
+    composing: bool,
+}
+
+impl FlatInput {
+    fn capture(&mut self, input: &egui::RawInput) -> bool {
+        if !input.focused
+            || input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::WindowFocused(false)))
+        {
+            *self = Self::default();
+            return false;
+        }
+        let clear = self.keys.is_empty()
+            && !self.pointers.iter().any(|pressed| *pressed)
+            && !self.composing;
+        for event in &input.events {
+            match event {
+                egui::Event::Key { key, pressed, .. } => {
+                    if *pressed {
+                        self.keys.insert(*key);
+                    } else {
+                        self.keys.remove(key);
+                    }
+                }
+                egui::Event::PointerButton {
+                    button, pressed, ..
+                } => {
+                    self.pointers[*button as usize] = *pressed;
+                }
+                egui::Event::Ime(egui::ImeEvent::Preedit(_)) => self.composing = true,
+                egui::Event::Ime(egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled) => {
+                    self.composing = false;
+                }
+                _ => {}
+            }
+        }
+        clear
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -302,12 +353,14 @@ impl Explorer {
         let mode = self.mode;
         let held_keys = std::mem::take(&mut self.held_keys);
         let claimed_keys = std::mem::take(&mut self.claimed_keys);
+        let flat_input = std::mem::take(&mut self.flat_input);
         // Connection reset also clears pending jobs. Generation + request IDs
         // exclude every prior connection reply, allowing fresh local epochs.
         *self = Self {
             mode,
             held_keys,
             claimed_keys,
+            flat_input,
             ..Self::default()
         };
     }
@@ -578,8 +631,11 @@ impl CedarApp {
     }
 
     fn explorer_input_blocked(&self, ctx: &egui::Context) -> bool {
+        self.explorer.mode != Mode::Tree || self.project_row_input_blocked(ctx)
+    }
+
+    fn project_row_input_blocked(&self, ctx: &egui::Context) -> bool {
         !self.ready()
-            || self.explorer.mode != Mode::Tree
             || self.navigation.blocks_editor()
             || self.navigation.restore_focus
             || self.foreign_modal_owns_input(ctx)
@@ -605,6 +661,7 @@ impl CedarApp {
         self.explorer.key_intent = None;
         self.explorer.key_reveal = None;
         self.explorer.pointer_blocked = original.pointer_blocked;
+        let flat_clear = self.explorer.flat_input.capture(input);
         if !input.focused
             || input
                 .events
@@ -616,14 +673,28 @@ impl CedarApp {
             return;
         }
         let focused = ctx.memory(|memory| memory.focused());
-        let owns_row = !self.explorer_input_blocked(ctx)
+        let owns_tree_row = !self.explorer_input_blocked(ctx)
             && focused.is_some_and(|focused| {
                 self.explorer
                     .visible_rows()
                     .iter()
                     .any(|row| row_id(&row.entry.path) == focused)
             });
-        let candidate = if owns_row { original.key } else { None };
+        let owns_flat_row = self.explorer.mode == Mode::Flat
+            && !self.project_row_input_blocked(ctx)
+            && self.project_focus_row_current("")
+            && self.explorer.flat_row_scope.is_some_and(|scope| {
+                self.entries
+                    .iter()
+                    .any(|entry| Some(scope.with(("flat_entry", &entry.path))) == focused)
+            });
+        let candidate = if owns_tree_row {
+            original.key
+        } else if owns_flat_row && flat_clear {
+            original.key.filter(is_flat_key)
+        } else {
+            None
+        };
         // winit leaves repeat=false for egui to fill during begin_pass. Track
         // these seven keys before removing them. A tree-claimed key stays owned
         // until release even if Open moves focus to the editor in the meantime.
@@ -650,7 +721,10 @@ impl CedarApp {
                     return !claimed;
                 }
                 let fresh = self.explorer.held_keys.insert(*key);
-                if owns_row && modifiers.is_none() {
+                // Flat owns all variants of its four movement keys while a
+                // row is focused. Modified/mixed gestures are inert rather
+                // than falling through to egui's pre-layout spatial focus.
+                if (owns_tree_row && modifiers.is_none()) || (owns_flat_row && is_flat_key(key)) {
                     if fresh || claimed {
                         self.explorer.claimed_keys.insert(*key);
                     }
@@ -670,6 +744,7 @@ impl CedarApp {
             focused: focused.expect("a row action requires focus"),
             selected: self.explorer.selected.clone(),
             epoch: self.explorer.epoch,
+            flat_identity: owns_flat_row.then(|| self.project_focus_identity()),
         });
     }
 
@@ -677,6 +752,10 @@ impl CedarApp {
         let Some(intent) = self.explorer.key_intent.take() else {
             return;
         };
+        if intent.flat_identity.is_some() {
+            self.explorer_flat_shortcut(ctx, intent);
+            return;
+        }
         if self.explorer_input_blocked(ctx)
             || !ctx.input(|input| input.focused)
             || intent.generation != self.generation
@@ -729,6 +808,40 @@ impl CedarApp {
         self.explorer_select(&target);
         self.explorer.key_reveal = Some(target.clone());
         ctx.memory_mut(|memory| memory.request_focus(row_id(&target)));
+        ctx.request_repaint();
+    }
+
+    fn explorer_flat_shortcut(&mut self, ctx: &egui::Context, intent: KeyIntent) {
+        if self.project_row_input_blocked(ctx)
+            || !ctx.input(|input| input.focused)
+            || intent.generation != self.generation
+            || intent.flat_identity.as_ref() != Some(&self.project_focus_identity())
+            || ctx.memory(|memory| memory.focused()) != Some(intent.focused)
+            || !self.project_focus_row_current("")
+        {
+            return;
+        }
+        let Some(scope) = self.explorer.flat_row_scope else {
+            return;
+        };
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| scope.with(("flat_entry", &entry.path)) == intent.focused)
+        else {
+            return;
+        };
+        let target = match intent.key {
+            egui::Key::ArrowUp => index.saturating_sub(1),
+            egui::Key::ArrowDown => (index + 1).min(self.entries.len() - 1),
+            egui::Key::Home => 0,
+            egui::Key::End => self.entries.len() - 1,
+            _ => return,
+        };
+        let path = self.entries[target].path.clone();
+        self.cancel_project_reveal();
+        self.explorer.key_reveal = Some(path.clone());
+        ctx.memory_mut(|memory| memory.request_focus(scope.with(("flat_entry", &path))));
         ctx.request_repaint();
     }
 
@@ -788,12 +901,15 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_flat_row(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         entry: &Entry,
         galley: std::sync::Arc<egui::Galley>,
         selected: bool,
     ) -> egui::Response {
+        // Preserve the existing scoped widget IDs; retain just their parent ID
+        // so the raw-input hook can recognize the first key after Tab/click.
+        self.explorer.flat_row_scope = Some(ui.id());
         let (_, rect) = ui.allocate_space(egui::vec2(
             ui.available_width(),
             chrome::ROW_HEIGHT.max(galley.size().y),
@@ -815,6 +931,17 @@ impl CedarApp {
                 &entry.name,
             )
         });
+        if response.has_focus() {
+            ui.memory_mut(|memory| {
+                memory.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        vertical_arrows: true,
+                        ..Default::default()
+                    },
+                )
+            });
+        }
         paint_project_row(ui, &response, entry, galley, selected, 0, None);
         response.on_hover_text(&entry.path)
     }
@@ -1409,5 +1536,12 @@ fn is_tree_key(key: &egui::Key) -> bool {
             | egui::Key::Home
             | egui::Key::End
             | egui::Key::Enter
+    )
+}
+
+fn is_flat_key(key: &egui::Key) -> bool {
+    matches!(
+        key,
+        egui::Key::ArrowUp | egui::Key::ArrowDown | egui::Key::Home | egui::Key::End
     )
 }

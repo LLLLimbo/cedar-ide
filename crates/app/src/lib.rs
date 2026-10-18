@@ -3060,11 +3060,10 @@ impl CedarApp {
                                     } else {
                                         self.explorer_flat_row(ui, entry, galley.clone(), selected)
                                     };
-                                    let explicit_tree_reveal = self.explorer.mode == explorer_tree::Mode::Tree
-                                        && self.explorer.key_reveal.as_deref() == Some(entry.path.as_str()) && response.has_focus();
+                                    let explicit_key_reveal = self.explorer.key_reveal.as_deref() == Some(entry.path.as_str()) && response.has_focus();
                                     let access_reveal = self.record_project_access(ui, &entry.path, &response);
                                     let current_file_reveal = self.record_project_reveal_row(ui, &entry.path, &response);
-                                    let newly_revealed = response.gained_focus() || (resized && response.has_focus()) || explicit_tree_reveal || access_reveal || current_file_reveal;
+                                    let newly_revealed = response.gained_focus() || (resized && response.has_focus()) || explicit_key_reveal || access_reveal || current_file_reveal;
                                     if newly_revealed || (pending_focus == Some(response.id) && response.has_focus()) {
                                         response.scroll_to_me(None);
                                         // Correct this request before any later row or label can
