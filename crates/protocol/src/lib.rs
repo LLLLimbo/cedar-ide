@@ -7,6 +7,8 @@ mod file_discovery;
 pub use file_discovery::*;
 mod scoped_search;
 pub use scoped_search::*;
+mod case_search;
+pub use case_search::*;
 pub const PROTOCOL_VERSION: u32 = 4;
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_FILE_BYTES: usize = 1024 * 1024;
@@ -204,6 +206,9 @@ pub enum Operation {
     SearchIn {
         request: ScopedSearchRequest,
     },
+    SearchCase {
+        request: CaseSearchRequest,
+    },
     FindFiles {
         query: String,
         scope: String,
@@ -358,7 +363,7 @@ impl Operation {
     pub fn capability_name(&self) -> Option<&'static str> {
         Some(match self {
             // Search extensions are gated by independent retained Hello descriptors.
-            Self::Hello | Self::FindFiles { .. } | Self::SearchIn { .. } => return None,
+            Self::Hello | Self::FindFiles { .. } | Self::SearchIn { .. } | Self::SearchCase { .. } => return None,
             Self::List { .. } => "list",
             Self::Read { .. } => "read",
             Self::Write { .. } => "write",
@@ -421,6 +426,8 @@ pub enum Payload {
         file_discovery: Option<FileDiscoveryDescriptor>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scoped_search: Option<ScopedSearchDescriptor>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        case_search: Option<CaseSearchDescriptor>,
     },
     Entries {
         entries: Vec<Entry>,
@@ -439,6 +446,9 @@ pub enum Payload {
     },
     ScopedMatches {
         result: ScopedSearchResult,
+    },
+    CaseMatches {
+        result: CaseSearchResult,
     },
     FilePaths {
         result: FileDiscoveryResult,
