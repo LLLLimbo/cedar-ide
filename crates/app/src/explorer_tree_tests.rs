@@ -2108,3 +2108,419 @@ fn project_name_search_native_start_preserves_dirty_editor_without_requests() {
     assert_eq!(app.documents[0].text, "saved");
     assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.text() == "1 match · loaded rows only")), "Project typing must show its matching loaded-row query");
 }
+
+fn name_type(app: &mut CedarApp, key: egui::Key, text: &str) {
+    frame(
+        app,
+        vec![key_event(key, false), egui::Event::Text(text.into())],
+    );
+}
+fn name_modified(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    let mut event = key_event(key, false);
+    if let egui::Event::Key {
+        modifiers: actual, ..
+    } = &mut event
+    {
+        *actual = modifiers;
+    }
+    event
+}
+fn name_open_button(app: &mut CedarApp) {
+    let at = workspace_access_tests::recorded_response(app, "project_name_search")
+        .rect
+        .center();
+    for pressed in [true, false] {
+        frame(
+            app,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        if pressed {
+            frame(app, vec![]);
+            frame(app, vec![egui::Event::PointerMoved(at)]);
+        }
+    }
+    assert!(app.project_name_observation().is_some());
+}
+fn name_replace(app: &mut CedarApp, text: &str) {
+    frame(
+        app,
+        vec![name_modified(egui::Key::A, egui::Modifiers::COMMAND)],
+    );
+    frame(app, vec![egui::Event::Text(text.into())]);
+}
+fn name_actual_frame(
+    app: &mut CedarApp,
+    events: Vec<egui::Event>,
+    change: impl FnOnce(&mut CedarApp),
+) -> egui::FullOutput {
+    app.workspace_key = Some(WorkspaceKey::Local {
+        root: "name-search-test".into(),
+    });
+    let ctx = app.editor_ctx.clone();
+    let mut native = eframe::Frame::_new_kittest();
+    let mut input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(780.0, 540.0),
+        )),
+        time: Some(ctx.cumulative_pass_nr() as f64 * 0.25),
+        events,
+        ..Default::default()
+    };
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    change(app);
+    ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut native))
+}
+fn name_receipts(app: &CedarApp) -> Vec<serde_json::Value> {
+    let id = workspace_access_tests::recorded_response(app, "project_name_query").id;
+    app.editor_ctx.data(|data| {
+        data.get_temp(id.with("experimental_native_ime_receipts"))
+            .unwrap_or_default()
+    })
+}
+
+#[test]
+fn project_name_search_literal_case_unicode_and_no_match() {
+    let (mut app, commands) = flat_fixture(vec![
+        entry("ZETA.rs", false),
+        entry("zeta.rs", false),
+        entry("雪zeta.rs", false),
+        entry("x.*.rs", false),
+    ]);
+    flat_focus(&mut app, "ZETA.rs");
+    name_type(&mut app, egui::Key::E, "eta");
+    assert_eq!(
+        app.project_name_observation().unwrap().1,
+        ["zeta.rs", "雪zeta.rs"]
+    );
+    name_replace(&mut app, "雪");
+    assert_eq!(app.project_name_observation().unwrap().1, ["雪zeta.rs"]);
+    name_replace(&mut app, ".*");
+    assert_eq!(app.project_name_observation().unwrap().1, ["x.*.rs"]);
+    name_replace(&mut app, "absent");
+    frame(&mut app, vec![key_event(egui::Key::Enter, false)]);
+    assert!(app.project_name_observation().unwrap().1.is_empty());
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn project_name_search_rejects_mixed_and_nonprinting_starters() {
+    let mut batches = vec![
+        vec![egui::Event::Text("zet".into())],
+        vec![egui::Event::Paste("zet".into())],
+        vec![egui::Event::Ime(egui::ImeEvent::Commit("zet".into()))],
+        vec![
+            key_event(egui::Key::Z, false),
+            egui::Event::Text("zet".into()),
+            key_event(egui::Key::Enter, false),
+        ],
+    ];
+    for key in [
+        egui::Key::Home,
+        egui::Key::End,
+        egui::Key::ArrowLeft,
+        egui::Key::ArrowRight,
+        egui::Key::F2,
+        egui::Key::F12,
+        egui::Key::Tab,
+        egui::Key::Enter,
+    ] {
+        batches.push(vec![key_event(key, false), egui::Event::Text("zet".into())]);
+    }
+    for modifier in [
+        egui::Modifiers::CTRL,
+        egui::Modifiers::ALT,
+        egui::Modifiers::COMMAND,
+    ] {
+        batches.push(vec![
+            name_modified(egui::Key::Z, modifier),
+            egui::Event::Text("zet".into()),
+        ]);
+    }
+    for events in batches {
+        let (mut app, commands) = flat_fixture(vec![entry("a.rs", false), entry("zeta.rs", false)]);
+        flat_focus(&mut app, "a.rs");
+        frame(&mut app, events.clone());
+        assert!(app.project_name_observation().is_none(), "{events:?}");
+        assert!(commands.try_recv().is_err(), "{events:?}");
+    }
+}
+
+#[test]
+fn project_name_search_native_button_enter_and_space_work() {
+    for events in [
+        vec![key_event(egui::Key::Enter, false)],
+        vec![
+            key_event(egui::Key::Space, false),
+            egui::Event::Text(" ".into()),
+        ],
+    ] {
+        let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+        let button = workspace_access_tests::recorded_response(&app, "project_name_search").id;
+        app.editor_ctx
+            .memory_mut(|memory| memory.request_focus(button));
+        frame(&mut app, events);
+        assert_eq!(app.project_name_observation().unwrap().0, "");
+        assert!(workspace_access_tests::recorded_response(&app, "project_name_query").has_focus());
+        frame(&mut app, vec![egui::Event::Text("zet".into())]);
+        assert_eq!(app.project_name_observation().unwrap().1, ["zeta.rs"]);
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn project_name_search_stale_edit_batches_cannot_touch_new_editor() {
+    let mut batches = vec![
+        vec![egui::Event::Text("BAD".into())],
+        vec![egui::Event::Paste("BAD".into())],
+        vec![egui::Event::Copy],
+        vec![egui::Event::Cut],
+        vec![egui::Event::Ime(egui::ImeEvent::Commit("BAD".into()))],
+    ];
+    for (key, modifier) in [
+        (egui::Key::Z, egui::Modifiers::COMMAND),
+        (
+            egui::Key::Z,
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        ),
+        (egui::Key::Y, egui::Modifiers::COMMAND),
+        (egui::Key::A, egui::Modifiers::COMMAND),
+        (egui::Key::H, egui::Modifiers::CTRL),
+        (egui::Key::K, egui::Modifiers::CTRL),
+        (egui::Key::U, egui::Modifiers::CTRL),
+        (egui::Key::W, egui::Modifiers::CTRL),
+        (egui::Key::Home, egui::Modifiers::CTRL),
+        (egui::Key::End, egui::Modifiers::CTRL),
+        (egui::Key::ArrowLeft, egui::Modifiers::CTRL),
+        (
+            egui::Key::ArrowRight,
+            egui::Modifiers::ALT | egui::Modifiers::SHIFT,
+        ),
+        (egui::Key::ArrowLeft, egui::Modifiers::MAC_CMD),
+        (egui::Key::Backspace, egui::Modifiers::NONE),
+        (egui::Key::Delete, egui::Modifiers::NONE),
+    ] {
+        batches.push(vec![name_modified(key, modifier)]);
+    }
+    for events in batches {
+        let (mut app, commands) = flat_fixture(vec![entry("a.rs", false), entry("zeta.rs", false)]);
+        app.documents
+            .push(Document::new(1, "a.rs".into(), "saved".into(), "r0".into()));
+        app.active_document = Some(1);
+        settle(&mut app);
+        let editor = egui::Id::new(("editor", 1u64));
+        app.editor_ctx
+            .memory_mut(|memory| memory.request_focus(editor));
+        frame(&mut app, vec![egui::Event::Text("dirty".into())]);
+        settle(&mut app);
+        let selection =
+            egui::text::CCursorRange::two(egui::text::CCursor::new(1), egui::text::CCursor::new(4));
+        let mut state = egui::TextEdit::load_state(&app.editor_ctx, editor).unwrap();
+        state.cursor.set_char_range(Some(selection));
+        state.store(&app.editor_ctx, editor);
+        let before = (app.documents[0].text.clone(), app.documents[0].edit_version);
+        flat_focus(&mut app, "a.rs");
+        name_type(&mut app, egui::Key::Z, "zet");
+        let output = name_actual_frame(&mut app, events.clone(), |app| {
+            app.editor_ctx
+                .memory_mut(|memory| memory.request_focus(editor))
+        });
+        assert_eq!(app.documents.len(), 1, "{events:?}");
+        assert_eq!(
+            (app.documents[0].text.clone(), app.documents[0].edit_version),
+            before,
+            "{events:?}"
+        );
+        assert!(
+            location_history::same_selection(
+                egui::TextEdit::load_state(&app.editor_ctx, editor)
+                    .unwrap()
+                    .cursor
+                    .char_range()
+                    .unwrap(),
+                selection
+            ),
+            "{events:?}"
+        );
+        assert!(
+            !output
+                .platform_output
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::OutputCommand::CopyText(_))),
+            "{events:?}"
+        );
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn project_name_search_actual_update_open_shields_held_enter_in_dirty_editor() {
+    for tree in [false, true] {
+        let (mut app, commands) = fixture();
+        if tree {
+            root(&mut app, &commands, vec![entry("draft.rs", false)]);
+        } else {
+            app.list(String::new());
+            reply(
+                &mut app,
+                commands.try_recv().unwrap(),
+                vec![entry("draft.rs", false)],
+            );
+            settle(&mut app);
+        }
+        app.documents.push(Document::new(
+            1,
+            "draft.rs".into(),
+            "saved".into(),
+            "r0".into(),
+        ));
+        app.active_document = Some(1);
+        for _ in 0..3 {
+            name_actual_frame(&mut app, vec![], |_| {});
+        }
+        let editor = egui::Id::new(("editor", 1u64));
+        app.editor_ctx
+            .memory_mut(|memory| memory.request_focus(editor));
+        name_actual_frame(&mut app, vec![egui::Event::Text("dirty".into())], |_| {});
+        for _ in 0..3 {
+            name_actual_frame(&mut app, vec![], |_| {});
+        }
+        let selection =
+            egui::text::CCursorRange::two(egui::text::CCursor::new(1), egui::text::CCursor::new(4));
+        let mut state = egui::TextEdit::load_state(&app.editor_ctx, editor).unwrap();
+        state.cursor.set_char_range(Some(selection));
+        state.store(&app.editor_ctx, editor);
+        let before = (app.documents[0].text.clone(), app.documents[0].edit_version);
+        flat_focus(&mut app, "draft.rs");
+        name_actual_frame(
+            &mut app,
+            vec![
+                key_event(egui::Key::D, false),
+                egui::Event::Text("draft".into()),
+            ],
+            |_| {},
+        );
+        name_actual_frame(&mut app, vec![released(egui::Key::D)], |_| {});
+        assert!(app.project_name_observation().is_some());
+        for _ in 0..5 {
+            name_actual_frame(&mut app, vec![key_event(egui::Key::Enter, false)], |_| {});
+        }
+        assert!(app.project_name_observation().is_none());
+        assert_eq!(
+            app.editor_ctx.memory(|memory| memory.focused()),
+            Some(editor)
+        );
+        assert_eq!(
+            (app.documents[0].text.clone(), app.documents[0].edit_version),
+            before
+        );
+        assert!(location_history::same_selection(
+            egui::TextEdit::load_state(&app.editor_ctx, editor)
+                .unwrap()
+                .cursor
+                .char_range()
+                .unwrap(),
+            selection
+        ));
+        assert!(commands.try_recv().is_err());
+        name_actual_frame(
+            &mut app,
+            vec![name_modified(egui::Key::Z, egui::Modifiers::COMMAND)],
+            |_| {},
+        );
+        assert_eq!(app.documents[0].text, "saved");
+        name_actual_frame(
+            &mut app,
+            vec![released(egui::Key::Z), released(egui::Key::Enter)],
+            |_| {},
+        );
+        name_actual_frame(&mut app, vec![key_event(egui::Key::Enter, false)], |_| {});
+        assert!(
+            app.documents[0].text.contains('\n'),
+            "fresh editor Enter after release"
+        );
+    }
+}
+
+#[test]
+fn project_name_search_composition_receipts_and_enter_commit_are_owned() {
+    let (mut app, commands) = flat_fixture(vec![entry("雪.rs", false)]);
+    name_open_button(&mut app);
+    frame(
+        &mut app,
+        vec![
+            egui::Event::Ime(egui::ImeEvent::Enabled),
+            egui::Event::Ime(egui::ImeEvent::Preedit("雪".into())),
+        ],
+    );
+    assert!(name_receipts(&app)
+        .iter()
+        .any(|value| value["outcome"] == "PreeditApplied"));
+    let (_, matches, composing, paused) = app.project_name_observation().unwrap();
+    assert!(matches.is_empty() && composing && paused);
+    held_frame(
+        &mut app,
+        vec![
+            key_event(egui::Key::Enter, false),
+            egui::Event::Ime(egui::ImeEvent::Commit("雪".into())),
+        ],
+    );
+    assert!(name_receipts(&app).iter().any(|value| value["outcome"]
+        .as_str()
+        .unwrap()
+        .starts_with("CommitAccepted")));
+    assert_eq!(
+        app.project_name_observation().unwrap(),
+        ("雪".into(), vec!["雪.rs".into()], false, false)
+    );
+    assert!(commands.try_recv().is_err());
+    held_frame(&mut app, vec![key_event(egui::Key::Enter, false)]);
+    assert!(commands.try_recv().is_err());
+    held_frame(&mut app, vec![released(egui::Key::Enter)]);
+    frame(&mut app, vec![key_event(egui::Key::Enter, false)]);
+    assert!(matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "雪.rs"));
+}
+
+#[test]
+fn project_name_search_foreign_and_cancelled_compositions_cannot_retarget() {
+    for foreign in [false, true] {
+        let (mut app, commands) = flat_fixture(vec![entry("雪.rs", false)]);
+        if !foreign {
+            name_open_button(&mut app);
+        }
+        frame(
+            &mut app,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Enabled),
+                egui::Event::Ime(egui::ImeEvent::Preedit("雪".into())),
+            ],
+        );
+        frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Disabled)]);
+        if !foreign {
+            frame(&mut app, vec![key_event(egui::Key::Escape, false)]);
+        }
+        name_open_button(&mut app);
+        frame(
+            &mut app,
+            vec![egui::Event::Ime(egui::ImeEvent::Commit("雪".into()))],
+        );
+        assert!(name_receipts(&app).iter().any(|value| value["outcome"]
+            .as_str()
+            .unwrap()
+            .starts_with("CommitAccepted")));
+        assert!(app.project_name_observation().unwrap().1.is_empty());
+        frame(&mut app, vec![key_event(egui::Key::Enter, false)]);
+        assert!(commands.try_recv().is_err());
+        name_replace(&mut app, "雪.");
+        assert_eq!(app.project_name_observation().unwrap().1, ["雪.rs"]);
+    }
+}

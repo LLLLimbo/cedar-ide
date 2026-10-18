@@ -258,6 +258,7 @@ struct NameFrame {
     command: Option<egui::Key>,
     button_key: Option<egui::Key>,
     pointer_clean: bool,
+    pointer_pressed: bool,
     query_owned: bool,
     edit_owned: bool,
     had_ime: bool,
@@ -924,7 +925,11 @@ impl CedarApp {
         row: &Row,
         galley: std::sync::Arc<egui::Galley>,
     ) -> egui::Response {
-        let selected = self.explorer.selected == row.entry.path;
+        let selected = if self.explorer.name_search.session.is_some() {
+            self.project_name_selected(&row.entry.path)
+        } else {
+            self.explorer.selected == row.entry.path
+        };
         let height = chrome::ROW_HEIGHT.max(galley.size().y);
         let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), height));
         let response = ui.interact(
@@ -980,6 +985,11 @@ impl CedarApp {
         galley: std::sync::Arc<egui::Galley>,
         selected: bool,
     ) -> egui::Response {
+        let selected = if self.explorer.name_search.session.is_some() {
+            self.project_name_selected(&entry.path)
+        } else {
+            selected
+        };
         // Preserve the existing scoped widget IDs; retain just their parent ID
         // so the raw-input hook can recognize the first key after Tab/click.
         self.explorer.flat_row_scope = Some(ui.id());
@@ -1015,15 +1025,7 @@ impl CedarApp {
                 )
             });
         }
-        paint_project_row(
-            ui,
-            &response,
-            entry,
-            galley,
-            selected || self.project_name_selected(&entry.path),
-            0,
-            None,
-        );
+        paint_project_row(ui, &response, entry, galley, selected, 0, None);
         response.on_hover_text(&entry.path)
     }
 
@@ -1769,16 +1771,25 @@ impl CedarApp {
         } else {
             None
         };
-        let pointer_clean = !actions.is_empty()
-            && actions.iter().all(|event| {
-                matches!(
-                    event,
-                    egui::Event::PointerButton {
-                        button: egui::PointerButton::Primary,
-                        ..
-                    }
-                )
-            });
+        let pointer_clean = actions.iter().all(|event| {
+            matches!(
+                event,
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    ..
+                }
+            )
+        });
+        let pointer_pressed = actions.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    ..
+                }
+            )
+        });
         let button_owned = allowed
             && window
             && focused.is_some()
@@ -1895,6 +1906,7 @@ impl CedarApp {
             command,
             button_key,
             pointer_clean,
+            pointer_pressed,
             query_owned,
             edit_owned,
             had_ime,
@@ -2181,7 +2193,10 @@ impl CedarApp {
             #[cfg(test)]
             crate::workspace_access_tests::record(ui, "project_name_search", &button);
             if let Some(frame) = &mut self.explorer.name_search.frame {
-                if frame.pointer_clean && button.is_pointer_button_down_on() {
+                if frame.pointer_clean
+                    && frame.pointer_pressed
+                    && button.is_pointer_button_down_on()
+                {
                     self.explorer.name_search.press = Some(frame.context.clone());
                 }
                 let pointer = frame.pointer_clean
