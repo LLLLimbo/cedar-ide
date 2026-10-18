@@ -62,6 +62,12 @@ impl CedarApp {
         }
     }
     pub(super) fn operation_problem(&self, operation: &Operation) -> Option<String> {
+        // Admission stays closed until both UI surfaces implement the complete
+        // captured-request contract. Even a conforming v1 peer cannot open a
+        // partial application route during inert Stage 1.
+        if matches!(operation, Operation::SearchCase { .. }) {
+            return Some("Case search is not enabled in this application yet".into());
+        }
         if let Operation::SearchIn { request } = operation {
             if !self.backend_scoped_search_supported() {
                 return Some(search_keyboard::SCOPED_UNAVAILABLE.into());
@@ -317,6 +323,7 @@ mod tests {
             result: Ok(Payload::Hello {
                 file_discovery: None,
                 scoped_search: None,
+                case_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: root.into(),
                 agent,
@@ -628,6 +635,7 @@ mod tests {
             result: Ok(Payload::Hello {
                 file_discovery: None,
                 scoped_search: None,
+                case_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION + 1,
                 root: "/unaccepted".into(),
                 agent: Some(full_test_agent()),

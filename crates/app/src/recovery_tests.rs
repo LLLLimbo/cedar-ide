@@ -403,6 +403,7 @@ fn recovery_connect_handshake_must_match_before_clearing_current_tabs() {
         result: Ok(Payload::Hello {
             file_discovery: None,
             scoped_search: None,
+            case_search: None,
             protocol: cedar_protocol::PROTOCOL_VERSION,
             agent: None,
             root: "/wrong".into(),
@@ -550,6 +551,7 @@ fn workspace_switch_does_not_move_pending_drafts_or_inherit_protection() {
         result: Ok(Payload::Hello {
             file_discovery: None,
             scoped_search: None,
+            case_search: None,
             protocol: cedar_protocol::PROTOCOL_VERSION,
             agent: None,
             root: "/different/root".into(),

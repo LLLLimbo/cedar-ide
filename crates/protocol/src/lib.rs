@@ -363,7 +363,10 @@ impl Operation {
     pub fn capability_name(&self) -> Option<&'static str> {
         Some(match self {
             // Search extensions are gated by independent retained Hello descriptors.
-            Self::Hello | Self::FindFiles { .. } | Self::SearchIn { .. } | Self::SearchCase { .. } => return None,
+            Self::Hello
+            | Self::FindFiles { .. }
+            | Self::SearchIn { .. }
+            | Self::SearchCase { .. } => return None,
             Self::List { .. } => "list",
             Self::Read { .. } => "read",
             Self::Write { .. } => "write",

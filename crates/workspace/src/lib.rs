@@ -10,6 +10,8 @@
 //! permissions, not merely workspace access.
 
 mod capabilities;
+#[cfg(test)]
+mod case_search_stage1_tests;
 mod file_discovery;
 mod git_read;
 #[cfg(feature = "windows-java-gc-diagnostic")]
@@ -191,6 +193,7 @@ impl Workspace {
                 protocol: PROTOCOL_VERSION,
                 file_discovery: Some(cedar_protocol::FileDiscoveryDescriptor::V1),
                 scoped_search: Some(cedar_protocol::ScopedSearchDescriptor::V1),
+                case_search: None,
                 root: self.root.to_string_lossy().into_owned(),
                 agent: Some({
                     let mut info = capabilities::agent_info(self.backend_mode);
@@ -209,6 +212,12 @@ impl Workspace {
             } => self.write(&path, &text, expected_revision.as_deref()),
             Operation::Search { query, limit } => self.search(&query, limit),
             Operation::SearchIn { request } => self.search_in(request),
+            // Inert Stage 1: reject before inspecting the request or touching
+            // any directory/content. Hello deliberately advertises no support.
+            Operation::SearchCase { .. } => Err(error(
+                "unsupported_operation",
+                "Case search is not implemented by this agent",
+            )),
             Operation::FindFiles {
                 query,
                 scope,

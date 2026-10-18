@@ -9,6 +9,7 @@ fn hello() -> Payload {
         agent: None,
         file_discovery: None,
         scoped_search: None,
+        case_search: None,
     }
 }
 

@@ -415,6 +415,7 @@ fn reconnect_reset_clears_results_and_endpoint_switch_clears_program() {
             result: Ok(Payload::Hello {
                 file_discovery: None,
                 scoped_search: None,
+                case_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: form.local_root,
                 agent: info,

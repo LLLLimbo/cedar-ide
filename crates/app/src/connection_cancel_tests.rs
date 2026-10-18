@@ -28,6 +28,7 @@ fn hello() -> Payload {
     Payload::Hello {
         file_discovery: None,
         scoped_search: None,
+        case_search: None,
         protocol: cedar_protocol::PROTOCOL_VERSION,
         root: ROOT.into(),
         agent: None,

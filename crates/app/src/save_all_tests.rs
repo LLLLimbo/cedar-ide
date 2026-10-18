@@ -694,6 +694,7 @@ fn exact_written_after_pending_save_is_missing_or_replaced_is_counted_unknown() 
             result: Ok(Payload::Hello {
                 file_discovery: None,
                 scoped_search: None,
+                case_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: app.root.clone(),
                 agent: None,

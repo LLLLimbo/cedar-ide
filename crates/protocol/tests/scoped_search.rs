@@ -36,6 +36,7 @@ fn hello(descriptor: Option<ScopedSearchDescriptor>) -> Response {
             agent: Some(agent()),
             file_discovery: Some(FileDiscoveryDescriptor::V1),
             scoped_search: descriptor,
+            case_search: None,
         }),
     }
 }
@@ -265,6 +266,7 @@ fn actual_accepted_061_reader_ignores_new_hello_field_but_rejects_new_operation(
         current.result,
         Ok(Payload::Hello {
             scoped_search: None,
+            case_search: None,
             file_discovery: Some(_),
             ..
         })

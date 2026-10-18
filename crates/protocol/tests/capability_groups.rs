@@ -64,6 +64,7 @@ fn hello(info: AgentInfo) -> Response {
             agent: Some(info),
             file_discovery: None,
             scoped_search: None,
+            case_search: None,
         }),
     }
 }

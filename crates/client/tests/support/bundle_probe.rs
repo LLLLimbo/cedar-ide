@@ -1246,6 +1246,7 @@ mod linux_desktop {
                 result: Ok(Payload::Hello {
                     file_discovery: None,
                     scoped_search: None,
+                    case_search: None,
                     protocol: if mode == "protocol" {
                         PROTOCOL_VERSION + 1
                     } else {

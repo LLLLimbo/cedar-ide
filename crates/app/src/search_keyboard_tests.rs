@@ -2658,6 +2658,7 @@ fn search_keyboard_workspace_changing_hello_preserves_held_lifetime_until_releas
             Ok(Payload::Hello {
                 file_discovery: None,
                 scoped_search: None,
+                case_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 root: "/other".into(),
                 agent: Some(agent_support::full_test_agent()),

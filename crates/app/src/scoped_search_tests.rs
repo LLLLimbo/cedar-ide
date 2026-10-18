@@ -1564,6 +1564,7 @@ fn scoped_find_reconnect_rejects_late_success_error_and_requires_fresh_submit() 
                     agent: Some(agent_support::full_test_agent()),
                     file_discovery: None,
                     scoped_search: Some(ScopedSearchDescriptor { version: 1 }),
+                    case_search: None,
                 }),
             );
             let list = reconnected.try_recv().unwrap();

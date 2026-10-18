@@ -5,6 +5,9 @@ use cedar_protocol::{JAVA_MAVEN_DEPENDENCIES_GROUP, JAVA_MAVEN_LEAF_GROUP};
 use std::{fs, sync::OnceLock};
 use tempfile::TempDir;
 
+#[path = "case_search_tests.rs"]
+mod case_search_tests;
+
 #[path = "scoped_search_tests.rs"]
 mod scoped_search_tests;
 

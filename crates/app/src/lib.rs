@@ -13,6 +13,8 @@ mod build_problem_process_tests;
 #[cfg(test)]
 mod build_problem_ui_tests;
 mod build_problems;
+#[cfg(test)]
+mod case_search_stage1_tests;
 mod chrome;
 mod close_transport;
 #[cfg(test)]
@@ -1189,6 +1191,7 @@ impl CedarApp {
                 Ok(Payload::Hello {
                     file_discovery,
                     scoped_search,
+                    case_search,
                     protocol,
                     root,
                     agent,
@@ -1206,6 +1209,14 @@ impl CedarApp {
                         }
                     }
                     if let Some(descriptor) = &scoped_search {
+                        if let Err(error) = descriptor.validate() {
+                            self.disconnected(error.to_string());
+                            return;
+                        }
+                    }
+                    // Stage 1 validates metadata, but exposes no case option
+                    // and retains no case-search authority in the application.
+                    if let Some(descriptor) = &case_search {
                         if let Err(error) = descriptor.validate() {
                             self.disconnected(error.to_string());
                             return;
@@ -4387,6 +4398,7 @@ mod tests {
             result: Ok(Payload::Hello {
                 file_discovery: None,
                 scoped_search: None,
+                case_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 agent: None,
                 root: root.into(),
@@ -4581,6 +4593,7 @@ mod tests {
             result: Ok(Payload::Hello {
                 file_discovery: None,
                 scoped_search: None,
+                case_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 agent: None,
                 root: "wrong".into(),
@@ -4678,6 +4691,7 @@ mod tests {
             result: Ok(Payload::Hello {
                 file_discovery: None,
                 scoped_search: None,
+                case_search: None,
                 protocol: cedar_protocol::PROTOCOL_VERSION,
                 agent: None,
                 root: "/new".into(),

@@ -36,6 +36,7 @@ fn hello(descriptor: Option<FileDiscoveryDescriptor>) -> Response {
             agent: Some(agent()),
             file_discovery: descriptor,
             scoped_search: None,
+            case_search: None,
         }),
     }
 }

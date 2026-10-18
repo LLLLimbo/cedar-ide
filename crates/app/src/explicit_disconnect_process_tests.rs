@@ -52,6 +52,7 @@ fn fixture(root: &Path, mode: &str) {
         serde_json::to_vec(&Payload::Hello {
             file_discovery: None,
             scoped_search: None,
+            case_search: None,
             protocol: cedar_protocol::PROTOCOL_VERSION,
             root: SYNTHETIC_ROOT.into(),
             agent: None,

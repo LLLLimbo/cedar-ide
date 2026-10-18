@@ -8,3 +8,6 @@ crates/app/tests/fixtures/surefire-3.5.4/enclosed-error.xml -text
 /vendor/egui-0.31.1/** -text
 /third-party-licenses/egui-0.31.1/LICENSE-MIT -text
 /third-party-licenses/egui-0.31.1/LICENSE-APACHE -text
+
+# Preserve the exact pre-case-search protocol reader on every checkout.
+/crates/protocol/tests/fixtures/accepted_079/*.rs -text

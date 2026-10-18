@@ -2256,6 +2256,7 @@ fn browse_file_discovery_uses_first_hello_and_resets_support_after_disconnect() 
         agent: Some(agent_support::full_test_agent()),
         file_discovery: descriptor,
         scoped_search: None,
+        case_search: None,
     };
     for replacement in [
         None,
@@ -2986,6 +2987,7 @@ fn browse_retained_reconnect_cannot_revive_preview_or_search_authority() {
                 agent: Some(agent_support::full_test_agent()),
                 file_discovery: None,
                 scoped_search: None,
+                case_search: None,
             }),
         );
         let list = commands.try_recv().unwrap();

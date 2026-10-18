@@ -33,6 +33,7 @@ fn hello(agent: Option<AgentInfo>) -> Response {
             agent,
             file_discovery: None,
             scoped_search: None,
+            case_search: None,
         }),
     }
 }

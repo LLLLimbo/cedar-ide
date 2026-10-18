@@ -1,0 +1,30 @@
+{
+  "commit": "705457c6ac67cc6e7be62490e17b5d2277af0d08",
+  "tree": "569ae835d76e908e1d6876d58366a3f1046dde2a",
+  "files": [
+    {
+      "path": "lib.rs",
+      "bytes": 30705,
+      "sha256": "78605cb00102bd6c7728b07814f2af5233731cb5fc75b458e0ee20f31ccb16a6",
+      "git_blob": "b95f2b43abfc29336187e1cf506bd75d9dd0785a"
+    },
+    {
+      "path": "file_discovery.rs",
+      "bytes": 8368,
+      "sha256": "4984a7d22e82fd78d7194d9542cffcbbe9fd78605664fc0d06c0a7e57e01af9a",
+      "git_blob": "9d9b519147b9cc17c65c015ddcfb475d72068af1"
+    },
+    {
+      "path": "maven_dependencies.rs",
+      "bytes": 9957,
+      "sha256": "3d26bb08840a7c9ed0bdfe8e7fac3fd59136d11b07afa9ff8b7d259724c759dd",
+      "git_blob": "8707970b7d2ab118074b34e5090e654cc8e3212a"
+    },
+    {
+      "path": "scoped_search.rs",
+      "bytes": 12629,
+      "sha256": "0f180a19fd9cf4371bc8004319bb398db1e67e70b1ae5d33a297f1fb708c3ce7",
+      "git_blob": "b8a4bcc964304022db1cde8033547477e9aca18e"
+    }
+  ]
+}

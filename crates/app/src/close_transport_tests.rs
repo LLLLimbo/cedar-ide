@@ -755,6 +755,7 @@ fn generation_exhaustion_never_wraps_or_admits_stale_ui_but_allows_guarded_close
                 agent: None,
                 file_discovery: None,
                 scoped_search: None,
+                case_search: None,
             }),
         }))
         .unwrap();

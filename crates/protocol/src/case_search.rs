@@ -1,8 +1,8 @@
 //! Independently negotiated case-aware literal search. Stage 1 defines the
 //! contract only; no workspace advertises or implements this operation yet.
 use crate::{
-    RemoteError, ScopedSearchIncompleteReason, ScopedSearchRequest, ScopedSearchResult, SearchMatch,
-    MAX_SCOPED_SEARCH_RESULT_BYTES,
+    RemoteError, ScopedSearchIncompleteReason, ScopedSearchRequest, ScopedSearchResult,
+    SearchMatch, MAX_SCOPED_SEARCH_RESULT_BYTES,
 };
 use serde::{
     de::{value::MapAccessDeserializer, MapAccess, Visitor},
@@ -131,7 +131,12 @@ impl CaseSearchResult {
         let scoped = request.scoped_request();
         let result = ScopedSearchResult {
             request: scoped.clone(),
-            matches: self.matches.iter().cloned().map(SearchMatch::from).collect(),
+            matches: self
+                .matches
+                .iter()
+                .cloned()
+                .map(SearchMatch::from)
+                .collect(),
             incomplete: self.incomplete,
             reasons: self.reasons.clone(),
             examined_entries: self.examined_entries,
@@ -177,9 +182,13 @@ impl<'de> Deserialize<'de> for CaseSearchDescriptor {
         }
         let fields: Fields = deserialize_object(deserializer)?;
         if fields.version == 0 {
-            return Err(serde::de::Error::custom("case_search version must be positive"));
+            return Err(serde::de::Error::custom(
+                "case_search version must be positive",
+            ));
         }
-        Ok(Self { version: fields.version })
+        Ok(Self {
+            version: fields.version,
+        })
     }
 }
 
@@ -209,9 +218,17 @@ impl<'de> Deserialize<'de> for CaseSearchMatch {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct Fields { path: String, line: usize, text: String }
+        struct Fields {
+            path: String,
+            line: usize,
+            text: String,
+        }
         let fields: Fields = deserialize_object(deserializer)?;
-        Ok(Self { path: fields.path, line: fields.line, text: fields.text })
+        Ok(Self {
+            path: fields.path,
+            line: fields.line,
+            text: fields.text,
+        })
     }
 }
 
