@@ -3013,6 +3013,7 @@ impl CedarApp {
                                 response.on_hover_text(format!("Workspace: {}\nProject directory scope: /{}", self.root, scope));
                             }
                         });
+                        self.project_name_ui(ui);
                         // Later status and tree requests retain native last-writer priority.
                         ui.push_id("explorer_status", |ui| self.explorer_status(ui, resized));
                         ui.add_space(4.0);
@@ -3028,8 +3029,7 @@ impl CedarApp {
                             });
                             let indent = row.map_or(0.0, |row| (row.depth as f32 * chrome::INDENT).min(file_text_width * 0.35));
                             let name = if entry.path.is_empty() && entry.is_dir { self.root.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or("Workspace") } else { &entry.name };
-                            egui::WidgetText::from(RichText::new(format!("{name}{state}")).color(TEXT))
-                                .into_galley(ui, Some(egui::TextWrapMode::Truncate), (file_text_width - indent - 38.0).max(0.0), egui::TextStyle::Body)
+                            self.project_name_galley(ui, entry, name, state, (file_text_width - indent - 38.0).max(0.0))
                         }).collect();
                         let explorer_min_height = file_galleys.iter().fold(64.0_f32, |height, galley| {
                             height.max(galley.size().y + 2.0 * ui.spacing().button_padding.y + 2.0 * ui.spacing().item_spacing.y).max(ui.spacing().interact_size.y)
@@ -3060,7 +3060,7 @@ impl CedarApp {
                                     } else {
                                         self.explorer_flat_row(ui, entry, galley.clone(), selected)
                                     };
-                                    let explicit_key_reveal = self.explorer.key_reveal.as_deref() == Some(entry.path.as_str()) && response.has_focus();
+                                    let explicit_key_reveal = self.explorer.key_reveal.as_deref() == Some(entry.path.as_str()) && (response.has_focus() || self.project_name_selected(&entry.path));
                                     let access_reveal = self.record_project_access(ui, &entry.path, &response);
                                     let current_file_reveal = self.record_project_reveal_row(ui, &entry.path, &response);
                                     let newly_revealed = response.gained_focus() || (resized && response.has_focus()) || explicit_key_reveal || access_reveal || current_file_reveal;
@@ -3099,7 +3099,7 @@ impl CedarApp {
                                         } else if row.expanded && row.loaded && !row.loading && tree_rows.get(index + 1).is_none_or(|child| child.depth <= row.depth) {
                                             ui.label(RichText::new("Empty directory").small().color(MUTED));
                                         }
-                                    } else if response.clicked() { open = Some(entry.clone()); }
+                                    } else if self.explorer_flat_activation(&response) { open = Some(entry.clone()); }
                                 }
                             });
                         if let Some((id, newly_revealed, row_rect, old_offset)) = focused_entry {
@@ -3126,6 +3126,7 @@ impl CedarApp {
                         sidebar_layout_tests::record_scroll(ctx, false, &explorer);
                         if let Some(path) = retry { self.explorer_refresh(&path); }
                         if let Some(entry) = open {
+                            self.cancel_project_name_search();
                             if self.explorer.mode == explorer_tree::Mode::Tree { self.explorer_activate(&entry.path); }
                             else if entry.is_dir { self.list(entry.path); } else { self.open(entry.path, None); }
                         }

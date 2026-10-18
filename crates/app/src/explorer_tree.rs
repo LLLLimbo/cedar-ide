@@ -228,6 +228,7 @@ struct NameSession {
     admitted: Option<String>,
     matches: Vec<String>,
     selected: Option<usize>,
+    origin: Option<String>,
     composing: bool,
     paused: bool,
 }
@@ -820,6 +821,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_tree_shortcuts(&mut self, ctx: &egui::Context) {
+        self.project_name_shortcuts(ctx);
         let Some(intent) = self.explorer.key_intent.take() else {
             return;
         };
@@ -1013,8 +1015,22 @@ impl CedarApp {
                 )
             });
         }
-        paint_project_row(ui, &response, entry, galley, selected, 0, None);
+        paint_project_row(
+            ui,
+            &response,
+            entry,
+            galley,
+            selected || self.project_name_selected(&entry.path),
+            0,
+            None,
+        );
         response.on_hover_text(&entry.path)
+    }
+
+    pub(crate) fn explorer_flat_activation(&self, response: &egui::Response) -> bool {
+        response.clicked()
+            && (!response.clicked_by(egui::PointerButton::Primary)
+                || !self.explorer.pointer_blocked)
     }
 
     pub(crate) fn explorer_pointer_activation(
@@ -1050,6 +1066,7 @@ impl CedarApp {
         if self.explorer.mode == mode {
             return;
         }
+        self.cancel_project_name_search();
         self.cancel_project_reveal();
         let Some(epoch) = self
             .explorer
@@ -1241,6 +1258,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_new_file(&mut self) {
+        self.cancel_project_name_search();
         self.cancel_project_reveal();
         let scope = self.explorer_scope();
         self.new_file = true;
@@ -1252,6 +1270,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_expand(&mut self, path: &str) {
+        self.cancel_project_name_search();
         self.cancel_project_reveal();
         if self.explorer.branches.contains_key(path) {
             return;
@@ -1260,6 +1279,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_refresh(&mut self, path: &str) {
+        self.cancel_project_name_search();
         self.cancel_project_reveal();
         if self.explorer.mode == Mode::Flat {
             self.list(path.into());
@@ -1330,6 +1350,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_collapse(&mut self, path: &str) {
+        self.cancel_project_name_search();
         self.cancel_project_reveal();
         self.explorer.advance_epoch();
         self.explorer
@@ -1362,6 +1383,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_saved(&mut self, path: &str) {
+        self.cancel_project_name_search();
         self.cancel_project_reveal();
         if self.explorer.mode == Mode::Tree {
             self.explorer.advance_epoch();
@@ -1378,6 +1400,7 @@ impl CedarApp {
     }
 
     pub(crate) fn explorer_list_flat(&mut self, path: String) {
+        self.cancel_project_name_search();
         self.cancel_project_reveal();
         if self.explorer.mode != Mode::Flat {
             return;
@@ -1582,7 +1605,11 @@ impl CedarApp {
 
 impl NameSearch {
     fn cancel(&mut self) {
-        if self.session.take().is_some_and(|session| session.composing || session.paused) {
+        if self
+            .session
+            .take()
+            .is_some_and(|session| session.composing || session.paused)
+        {
             self.ime_barrier = true;
         }
         self.press = None;
@@ -1590,10 +1617,20 @@ impl NameSearch {
 }
 
 fn name_command(key: egui::Key) -> bool {
-    matches!(key, egui::Key::ArrowUp | egui::Key::ArrowDown | egui::Key::Enter | egui::Key::Escape)
+    matches!(
+        key,
+        egui::Key::ArrowUp | egui::Key::ArrowDown | egui::Key::Enter | egui::Key::Escape
+    )
 }
 fn name_text_event(event: &egui::Event) -> bool {
-    matches!(event, egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Ime(_) | egui::Event::Copy | egui::Event::Cut)
+    matches!(
+        event,
+        egui::Event::Text(_)
+            | egui::Event::Paste(_)
+            | egui::Event::Ime(_)
+            | egui::Event::Copy
+            | egui::Event::Cut
+    )
 }
 fn name_printable_key(key: egui::Key) -> bool {
     // Explicit contiguous printable groups in pinned egui 0.31.1.
@@ -1618,12 +1655,20 @@ impl CedarApp {
     }
 
     fn project_name_entries(&self) -> Vec<Entry> {
-        if !self.ready() { return Vec::new(); }
+        if !self.ready() {
+            return Vec::new();
+        }
         if self.explorer.mode == Mode::Flat {
-            if !self.project_focus_row_current("") { return Vec::new(); }
+            if !self.project_focus_row_current("") {
+                return Vec::new();
+            }
             self.entries.clone()
         } else {
-            self.explorer.visible_rows().into_iter().map(|row| row.entry).collect()
+            self.explorer
+                .visible_rows()
+                .into_iter()
+                .map(|row| row.entry)
+                .collect()
         }
     }
 
@@ -1631,7 +1676,9 @@ impl CedarApp {
         if self.explorer.mode == Mode::Tree {
             Some(row_id(path))
         } else {
-            self.explorer.flat_row_scope.map(|scope| scope.with(("flat_entry", path)))
+            self.explorer
+                .flat_row_scope
+                .map(|scope| scope.with(("flat_entry", path)))
         }
     }
 
@@ -1639,68 +1686,197 @@ impl CedarApp {
         self.explorer.name_search.cancel();
     }
 
-    fn capture_project_name_input(&mut self, ctx: &egui::Context, raw: &egui::RawInput, consumed: &mut [bool]) {
+    fn capture_project_name_input(
+        &mut self,
+        ctx: &egui::Context,
+        raw: &egui::RawInput,
+        consumed: &mut [bool],
+    ) {
         let context = self.project_name_context();
         let focused = ctx.memory(|memory| memory.focused());
-        let window = raw.focused && !raw.events.iter().any(|event| matches!(event, egui::Event::WindowFocused(false)));
-        let allowed = !self.project_row_input_blocked(ctx) && !self.file_structure_open() && !ctx.memory(|memory| memory.any_popup_open());
-        let query_owned = self.explorer.name_search.session.as_ref().is_some_and(|session| Some(session.id()) == focused);
-        let owner = self.explorer.name_search.session.as_ref().map(|session| (session.serial, session.revision));
-        let selected = self.explorer.name_search.session.as_ref().and_then(|session| session.selected.and_then(|index| session.matches.get(index).cloned()));
-        let row_owned = allowed && window && self.project_name_entries().iter().any(|entry| self.project_name_row_id(&entry.path) == focused);
-        let clear = self.explorer.flat_input.keys.is_empty() && !self.explorer.flat_input.pointers.iter().any(|pressed| *pressed) && !self.explorer.flat_input.composing;
-        let was_composing = self.explorer.flat_input.composing || self.explorer.name_search.session.as_ref().is_some_and(|session| session.composing);
-        let had_ime = raw.events.iter().any(|event| matches!(event, egui::Event::Ime(_)));
-        let actions: Vec<_> = raw.events.iter().filter(|event| actionable(event)).collect();
-        let clean_key = if let [egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }] = actions.as_slice() {
+        let window = raw.focused
+            && !raw
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::WindowFocused(false)));
+        let allowed = !self.project_row_input_blocked(ctx)
+            && !self.file_structure_open()
+            && !ctx.memory(|memory| memory.any_popup_open());
+        let query_owned = self
+            .explorer
+            .name_search
+            .session
+            .as_ref()
+            .is_some_and(|session| Some(session.id()) == focused);
+        let owner = self
+            .explorer
+            .name_search
+            .session
+            .as_ref()
+            .map(|session| (session.serial, session.revision));
+        let selected = self
+            .explorer
+            .name_search
+            .session
+            .as_ref()
+            .and_then(|session| {
+                session
+                    .selected
+                    .and_then(|index| session.matches.get(index).cloned())
+            });
+        let row_owned = allowed
+            && window
+            && self
+                .project_name_entries()
+                .iter()
+                .any(|entry| self.project_name_row_id(&entry.path) == focused);
+        let clear = self.explorer.flat_input.keys.is_empty()
+            && !self
+                .explorer
+                .flat_input
+                .pointers
+                .iter()
+                .any(|pressed| *pressed)
+            && !self.explorer.flat_input.composing;
+        let was_composing = self.explorer.flat_input.composing
+            || self
+                .explorer
+                .name_search
+                .session
+                .as_ref()
+                .is_some_and(|session| session.composing);
+        let had_ime = raw
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Ime(_)));
+        if had_ime && !query_owned {
+            self.explorer.name_search.ime_barrier = true;
+        }
+        let actions: Vec<_> = raw
+            .events
+            .iter()
+            .filter(|event| actionable(event))
+            .collect();
+        let clean_key = if let [egui::Event::Key {
+            key,
+            pressed: true,
+            repeat: false,
+            modifiers,
+            ..
+        }] = actions.as_slice()
+        {
             modifiers.is_none().then_some(*key)
-        } else { None };
-        let pointer_clean = !actions.is_empty() && actions.iter().all(|event| matches!(event, egui::Event::PointerButton { button: egui::PointerButton::Primary, .. }));
-        let button_owned = allowed && window && focused.is_some() && focused == self.explorer.name_search.button_id;
+        } else {
+            None
+        };
+        let pointer_clean = !actions.is_empty()
+            && actions.iter().all(|event| {
+                matches!(
+                    event,
+                    egui::Event::PointerButton {
+                        button: egui::PointerButton::Primary,
+                        ..
+                    }
+                )
+            });
+        let button_owned = allowed
+            && window
+            && focused.is_some()
+            && focused == self.explorer.name_search.button_id;
         let button_key = if button_owned && clear {
             match actions.as_slice() {
-                [egui::Event::Key { key: egui::Key::Enter | egui::Key::Space, pressed: true, repeat: false, modifiers, .. }] if modifiers.is_none() => clean_key,
-                [egui::Event::Key { key: egui::Key::Space, pressed: true, repeat: false, modifiers, .. }, egui::Event::Text(text)] if modifiers.is_none() && text.as_str() == " " => Some(egui::Key::Space),
+                [egui::Event::Key {
+                    key: egui::Key::Enter | egui::Key::Space,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                }] if modifiers.is_none() => clean_key,
+                [egui::Event::Key {
+                    key: egui::Key::Space,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                }, egui::Event::Text(text)]
+                    if modifiers.is_none() && text.as_str() == " " =>
+                {
+                    Some(egui::Key::Space)
+                }
                 _ => None,
             }
-        } else { None };
+        } else {
+            None
+        };
         let seed = if row_owned && clear {
             match actions.as_slice() {
-                [egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }, egui::Event::Text(text)]
-                    if name_printable_key(*key) && !modifiers.ctrl && !modifiers.alt && !modifiers.command && !modifiers.mac_cmd => {
-                        let bounded: String = text.chars().take(MAX_NAME_QUERY_CHARS).collect();
-                        name_query_valid(&bounded).then_some(bounded)
-                    }
+                [egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                }, egui::Event::Text(text)]
+                    if name_printable_key(*key)
+                        && !modifiers.ctrl
+                        && !modifiers.alt
+                        && !modifiers.command
+                        && !modifiers.mac_cmd =>
+                {
+                    let bounded: String = text.chars().take(MAX_NAME_QUERY_CHARS).collect();
+                    name_query_valid(&bounded).then_some(bounded)
+                }
                 _ => None,
             }
-        } else { None };
+        } else {
+            None
+        };
         // Do not enumerate TextEdit's editing shortcuts here. Current-owner
         // key/text batches reach native editing; ordinary global shortcuts keep
         // their existing route. Our four commands and Tab are separate gestures.
-        let edit_owned = query_owned && allowed && window && actions.iter().all(|event| match event {
-            egui::Event::Key { key, modifiers, .. } => (!name_command(*key) && *key != egui::Key::Tab)
-                || (was_composing && had_ime && name_command(*key) && modifiers.is_none()),
-            event => name_text_event(event),
-        });
+        let edit_owned = query_owned
+            && allowed
+            && window
+            && actions.iter().all(|event| match event {
+                egui::Event::Key { key, modifiers, .. } => {
+                    (!name_command(*key) && *key != egui::Key::Tab)
+                        || (was_composing && had_ime && name_command(*key) && modifiers.is_none())
+                }
+                event => name_text_event(event),
+            });
         let row_text_batch = row_owned && raw.events.iter().any(name_text_event);
         let mut command = None;
         for (index, event) in raw.events.iter().enumerate() {
-            if (row_owned || (query_owned && !edit_owned) || button_key.is_some()) && name_text_event(event) {
+            if (row_owned || (query_owned && !edit_owned) || button_key.is_some())
+                && name_text_event(event)
+            {
                 consumed[index] = true;
             }
-            // A mixed row Text+pointer batch must not become a clean click once
-            // its text is removed. Keep the original pointer lifetime metadata.
-            if row_text_batch && matches!(event, egui::Event::PointerButton { .. }) {
-                consumed[index] = true;
-            }
-            if let egui::Event::Key { key, pressed, repeat, .. } = event {
+            if let egui::Event::Key {
+                key,
+                pressed,
+                repeat,
+                ..
+            } = event
+            {
                 let claimed = self.explorer.name_search.claimed.contains(key);
                 if !pressed {
                     consumed[index] |= self.explorer.name_search.claimed.remove(key);
-                } else if claimed || row_text_batch || button_key == Some(*key) || (query_owned && name_command(*key)) {
+                } else if claimed
+                    || row_text_batch
+                    || button_key == Some(*key)
+                    || (query_owned && name_command(*key))
+                {
                     consumed[index] = true;
                     self.explorer.name_search.claimed.insert(*key);
-                    if query_owned && allowed && window && clear && !claimed && !repeat && clean_key == Some(*key) {
+                    if query_owned
+                        && allowed
+                        && window
+                        && clear
+                        && !claimed
+                        && !repeat
+                        && clean_key == Some(*key)
+                    {
                         command = Some(*key);
                     }
                 }
@@ -1710,7 +1886,21 @@ impl CedarApp {
             self.cancel_project_name_search();
             self.explorer.name_search.claimed.clear();
         }
-        self.explorer.name_search.frame = Some(NameFrame { context, focused, owner, selected, seed, command, button_key, pointer_clean, query_owned, edit_owned, had_ime, was_composing, observed: false });
+        self.explorer.name_search.frame = Some(NameFrame {
+            context,
+            focused,
+            owner,
+            selected,
+            seed,
+            command,
+            button_key,
+            pointer_clean,
+            query_owned,
+            edit_owned,
+            had_ime,
+            was_composing,
+            observed: false,
+        });
     }
 
     // Run immediately after navigation replies, and before query/editor render.
@@ -1720,18 +1910,499 @@ impl CedarApp {
     pub(crate) fn guard_project_name_input(&mut self, ctx: &egui::Context) {
         let context = self.project_name_context();
         let focused = ctx.memory(|memory| memory.focused());
-        let current = self.explorer.name_search.session.as_ref().is_some_and(|session| {
-            session.context == context && focused == Some(session.id())
-                && !self.project_row_input_blocked(ctx) && !self.file_structure_open()
-                && ctx.input(|input| input.focused) && !ctx.memory(|memory| memory.any_popup_open())
-        });
-        let stale_owned = self.explorer.name_search.frame.as_ref().is_some_and(|frame| frame.query_owned && (!current || frame.context != context || frame.focused != focused));
+        let current = self
+            .explorer
+            .name_search
+            .session
+            .as_ref()
+            .is_some_and(|session| {
+                session.context == context
+                    && focused == Some(session.id())
+                    && !self.project_row_input_blocked(ctx)
+                    && !self.file_structure_open()
+                    && ctx.input(|input| input.focused)
+                    && !ctx.memory(|memory| memory.any_popup_open())
+            });
+        let stale_owned = self
+            .explorer
+            .name_search
+            .frame
+            .as_ref()
+            .is_some_and(|frame| {
+                frame.query_owned
+                    && (!current || frame.context != context || frame.focused != focused)
+            });
         if stale_owned {
-            ctx.input_mut(|input| input.events.retain(|event| !name_text_event(event) && !matches!(event, egui::Event::Key { .. })));
+            ctx.input_mut(|input| {
+                input.events.retain(|event| {
+                    !name_text_event(event) && !matches!(event, egui::Event::Key { .. })
+                })
+            });
         }
         if self.explorer.name_search.session.is_some() && !current {
             self.cancel_project_name_search();
         }
+    }
+}
+
+impl CedarApp {
+    fn open_project_name_search(&mut self, ctx: &egui::Context, query: String) {
+        if self.project_row_input_blocked(ctx) || self.file_structure_open() {
+            return;
+        }
+        let Some(serial) = self.explorer.name_search.serial.checked_add(1) else {
+            return;
+        };
+        let focused = ctx.memory(|memory| memory.focused());
+        let entries = self.project_name_entries();
+        let origin = entries
+            .iter()
+            .find(|entry| self.project_name_row_id(&entry.path) == focused)
+            .or_else(|| {
+                entries
+                    .iter()
+                    .find(|entry| entry.path == self.explorer.selected)
+            })
+            .or_else(|| entries.first())
+            .map(|entry| entry.path.clone());
+        self.cancel_project_reveal();
+        if !query.is_empty() {
+            self.explorer.name_search.ime_barrier = false;
+        }
+        self.explorer.name_search.serial = serial;
+        let session = NameSession {
+            context: self.project_name_context(),
+            serial,
+            revision: 0,
+            query,
+            admitted: None,
+            matches: Vec::new(),
+            selected: None,
+            origin,
+            composing: false,
+            paused: false,
+        };
+        ctx.memory_mut(|memory| memory.request_focus(session.id()));
+        self.explorer.name_search.session = Some(session);
+        self.update_project_name_matches();
+    }
+
+    fn update_project_name_matches(&mut self) {
+        let entries = self.project_name_entries();
+        let context = self.project_name_context();
+        let Some(session) = &mut self.explorer.name_search.session else {
+            return;
+        };
+        session.matches.clear();
+        session.selected = None;
+        session.admitted = None;
+        if session.context != context
+            || session.composing
+            || session.paused
+            || !name_query_valid(&session.query)
+        {
+            return;
+        }
+        session.matches = entries
+            .into_iter()
+            .filter(|entry| !entry.path.is_empty() && entry.name.contains(&session.query))
+            .map(|entry| entry.path)
+            .collect();
+        session.admitted = Some(session.query.clone());
+        if let Some(path) = session.matches.first() {
+            session.selected = Some(0);
+            self.explorer.key_reveal = Some(path.clone());
+            if self.explorer.mode == Mode::Tree {
+                self.explorer.selected = path.clone();
+            }
+        }
+    }
+
+    pub(crate) fn project_name_selected(&self, path: &str) -> bool {
+        self.explorer
+            .name_search
+            .session
+            .as_ref()
+            .is_some_and(|session| {
+                session
+                    .selected
+                    .and_then(|index| session.matches.get(index))
+                    .is_some_and(|selected| selected == path)
+            })
+    }
+
+    fn project_name_shortcuts(&mut self, ctx: &egui::Context) {
+        self.guard_project_name_input(ctx);
+        let Some(mut frame) = self.explorer.name_search.frame.take() else {
+            return;
+        };
+        let current = frame.context == self.project_name_context()
+            && frame.focused == ctx.memory(|memory| memory.focused())
+            && !self.project_row_input_blocked(ctx)
+            && !self.file_structure_open()
+            && ctx.input(|input| input.focused)
+            && self.navigation.input_frame_current(ctx);
+        if current {
+            if let Some(seed) = frame.seed.take() {
+                if self.explorer.name_search.session.is_none() {
+                    self.open_project_name_search(ctx, seed);
+                }
+            } else if let Some(key) = frame.command.take() {
+                let valid = self
+                    .explorer
+                    .name_search
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| {
+                        frame.owner == Some((session.serial, session.revision))
+                            && frame.focused == Some(session.id())
+                            && frame.selected
+                                == session
+                                    .selected
+                                    .and_then(|index| session.matches.get(index).cloned())
+                    });
+                if valid {
+                    let session = self.explorer.name_search.session.as_mut().unwrap();
+                    if key == egui::Key::Escape {
+                        let target = session
+                            .selected
+                            .and_then(|index| session.matches.get(index).cloned())
+                            .or_else(|| session.origin.clone());
+                        self.cancel_project_name_search();
+                        if let Some(path) = target {
+                            if self
+                                .project_name_entries()
+                                .iter()
+                                .any(|entry| entry.path == path)
+                            {
+                                if let Some(id) = self.project_name_row_id(&path) {
+                                    ctx.memory_mut(|memory| memory.request_focus(id));
+                                }
+                                self.explorer.key_reveal = Some(path);
+                            }
+                        }
+                    } else if !session.composing
+                        && !session.paused
+                        && session.admitted.as_ref() == Some(&session.query)
+                    {
+                        if let Some(index) = session.selected {
+                            match key {
+                                egui::Key::ArrowUp | egui::Key::ArrowDown => {
+                                    let next = if key == egui::Key::ArrowUp {
+                                        index.saturating_sub(1)
+                                    } else {
+                                        (index + 1).min(session.matches.len() - 1)
+                                    };
+                                    session.selected = Some(next);
+                                    let path = session.matches[next].clone();
+                                    self.explorer.key_reveal = Some(path.clone());
+                                    if self.explorer.mode == Mode::Tree {
+                                        self.explorer.selected = path;
+                                    }
+                                }
+                                egui::Key::Enter => {
+                                    let path = session.matches[index].clone();
+                                    let target = self
+                                        .project_name_entries()
+                                        .into_iter()
+                                        .find(|entry| entry.path == path);
+                                    self.cancel_project_name_search();
+                                    if let Some(entry) = target {
+                                        if self.explorer.mode == Mode::Tree {
+                                            self.explorer_activate(&entry.path);
+                                        } else if entry.is_dir {
+                                            self.list(entry.path);
+                                        } else {
+                                            self.open(entry.path, None);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.explorer.name_search.frame = Some(frame);
+    }
+
+    pub(crate) fn project_name_galley(
+        &self,
+        ui: &egui::Ui,
+        entry: &Entry,
+        name: &str,
+        state: &str,
+        width: f32,
+    ) -> std::sync::Arc<egui::Galley> {
+        let query = self
+            .explorer
+            .name_search
+            .session
+            .as_ref()
+            .and_then(|session| session.admitted.as_deref());
+        let format = egui::TextFormat {
+            font_id: egui::TextStyle::Body.resolve(ui.style()),
+            color: TEXT,
+            ..Default::default()
+        };
+        let mut job = egui::text::LayoutJob::default();
+        if let Some((query, start)) = query
+            .filter(|query| !entry.path.is_empty() && !query.is_empty())
+            .and_then(|query| name.find(query).map(|start| (query, start)))
+        {
+            job.append(&name[..start], 0.0, format.clone());
+            let mut highlight = format.clone();
+            highlight.background = chrome::SELECTED;
+            highlight.color = egui::Color32::WHITE;
+            job.append(&name[start..start + query.len()], 0.0, highlight);
+            job.append(&name[start + query.len()..], 0.0, format.clone());
+        } else {
+            job.append(name, 0.0, format.clone());
+        }
+        job.append(state, 0.0, format);
+        egui::WidgetText::from(job).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            width,
+            egui::TextStyle::Body,
+        )
+    }
+
+    pub(crate) fn project_name_ui(&mut self, ui: &mut egui::Ui) {
+        self.guard_project_name_input(ui.ctx());
+        let context = self.project_name_context();
+        if self.explorer.name_search.session.is_none() {
+            let button = ui.add_enabled(
+                self.ready() && !self.project_row_input_blocked(ui.ctx()),
+                egui::Button::new("Search names…"),
+            );
+            self.explorer.name_search.button_id = Some(button.id);
+            #[cfg(test)]
+            crate::workspace_access_tests::record(ui, "project_name_search", &button);
+            if let Some(frame) = &mut self.explorer.name_search.frame {
+                if frame.pointer_clean && button.is_pointer_button_down_on() {
+                    self.explorer.name_search.press = Some(frame.context.clone());
+                }
+                let pointer = frame.pointer_clean
+                    && !frame.was_composing
+                    && self.explorer.name_search.press.as_ref() == Some(&context);
+                let keyboard = frame.focused == Some(button.id)
+                    && button.has_focus()
+                    && frame.button_key.take().is_some()
+                    && !frame.was_composing;
+                let open = frame.context == context && ((button.clicked() && pointer) || keyboard);
+                if !frame.pointer_clean {
+                    self.explorer.name_search.press = None;
+                }
+                if open {
+                    self.open_project_name_search(ui.ctx(), String::new());
+                }
+            }
+        }
+        let Some(mut session) = self.explorer.name_search.session.take() else {
+            return;
+        };
+        let id = session.id();
+        let before = session.query.clone();
+        let before_flags = (session.composing, session.paused);
+        let mut close = false;
+        let output = ui
+            .horizontal(|ui| {
+                // desired_width is INNER width. Preserve the actual native margins,
+                // inter-item spacing and 26px IconButton inside the sidebar bounds.
+                let margin = egui::Margin::symmetric(4, 2);
+                let width =
+                    ui.available_width() - margin.sum().x - ui.spacing().item_spacing.x - 26.0;
+                let output = egui::TextEdit::singleline(&mut session.query)
+                    .id(id)
+                    .margin(margin)
+                    .desired_width(width.max(24.0))
+                    .char_limit(MAX_NAME_QUERY_CHARS)
+                    .hint_text("Name contains (case-sensitive)")
+                    .show(ui);
+                ui.memory_mut(|memory| {
+                    memory.set_focus_lock_filter(
+                        id,
+                        egui::EventFilter {
+                            horizontal_arrows: true,
+                            vertical_arrows: true,
+                            escape: true,
+                            tab: false,
+                        },
+                    )
+                });
+                #[cfg(test)]
+                {
+                    crate::workspace_access_tests::record_text_edit_receipts(ui, &output);
+                    crate::workspace_access_tests::record(
+                        ui,
+                        "project_name_query",
+                        &output.response,
+                    );
+                }
+                let button = ui
+                    .push_id("project_name_close", |ui| {
+                        ui.add(chrome::IconButton::new(
+                            chrome::Icon::Close,
+                            "Close name search",
+                        ))
+                    })
+                    .inner;
+                #[cfg(test)]
+                crate::workspace_access_tests::record(ui, "project_name_close", &button);
+                close = button.clicked();
+                output
+            })
+            .inner;
+        let current = session.context == self.project_name_context()
+            && output.response.has_focus()
+            && !output.response.lost_focus();
+        let owner = self
+            .explorer
+            .name_search
+            .frame
+            .as_ref()
+            .is_some_and(|frame| {
+                !frame.observed
+                    && frame.query_owned
+                    && frame.edit_owned
+                    && frame.context == session.context
+                    && frame.focused == Some(id)
+                    && frame.owner == Some((session.serial, session.revision))
+                    && !output.response.gained_focus()
+                    && self.navigation.input_frame_current(ui.ctx())
+            });
+        let had_ime = self
+            .explorer
+            .name_search
+            .frame
+            .as_ref()
+            .is_some_and(|frame| frame.had_ime);
+        let was_composing = self
+            .explorer
+            .name_search
+            .frame
+            .as_ref()
+            .is_some_and(|frame| frame.was_composing);
+        let mut admitted_edit = false;
+        if owner && current {
+            for receipt in &output.ime_receipts {
+                use egui::text_edit::ImeEventOutcome::*;
+                match receipt.outcome {
+                    Enabled => {}
+                    PreeditApplied => {
+                        self.explorer.name_search.ime_barrier = false;
+                        session.composing = true;
+                        session.paused = true;
+                        admitted_edit = false;
+                    }
+                    CommitAccepted { .. } => {
+                        session.composing = false;
+                        session.paused = self.explorer.name_search.ime_barrier;
+                        admitted_edit = !session.paused;
+                    }
+                    CommitEmpty
+                    | CommitRejectedAnchor
+                    | CommitIgnoredLineBreak
+                    | PreeditIgnoredLineBreak => {
+                        self.explorer.name_search.ime_barrier = true;
+                        session.composing = false;
+                        session.paused = true;
+                        admitted_edit = false;
+                    }
+                    Disabled => {
+                        if session.composing {
+                            self.explorer.name_search.ime_barrier = true;
+                            session.paused = true;
+                            admitted_edit = false;
+                        }
+                        session.composing = false;
+                    }
+                }
+            }
+            if session.query != before
+                && !had_ime
+                && output.ime_receipts.is_empty()
+                && !was_composing
+                && !session.composing
+            {
+                self.explorer.name_search.ime_barrier = false;
+                session.paused = false;
+                admitted_edit = true;
+            }
+        } else if session.query != before || !output.ime_receipts.is_empty() {
+            self.explorer.name_search.ime_barrier = true;
+            session.paused = true;
+            session.composing = false;
+        }
+        if let Some(frame) = &mut self.explorer.name_search.frame {
+            frame.observed = true;
+        }
+        let ime_changed = output.ime_receipts.iter().any(|receipt| {
+            !matches!(
+                receipt.outcome,
+                egui::text_edit::ImeEventOutcome::Enabled
+                    | egui::text_edit::ImeEventOutcome::Disabled
+            )
+        });
+        if session.query != before
+            || before_flags != (session.composing, session.paused)
+            || ime_changed
+        {
+            if let Some(revision) = session.revision.checked_add(1) {
+                session.revision = revision;
+            } else {
+                close = true;
+            }
+            session.admitted = None;
+            session.matches.clear();
+            session.selected = None;
+        }
+        if close || !current {
+            if session.composing || session.paused {
+                self.explorer.name_search.ime_barrier = true;
+            }
+            return;
+        }
+        self.cjk_seen |= system_fonts::contains_cjk(&session.query);
+        self.explorer.name_search.session = Some(session);
+        if admitted_edit {
+            self.update_project_name_matches();
+        }
+        let session = self.explorer.name_search.session.as_ref().unwrap();
+        let status = if session.composing {
+            "Composing · loaded rows only".into()
+        } else if session.paused {
+            "Search paused · edit the query to resume".into()
+        } else if session.query.is_empty() {
+            "Type a name · loaded rows only".into()
+        } else if !name_query_valid(&session.query) {
+            "Use a single-line name without control characters".into()
+        } else {
+            format!(
+                "{} {} · loaded rows only",
+                session.matches.len(),
+                if session.matches.len() == 1 {
+                    "match"
+                } else {
+                    "matches"
+                }
+            )
+        };
+        ui.label(RichText::new(status).small().color(MUTED)).on_hover_text("Literal, case-sensitive names in this Flat directory or expanded Tree rows. Collapsed/unloaded directories are not searched. Typing sends no requests. Enter opens the selected exact path.");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_name_observation(&self) -> Option<(String, Vec<String>, bool, bool)> {
+        self.explorer.name_search.session.as_ref().map(|session| {
+            (
+                session.query.clone(),
+                session.matches.clone(),
+                session.composing,
+                session.paused,
+            )
+        })
     }
 }
 

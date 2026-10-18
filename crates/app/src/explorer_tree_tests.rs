@@ -2052,3 +2052,59 @@ fn explicit_explorer_open_admits_one_location_after_read_completion() {
     assert!(app.location_history.pending.is_none());
     assert!(commands.try_recv().is_err());
 }
+
+#[test]
+fn project_name_search_native_start_preserves_dirty_editor_without_requests() {
+    let (mut app, commands) = flat_fixture(vec![entry("alpha.rs", false), entry("zeta.rs", false)]);
+    app.documents.push(Document::new(
+        1,
+        "alpha.rs".into(),
+        "saved".into(),
+        "r0".into(),
+    ));
+    app.active_document = Some(1);
+    settle(&mut app);
+    let editor = egui::Id::new(("editor", 1u64));
+    app.editor_ctx
+        .memory_mut(|memory| memory.request_focus(editor));
+    frame(&mut app, vec![egui::Event::Text("dirty".into())]);
+    settle(&mut app);
+    let selection =
+        egui::text::CCursorRange::two(egui::text::CCursor::new(1), egui::text::CCursor::new(4));
+    let mut state = egui::TextEdit::load_state(&app.editor_ctx, editor).unwrap();
+    state.cursor.set_char_range(Some(selection));
+    state.store(&app.editor_ctx, editor);
+    let before = (app.documents[0].text.clone(), app.documents[0].edit_version);
+    assert!(app.documents[0].dirty());
+    flat_focus(&mut app, "alpha.rs");
+    let output = frame(
+        &mut app,
+        vec![
+            key_event(egui::Key::Z, false),
+            egui::Event::Text("zet".into()),
+        ],
+    );
+    assert_eq!(
+        (app.documents[0].text.clone(), app.documents[0].edit_version),
+        before
+    );
+    assert!(location_history::same_selection(
+        egui::TextEdit::load_state(&app.editor_ctx, editor)
+            .unwrap()
+            .cursor
+            .char_range()
+            .unwrap(),
+        selection
+    ));
+    assert!(commands.try_recv().is_err());
+    assert!(app.location_history.back.is_empty());
+    app.editor_ctx
+        .memory_mut(|memory| memory.request_focus(editor));
+    let mut undo = key_event(egui::Key::Z, false);
+    if let egui::Event::Key { modifiers, .. } = &mut undo {
+        *modifiers = egui::Modifiers::COMMAND;
+    }
+    frame(&mut app, vec![undo]);
+    assert_eq!(app.documents[0].text, "saved");
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.text() == "1 match · loaded rows only")), "Project typing must show its matching loaded-row query");
+}
