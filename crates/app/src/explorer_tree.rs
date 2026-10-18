@@ -60,6 +60,7 @@ pub(crate) struct Explorer {
     flat_failed_path: Option<String>,
     flat_row_scope: Option<egui::Id>,
     flat_input: FlatInput,
+    name_search: NameSearch,
     key_intent: Option<KeyIntent>,
     pub(crate) key_reveal: Option<String>,
     pointer_blocked: bool,
@@ -201,6 +202,72 @@ pub(super) struct FocusIdentity {
     selected: String,
     directory: String,
     flat_admission: Option<(u64, String)>,
+}
+
+// Project name search is a local, literal, case-sensitive view of admitted
+// rows, not a provider query. This is the same scalar bound as loaded-file search.
+const MAX_NAME_QUERY_CHARS: usize = 4096;
+
+#[derive(Clone, PartialEq, Eq)]
+struct NameContext {
+    generation: u64,
+    mode: Mode,
+    mode_epoch: u64,
+    epoch: u64,
+    directory: String,
+    directory_request: u64,
+    flat_admission: Option<(u64, String)>,
+    navigation: u64,
+}
+
+struct NameSession {
+    context: NameContext,
+    serial: u64,
+    revision: u64,
+    query: String,
+    admitted: Option<String>,
+    matches: Vec<String>,
+    selected: Option<usize>,
+    composing: bool,
+    paused: bool,
+}
+impl NameSession {
+    fn id(&self) -> egui::Id {
+        egui::Id::new(("project_name_query", self.context.generation, self.serial))
+    }
+}
+
+#[derive(Default)]
+struct NameSearch {
+    session: Option<NameSession>,
+    serial: u64,
+    claimed: HashSet<egui::Key>,
+    frame: Option<NameFrame>,
+    press: Option<NameContext>,
+    button_id: Option<egui::Id>,
+    // A cancelled composition must not become a commit in a later query.
+    ime_barrier: bool,
+}
+struct NameFrame {
+    context: NameContext,
+    focused: Option<egui::Id>,
+    owner: Option<(u64, u64)>,
+    selected: Option<String>,
+    seed: Option<String>,
+    command: Option<egui::Key>,
+    button_key: Option<egui::Key>,
+    pointer_clean: bool,
+    query_owned: bool,
+    edit_owned: bool,
+    had_ime: bool,
+    was_composing: bool,
+    observed: bool,
+}
+
+fn name_query_valid(query: &str) -> bool {
+    !query.is_empty()
+        && !query.chars().any(char::is_control)
+        && query.chars().take(MAX_NAME_QUERY_CHARS + 1).count() <= MAX_NAME_QUERY_CHARS
 }
 
 pub(crate) fn row_id(path: &str) -> egui::Id {
