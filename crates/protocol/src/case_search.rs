@@ -1,5 +1,5 @@
-//! Independently negotiated case-aware literal search. Stage 1 defines the
-//! contract only; no workspace advertises or implements this operation yet.
+//! Independently negotiated case-aware literal search. The strict contract is
+//! shared by programmatic clients and the bounded backend; UI admission is separate.
 use crate::{
     RemoteError, ScopedSearchIncompleteReason, ScopedSearchRequest, ScopedSearchResult,
     SearchMatch, MAX_SCOPED_SEARCH_RESULT_BYTES,

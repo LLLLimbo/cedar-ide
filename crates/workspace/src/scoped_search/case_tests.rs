@@ -415,3 +415,146 @@ fn case_response_budget_includes_exact_boolean_escaping_and_requested_limit() {
         assert!(smaller.encoded_bytes().unwrap() < bytes);
     }
 }
+
+#[test]
+fn production_encoded_cap_counts_large_escaped_rows_and_keeps_a_valid_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let text = format!("NEEDLE{}\n", "\"".repeat(800)).repeat(900);
+    fixture(root.path(), &[("escaped", &text)]);
+    let workspace = Workspace::open(root.path()).unwrap();
+    for sensitive in [false, true] {
+        let spec = request("NEEDLE", "", &[], sensitive);
+        let result = run(&workspace, &spec, Budget::default());
+        assert_eq!(result.reasons, [Reason::ResponseLimit]);
+        assert!(!result.matches.is_empty() && result.matches.len() < 900);
+        assert_eq!(result.read_bytes, text.len());
+        assert_eq!(
+            result.encoded_bytes().unwrap(),
+            serde_json::to_vec(&result).unwrap().len()
+        );
+        assert!(result.encoded_bytes().unwrap() <= MAX_SCOPED_SEARCH_RESULT_BYTES);
+        result.validate_for(&spec).unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn case_symlink_scope_queued_directory_and_leaf_replacements_never_open_sentinels() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fixture(outside.path(), &[("sentinel", "NEEDLE")]);
+    symlink(outside.path(), root.path().join("linked")).unwrap();
+    let workspace = Workspace::open(root.path()).unwrap();
+    let failure = workspace
+        .search_case_with_budget(
+            &request("needle", "linked", &[], false),
+            Budget::default(),
+            || false,
+            |kind, _| assert_ne!(kind, TestEvent::Open),
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(failure.code, "invalid_path");
+    fs::create_dir(root.path().join("queued")).unwrap();
+    let queued = workspace
+        .search_case_with_budget(
+            &request("needle", "", &[], false),
+            Budget::default(),
+            || false,
+            |kind, path| {
+                if kind == TestEvent::Directory && path == "queued" {
+                    fs::rename(root.path().join(path), root.path().join("moved")).unwrap();
+                    symlink(outside.path(), root.path().join(path)).unwrap();
+                }
+                assert_ne!(kind, TestEvent::Open);
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(queued.reasons, [Reason::UnsafePath]);
+    assert_eq!(queued.read_bytes, 0);
+    fixture(root.path(), &[("local", "NEEDLE")]);
+    let leaf = workspace
+        .search_case_with_budget(
+            &request("needle", "", &["local"], false),
+            Budget::default(),
+            || false,
+            |kind, path| {
+                if kind == TestEvent::FileCheck {
+                    fs::rename(root.path().join(path), root.path().join("retired")).unwrap();
+                    symlink(outside.path().join("sentinel"), root.path().join(path)).unwrap();
+                }
+                assert_ne!(kind, TestEvent::Open);
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(leaf.reasons, [Reason::UnsafePath]);
+    assert_eq!(leaf.read_bytes, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn case_non_utf8_path_is_incomplete_without_lossy_alias_or_content_open() {
+    use std::os::unix::ffi::OsStringExt;
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path().join(std::ffi::OsString::from_vec(vec![255])),
+        "NEEDLE",
+    )
+    .unwrap();
+    let workspace = Workspace::open(root.path()).unwrap();
+    let result = workspace
+        .search_case_with_budget(
+            &request("needle", "", &[], false),
+            Budget::default(),
+            || false,
+            |kind, _| assert_ne!(kind, TestEvent::Open),
+            None,
+        )
+        .unwrap();
+    assert_eq!(result.reasons, [Reason::UnrepresentablePath]);
+    assert_eq!(result.read_bytes, 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn case_windows_junction_is_excluded_and_rejected_as_explicit_scope() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fixture(outside.path(), &[("sentinel", "NEEDLE")]);
+    let link = root.path().join("junction");
+    let output = std::process::Command::new("cmd")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(outside.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "junction fixture: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(is_link_or_reparse(&fs::symlink_metadata(&link).unwrap()));
+    let workspace = Workspace::open(root.path()).unwrap();
+    let result = workspace
+        .search_case_with_budget(
+            &request("needle", "", &[], false),
+            Budget::default(),
+            || false,
+            |kind, _| assert_ne!(kind, TestEvent::Open),
+            None,
+        )
+        .unwrap();
+    assert!(result.matches.is_empty());
+    assert!(!result.incomplete);
+    assert_eq!(result.read_bytes, 0);
+    assert_eq!(
+        workspace
+            .search_case(request("needle", "junction", &[], false))
+            .unwrap_err()
+            .code,
+        "invalid_path"
+    );
+}

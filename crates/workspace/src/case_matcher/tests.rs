@@ -171,3 +171,11 @@ fn shared_offset_crop_preserves_frozen_legacy_preview_bytes() {
         }
     }
 }
+
+#[test]
+fn maximum_ascii_query_matches_wide_kelvin_text_under_production_component_caps() {
+    let query = "K".repeat(4096);
+    let text = "K".repeat(4096);
+    let matcher = CaseMatcher::new(&query, false).unwrap();
+    assert_eq!(matcher.find(&text), Some(0..text.len()));
+}

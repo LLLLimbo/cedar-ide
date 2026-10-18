@@ -1,5 +1,5 @@
 //! Case-search contract admission uses the established real-pipe fixture.
-//! Stage 1 never advertises or executes a case-search backend.
+//! Stage 2 also verifies the supported embedded backend; mock-peer gates remain independent.
 use super::*;
 use cedar_protocol::CaseSearchRequest;
 
@@ -838,29 +838,45 @@ fn case_search_cancellation_polling_preserves_the_original_transport_deadline() 
 
 #[cfg(not(windows))]
 #[test]
-fn case_search_stage_one_embedded_client_never_advertises_or_attempts_the_operation() {
+fn case_search_stage_two_embedded_client_negotiates_and_validates_both_modes() {
     let directory = tempfile::tempdir().unwrap();
-    fs::write(directory.path().join("fixture.txt"), "needle\n").unwrap();
+    fs::write(directory.path().join("fixture.txt"), "needle\nNEEDLE\n").unwrap();
     let mut client = Client::connect(ConnectionSpec::Local {
         root: directory.path().to_owned(),
         allow_run: false,
     })
     .unwrap();
-    assert!(!client.supports_case_search());
+    assert!(client.supports_case_search());
     assert!(matches!(
         client.handshake(),
         Payload::Hello {
-            case_search: None,
+            case_search: Some(descriptor),
             ..
-        }
+        } if descriptor.supported()
     ));
-    assert!(client
-        .request(case_operation())
-        .unwrap_err()
-        .starts_with("unsupported_operation:"));
+    for case_sensitive in [false, true] {
+        let request = cedar_protocol::CaseSearchRequest {
+            query: "needle".into(),
+            scope: String::new(),
+            masks: Vec::new(),
+            limit: 500,
+            case_sensitive,
+        };
+        let Payload::CaseMatches { result } = client
+            .request(Operation::SearchCase {
+                request: request.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("case result");
+        };
+        result.validate_for(&request).unwrap();
+        assert_eq!(result.matches.len(), if case_sensitive { 1 } else { 2 });
+        assert!(!result.incomplete);
+    }
     assert!(client.is_connected());
     assert!(
-        matches!(client.request(Operation::Read { path: "fixture.txt".into() }).unwrap(), Payload::File { text, .. } if text == "needle\n")
+        matches!(client.request(Operation::Read { path: "fixture.txt".into() }).unwrap(), Payload::File { text, .. } if text == "needle\nNEEDLE\n")
     );
     client.close_and_wait(Duration::from_secs(5)).unwrap();
 }

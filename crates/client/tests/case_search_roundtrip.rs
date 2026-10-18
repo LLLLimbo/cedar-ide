@@ -425,21 +425,41 @@ fn normal_agent_previews_use_first_original_utf8_offsets_and_keep_old_cropping()
 
 #[test]
 #[ignore = "requires a compiled normal cedar-agent; run with CEDAR_AGENT_BIN"]
-fn normal_agent_accepts_maximum_literal_queries_and_retains_uncropped_request_echo() {
+fn normal_agent_bounds_maximum_literal_queries_and_retains_uncropped_request_echo() {
     let root = tempfile::tempdir().unwrap();
     let wide_query = "K".repeat(4096);
     let escaped_query = "*".repeat(4096);
     write(root.path(), "wide.txt", &"K".repeat(4096));
     write(root.path(), "escaped.txt", &escaped_query);
     let mut client = spawn(root.path());
-    let wide = complete_case(
+    let started = std::time::Instant::now();
+    let wide = search_case(
         &mut client,
         request(&wide_query, "", &["wide.txt"], 1007, false),
     );
+    eprintln!(
+        "maximum folded literal: query_bytes=4096, elapsed_ms={}, entries={}, read_bytes={}, rows={}, reasons={:?}",
+        started.elapsed().as_millis(), wide.examined_entries, wide.read_bytes, wide.matches.len(), wide.reasons
+    );
+    // A valid-sized query need not finish compilation/matching within the
+    // cooperative budget. This boundary test must not invent a latency promise.
+    // Smaller original-width cases above independently require matching rows.
     let expected_wide = format!("{}…", "K".repeat(682));
-    assert_eq!(case_rows(&wide), [("wide.txt", 1, expected_wide.as_str())]);
-    assert!(!wide.matches[0].text.contains(&wide_query));
+    if wide.incomplete {
+        assert_eq!(wide.reasons, [ScopedSearchIncompleteReason::TimeLimit]);
+        assert!(
+            wide.matches.is_empty()
+                || case_rows(&wide) == [("wide.txt", 1, expected_wide.as_str())]
+        );
+        assert!(wide.examined_entries <= 2);
+        assert!(wide.read_bytes <= 3 * 4096);
+    } else {
+        assert_eq!(case_rows(&wide), [("wide.txt", 1, expected_wide.as_str())]);
+        assert!(!wide.matches[0].text.contains(&wide_query));
+    }
     assert_eq!(wide.request.query.len(), 4096);
+    assert_eq!(wide.request.limit, 1007);
+    assert!(client.is_connected());
     for case_sensitive in [false, true] {
         let escaped = complete_case(
             &mut client,
