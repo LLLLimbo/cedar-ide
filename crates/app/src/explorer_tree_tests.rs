@@ -631,8 +631,16 @@ fn frame(app: &mut CedarApp, events: Vec<egui::Event>) -> egui::FullOutput {
     output
 }
 fn held_frame(app: &mut CedarApp, events: Vec<egui::Event>) -> egui::FullOutput {
+    held_frame_with_focus(app, events, true)
+}
+fn held_frame_with_focus(
+    app: &mut CedarApp,
+    events: Vec<egui::Event>,
+    focused: bool,
+) -> egui::FullOutput {
     let ctx = app.editor_ctx.clone();
     let mut input = egui::RawInput {
+        focused,
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(780.0, 540.0),
@@ -3127,87 +3135,108 @@ fn project_name_search_preserves_current_file_find_shortcut() {
 
 #[test]
 fn project_name_search_window_loss_releases_rejected_pointer_lifetime() {
-    for combined_fresh in [false, true] {
-        for contested in [false, true] {
-            for together in [false, true] {
-                for reset in [false, true] {
-                    let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
-                    flat_focus(&mut app, "zeta.rs");
-                    let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
-                        .rect
-                        .center();
-                    let mut press = vec![
-                        egui::Event::PointerMoved(at),
-                        egui::Event::PointerButton {
-                            pos: at,
-                            button: egui::PointerButton::Primary,
-                            pressed: true,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ];
-                    if contested {
-                        press.push(egui::Event::Text("zet".into()));
-                    }
-                    if together {
-                        press.push(egui::Event::WindowFocused(false));
-                    }
-                    frame(&mut app, press);
-                    if !together {
-                        frame(&mut app, vec![egui::Event::WindowFocused(false)]);
-                    }
-                    if reset {
-                        app.explorer.reset_connection();
-                        app.list(String::new());
-                        reply(
-                            &mut app,
-                            commands.try_recv().unwrap(),
-                            vec![entry("zeta.rs", false)],
-                        );
-                        settle(&mut app);
-                    }
-                    frame(
-                        &mut app,
-                        vec![
-                            egui::Event::WindowFocused(true),
-                            egui::Event::PointerButton {
-                                pos: at,
-                                button: egui::PointerButton::Primary,
-                                pressed: false,
-                                modifiers: egui::Modifiers::NONE,
-                            },
-                        ],
-                    );
-                    assert!(
-                        commands.try_recv().is_err(),
-                        "orphan release: {contested}/{together}/{reset}"
-                    );
-                    let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
-                        .rect
-                        .center();
-                    let mut fresh = Vec::new();
-                    for pressed in [true, false] {
-                        let events = vec![
-                            egui::Event::PointerMoved(at),
-                            egui::Event::PointerButton {
-                                pos: at,
-                                button: egui::PointerButton::Primary,
-                                pressed,
-                                modifiers: egui::Modifiers::NONE,
-                            },
-                        ];
-                        if combined_fresh {
-                            fresh.extend(events);
-                        } else {
-                            frame(&mut app, events);
+    for raw_flag in [false, true] {
+        for release_on_loss in [false, true] {
+            for combined_fresh in [false, true] {
+                for contested in [false, true] {
+                    for together in [false, true] {
+                        for reset in [false, true] {
+                            let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+                            flat_focus(&mut app, "zeta.rs");
+                            let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
+                                .rect
+                                .center();
+                            let mut press = vec![
+                                egui::Event::PointerMoved(at),
+                                egui::Event::PointerButton {
+                                    pos: at,
+                                    button: egui::PointerButton::Primary,
+                                    pressed: true,
+                                    modifiers: egui::Modifiers::NONE,
+                                },
+                            ];
+                            if contested {
+                                press.push(egui::Event::Text("zet".into()));
+                            }
+                            let mut loss = if raw_flag {
+                                vec![]
+                            } else {
+                                vec![egui::Event::WindowFocused(false)]
+                            };
+                            if release_on_loss {
+                                loss.push(egui::Event::PointerButton {
+                                    pos: at,
+                                    button: egui::PointerButton::Primary,
+                                    pressed: false,
+                                    modifiers: egui::Modifiers::NONE,
+                                });
+                            }
+                            if together {
+                                press.extend(loss);
+                                held_frame_with_focus(&mut app, press, !raw_flag);
+                            } else {
+                                frame(&mut app, press);
+                                held_frame_with_focus(&mut app, loss, !raw_flag);
+                            }
+                            assert!(commands.try_recv().is_err(), "loss frame: raw={raw_flag}, release={release_on_loss}, contested={contested}, together={together}");
+                            if release_on_loss {
+                                assert!(!app.editor_ctx.input(|input| input.pointer.any_down()));
+                            }
+                            if reset {
+                                app.explorer.reset_connection();
+                                app.list(String::new());
+                                reply(
+                                    &mut app,
+                                    commands.try_recv().unwrap(),
+                                    vec![entry("zeta.rs", false)],
+                                );
+                                settle(&mut app);
+                            }
+                            frame(
+                                &mut app,
+                                vec![
+                                    egui::Event::WindowFocused(true),
+                                    egui::Event::PointerButton {
+                                        pos: at,
+                                        button: egui::PointerButton::Primary,
+                                        pressed: false,
+                                        modifiers: egui::Modifiers::NONE,
+                                    },
+                                ],
+                            );
+                            assert!(
+                                commands.try_recv().is_err(),
+                                "orphan release: {contested}/{together}/{reset}"
+                            );
+                            let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
+                                .rect
+                                .center();
+                            let mut fresh = Vec::new();
+                            for pressed in [true, false] {
+                                let events = vec![
+                                    egui::Event::PointerMoved(at),
+                                    egui::Event::PointerButton {
+                                        pos: at,
+                                        button: egui::PointerButton::Primary,
+                                        pressed,
+                                        modifiers: egui::Modifiers::NONE,
+                                    },
+                                ];
+                                if combined_fresh {
+                                    fresh.extend(events);
+                                } else {
+                                    frame(&mut app, events);
+                                }
+                            }
+                            if combined_fresh {
+                                frame(&mut app, fresh);
+                            }
+                            assert!(
+                                matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "zeta.rs"),
+                                "fresh click: {contested}/{together}/{reset}"
+                            );
                         }
                     }
-                    if combined_fresh {
-                        frame(&mut app, fresh);
-                    }
-                    assert!(
-                        matches!(commands.try_recv().unwrap().op, Operation::Read { path } if path == "zeta.rs"),
-                        "fresh click: {contested}/{together}/{reset}"
-                    );
                 }
             }
         }

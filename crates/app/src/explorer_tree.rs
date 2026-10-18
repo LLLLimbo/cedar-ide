@@ -1930,6 +1930,9 @@ impl CedarApp {
             }
         }
         if !window {
+            // RawInput.focused can report loss without a WindowFocused event.
+            // Fence this frame's release as well as future orphan releases.
+            self.explorer.pointer_blocked = true;
             self.cancel_project_name_search();
             self.explorer.name_search.claimed.clear();
             self.explorer.name_search.rejected_pointer = false;
