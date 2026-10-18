@@ -1062,7 +1062,9 @@ impl CedarApp {
     }
 
     fn poll_ready_navigation(&mut self, ctx: Option<&egui::Context>) {
-        let newer_input = ctx.is_some_and(|ctx| self.history_newer_completion_input(ctx));
+        let newer_input = ctx.is_some_and(|ctx| {
+            self.history_newer_completion_input(ctx) || self.java_type_newer_input(ctx)
+        });
         loop {
             let event = match self.result_rx.try_recv() {
                 Ok(event) => event,
@@ -4031,6 +4033,11 @@ impl eframe::App for CedarApp {
         // Classify every surface from the same ordered native batch. Filtering
         // sooner could create a new clean action or hide a held key's release.
         let mut consumed = vec![false; raw_input.events.len()];
+        if self.capture_java_type_input(ctx, raw_input, &mut consumed) {
+            // The result's held Enter cannot become editor indentation after
+            // navigation moves focus; this grant saw the original raw batch.
+            self.enter_input = None;
+        }
         self.capture_file_find_input(ctx, raw_input);
         self.capture_recent_input(ctx, raw_input, &mut consumed);
         self.capture_browse_input(ctx, raw_input, &mut consumed);

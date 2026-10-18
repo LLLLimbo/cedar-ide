@@ -6,7 +6,7 @@ const QUERY_INPUT: &str = "java_type_query";
 const INDEX_NOTICE: &str =
     "Unversioned index snapshot; results may lag unsaved edits or project indexing.";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TypeContext {
     generation: u64,
     session: u64,
@@ -19,6 +19,36 @@ struct Snapshot {
     rows: Vec<WorkspaceSymbol>,
 }
 
+struct TypeKeyIntent {
+    context: TypeContext,
+    focused: egui::Id,
+    row: Option<usize>,
+    key: egui::Key,
+    navigation: u64,
+    document: Option<(u64, u64)>,
+}
+
+fn result_id(context: &TypeContext, index: usize) -> egui::Id {
+    egui::Id::new((
+        "java_type_result",
+        context.generation,
+        context.session,
+        context.sequence,
+        index,
+    ))
+}
+
+fn result_key(key: egui::Key) -> bool {
+    matches!(
+        key,
+        egui::Key::ArrowUp
+            | egui::Key::ArrowDown
+            | egui::Key::Home
+            | egui::Key::End
+            | egui::Key::Enter
+    )
+}
+
 #[derive(Default)]
 pub(super) struct TypeSearch {
     query: String,
@@ -27,6 +57,13 @@ pub(super) struct TypeSearch {
     pending: Option<TypeContext>,
     snapshot: Option<Snapshot>,
     error: Option<String>,
+    selected: Option<usize>,
+    focus_result: Option<usize>,
+    key_intent: Option<TypeKeyIntent>,
+    submit_query: bool,
+    held_keys: HashSet<egui::Key>,
+    owned_enter: bool,
+    composing: bool,
 }
 
 impl TypeSearch {
@@ -36,10 +73,178 @@ impl TypeSearch {
         self.pending = None;
         self.snapshot = None;
         self.error = None;
+        self.selected = None;
+        self.focus_result = None;
+        self.key_intent = None;
+        self.submit_query = false;
+        // Physical input lifetimes survive dismiss/reopen and query changes.
+        // A held key or unfinished composition cannot become a fresh action.
     }
 }
 
 impl CedarApp {
+    pub(crate) fn capture_java_type_input(
+        &mut self,
+        ctx: &egui::Context,
+        raw: &egui::RawInput,
+        consumed: &mut [bool],
+    ) -> bool {
+        let mut claimed_enter = false;
+        let state = &mut self.language.types;
+        state.key_intent = None;
+        state.submit_query = false;
+        let was_composing = state.composing;
+        let had_keys = !state.held_keys.is_empty();
+        for (index, event) in raw.events.iter().enumerate() {
+            match event {
+                egui::Event::Key { key, pressed, .. } => {
+                    // An accepted result Enter owns its physical lifetime even
+                    // after opening an editor or leaving the results view.
+                    // Preserve keyup, including a release before a fresh press.
+                    if *key == egui::Key::Enter {
+                        if *pressed && state.owned_enter {
+                            consumed[index] = true;
+                            claimed_enter = true;
+                        } else if !*pressed {
+                            state.owned_enter = false;
+                        }
+                    }
+                    if *pressed {
+                        state.held_keys.insert(*key);
+                    } else {
+                        state.held_keys.remove(key);
+                    }
+                }
+                egui::Event::Ime(egui::ImeEvent::Preedit(_)) => state.composing = true,
+                egui::Event::Ime(egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled) => {
+                    state.composing = false;
+                }
+                egui::Event::WindowFocused(false) => {
+                    state.held_keys.clear();
+                    state.composing = false;
+                }
+                _ => {}
+            }
+        }
+        if !raw.focused || self.foreign_modal_owns_input(ctx) || self.navigation.blocks_editor() {
+            return claimed_enter;
+        }
+        let context = TypeContext {
+            generation: self.generation,
+            session: self.language.session,
+            sequence: self.language.types.sequence,
+            query: self.language.types.query.clone(),
+        };
+        if !self.java_type_context_current(&context) {
+            return claimed_enter;
+        }
+        let Some(focused) = ctx.memory(|memory| memory.focused()) else {
+            return claimed_enter;
+        };
+        let row = self.language.types.snapshot.as_ref().and_then(|snapshot| {
+            snapshot.rows.iter().enumerate().find_map(|(index, _)| {
+                (result_id(&snapshot.context, index) == focused).then_some(index)
+            })
+        });
+        let query = focused == egui::Id::new(QUERY_INPUT);
+        if !query && row.is_none() {
+            return claimed_enter;
+        }
+        let key = crate::browse::clean_press(&raw.events)
+            .filter(|(_, modifiers)| modifiers.is_none() && raw.modifiers.is_none())
+            .map(|(key, _)| key)
+            .filter(|key| {
+                result_key(*key)
+                    && (!query || matches!(key, egui::Key::ArrowDown | egui::Key::Enter))
+            })
+            .filter(|_| {
+                !claimed_enter
+                    && !had_keys
+                    && !was_composing
+                    && !self.language.types.composing
+                    && !ctx.input(|input| input.pointer.any_down())
+                    && !self.language_busy()
+            })
+            .filter(|key| {
+                (query && *key == egui::Key::Enter)
+                    || (self.backend_supports("language_resolve_uri")
+                        && self.backend_supports("read"))
+            });
+        // Only Down explicitly transfers from the query. Home/End/Up and all
+        // composition input retain the query's native caret behavior. Result
+        // navigation presses are shielded before egui spatial focus handling.
+        // The ready-reply guard separately sees only newly admitted intent.
+        // Keep all releases so egui's held-key state can clear.
+        let suppress_query_enter = query
+            && !was_composing
+            && !self.language.types.composing
+            && !raw
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Ime(_)))
+            && (had_keys
+                || self.language_busy()
+                || raw.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Key {
+                            key: egui::Key::Enter,
+                            pressed: true,
+                            repeat: true,
+                            ..
+                        }
+                    )
+                }));
+        let query_down = query
+            && !was_composing
+            && !self.language.types.composing
+            && !raw
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Ime(_)));
+        for (index, event) in raw.events.iter().enumerate() {
+            if matches!(event, egui::Event::Key { key: event_key, pressed: true, modifiers, .. }
+                if (row.is_some() && result_key(*event_key))
+                    || (query_down && modifiers.is_none() && *event_key == egui::Key::ArrowDown)
+                    || (suppress_query_enter && *event_key == egui::Key::Enter))
+            {
+                consumed[index] = true;
+            }
+        }
+        if let Some(key) = key {
+            if row.is_some() && key == egui::Key::Enter {
+                claimed_enter = true;
+                self.language.types.owned_enter =
+                    self.language.types.held_keys.contains(&egui::Key::Enter);
+            }
+            self.language.types.key_intent = Some(TypeKeyIntent {
+                context,
+                focused,
+                row,
+                key,
+                navigation: self.navigation_epoch,
+                document: self.active().map(|doc| (doc.id, doc.edit_version)),
+            });
+        }
+        claimed_enter
+    }
+
+    pub(crate) fn java_type_newer_input(&self, ctx: &egui::Context) -> bool {
+        self.navigation.input_frame_current(ctx)
+            && self
+                .language
+                .types
+                .key_intent
+                .as_ref()
+                .is_some_and(|intent| {
+                    self.java_type_context_current(&intent.context)
+                        && self.navigation_epoch == intent.navigation
+                        && self.active().map(|doc| (doc.id, doc.edit_version)) == intent.document
+                        && ctx.memory(|memory| memory.focused()) == Some(intent.focused)
+                        && !self.language_busy()
+                })
+    }
+
     fn java_types_problem(&self) -> Option<String> {
         if !self.ready() {
             return Some("Find Java type requires a ready workspace connection".into());
@@ -284,6 +489,7 @@ impl CedarApp {
     }
 
     pub(super) fn java_type_shortcuts(&mut self, ctx: &egui::Context) -> bool {
+        let intent = self.language.types.key_intent.take();
         if !self.tools_open
             || self.tool != crate::Tool::Language
             || self.language.view != View::JavaTypes
@@ -296,9 +502,105 @@ impl CedarApp {
             self.language.view = View::Problems;
             return true;
         }
+        if let Some(intent) = intent.filter(|intent| {
+            self.navigation.input_frame_current(ctx)
+                && self.java_type_context_current(&intent.context)
+                && self.navigation_epoch == intent.navigation
+                && self.active().map(|doc| (doc.id, doc.edit_version)) == intent.document
+                && ctx.memory(|memory| memory.focused()) == Some(intent.focused)
+                && !self.language_busy()
+        }) {
+            if intent.row.is_none() && intent.key == egui::Key::Enter {
+                self.language.types.submit_query = !self.language_busy();
+                return true;
+            }
+            let rows = self
+                .language
+                .types
+                .snapshot
+                .as_ref()
+                .filter(|snapshot| snapshot.context == intent.context)
+                .filter(|_| {
+                    self.backend_supports("language_resolve_uri") && self.backend_supports("read")
+                })
+                .map(|snapshot| {
+                    snapshot
+                        .rows
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, row)| {
+                            row.location.uri.starts_with("file:").then_some(index)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if intent.key == egui::Key::Enter {
+                if let Some(row) = intent.row.filter(|row| {
+                    rows.contains(row)
+                        && !self.language_busy()
+                        && self.backend_supports("language_resolve_uri")
+                        && self.backend_supports("read")
+                }) {
+                    self.language.types.selected = Some(row);
+                    self.select_java_type(row);
+                }
+            } else {
+                let next = if let Some(row) = intent.row {
+                    rows.iter()
+                        .position(|index| *index == row)
+                        .and_then(|position| {
+                            crate::search_keyboard::destination(rows.len(), position, intent.key)
+                                .map(|next| rows[next])
+                        })
+                } else {
+                    rows.first().copied()
+                };
+                if let Some(next) = next {
+                    let pending_type_open = self.pending.values().any(|job| match job {
+                        Job::JavaTypeOpen {
+                            context,
+                            navigation,
+                            ..
+                        } => *context == intent.context && *navigation == self.navigation_epoch,
+                        Job::Language(Action {
+                            kind:
+                                ActionKind::JavaTypeResolve {
+                                    context,
+                                    navigation,
+                                    ..
+                                },
+                            ..
+                        }) => *context == intent.context && *navigation == self.navigation_epoch,
+                        _ => false,
+                    });
+                    if pending_type_open {
+                        self.location_history.cancel_pending();
+                        self.navigation_epoch = self.navigation_epoch.wrapping_add(1);
+                        self.cancel_ready_language_navigation();
+                    }
+                    self.language.types.selected = Some(next);
+                    self.language.types.focus_result = Some(next);
+                    ctx.request_repaint();
+                }
+            }
+        }
         // Let the query's TextEdit receive Enter and any text in this frame.
-        // Editor completion shortcuts must not consume query-field input.
-        ctx.memory(|memory| memory.has_focus(egui::Id::new(QUERY_INPUT)))
+        // Editor completion shortcuts must not consume query or result input.
+        ctx.memory(|memory| {
+            memory.has_focus(egui::Id::new(QUERY_INPUT))
+                || self
+                    .language
+                    .types
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| {
+                        snapshot
+                            .rows
+                            .iter()
+                            .enumerate()
+                            .any(|(index, _)| memory.has_focus(result_id(&snapshot.context, index)))
+                    })
+        })
     }
 
     pub(super) fn java_types_view(&mut self, ui: &mut egui::Ui) {
@@ -310,7 +612,9 @@ impl CedarApp {
         }
         let mut search = false;
         let mut dismiss = false;
+        let mut query_response = None;
         let focus_query = self.language.types.focus_query;
+        let submit_query = std::mem::take(&mut self.language.types.submit_query);
         ui.horizontal_wrapped(|ui| {
             let input = ui.add(
                 egui::TextEdit::singleline(&mut self.language.types.query)
@@ -328,6 +632,7 @@ impl CedarApp {
                 self.language.cjk_seen |=
                     crate::system_fonts::contains_cjk(&self.language.types.query);
             }
+            query_response = Some(input.clone());
             let valid =
                 language_navigation_results::validate_workspace_query(&self.language.types.query)
                     .is_ok();
@@ -336,6 +641,7 @@ impl CedarApp {
                 .add_enabled(enabled, egui::Button::new("Search"))
                 .clicked()
                 || (!focus_query
+                    && submit_query
                     && enabled
                     && input.lost_focus()
                     && ui.input(|input| input.key_pressed(egui::Key::Enter)));
@@ -348,6 +654,12 @@ impl CedarApp {
         }
         if search {
             self.request_java_types();
+            // Single-line Enter surrenders TextEdit focus. Restore it on the
+            // rendered query after its input processing; Down is a separate act.
+            if let Some(response) = query_response {
+                response.request_focus();
+            }
+            ui.ctx().request_repaint();
         }
         if !self.language.types.query.is_empty() {
             if let Err(error) =
@@ -363,6 +675,12 @@ impl CedarApp {
             ui.label("Searching the Java index…");
         }
         let mut selected = None;
+        let focus_result = if ui.is_sizing_pass() {
+            None
+        } else {
+            self.language.types.focus_result.take()
+        };
+        let mut focused_result = None;
         if let Some(snapshot) = &self.language.types.snapshot {
             ui.label(format!(
                 "{} results for {:?}",
@@ -371,11 +689,13 @@ impl CedarApp {
             ));
             if snapshot.rows.is_empty() {
                 ui.label("No indexed matches. Try a different query, or retry after indexing.");
+            } else {
+                ui.label(RichText::new("Down from query selects a result · Up/Down/Home/End moves · Enter opens · Tab changes control").small().color(MUTED));
             }
             let enabled = self.java_type_context_current(&snapshot.context)
-                && !self.language_busy()
                 && self.backend_supports("language_resolve_uri")
                 && self.backend_supports("read");
+            let busy = self.language_busy();
             egui::ScrollArea::vertical()
                 .id_salt("java_type_results")
                 .show(ui, |ui| {
@@ -383,10 +703,53 @@ impl CedarApp {
                         let suffix = if row.deprecated { " · deprecated" } else { "" };
                         let label = format!("{} · {}{}", row.name, symbol_kind(row.kind), suffix);
                         let supported = row.location.uri.starts_with("file:");
-                        let response =
-                            ui.add_enabled(enabled && supported, egui::Button::new(label));
-                        if response.clicked() {
+                        let id = result_id(&snapshot.context, index);
+                        // Preserve the existing focus owner while resolving;
+                        // other rows stay inert until the request settles.
+                        let row_enabled = enabled
+                            && supported
+                            && (!busy
+                                || (self.language.types.selected == Some(index)
+                                    && ui.memory(|memory| memory.has_focus(id))));
+                        let response = ui
+                            .add_enabled_ui(row_enabled, |ui| {
+                                crate::navigation::candidate_row(
+                                    ui,
+                                    id,
+                                    self.language.types.selected == Some(index),
+                                    &label,
+                                    true,
+                                )
+                            })
+                            .inner;
+                        #[cfg(test)]
+                        crate::workspace_access_tests::record(
+                            ui,
+                            &format!("java_type_row_{index}"),
+                            &response,
+                        );
+                        // Keyboard activation is admitted only from the original
+                        // raw batch and its exact snapshot/focus ticket above.
+                        if !busy && response.clicked_by(egui::PointerButton::Primary) {
                             selected = Some(index);
+                        }
+                        if response.has_focus() && enabled && supported {
+                            focused_result = Some(index);
+                        }
+                        if focus_result == Some(index) && enabled && supported {
+                            response.scroll_to_me(Some(egui::Align::Center));
+                            response.request_focus();
+                        }
+                        if response.has_focus() {
+                            ui.memory_mut(|memory| {
+                                memory.set_focus_lock_filter(
+                                    response.id,
+                                    egui::EventFilter {
+                                        vertical_arrows: true,
+                                        ..Default::default()
+                                    },
+                                )
+                            });
                         }
                         if !row.container.is_empty() {
                             ui.label(RichText::new(&row.container).small().color(MUTED));
@@ -415,7 +778,11 @@ impl CedarApp {
         } else if self.language.types.pending.is_none() && self.language.types.error.is_none() {
             ui.label("Enter a type name, then press Search or Enter.");
         }
+        if let Some(index) = focus_result.or(focused_result) {
+            self.language.types.selected = Some(index);
+        }
         if let Some(index) = selected {
+            self.language.types.selected = Some(index);
             self.select_java_type(index);
         }
     }

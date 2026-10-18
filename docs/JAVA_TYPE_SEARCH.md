@@ -34,6 +34,16 @@ open buffers are reused with their Undo history, while stale query/session/navig
 replies cannot take over newer user intent. A recorded range can be stale against
 a dirty draft; it is not a claim that the draft and server index share a revision.
 
+After Search or Enter, the query keeps keyboard focus. Press **Down** to select
+the first openable result without opening it. With a result focused,
+**Up/Down/Home/End** moves the selection and scrolls it into view; **Enter** opens
+that exact row. Navigation stops at the ends and skips disabled non-file targets.
+Tab and Shift+Tab retain normal control traversal. In the query, Up, Home, End
+and modified keys retain their text-editing behavior. An active IME composition
+does not transfer focus to results. Editing the query or dismissing the view
+clears selection; reopening does not repeat the search or reopen a result.
+These keyboard controls add no provider, automatic query or automatic file read.
+
 The feature works with the normal Java recipe and the same provider in an explicitly
 started Maven leaf session. Maven's existing scope and trust limitations still apply.
 This is type navigation, not general method search, a recursive filesystem index or
