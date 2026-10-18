@@ -1857,7 +1857,18 @@ impl CedarApp {
                 }
                 event => name_text_event(event),
             });
-        let row_text_batch = row_owned && raw.events.iter().any(name_text_event);
+        // A modifier chord may intentionally open another input surface with
+        // same-batch text (for example Cmd+G followed by pasted coordinates).
+        // Leave that native gesture to existing shortcuts. A second press,
+        // pointer, IME, or activation key never receives this exception.
+        let shortcut_text = matches!(actions.as_slice(),
+            [egui::Event::Key { key, modifiers, .. }, rest @ ..]
+                if name_printable_key(*key) && *key != egui::Key::Space
+                    && (modifiers.ctrl || modifiers.alt || modifiers.command || modifiers.mac_cmd)
+                    && rest.iter().all(|event| matches!(event,
+                        egui::Event::Text(_) | egui::Event::Paste(_)
+                            | egui::Event::Copy | egui::Event::Cut)));
+        let row_text_batch = row_owned && !shortcut_text && raw.events.iter().any(name_text_event);
         // Keep egui's native press/release lifetime intact. A rejected mixed
         // press also owns its later release, even if that release is clean.
         // A fresh down/up may arrive together. Admit that click only when its
@@ -1894,7 +1905,9 @@ impl CedarApp {
         }
         let mut command = None;
         for (index, event) in raw.events.iter().enumerate() {
-            if (row_owned || (query_owned && !edit_owned) || button_key.is_some())
+            if ((row_owned && !shortcut_text)
+                || (query_owned && !edit_owned)
+                || button_key.is_some())
                 && name_text_event(event)
             {
                 consumed[index] = true;

@@ -3242,3 +3242,146 @@ fn project_name_search_window_loss_releases_rejected_pointer_lifetime() {
         }
     }
 }
+
+#[test]
+fn project_name_search_row_shortcuts_keep_native_opening_text() {
+    for tree in [false, true] {
+        for key in [egui::Key::G, egui::Key::P] {
+            for paste in [false, true] {
+                let (mut app, commands) = fixture();
+                if tree {
+                    root(&mut app, &commands, vec![entry("zeta.rs", false)]);
+                } else {
+                    app.list(String::new());
+                    reply(
+                        &mut app,
+                        commands.try_recv().unwrap(),
+                        vec![entry("zeta.rs", false)],
+                    );
+                    settle(&mut app);
+                }
+                app.documents.push(Document::new(
+                    1,
+                    "zeta.rs".into(),
+                    "one\ntwo three".into(),
+                    "r".into(),
+                ));
+                app.active_document = Some(1);
+                for _ in 0..3 {
+                    name_actual_frame(&mut app, vec![], |_| {});
+                }
+                let editor = egui::Id::new(("editor", 1u64));
+                app.editor_ctx
+                    .memory_mut(|memory| memory.request_focus(editor));
+                name_actual_frame(&mut app, vec![egui::Event::Text("dirty".into())], |_| {});
+                for _ in 0..3 {
+                    name_actual_frame(&mut app, vec![], |_| {});
+                }
+                let selection = egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(1),
+                    egui::text::CCursor::new(4),
+                );
+                let mut state = egui::TextEdit::load_state(&app.editor_ctx, editor).unwrap();
+                state.cursor.set_char_range(Some(selection));
+                state.store(&app.editor_ctx, editor);
+                let before = (app.documents[0].text.clone(), app.documents[0].edit_version);
+                assert!(app.documents[0].dirty());
+                if tree {
+                    focus(&mut app, "zeta.rs");
+                } else {
+                    flat_focus(&mut app, "zeta.rs");
+                }
+                let text = if key == egui::Key::G { "2:4" } else { "zet" };
+                let body = if paste {
+                    egui::Event::Paste(text.into())
+                } else {
+                    egui::Event::Text(text.into())
+                };
+                name_actual_frame(
+                    &mut app,
+                    vec![name_modified(key, egui::Modifiers::COMMAND), body],
+                    |_| {},
+                );
+                assert!(app.navigation.dialog_open(), "{tree}/{key:?}/{paste}");
+                if key == egui::Key::G {
+                    assert_eq!(app.navigation.line_input(), Some(text));
+                } else {
+                    assert_eq!(app.navigation.query_text(), text);
+                }
+                assert!(app.project_name_observation().is_none());
+                assert_eq!(
+                    (app.documents[0].text.clone(), app.documents[0].edit_version),
+                    before
+                );
+                assert!(location_history::same_selection(
+                    egui::TextEdit::load_state(&app.editor_ctx, editor)
+                        .unwrap()
+                        .cursor
+                        .char_range()
+                        .unwrap(),
+                    selection
+                ));
+                assert!(app.location_history.back.is_empty());
+                assert!(app.location_history.pending.is_none());
+                name_actual_frame(&mut app, vec![released(key)], |_| {});
+                name_actual_frame(&mut app, vec![key_event(egui::Key::Escape, false)], |_| {});
+                name_actual_frame(&mut app, vec![released(egui::Key::Escape)], |_| {});
+                for _ in 0..3 {
+                    name_actual_frame(&mut app, vec![], |_| {});
+                }
+                app.editor_ctx
+                    .memory_mut(|memory| memory.request_focus(editor));
+                name_actual_frame(
+                    &mut app,
+                    vec![name_modified(egui::Key::Z, egui::Modifiers::COMMAND)],
+                    |_| {},
+                );
+                assert_eq!(app.documents[0].text, "one\ntwo three");
+                assert!(commands.try_recv().is_err());
+            }
+        }
+    }
+    for variant in 0..6 {
+        let (mut app, commands) = flat_fixture(vec![entry("zeta.rs", false)]);
+        flat_focus(&mut app, "zeta.rs");
+        let at = workspace_access_tests::recorded_response(&app, "zeta.rs")
+            .rect
+            .center();
+        let key = match variant {
+            0 => egui::Key::Enter,
+            1 => egui::Key::Space,
+            _ => egui::Key::G,
+        };
+        let mut events = vec![
+            name_modified(key, egui::Modifiers::COMMAND),
+            egui::Event::Paste("zet".into()),
+        ];
+        match variant {
+            2 => events.push(key_event(egui::Key::Enter, false)),
+            3 => events.push(key_event(egui::Key::Space, false)),
+            4 => events.push(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }),
+            5 => events.push(egui::Event::Ime(egui::ImeEvent::Commit("zet".into()))),
+            _ => {}
+        }
+        frame(&mut app, events);
+        if variant == 4 {
+            frame(
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        assert!(!app.navigation.dialog_open(), "{variant}");
+        assert!(app.project_name_observation().is_none(), "{variant}");
+        assert!(commands.try_recv().is_err(), "{variant}");
+    }
+}
