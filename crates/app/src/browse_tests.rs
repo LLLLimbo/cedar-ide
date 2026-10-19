@@ -8178,7 +8178,7 @@ fn text_compact_first_visible_footer_stays_fixed_through_all_states() {
             let first_code = text_painted_galleys(&first_loaded)
                 .iter()
                 .filter(|(text, rect, clip, _)| {
-                    text.contains(" | needle line ")
+                    text.starts_with("needle line ")
                         && rect.top() >= first_viewport.top()
                         && rect.bottom() <= first_viewport.bottom()
                         && rect.top() >= clip.top()
@@ -8227,7 +8227,7 @@ fn text_compact_first_visible_footer_stays_fixed_through_all_states() {
             let code_lines = draws
                 .iter()
                 .filter(|(text, rect, clip, _)| {
-                    text.contains(" | needle line ")
+                    text.starts_with("needle line ")
                         && rect.top() >= viewport.top()
                         && rect.bottom() <= viewport.bottom()
                         && rect.top() >= clip.top()

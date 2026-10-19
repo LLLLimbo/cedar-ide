@@ -633,7 +633,7 @@ fn open_target_repaint_journey(bottom: bool) {
         assert!(app.find_preview_identity() == ticket);
     }
     assert_eq!(repaint_delay(&output), std::time::Duration::MAX);
-    assert!(has_text(&output, "▶ 160 | B source line 160"));
+    assert!(has_text(&output, "B source line 160"));
     let target = recorded_rect(&app, "project_text_context_target");
     let clip = recorded_clip(&app, "project_text_context_target");
     assert!(

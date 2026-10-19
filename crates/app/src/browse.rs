@@ -4995,6 +4995,174 @@ fn discovery_reason(reason: &FileDiscoveryIncompleteReason) -> &'static str {
     }
 }
 
+// The formatter remains the sole owner of context text and byte limits. Split
+// only its leading metadata; source code after the delimiter is never parsed.
+struct ContextLine<'a> {
+    full: &'a str,
+    number: &'a str,
+    code: &'a str,
+    target: bool,
+}
+
+fn context_lines(context: &ProjectTextContext) -> Option<Vec<ContextLine<'_>>> {
+    if context.text.len() > MAX_PROJECT_TEXT_CONTEXT_BYTES {
+        return None;
+    }
+    let mut rows = Vec::new();
+    let mut previous = None;
+    let mut targets = 0;
+    for full in context.text.lines() {
+        if rows.len() == MAX_PROJECT_TEXT_CONTEXT_LINES {
+            return None;
+        }
+        let (target, rest) = if let Some(rest) = full.strip_prefix("▶ ") {
+            (true, rest)
+        } else {
+            (false, full.strip_prefix("  ")?)
+        };
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let number = &rest[..digits];
+        if number.is_empty() || number.starts_with('0') {
+            return None;
+        }
+        let value = number.parse::<usize>().ok()?;
+        if previous.is_some_and(|previous: usize| previous.checked_add(1) != Some(value)) {
+            return None;
+        }
+        previous = Some(value);
+        let code = rest[digits..].strip_prefix(" | ")?;
+        targets += usize::from(target);
+        rows.push(ContextLine {
+            full,
+            number,
+            code,
+            target,
+        });
+    }
+    (rows.is_empty() || targets == 1).then_some(rows)
+}
+
+struct ContextRowLayout<'a> {
+    line: ContextLine<'a>,
+    height: f32,
+    marker: Arc<egui::Galley>,
+    number: Arc<egui::Galley>,
+    separator: Arc<egui::Galley>,
+    code: Arc<egui::Galley>,
+    offsets_y: [f32; 4],
+}
+
+struct ContextLayout<'a> {
+    rows: Vec<ContextRowLayout<'a>>,
+    number_right: f32,
+    separator_x: f32,
+    code_x: f32,
+    width: f32,
+}
+
+fn context_galley(ui: &egui::Ui, text: &str, color: egui::Color32) -> Arc<egui::Galley> {
+    let mut job = egui::WidgetText::from(RichText::new(text).monospace().color(color))
+        .into_layout_job(ui.style(), egui::FontSelection::Default, ui.text_valign());
+    job.wrap.max_width = f32::INFINITY;
+    job.halign = ui.layout().horizontal_placement();
+    job.justify = ui.layout().horizontal_justify();
+    ui.fonts(|fonts| fonts.layout_job(job))
+}
+
+// Fallback faces need not share the arrow's baseline. Every piece must match
+// its own reference glyph slice with one finite vertical translation.
+fn context_piece_offset(
+    reference: &egui::Galley,
+    piece: &egui::Galley,
+    start: usize,
+) -> Option<f32> {
+    if reference.rows.len() != 1 || piece.rows.len() != 1 {
+        return None;
+    }
+    let glyphs = &piece.rows[0].glyphs;
+    let originals = reference.rows[0]
+        .glyphs
+        .get(start..start.checked_add(glyphs.len())?)?;
+    let offset = originals
+        .first()
+        .zip(glyphs.first())
+        .map_or(0.0, |(original, glyph)| original.pos.y - glyph.pos.y);
+    (offset.is_finite()
+        && glyphs.iter().zip(originals).all(|(glyph, original)| {
+            glyph.chr == original.chr
+                && glyph.pos.is_finite()
+                && original.pos.is_finite()
+                && glyph.pos.y + offset == original.pos.y
+        }))
+    .then_some(offset)
+}
+
+fn context_layout<'a>(ui: &egui::Ui, context: &'a ProjectTextContext) -> Option<ContextLayout<'a>> {
+    let lines = context_lines(context)?;
+    let color = ui.visuals().text_color();
+    let muted = ui.visuals().weak_text_color();
+    let space = context_galley(ui, " ", muted).size().x;
+    let marker = context_galley(ui, "▶", muted);
+    let blank = context_galley(ui, " ", muted);
+    let separator = context_galley(ui, "|", muted);
+    let mut number_width = 0.0_f32;
+    let mut code_width = 0.0_f32;
+    let mut rows = Vec::new();
+    for line in lines {
+        let reference = context_galley(ui, line.full, color);
+        if reference.rows.len() != 1 || reference.rows[0].glyphs.len() != line.full.chars().count()
+        {
+            return None;
+        }
+        let height = reference.size().y;
+        let number = context_galley(ui, line.number, muted);
+        let code = context_galley(ui, line.code, color);
+        let marker = if line.target {
+            marker.clone()
+        } else {
+            blank.clone()
+        };
+        let offsets_y = [
+            context_piece_offset(&reference, &marker, 0)?,
+            context_piece_offset(&reference, &number, 2)?,
+            context_piece_offset(&reference, &separator, line.number.len() + 3)?,
+            context_piece_offset(&reference, &code, line.number.len() + 5)?,
+        ];
+        if !height.is_finite()
+            || height <= 0.0
+            || !number.size().is_finite()
+            || !code.size().is_finite()
+        {
+            return None;
+        }
+        number_width = number_width.max(number.size().x);
+        code_width = code_width.max(code.size().x);
+        rows.push(ContextRowLayout {
+            line,
+            height,
+            marker,
+            number,
+            separator: separator.clone(),
+            code,
+            offsets_y,
+        });
+    }
+    let number_right = marker.size().x.max(blank.size().x) + space + number_width;
+    let separator_x = number_right + space;
+    let code_x = separator_x + separator.size().x + space;
+    let width = (code_x + code_width).max(ui.available_width());
+    [number_right, separator_x, code_x, width]
+        .into_iter()
+        .all(|value| value.is_finite() && value >= 0.0)
+        .then_some(ContextLayout {
+            rows,
+            number_right,
+            separator_x,
+            code_x,
+            width,
+        })
+}
+
 fn draw_project_text_context(
     ui: &mut egui::Ui,
     context: &ProjectTextContext,
@@ -5002,26 +5170,87 @@ fn draw_project_text_context(
 ) -> egui::Response {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
-        for line in context.text.lines() {
-            let response = ui.add(
-                egui::Label::new(RichText::new(line).monospace())
-                    .selectable(false)
-                    .wrap_mode(egui::TextWrapMode::Extend),
-            );
-            if line.starts_with('▶') {
-                #[cfg(test)]
-                crate::workspace_access_tests::record(ui, "project_text_context_target", &response);
-                if reveal {
-                    let marker = egui::Rect::from_min_max(
-                        response.rect.min,
-                        egui::pos2(response.rect.min.x + 1.0, response.rect.max.y),
-                    );
-                    ui.scroll_to_rect(marker, Some(egui::Align::Center));
+        let Some(layout) = context_layout(ui, context) else {
+            // Preserve the old complete plain presentation on any malformed
+            // metadata or untrustworthy geometry; never drop individual rows.
+            for line in context.text.lines() {
+                let response = ui.add(
+                    egui::Label::new(RichText::new(line).monospace())
+                        .selectable(false)
+                        .wrap_mode(egui::TextWrapMode::Extend),
+                );
+                if line.starts_with('▶') {
+                    context_target(ui, &response, reveal);
                 }
+            }
+            return;
+        };
+        for row in layout.rows {
+            // This is exactly the nonselectable Label's existing sense policy.
+            let sense = if ui.memory(|memory| memory.options.screen_reader) {
+                egui::Sense::focusable_noninteractive()
+            } else {
+                egui::Sense::hover()
+            };
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(layout.width, row.height), sense);
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), row.line.full)
+            });
+            if ui.is_rect_visible(rect) {
+                if row.line.target {
+                    ui.painter().rect_filled(
+                        rect,
+                        0.0,
+                        ui.visuals().selection.bg_fill.gamma_multiply(0.15),
+                    );
+                }
+                let underline = if response.has_focus() || response.highlighted() {
+                    egui::Stroke::new(1.0_f32, ui.visuals().text_color())
+                } else {
+                    egui::Stroke::NONE
+                };
+                let number_x = layout.number_right - row.number.size().x;
+                for (galley, x, y) in [
+                    (row.marker, 0.0, row.offsets_y[0]),
+                    (row.number, number_x, row.offsets_y[1]),
+                    (row.separator, layout.separator_x, row.offsets_y[2]),
+                    (row.code, layout.code_x, row.offsets_y[3]),
+                ] {
+                    ui.painter().add(
+                        egui::epaint::TextShape::new(
+                            rect.min + egui::vec2(x, y),
+                            galley,
+                            ui.visuals().text_color(),
+                        )
+                        .with_underline(underline),
+                    );
+                }
+            }
+            #[cfg(test)]
+            crate::workspace_access_tests::record(
+                ui,
+                &format!("project_text_context_row:{}", row.line.number),
+                &response,
+            );
+            if row.line.target {
+                context_target(ui, &response, reveal);
             }
         }
     })
     .response
+}
+
+fn context_target(ui: &mut egui::Ui, response: &egui::Response, reveal: bool) {
+    #[cfg(test)]
+    crate::workspace_access_tests::record(ui, "project_text_context_target", response);
+    if reveal {
+        let marker = egui::Rect::from_min_max(
+            response.rect.min,
+            egui::pos2(response.rect.min.x + 1.0, response.rect.max.y),
+        );
+        ui.scroll_to_rect(marker, Some(egui::Align::Center));
+    }
 }
 #[cfg(test)]
 fn record_context_scroll(
