@@ -3322,19 +3322,35 @@ fn result_style_draw<'a>(
     color: egui::Color32,
 ) -> &'a egui::epaint::TextShape {
     let row = recorded_rect(app, probe);
-    let row_clip = row.intersect(recorded_clip(app, probe));
+    let native_clip = recorded_clip(app, probe);
+    let row_clip = row.intersect(native_clip);
     assert!(
         row_clip.is_positive(),
         "{probe}: visible production row required"
     );
-    let (draw, clip) = result_style_texts(output)
+    let same_text = result_style_texts(output)
         .into_iter()
-        .find(|(draw, clip)| {
-            draw.galley.job.text.as_bytes() == original.as_bytes()
-                && row_clip.intersects(draw.galley.rect.translate(draw.pos.to_vec2()))
-                && clip.intersects(row_clip)
+        .filter(|(draw, _)| draw.galley.job.text.as_bytes() == original.as_bytes())
+        .collect::<Vec<_>>();
+    // The modal and the underlying bottom panel can paint identical strings
+    // in one FullOutput. Bind evidence to this native surface's actual clip;
+    // a mere boundary touch with another surface is not visible row evidence.
+    let candidates = same_text
+        .iter()
+        .copied()
+        .filter(|(draw, clip)| {
+            let overlap = row_clip.intersect(draw.galley.rect.translate(draw.pos.to_vec2()));
+            *clip == native_clip
+                && clip.contains_rect(row_clip)
+                && overlap.width() > 0.0
+                && overlap.height() > 0.0
         })
-        .unwrap_or_else(|| panic!("{probe}: missing independent painted galley for {original:?}"));
+        .collect::<Vec<_>>();
+    assert_eq!(candidates.len(), 1,
+        "{probe}: expected one independent painted galley for {original:?}; native_clip={native_clip:?}, row={row:?}, same-text candidates={:?}",
+        same_text.iter().map(|(draw, clip)|
+            (*clip, draw.galley.rect.translate(draw.pos.to_vec2()))).collect::<Vec<_>>());
+    let (draw, clip) = candidates[0];
     let painted = draw.galley.rect.translate(draw.pos.to_vec2());
     assert_eq!(draw.galley.rows.len(), 1, "{probe}: one painted line");
     assert!(painted.height() > 0.0 && painted.width() > 0.0);
@@ -3463,7 +3479,7 @@ fn result_style_decorations(
     let clip = recorded_clip(app, probe);
     let mut paths = Vec::new();
     for shape in &output.shapes {
-        if shape.clip_rect.intersects(group.intersect(clip)) {
+        if shape.clip_rect == clip {
             visit(&shape.shape, &mut paths);
         }
     }
