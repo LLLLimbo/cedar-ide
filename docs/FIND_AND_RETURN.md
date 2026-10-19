@@ -98,6 +98,17 @@ At source sealing, fresh final-tree checks, exact-commit CI, new package audits
 and a bounded Linux native comparison remain separate acceptance gates. Prior
 0.80.0 screenshots document the old visual difference, not this candidate's result.
 
+The same long-Unicode fixture also reproduced an existing small-window tooltip
+hit trap on the unchanged 0.80 baseline: a large tooltip covered its originating
+row. Project Text's existing group/hit tooltips now keep their original row anchor
+and hover lifecycle, with a bounded text viewport and a native scrollbar for the
+full original text. Bottom hit rows still have no tooltip. The scrollbar can be
+dragged to read overflow; egui 0.31's existing wheel-triggered tooltip hiding is
+not changed. If an extreme viewport has no safe vertical placement, the tooltip
+is omitted instead of covering the row; the original accessibility text remains.
+This is a separately identified tooltip constraint fix, not a search or input
+policy change or a defect introduced by sharing the row paint.
+
 
 ## Files native IME acceptance (0.76 candidate)
 

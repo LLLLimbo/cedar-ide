@@ -4554,6 +4554,67 @@ impl TextResultRow {
     }
 }
 
+// Keep the original native hover lifecycle and row anchor. A large tooltip
+// must fit the side egui will choose using its cached (initially 64x32) size;
+// merely limiting it to the larger side can still clamp it over the origin.
+pub(super) fn text_result_tooltip(response: egui::Response, text: &str) -> egui::Response {
+    let ctx = &response.ctx;
+    let screen = ctx.screen_rect();
+    let mut origin = response.rect;
+    if let Some(transform) = ctx.layer_transform_to_global(response.layer_id) {
+        origin = transform * origin;
+    }
+    let expected = egui::AreaState::load(
+        ctx,
+        egui::containers::popup::next_tooltip_id(ctx, response.id),
+    )
+    .and_then(|state| state.size)
+    .unwrap_or(egui::vec2(64.0, 32.0));
+    let below = (screen.bottom() - origin.bottom() - 4.0).max(0.0);
+    let above = (origin.top() - screen.top() - 4.0).max(0.0);
+    let space = if !ctx.input(|input| input.any_touches()) && expected.y <= below {
+        below
+    } else if expected.y <= above {
+        above
+    } else {
+        // Below the native minimum window size, or after an extreme resize,
+        // do not use egui's fallback at screen.left_top: it may cover the row.
+        // The original response and its full accessibility text remain intact.
+        return response;
+    };
+    let margin = egui::Frame::popup(&ctx.style()).total_margin().sum();
+    let height = space.min(160.0).min(screen.height() * 0.25) - margin.y - 2.0;
+    let width = (screen.width() - margin.x - 16.0).min(ctx.style().spacing.tooltip_width);
+    if height <= 0.0 || width <= 0.0 {
+        return response;
+    }
+    let id = response.id;
+    let contents = |ui: &mut egui::Ui| {
+        ui.set_max_width(width);
+        let scroll = egui::ScrollArea::vertical()
+            .id_salt(("project_text_tooltip", id))
+            .auto_shrink([false, true])
+            .min_scrolled_height(0.0)
+            .max_height(height)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .show(ui, |ui| {
+                ui.add(egui::Label::new(text).wrap());
+            });
+        #[cfg(test)]
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new(("text_result_tooltip_probe", id)),
+                (scroll.id, scroll.inner_rect, scroll.content_size),
+            );
+        });
+        #[cfg(not(test))]
+        let _ = scroll;
+    };
+    response
+        .on_hover_ui(contents)
+        .on_disabled_hover_ui(contents)
+}
+
 // Text rows keep their accepted index IDs. All painted pieces belong to one
 // native response, so decoration cannot become another navigation target.
 fn text_result_group(
@@ -4578,9 +4639,7 @@ fn text_result_group(
         )
     });
     row.paint(ui, rect, &response, false);
-    response
-        .on_hover_text(&accessible)
-        .on_disabled_hover_text(accessible)
+    text_result_tooltip(response, &accessible)
 }
 
 fn text_row_background(ui: &egui::Ui, rect: egui::Rect, response: &egui::Response, selected: bool) {
@@ -4623,9 +4682,7 @@ fn text_result_hit(
         )
     });
     row.paint(ui, rect, &response, selected);
-    response
-        .on_hover_text(&accessible)
-        .on_disabled_hover_text(accessible)
+    text_result_tooltip(response, &accessible)
 }
 
 fn shortcut_provider(key: egui::Key, modifiers: egui::Modifiers) -> Option<GlobalEntry> {

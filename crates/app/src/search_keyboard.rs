@@ -1901,9 +1901,8 @@ impl CedarApp {
                                 let row = crate::browse::TextResultRow::group(ui, &result.path, group.len(), expanded);
                                 row_control(ui, id, &label, false, row)
                             })
-                            .inner
-                            .on_hover_text(&result.path)
-                            .on_disabled_hover_text(&result.path);
+                            .inner;
+                        let response = crate::browse::text_result_tooltip(response, &result.path);
                         app.search_state
                             .keyboard
                             .record(ui, MAX_ROWS + first, &response);
