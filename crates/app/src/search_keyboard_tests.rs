@@ -4964,3 +4964,923 @@ fn snippet_highlight_bottom_actual_paint_regression() {
 fn snippet_highlight_browse_actual_paint_regression() {
     snippet_highlight_first_painted_matches(true);
 }
+
+fn snippet_highlight_counts() -> [u128; 4] {
+    let o = crate::search_keyboard::highlights::test_observations();
+    [
+        o.prepares as u128,
+        o.builds as u128,
+        o.scan_calls as u128,
+        o.scanned_bytes as u128,
+    ]
+}
+
+fn snippet_highlight_prefix(browse: bool) -> &'static str {
+    if browse {
+        "browse"
+    } else {
+        "search"
+    }
+}
+
+fn snippet_highlight_replace(app: &mut CedarApp, browse: bool, size: egui::Vec2, query: &str) {
+    let before = snippet_highlight_counts();
+    result_style_click(
+        app,
+        size,
+        &format!("{}_query", snippet_highlight_prefix(browse)),
+    );
+    result_style_frame(
+        app,
+        size,
+        modified_key(egui::Key::A, egui::Modifiers::COMMAND),
+    );
+    result_style_frame(app, size, vec![egui::Event::Text(query.into())]);
+    for _ in 0..3 {
+        result_style_frame(app, size, vec![]);
+    }
+    assert_eq!(app.search_query, query);
+    if browse {
+        assert_eq!(app.browse.query(), query);
+    }
+    assert_eq!(
+        snippet_highlight_counts(),
+        before,
+        "draft edits cannot prepare/build/scan decoration"
+    );
+}
+
+fn snippet_highlight_submit(
+    app: &mut CedarApp,
+    commands: &Receiver<Command>,
+    browse: bool,
+    size: egui::Vec2,
+) -> Command {
+    let before = snippet_highlight_counts();
+    result_style_click(
+        app,
+        size,
+        &format!("{}_query", snippet_highlight_prefix(browse)),
+    );
+    result_style_frame(app, size, key(egui::Key::Enter));
+    let command = commands
+        .try_recv()
+        .expect("one explicitly submitted Search");
+    assert!(matches!(
+        command.op,
+        Operation::Search { .. } | Operation::SearchCase { .. } | Operation::SearchIn { .. }
+    ));
+    assert!(
+        commands.try_recv().is_err(),
+        "submission emits exactly one command"
+    );
+    assert_eq!(
+        snippet_highlight_counts(),
+        before,
+        "submission is not acceptance"
+    );
+    assert!(!app.search_rows_active());
+    command
+}
+
+fn snippet_highlight_payload(command: &Command, matches: Vec<SearchMatch>) -> Payload {
+    let read_bytes = matches.iter().map(|row| row.text.len()).sum::<usize>();
+    let examined_entries = matches.len();
+    match &command.op {
+        Operation::Search { .. } => Payload::Matches {
+            matches,
+            truncated: false,
+        },
+        Operation::SearchCase { request } => Payload::CaseMatches {
+            result: cedar_protocol::CaseSearchResult {
+                request: request.clone(),
+                matches: matches
+                    .into_iter()
+                    .map(|row| cedar_protocol::CaseSearchMatch {
+                        path: row.path,
+                        line: row.line,
+                        text: row.text,
+                    })
+                    .collect(),
+                incomplete: false,
+                reasons: vec![],
+                examined_entries,
+                read_bytes,
+            },
+        },
+        Operation::SearchIn { request } => Payload::ScopedMatches {
+            result: cedar_protocol::ScopedSearchResult {
+                request: request.clone(),
+                matches,
+                incomplete: false,
+                reasons: vec![],
+                examined_entries,
+                read_bytes,
+            },
+        },
+        _ => panic!("expected Search operation"),
+    }
+}
+
+fn snippet_highlight_queue(
+    app: &CedarApp,
+    generation: u64,
+    id: u64,
+    result: Result<Payload, String>,
+    connected: bool,
+) {
+    app.result_tx
+        .send(WorkerEvent::Response(Event {
+            generation,
+            id,
+            result,
+            connected,
+        }))
+        .unwrap();
+}
+
+fn snippet_highlight_has_current_draw(
+    app: &CedarApp,
+    output: &egui::FullOutput,
+    browse: bool,
+    original: &str,
+) -> bool {
+    if !app.search_rows_active() {
+        return false;
+    }
+    let probe = format!("{}_row:0", snippet_highlight_prefix(browse));
+    let clip = recorded_clip(app, &probe);
+    let row = recorded_rect(app, &probe).intersect(clip);
+    result_style_texts(output)
+        .into_iter()
+        .any(|(draw, actual_clip)| {
+            actual_clip == clip
+                && draw.galley.job.text == original.trim()
+                && draw
+                    .galley
+                    .job
+                    .sections
+                    .iter()
+                    .all(|section| section.format.color == chrome::TEXT)
+                && draw
+                    .galley
+                    .rect
+                    .translate(draw.pos.to_vec2())
+                    .intersect(row)
+                    .is_positive()
+        })
+}
+
+fn snippet_highlight_accept(
+    app: &mut CedarApp,
+    commands: &Receiver<Command>,
+    browse: bool,
+    size: egui::Vec2,
+    command: Command,
+    matches: Vec<SearchMatch>,
+) -> egui::FullOutput {
+    let expected_bytes: usize = matches.iter().map(|row| row.text.len()).sum();
+    let first = matches[0].text.clone();
+    let before = snippet_highlight_counts();
+    let request = command.id;
+    let generation = app.generation;
+    snippet_highlight_queue(
+        app,
+        generation,
+        request,
+        Ok(snippet_highlight_payload(&command, matches)),
+        true,
+    );
+    let started = std::time::Instant::now();
+    for frame_index in 0..5 {
+        let output = result_style_frame(app, size, vec![]);
+        if app
+            .search_state
+            .accepted
+            .as_ref()
+            .is_some_and(|source| source.request == request)
+            && snippet_highlight_has_current_draw(app, &output, browse, &first)
+        {
+            let after = snippet_highlight_counts();
+            assert_eq!(
+                after[0] - before[0],
+                1,
+                "one preparation at accepted response only"
+            );
+            assert_eq!(
+                after[1] - before[1],
+                1,
+                "one matcher build for this eligible accepted batch"
+            );
+            assert_eq!(after[3] - before[3], expected_bytes as u128);
+            assert!(after[2] > before[2]);
+            assert!(
+                commands.try_recv().is_err(),
+                "response/paint may not Search or Read"
+            );
+            eprintln!("SNIPPET_ACCEPT_FRAME browse={browse} size={size:?} request={request} first_visible_frame={frame_index} elapsed_ns={} counts_before={before:?} counts_after={after:?}", started.elapsed().as_nanos());
+            return output;
+        }
+    }
+    panic!("accepted request {request} did not produce a current native snippet draw");
+}
+
+fn snippet_highlight_all_backgrounds(output: &egui::FullOutput) -> Vec<egui::Rect> {
+    fn collect(shape: &egui::Shape, out: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Rect(rect)
+                if rect.fill == crate::search_keyboard::highlights::BACKGROUND =>
+            {
+                out.push(rect.rect)
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut rectangles = vec![];
+    for shape in &output.shapes {
+        collect(&shape.shape, &mut rectangles);
+    }
+    rectangles
+}
+
+// The expected ranges below are explicit original UTF-8 byte offsets, not another
+// matcher invocation. The paint oracle does not call production rectangles().
+fn snippet_highlight_assert_row(
+    app: &CedarApp,
+    output: &egui::FullOutput,
+    browse: bool,
+    font: f32,
+    index: usize,
+    original: &str,
+    spans: &[std::ops::Range<usize>],
+) -> Vec<egui::Rect> {
+    let probe = format!("{}_row:{index}", snippet_highlight_prefix(browse));
+    assert_eq!(
+        app.search_highlight_ranges(index),
+        spans,
+        "cache must use original accepted row {index}"
+    );
+    let draw = result_style_draw(
+        app,
+        output,
+        &probe,
+        original.trim(),
+        FontId::monospace(font),
+        chrome::TEXT,
+    );
+    let row = &draw.galley.rows[0];
+    let visible_glyphs = row.glyphs.len() - usize::from(draw.galley.elided);
+    if draw.galley.elided {
+        assert_eq!(row.glyphs.last().unwrap().chr, '…');
+    }
+    let original_chars: Vec<_> = original.trim().chars().collect();
+    assert_eq!(
+        row.glyphs[..visible_glyphs]
+            .iter()
+            .map(|glyph| glyph.chr)
+            .collect::<Vec<_>>(),
+        original_chars[..visible_glyphs]
+    );
+    let trim_start = original.len() - original.trim_start().len();
+    let visible_bytes = original_chars[..visible_glyphs]
+        .iter()
+        .map(|ch| ch.len_utf8())
+        .sum::<usize>();
+    let native_row = recorded_rect(app, &probe);
+    let snippet_clip = egui::Rect::from_min_max(
+        egui::pos2(draw.pos.x, native_row.top()),
+        egui::pos2(native_row.right() - 6.0, native_row.bottom()),
+    );
+    let clip = recorded_clip(app, &probe)
+        .intersect(native_row)
+        .intersect(snippet_clip);
+    let mut expected = vec![];
+    for span in spans {
+        assert!(original.is_char_boundary(span.start) && original.is_char_boundary(span.end));
+        assert!(span.start >= trim_start);
+        if span.end > trim_start + visible_bytes {
+            continue;
+        }
+        let first = original[trim_start..span.start].chars().count();
+        let after = original[trim_start..span.end].chars().count();
+        // Zero-advance combining geometry is deliberately undecorated.
+        if row.glyphs[first..after]
+            .iter()
+            .any(|glyph| glyph.advance_width <= 0.0)
+        {
+            continue;
+        }
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(row.glyphs[first].pos.x, row.rect.top()),
+            egui::pos2(row.glyphs[after - 1].max_x(), row.rect.bottom()),
+        )
+        .translate(draw.pos.to_vec2());
+        if draw.galley.elided && rect.right() > draw.pos.x + row.glyphs[visible_glyphs].pos.x {
+            continue;
+        }
+        // No epsilon, shortening, or alternate expected geometry: a fully visible
+        // accepted match must receive its complete original-glyph rectangle.
+        assert!(rect.is_positive() && rect.is_finite());
+        assert!(
+            clip.contains_rect(rect),
+            "fixture match must be wholly inside native snippet clip: {rect:?}, {clip:?}"
+        );
+        expected.push(rect);
+    }
+    let painted = snippet_highlight_shapes(
+        output,
+        recorded_clip(app, &probe),
+        recorded_rect(app, &probe),
+    );
+    assert_eq!(
+        painted, expected,
+        "actual background geometry for {probe}, original={original:?}"
+    );
+    assert_eq!(
+        app.search_results[index].text.as_bytes(),
+        original.as_bytes()
+    );
+    // Relative rectangles permit an honest cross-surface comparison for short
+    // rows; Browse and Bottom intentionally have different absolute origins.
+    painted
+        .into_iter()
+        .map(|rect| rect.translate(-draw.pos.to_vec2()))
+        .collect()
+}
+
+fn snippet_highlight_galley_signature(
+    app: &CedarApp,
+    output: &egui::FullOutput,
+    browse: bool,
+    font: f32,
+    original: &str,
+) -> serde_json::Value {
+    let probe = format!("{}_row:0", snippet_highlight_prefix(browse));
+    let draw = result_style_draw(
+        app,
+        output,
+        &probe,
+        original.trim(),
+        FontId::monospace(font),
+        chrome::TEXT,
+    );
+    let glyphs = draw.galley.rows[0]
+        .glyphs
+        .iter()
+        .map(|glyph| {
+            (
+                glyph.chr.to_string(),
+                glyph.pos.x,
+                glyph.pos.y,
+                glyph.advance_width,
+                glyph.max_x(),
+            )
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "text": draw.galley.job.text, "glyphs": glyphs,
+        "position": [draw.pos.x, draw.pos.y],
+        "size": [draw.galley.size().x, draw.galley.size().y],
+        "rect": format!("{:?}", draw.galley.rect),
+        "job": format!("{:?}", draw.galley.job),
+        "clip": format!("{:?}", recorded_clip(app, &probe)),
+        "row": format!("{:?}", recorded_rect(app, &probe)),
+        "id": format!("{:?}", recorded_response(app, &probe).id),
+        "elided": draw.galley.elided,
+    })
+}
+
+fn snippet_highlight_retired(
+    app: &mut CedarApp,
+    commands: &Receiver<Command>,
+    size: egui::Vec2,
+    counts: [u128; 4],
+    editor: &serde_json::Value,
+) {
+    for _ in 0..3 {
+        let output = result_style_frame(app, size, vec![]);
+        assert!(!app.search_rows_active());
+        for index in 0..app.search_results.len() {
+            assert!(app.search_highlight_ranges(index).is_empty());
+        }
+        assert!(
+            snippet_highlight_all_backgrounds(&output).is_empty(),
+            "no stale decoration on either surface, including the modal's underlying Bottom panel"
+        );
+        assert_eq!(snippet_highlight_counts(), counts);
+        assert_eq!(
+            &result_style_editor(app),
+            editor,
+            "exact dirty buffer/selection-affinity/Undo/Redo/history snapshot"
+        );
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[test]
+fn snippet_highlight_native_two_surface_unicode_literal_ellipsis_truncation_matrix() {
+    // name, query, Match case, original snippet, explicit expected original ranges, must elide
+    let cases = vec![
+        (
+            "trim_unicode",
+            "second",
+            true,
+            "  second 中文😀K second  ".to_owned(),
+            vec![2..8, 23..29],
+            false,
+        ),
+        (
+            "kelvin_simple_fold",
+            "k",
+            false,
+            "  k K K 😀中文  ".to_owned(),
+            vec![2..3, 4..7, 8..9],
+            false,
+        ),
+        (
+            "literal_metacharacters",
+            "[a].*",
+            true,
+            "  [a].* [a]zz [a].*  ".to_owned(),
+            vec![2..7, 14..19],
+            false,
+        ),
+        (
+            "edge_and_middle_ellipsis",
+            "…",
+            true,
+            "…a…b…".to_owned(),
+            vec![4..7],
+            false,
+        ),
+        (
+            "emoji_bytes",
+            "😀",
+            true,
+            "  😀中文😀  ".to_owned(),
+            vec![2..6, 12..16],
+            false,
+        ),
+        (
+            "trim_crossing",
+            " second",
+            true,
+            " second second ".to_owned(),
+            vec![7..14],
+            false,
+        ),
+        (
+            "hidden_suffix",
+            "second",
+            true,
+            format!("  second {} second  ", "x".repeat(300)),
+            vec![2..8, 310..316],
+            true,
+        ),
+        (
+            "partial_final_match",
+            "second",
+            true,
+            "second".repeat(40),
+            (0..40).map(|index| index * 6..index * 6 + 6).collect(),
+            true,
+        ),
+    ];
+    for size in [egui::vec2(1180.0, 812.0), egui::vec2(780.0, 540.0)] {
+        for font in [13.0, 18.0] {
+            for (name, query, sensitive, original, spans, elided) in &cases {
+                let mut across = None;
+                for browse in [false, true] {
+                    let hit = SearchMatch {
+                        path: "first-parent/duplicate.rs".into(),
+                        line: 42,
+                        text: original.clone(),
+                    };
+                    let (mut app, commands, _, _hold) =
+                        result_style_fixture(browse, size, font, vec![hit.clone()], |_, _| {});
+                    // Negotiated capability fixture only. Accepted Source/cache are
+                    // always created by genuine explicit submission plus validation.
+                    app.case_search = Some(cedar_protocol::CaseSearchDescriptor::V1);
+                    let editor = result_style_editor(&app); // after Browse entry
+                    snippet_highlight_replace(&mut app, browse, size, query);
+                    if app.search_match_case != *sensitive {
+                        result_style_click(
+                            &mut app,
+                            size,
+                            &format!("{}_match_case", snippet_highlight_prefix(browse)),
+                        );
+                    }
+                    assert_eq!(app.search_match_case, *sensitive);
+                    assert!(commands.try_recv().is_err(), "edit/toggle do not submit");
+                    let command = snippet_highlight_submit(&mut app, &commands, browse, size);
+                    let output = snippet_highlight_accept(
+                        &mut app,
+                        &commands,
+                        browse,
+                        size,
+                        command,
+                        vec![hit],
+                    );
+                    let source = app.search_state.accepted.as_ref().unwrap();
+                    assert_eq!(source.query, *query);
+                    assert_eq!(source.specification.request.query, *query);
+                    assert_eq!(source.specification.case_sensitive, *sensitive);
+                    let relative = snippet_highlight_assert_row(
+                        &app, &output, browse, font, 0, original, spans,
+                    );
+                    let signature =
+                        snippet_highlight_galley_signature(&app, &output, browse, font, original);
+                    assert_eq!(signature["elided"], serde_json::json!(elided));
+                    assert!(
+                        !relative.is_empty(),
+                        "{name}: positive actual-paint witness required"
+                    );
+                    if !elided {
+                        if let Some(previous) = across.as_ref() {
+                            assert_eq!(&relative, previous, "same scalar shading on both surfaces");
+                        }
+                        across = Some(relative);
+                    }
+                    let cached = snippet_highlight_counts();
+                    for _ in 0..4 {
+                        let idle = result_style_frame(&mut app, size, vec![]);
+                        snippet_highlight_assert_row(&app, &idle, browse, font, 0, original, spans);
+                        assert_eq!(
+                            snippet_highlight_galley_signature(&app, &idle, browse, font, original),
+                            signature,
+                            "original Galley/font/glyph/geometry/ID/clip stays unchanged"
+                        );
+                        assert_eq!(snippet_highlight_counts(), cached);
+                        assert_eq!(result_style_editor(&app), editor);
+                        assert!(commands.try_recv().is_err());
+                    }
+                    eprintln!("SNIPPET_NATIVE_MATRIX case={name} browse={browse} size={size:?} ui_font={font} mono_font={:?} cached={cached:?}", FontId::monospace(font));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn snippet_highlight_cache_reused_across_hover_resize_grouping_and_surfaces() {
+    let size = egui::vec2(1180.0, 812.0);
+    let hits = vec![
+        SearchMatch {
+            path: "first-parent/duplicate.rs".into(),
+            line: 7,
+            text: "second first".into(),
+        },
+        SearchMatch {
+            path: "second-parent/duplicate.rs".into(),
+            line: 42,
+            text: "middle second second".into(),
+        },
+        SearchMatch {
+            path: "first-parent/duplicate.rs".into(),
+            line: 8,
+            text: "third xx second".into(),
+        },
+    ];
+    let spans = [vec![0..6], vec![7..13, 14..20], vec![9..15]];
+    let (mut app, commands, _, _hold) =
+        result_style_fixture(false, size, 13.0, hits.clone(), |_, _| {});
+    let source = app.search_state.accepted.clone();
+    let cached = snippet_highlight_counts();
+    let accounting = app.search_highlight_accounting();
+    assert_eq!(accounting.unwrap()[0], 1);
+    let addresses = (0..3)
+        .map(|index| app.search_highlight_ranges(index).as_ptr() as usize)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        app.search_state.group_rows(),
+        vec![vec![0, 2], vec![1]],
+        "deliberately non-contiguous original indices"
+    );
+    let original_editor = result_style_editor(&app);
+    for browse in [false, true, false] {
+        if browse {
+            result_style_frame(
+                &mut app,
+                size,
+                modified_key(
+                    egui::Key::F,
+                    egui::Modifiers {
+                        ctrl: true,
+                        command: true,
+                        shift: true,
+                        ..egui::Modifiers::NONE
+                    },
+                ),
+            );
+        } else if app.browse_marker_open() {
+            result_style_frame(&mut app, size, key(egui::Key::Escape));
+        }
+        for _ in 0..3 {
+            result_style_frame(&mut app, size, vec![]);
+        }
+        // Entering a native Browse context intentionally increments navigation_epoch.
+        // Do not compare a pre-entry epoch to its legitimate post-entry value.
+        let editor = result_style_editor(&app);
+        for field in [
+            "documents",
+            "active_document",
+            "back",
+            "forward",
+            "navigation_pending",
+        ] {
+            assert_eq!(
+                editor[field], original_editor[field],
+                "surface entry preserves {field}"
+            );
+        }
+        for current_size in [size, egui::vec2(780.0, 540.0), size] {
+            let mut output =
+                result_style_frame(&mut app, current_size, vec![egui::Event::PointerGone]);
+            for _ in 0..3 {
+                output = result_style_frame(&mut app, current_size, vec![]);
+            }
+            for index in [0, 2, 1] {
+                snippet_highlight_assert_row(
+                    &app,
+                    &output,
+                    browse,
+                    13.0,
+                    index,
+                    &hits[index].text,
+                    &spans[index],
+                );
+            }
+            let probe = format!("{}_group:0", snippet_highlight_prefix(browse));
+            result_style_click(&mut app, current_size, &probe);
+            let collapsed = result_style_frame(&mut app, current_size, vec![]);
+            assert!(!app.search_state.group_expanded(0));
+            snippet_highlight_assert_row(
+                &app,
+                &collapsed,
+                browse,
+                13.0,
+                1,
+                &hits[1].text,
+                &spans[1],
+            );
+            assert_eq!(app.search_state.visible_indices(), vec![1]);
+            result_style_click(&mut app, current_size, &probe);
+            result_style_frame(&mut app, current_size, vec![]);
+            assert!(app.search_state.group_expanded(0));
+            assert_eq!(app.search_state.accepted, source);
+            assert_eq!(app.search_highlight_accounting(), accounting);
+            assert_eq!(snippet_highlight_counts(), cached, "no cache preparation/build/raw scan during native painting, hover, resize, collapse or provider change");
+            assert_eq!(
+                (0..3)
+                    .map(|index| app.search_highlight_ranges(index).as_ptr() as usize)
+                    .collect::<Vec<_>>(),
+                addresses
+            );
+            assert_eq!(result_style_editor(&app), editor);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn snippet_highlight_aba_and_case_toggle_never_revive_accepted_cache() {
+    let size = egui::vec2(1180.0, 812.0);
+    for browse in [false, true] {
+        let original = "second SECOND second";
+        let hit = SearchMatch {
+            path: "parent/duplicate.rs".into(),
+            line: 7,
+            text: original.into(),
+        };
+        let (mut app, commands, output, _hold) =
+            result_style_fixture(browse, size, 13.0, vec![hit.clone()], |_, _| {});
+        app.case_search = Some(cedar_protocol::CaseSearchDescriptor::V1);
+        snippet_highlight_assert_row(&app, &output, browse, 13.0, 0, original, &[0..6, 14..20]);
+        let editor = result_style_editor(&app);
+        let source = app.search_state.accepted.clone();
+        let cached = snippet_highlight_counts();
+        let accounting = app.search_highlight_accounting();
+        for query in ["replacement", "second"] {
+            snippet_highlight_replace(&mut app, browse, size, query);
+            snippet_highlight_retired(&mut app, &commands, size, cached, &editor);
+            assert_eq!(app.search_state.accepted, source);
+            assert_eq!(app.search_highlight_accounting(), accounting);
+        }
+        for sensitive in [false, true, false] {
+            result_style_click(
+                &mut app,
+                size,
+                &format!("{}_match_case", snippet_highlight_prefix(browse)),
+            );
+            assert_eq!(app.search_match_case, sensitive);
+            snippet_highlight_retired(&mut app, &commands, size, cached, &editor);
+            assert_eq!(app.search_state.accepted, source);
+        }
+        let command = snippet_highlight_submit(&mut app, &commands, browse, size);
+        let output =
+            snippet_highlight_accept(&mut app, &commands, browse, size, command, vec![hit]);
+        assert!(
+            !app.search_state
+                .accepted
+                .as_ref()
+                .unwrap()
+                .specification
+                .case_sensitive
+        );
+        assert_ne!(app.search_state.accepted, source);
+        snippet_highlight_assert_row(
+            &app,
+            &output,
+            browse,
+            13.0,
+            0,
+            original,
+            &[0..6, 7..13, 14..20],
+        );
+        assert_eq!(result_style_editor(&app), editor);
+    }
+}
+
+#[test]
+fn snippet_highlight_pending_failed_invalid_and_retired_responses_do_not_prepare_or_revive() {
+    let size = egui::vec2(1180.0, 812.0);
+    for browse in [false, true] {
+        for failure in 0..3 {
+            let hit = SearchMatch {
+                path: "parent/duplicate.rs".into(),
+                line: 7,
+                text: "second retained".into(),
+            };
+            let (mut app, commands, _, _hold) =
+                result_style_fixture(browse, size, 13.0, vec![hit.clone()], |_, _| {});
+            let editor = result_style_editor(&app);
+            let source = app.search_state.accepted.clone();
+            let cached = snippet_highlight_counts();
+            let pending = snippet_highlight_submit(&mut app, &commands, browse, size);
+            snippet_highlight_retired(&mut app, &commands, size, cached, &editor);
+            let response = match failure {
+                0 => Err("controlled current failure".into()),
+                1 => Ok(Payload::GitStatus {
+                    text: "wrong payload".into(),
+                }),
+                _ => Ok(Payload::Matches {
+                    matches: vec![hit.clone(); MAX_ROWS + 1],
+                    truncated: false,
+                }),
+            };
+            snippet_highlight_queue(&app, app.generation, pending.id, response, true);
+            snippet_highlight_retired(&mut app, &commands, size, cached, &editor);
+            assert!(app.search_state.pending.is_none());
+            assert!(app.error.is_some());
+            assert_eq!(app.search_state.accepted, source);
+            // A physically outstanding request is retired by native A -> B -> A.
+            let late = snippet_highlight_submit(&mut app, &commands, browse, size);
+            snippet_highlight_replace(&mut app, browse, size, "replacement");
+            snippet_highlight_replace(&mut app, browse, size, "second");
+            snippet_highlight_queue(
+                &app,
+                app.generation,
+                late.id,
+                Ok(snippet_highlight_payload(&late, vec![hit.clone()])),
+                true,
+            );
+            snippet_highlight_retired(&mut app, &commands, size, cached, &editor);
+            assert_eq!(app.search_state.accepted, source);
+            let fresh_hit = SearchMatch {
+                text: "new second second".into(),
+                ..hit
+            };
+            let fresh = snippet_highlight_submit(&mut app, &commands, browse, size);
+            let output = snippet_highlight_accept(
+                &mut app,
+                &commands,
+                browse,
+                size,
+                fresh,
+                vec![fresh_hit.clone()],
+            );
+            assert_ne!(app.search_state.accepted, source);
+            snippet_highlight_assert_row(
+                &app,
+                &output,
+                browse,
+                13.0,
+                0,
+                &fresh_hit.text,
+                &[4..10, 11..17],
+            );
+            assert_eq!(result_style_editor(&app), editor);
+        }
+    }
+}
+
+#[test]
+fn snippet_highlight_same_workspace_reconnect_and_old_generation_cannot_revive() {
+    let size = egui::vec2(1180.0, 812.0);
+    for browse in [false, true] {
+        let hit = SearchMatch {
+            path: "parent/duplicate.rs".into(),
+            line: 7,
+            text: "second retained".into(),
+        };
+        let (mut app, commands, _, _hold) =
+            result_style_fixture(browse, size, 13.0, vec![hit.clone()], |_, _| {});
+        let editor = result_style_editor(&app);
+        let cached = snippet_highlight_counts();
+        let source = app.search_state.accepted.clone();
+        let old_generation = app.generation;
+        let pending = snippet_highlight_submit(&mut app, &commands, browse, size);
+        // Use the same real disconnect/Hello transition as case_search_tests.
+        app.disconnected("controlled reconnect".into());
+        app.generation += 1;
+        let (worker, reconnected) = Worker::recording();
+        app.worker = Some(worker);
+        app.state = ConnectionState::Connecting;
+        app.connecting_form = app.active_form.clone();
+        snippet_highlight_queue(
+            &app,
+            app.generation,
+            0,
+            Ok(Payload::Hello {
+                protocol: cedar_protocol::PROTOCOL_VERSION,
+                root: "/workspace".into(),
+                agent: Some(agent_support::full_test_agent()),
+                file_discovery: None,
+                scoped_search: None,
+                case_search: None,
+            }),
+            true,
+        );
+        result_style_frame(&mut app, size, vec![]);
+        assert!(app.ready());
+        let list = reconnected
+            .try_recv()
+            .expect("accepted Hello requests its ordinary List");
+        assert!(matches!(list.op, Operation::List { .. }));
+        snippet_highlight_queue(
+            &app,
+            app.generation,
+            list.id,
+            Ok(Payload::Entries { entries: vec![] }),
+            true,
+        );
+        for _ in 0..3 {
+            result_style_frame(&mut app, size, vec![]);
+        }
+        assert_eq!(
+            result_style_editor(&app)["documents"],
+            editor["documents"],
+            "reconnect retains exact dirty text, selection affinity, Undo and Redo"
+        );
+        assert_eq!(app.search_state.accepted, source);
+        if browse {
+            result_style_frame(
+                &mut app,
+                size,
+                modified_key(
+                    egui::Key::F,
+                    egui::Modifiers {
+                        ctrl: true,
+                        command: true,
+                        shift: true,
+                        ..egui::Modifiers::NONE
+                    },
+                ),
+            );
+            for _ in 0..3 {
+                result_style_frame(&mut app, size, vec![]);
+            }
+        }
+        let reentered = result_style_editor(&app);
+        snippet_highlight_retired(&mut app, &reconnected, size, cached, &reentered);
+        snippet_highlight_queue(
+            &app,
+            old_generation,
+            pending.id,
+            Ok(snippet_highlight_payload(&pending, vec![hit.clone()])),
+            true,
+        );
+        snippet_highlight_retired(&mut app, &reconnected, size, cached, &reentered);
+        assert_eq!(app.search_state.accepted, source);
+        let fresh = snippet_highlight_submit(&mut app, &reconnected, browse, size);
+        let output = snippet_highlight_accept(
+            &mut app,
+            &reconnected,
+            browse,
+            size,
+            fresh,
+            vec![hit.clone()],
+        );
+        assert_eq!(
+            app.search_state.accepted.as_ref().unwrap().generation,
+            app.generation
+        );
+        snippet_highlight_assert_row(&app, &output, browse, 13.0, 0, &hit.text, &[0..6]);
+        assert_eq!(result_style_editor(&app), reentered);
+    }
+}
