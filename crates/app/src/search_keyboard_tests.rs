@@ -3657,10 +3657,23 @@ fn result_style_click(app: &mut CedarApp, size: egui::Vec2, probe: &str) -> egui
         "{probe}: hover preserves geometry"
     );
     assert_eq!(recorded_response(app, probe).id, id);
+    let hover_areas = app.editor_ctx.memory(|memory| {
+        memory
+            .layer_ids()
+            .map(|layer| (layer, memory.area_rect(layer.id)))
+            .collect::<Vec<_>>()
+    });
+    let hover_geometry = app.editor_ctx.data(|data| {
+        data.get_temp::<(egui::Rect, egui::Vec2, f32, f32, f32, f32, f32)>(egui::Id::new((
+            "text_result_tooltip_geometry_probe",
+            id,
+        )))
+    });
     result_style_frame(app, size, pointer(pos, true));
     let down = recorded_response(app, probe);
     if enabled && !down.is_pointer_button_down_on() {
         let ctx = &app.editor_ctx;
+        eprintln!("RESULT_STYLE_FIRST_HOVER areas={hover_areas:?} geometry={hover_geometry:?}");
         eprintln!(
             "RESULT_STYLE_POINTER probe={probe} pos={pos:?} rect={rect:?} clip={clip:?} id={id:?} tooltip_id={:?} response_layer={:?} pointer_layer={:?} default_area_size={:?} areas={:?}",
             id.with(0_usize), down.layer_id, ctx.layer_id_at(pos),
