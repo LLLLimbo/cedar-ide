@@ -197,11 +197,14 @@ def validate_origin(origin, package_ids):
 
 def _validate_review(review):
     keys(review, ('schema_version', 'kind', 'lock_sha256', 'source_pins', 'packages', 'materials',
-                  'discovery', 'scopes', 'policy_issues', 'release_hold', 'notices_sha256'), 'review')
+                  'discovery', 'scopes', 'policy_issues', 'release_hold', 'notices_sha256',
+                  'legacy_notices_sha256'), 'review')
     require(type(review['schema_version']) is int and review['schema_version'] == 1
             and review['kind'] == 'cedar-license-material-review', 'Unsupported review schema')
     hash_value(review['lock_sha256'], 'Cargo.lock')
     hash_value(review['notices_sha256'], 'notices')
+    if review['legacy_notices_sha256'] is not None:
+        hash_value(review['legacy_notices_sha256'], 'pinned legacy notices')
     pins = review['source_pins']
     require(type(pins) is list and 1 <= len(pins) <= 512, 'Invalid source pin count')
     for pin in pins:
@@ -400,10 +403,19 @@ def distribution_status(review, scope_id):
     return {'scope': scope_id, 'distribution_ready': not reasons, 'blocking_reasons': sorted(reasons)}
 
 
+def notice_status_text(review):
+    statuses = '; '.join(scope + '=' + str(distribution_status(review, scope)['distribution_ready']).lower()
+                         for scope in SCOPES)
+    return ('Engineering material inventory. Current scope readiness: ' + statuses + '.\n'
+            'Scope-specific blocking reasons and any release hold are recorded in\n'
+            'LICENSE-MATERIALS-README.md and LICENSE-MATERIAL-COVERAGE.json.\n'
+            'This inventory is not a legal compliance or distribution-approval conclusion.\n\n')
+
+
 def coverage_bytes(review, review_raw):
     return canonical({'schema_version': 1, 'kind': 'cedar-license-material-coverage',
         'review_sha256': digest(review_raw), 'lock_sha256': review['lock_sha256'],
-        'source_pins': review['source_pins'],
+        'source_pins': review['source_pins'], 'legacy_notices_sha256': review['legacy_notices_sha256'],
         'material_inventory': material_inventory(review),
         'packages': [{'id': p['id'], 'state': p['state'],
                       'material_paths': [binding['material'] for binding in p['bindings']],

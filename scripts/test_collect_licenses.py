@@ -618,7 +618,7 @@ class MaterialReviewContractTests(unittest.TestCase):
                                  'reason': None} for path, member, data in outputs],
                   'scopes': scopes, 'policy_issues': [],
                   'release_hold': {'active': True, 'reason': 'Independent policy review remains pending'},
-                  'notices_sha256': materials.digest(notices)}
+                  'legacy_notices_sha256': None, 'notices_sha256': materials.digest(notices)}
         raw = materials.canonical(review)
         materials.validate_review(review)
         payload = {path: data for path, _, data in outputs}
@@ -787,6 +787,7 @@ class MaterialReviewContractTests(unittest.TestCase):
         review = copy.deepcopy(original)
         review['release_hold']['active'] = False
         self.assertTrue(materials.distribution_status(review, 'linux-agent')['distribution_ready'])
+        self.assertIn('linux-agent=true', materials.notice_status_text(review))
         optional = review['scopes'][0]['packages'][1]
         optional.update(role='normal', witness=['optional@1.0.0'], reason=None)
         status = materials.distribution_status(review, 'linux-agent')
