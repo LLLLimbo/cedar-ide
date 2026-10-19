@@ -4115,3 +4115,42 @@ fn search_result_style_bottom_native_navigation_and_undo_redo_matrix() {
         }
     }
 }
+
+#[test]
+fn search_result_style_tooltip_area_height_guard_restores_all_exit_paths() {
+    let ctx = egui::Context::default();
+    ctx.set_theme(egui::Theme::Dark);
+    let original = ctx.style();
+    let light = ctx.style_of(egui::Theme::Light);
+    let unrelated = egui::Context::default();
+    let unrelated_style = unrelated.style();
+    let value = crate::browse::with_text_tooltip_area_height(&ctx, 120.0, || {
+        let mut expected = (*original).clone();
+        expected.spacing.default_area_size.y = 120.0;
+        assert_eq!(*ctx.style(), expected);
+        assert_eq!(*ctx.style_of(egui::Theme::Light), *light);
+        assert_eq!(*unrelated.style(), *unrelated_style);
+        crate::browse::with_text_tooltip_area_height(&ctx, 64.0, || {
+            assert_eq!(ctx.style().spacing.default_area_size.y, 64.0);
+        });
+        assert_eq!(*ctx.style(), expected);
+        7
+    });
+    assert_eq!(value, 7);
+    assert_eq!(*ctx.style(), *original);
+    let early = crate::browse::with_text_tooltip_area_height(&ctx, 80.0, || {
+        None::<u8>?;
+        Some(9)
+    });
+    assert_eq!(early, None);
+    assert_eq!(*ctx.style(), *original);
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::browse::with_text_tooltip_area_height(&ctx, 40.0, || {
+            panic!("intentional tooltip guard restoration witness");
+        });
+    }));
+    assert!(panic.is_err());
+    assert_eq!(*ctx.style(), *original);
+    assert_eq!(*ctx.style_of(egui::Theme::Light), *light);
+    assert_eq!(*unrelated.style(), *unrelated_style);
+}

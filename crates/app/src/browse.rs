@@ -4554,6 +4554,39 @@ impl TextResultRow {
     }
 }
 
+// Response's tooltip constructor does not expose Area::default_height. Bound
+// its first sizing rectangle only for this synchronous construction, then
+// restore the one context-style field even during unwinding or nested calls.
+pub(super) fn with_text_tooltip_area_height<R>(
+    ctx: &egui::Context,
+    height: f32,
+    show: impl FnOnce() -> R,
+) -> R {
+    struct Restore {
+        ctx: egui::Context,
+        theme: egui::Theme,
+        height: f32,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            self.ctx.style_mut_of(self.theme, |style| {
+                style.spacing.default_area_size.y = self.height;
+            });
+        }
+    }
+    let restore = Restore {
+        ctx: ctx.clone(),
+        theme: ctx.theme(),
+        height: ctx.style().spacing.default_area_size.y,
+    };
+    ctx.style_mut_of(restore.theme, |style| {
+        style.spacing.default_area_size.y = height;
+    });
+    let result = show();
+    drop(restore);
+    result
+}
+
 // Keep the original native hover lifecycle and row anchor. A large tooltip
 // must fit the side egui will choose using its cached (initially 64x32) size;
 // merely limiting it to the larger side can still clamp it over the origin.
@@ -4614,9 +4647,12 @@ pub(super) fn text_result_tooltip(response: egui::Response, text: &str) -> egui:
         #[cfg(not(test))]
         let _ = scroll;
     };
-    response
-        .on_hover_ui(contents)
-        .on_disabled_hover_ui(contents)
+    let ctx = ctx.clone();
+    with_text_tooltip_area_height(&ctx, height + margin.y + 2.0, || {
+        response
+            .on_hover_ui(contents)
+            .on_disabled_hover_ui(contents)
+    })
 }
 
 // Text rows keep their accepted index IDs. All painted pieces belong to one
