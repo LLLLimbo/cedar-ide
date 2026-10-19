@@ -6049,6 +6049,11 @@ fn snippet_highlight_current_paint_response(
         .expect("current shared row paint must record its real response")
     });
     assert_eq!(observation.3, recorded_rect(app, probe));
+    assert_eq!(
+        observation.4.checked_add(1),
+        Some(app.editor_ctx.cumulative_pass_nr()),
+        "response observation belongs to the latest completed paint pass"
+    );
     assert!(
         !observation.2,
         "first actual visible row is not a sizing pass"
