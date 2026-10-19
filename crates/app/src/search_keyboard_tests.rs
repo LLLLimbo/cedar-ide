@@ -3180,29 +3180,22 @@ fn result_style_fixture(
     size: egui::Vec2,
     font: f32,
     matches: Vec<SearchMatch>,
-) -> (CedarApp, Receiver<Command>, egui::FullOutput) {
+) -> (CedarApp, Receiver<Command>, egui::FullOutput, impl FnOnce()) {
     let (mut app, commands) = app(0);
     app.editor_ctx.set_fonts(system_fonts::base_fonts());
+    // Keep the controlled sender alive for the complete measured journey.
+    // Unicode bytes exercise layout, never an OS probe or CJK coverage claim.
+    let (fonts, hold_font_probe) = system_fonts::SystemFonts::pending_failure_for_test();
+    app.system_fonts = fonts;
+    app.font_size = font;
     app.editor_ctx.style_mut(|style| {
         for text in [egui::TextStyle::Body, egui::TextStyle::Button] {
             style.text_styles.insert(text, FontId::proportional(font));
         }
         style
             .text_styles
-            .insert(egui::TextStyle::Monospace, FontId::monospace(font + 1.0));
+            .insert(egui::TextStyle::Monospace, FontId::monospace(font));
     });
-    app.search();
-    let search = commands.try_recv().expect("explicit fixture search");
-    assert!(matches!(search.op, Operation::Search { .. }));
-    reply(
-        &mut app,
-        search.id,
-        Ok(Payload::Matches {
-            matches,
-            truncated: false,
-        }),
-        true,
-    );
     if browse {
         result_style_frame(
             &mut app,
@@ -3217,18 +3210,49 @@ fn result_style_fixture(
                 },
             ),
         );
+        for _ in 0..3 {
+            result_style_frame(&mut app, size, vec![]);
+        }
+        assert_eq!(app.browse.query(), "second");
+        assert_eq!(
+            focused(&app),
+            Some(recorded_response(&app, "browse_query").id)
+        );
+        assert!(commands.try_recv().is_err(), "entry cannot submit a search");
+        result_style_frame(&mut app, size, key(egui::Key::Enter));
+    } else {
+        app.search();
     }
+    let search = commands.try_recv().expect("explicit fixture search");
+    assert!(matches!(search.op, Operation::Search { .. }));
+    assert!(commands.try_recv().is_err(), "one explicit Search only");
+    reply(
+        &mut app,
+        search.id,
+        Ok(Payload::Matches {
+            matches,
+            truncated: false,
+        }),
+        true,
+    );
     for _ in 0..3 {
         result_style_frame(&mut app, size, vec![]);
     }
     let output = result_style_frame(&mut app, size, vec![]);
-    assert!(app.search_rows_active());
-    assert!(app.system_fonts.needs_probe(), "no optional font I/O");
+    assert!(
+        app.search_rows_active(),
+        "accepted rows must be current on this surface"
+    );
+    assert_eq!(
+        app.search_state.accepted.as_ref().unwrap().request,
+        search.id
+    );
+    assert_eq!(app.system_fonts.probe_state_for_test(), "loading");
     assert!(
         commands.try_recv().is_err(),
         "painting must not Search or Read"
     );
-    (app, commands, output)
+    (app, commands, output, hold_font_probe)
 }
 
 fn result_style_texts(output: &egui::FullOutput) -> Vec<(&egui::epaint::TextShape, egui::Rect)> {
@@ -3298,7 +3322,7 @@ fn result_style_draw<'a>(
 fn result_style_baseline(browse: bool) {
     let path = "first-parent/duplicate.rs";
     let snippet = "  second 中文😀K raw  ";
-    let (app, commands, output) = result_style_fixture(
+    let (app, commands, output, _hold_font_probe) = result_style_fixture(
         browse,
         egui::vec2(1180.0, 812.0),
         13.0,
@@ -3316,7 +3340,7 @@ fn result_style_baseline(browse: bool) {
         &output,
         &row,
         snippet.trim(),
-        FontId::monospace(14.0),
+        FontId::monospace(13.0),
         chrome::TEXT,
     );
     result_style_draw(
@@ -3324,7 +3348,7 @@ fn result_style_baseline(browse: bool) {
         &output,
         &row,
         "42",
-        FontId::monospace(14.0),
+        FontId::monospace(13.0),
         chrome::MUTED,
     );
     result_style_draw(
