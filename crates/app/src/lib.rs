@@ -14,7 +14,9 @@ mod build_problem_process_tests;
 mod build_problem_ui_tests;
 mod build_problems;
 #[cfg(test)]
-mod case_search_stage1_tests;
+mod case_search_open_tests;
+#[cfg(test)]
+mod case_search_tests;
 mod chrome;
 mod close_transport;
 #[cfg(test)]
@@ -306,6 +308,15 @@ impl ConnectForm {
     }
 }
 
+// Project Text activation remains tied to one accepted snapshot and selected
+// row. Its authority can retire while the physical Read remains drainable.
+struct SearchOpenSource {
+    snapshot: search_keyboard::Source,
+    index: usize,
+    text_identity: egui::Id,
+    active: bool,
+}
+
 enum Job {
     BrowseFindFiles {
         ticket: browse::DiscoveryTicket,
@@ -323,6 +334,12 @@ enum Job {
         path: String,
         line: Option<usize>,
         navigation: u64,
+    },
+    SearchOpen {
+        path: String,
+        line: Option<usize>,
+        navigation: u64,
+        source: SearchOpenSource,
     },
     LanguageOpen {
         path: String,
@@ -895,6 +912,111 @@ impl CedarApp {
         self.open_with_build_source(path, line, None);
     }
 
+    pub(crate) fn open_search_result(&mut self, index: usize) {
+        if !self.search_rows_active()
+            || self.search_state.selected_index() != Some(index)
+            || !self.search_state.visible(index)
+        {
+            return;
+        }
+        let (Some(snapshot), Some(row)) = (
+            self.search_state.accepted.as_ref(),
+            self.search_results.get(index),
+        ) else {
+            return;
+        };
+        let source = SearchOpenSource {
+            snapshot: snapshot.clone(),
+            index,
+            text_identity: egui::Id::new(&row.text),
+            active: true,
+        };
+        let path = row.path.clone();
+        let line = Some(row.line);
+        // Preserve ordinary dirty-tab reuse, history, and same-path physical
+        // Read reuse. Only a pending Open gains this additional authority.
+        self.open(path.clone(), line);
+        let navigation = self.navigation_epoch;
+        if let Some(job) = self.pending.values_mut().find(|job| {
+            matches!(job, Job::Open { path: pending, line: hint, navigation: epoch }
+                if pending == &path && *hint == line && *epoch == navigation)
+        }) {
+            *job = Job::SearchOpen {
+                path,
+                line,
+                navigation,
+                source,
+            };
+        }
+    }
+
+    fn search_open_source_current(
+        &self,
+        source: &SearchOpenSource,
+        path: &str,
+        line: Option<usize>,
+    ) -> bool {
+        source.active
+            && self.search_rows_active()
+            && self.search_state.selected_index() == Some(source.index)
+            && self.search_state.accepted.as_ref() == Some(&source.snapshot)
+            && self.search_results.get(source.index).is_some_and(|row| {
+                row.path == path
+                    && Some(row.line) == line
+                    && egui::Id::new(&row.text) == source.text_identity
+            })
+    }
+
+    pub(crate) fn retire_search_result_opens(&mut self) {
+        let mut retired = Vec::new();
+        for job in self.pending.values_mut() {
+            if let Job::SearchOpen {
+                source, navigation, ..
+            } = job
+            {
+                if source.active {
+                    source.active = false;
+                    retired.push(*navigation);
+                }
+            }
+        }
+        for navigation in retired {
+            // A newer ordinary Open may already own a different history ticket.
+            self.history_cancel_ticket(navigation);
+        }
+    }
+
+    fn cache_retired_search_open(
+        &mut self,
+        request: u64,
+        path: &str,
+        result: Result<Payload, String>,
+    ) {
+        let Ok(Payload::File {
+            path: returned,
+            text,
+            revision,
+        }) = result
+        else {
+            return;
+        };
+        if returned != path {
+            return;
+        }
+        // A matching completed Read is disk evidence even after its activation
+        // retires, and even if an existing draft or full cache prevents insertion.
+        self.observe_maven_pom_acknowledgement(request, &returned, &revision);
+        if self.documents.iter().any(|doc| doc.path == path) || self.documents.len() >= 32 {
+            return;
+        }
+        let Ok(id) = self.allocate_document_id() else {
+            return;
+        };
+        // Keep safe inactive caching without caret, focus, history, or error changes.
+        self.documents
+            .push(Document::new(id, returned, text, revision));
+    }
+
     fn open_with_build_source(
         &mut self,
         path: String,
@@ -961,6 +1083,7 @@ impl CedarApp {
         }
         let pending = self.pending.iter().find_map(|(id, job)| match job {
             Job::Open { path: pending, .. }
+            | Job::SearchOpen { path: pending, .. }
             | Job::LanguageOpen { path: pending, .. }
             | Job::BuildProblemOpen { path: pending, .. }
             | Job::FileStructureOpen { path: pending, .. }
@@ -1093,6 +1216,14 @@ impl CedarApp {
                 if let WorkerEvent::Response(reply) = &event {
                     let navigation = self.pending.get(&reply.id).and_then(|job| match job {
                         Job::Open { navigation, .. } => Some(*navigation),
+                        Job::SearchOpen {
+                            path,
+                            line,
+                            navigation,
+                            source,
+                        } if self.search_open_source_current(source, path, *line) => {
+                            Some(*navigation)
+                        }
                         Job::LanguageOpen {
                             navigation,
                             session,
@@ -1415,6 +1546,35 @@ impl CedarApp {
             }
             return;
         }
+        let job = if let Job::SearchOpen {
+            path,
+            line,
+            navigation,
+            source,
+        } = job
+        {
+            // Retired UI authority cannot conceal a current transport failure.
+            if !event.connected {
+                self.disconnected(event.result.err().unwrap_or_else(|| {
+                    "The connection closed while opening a search result. Your drafts are retained".into()
+                }));
+                return;
+            }
+            if navigation != self.navigation_epoch
+                || !self.search_open_source_current(&source, &path, line)
+            {
+                self.history_cancel_ticket(navigation);
+                self.cache_retired_search_open(event.id, &path, event.result);
+                return;
+            }
+            Job::Open {
+                path,
+                line,
+                navigation,
+            }
+        } else {
+            job
+        };
         let job = match job {
             Job::List { path } => {
                 self.explorer_apply_list(event, path, None);

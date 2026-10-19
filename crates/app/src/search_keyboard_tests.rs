@@ -169,17 +169,32 @@ fn id(app: &CedarApp, index: usize) -> egui::Id {
 }
 
 fn tab_from_search_query_to_submit(app: &mut CedarApp) {
-    assert_eq!(focused(app), Some(recorded_response(app, "search_query").id));
-    for probe in ["search_scope", "search_masks", "search_match_case", "search_submit"] {
+    assert_eq!(
+        focused(app),
+        Some(recorded_response(app, "search_query").id)
+    );
+    for probe in [
+        "search_scope",
+        "search_masks",
+        "search_match_case",
+        "search_submit",
+    ] {
         let response = recorded_response(app, probe);
         assert!(response.enabled() && response.sense.is_focusable());
         frame(app, key(egui::Key::Tab));
-        assert_eq!(focused(app), Some(response.id), "native Tab must visit {probe}");
+        assert_eq!(
+            focused(app),
+            Some(response.id),
+            "native Tab must visit {probe}"
+        );
     }
 }
 
 fn tab_from_search_submit_to_first_row(app: &mut CedarApp) {
-    assert_eq!(focused(app), Some(recorded_response(app, "search_submit").id));
+    assert_eq!(
+        focused(app),
+        Some(recorded_response(app, "search_submit").id)
+    );
     let area_id = recorded_scroll_id(app).with("area");
     if app
         .editor_ctx
@@ -2835,7 +2850,10 @@ fn search_keyboard_row_continuity_same_row_double_opens_once_across_passes() {
         }
         let open = commands.try_recv().unwrap();
         assert!(matches!(&open.op, Operation::Read { path } if path == "file-2.txt"));
-        assert!(matches!(app.pending.get(&open.id), Some(Job::SearchOpen { .. })));
+        assert!(matches!(
+            app.pending.get(&open.id),
+            Some(Job::SearchOpen { .. })
+        ));
         assert!(commands.try_recv().is_err());
         reply(
             &mut app,
@@ -3129,4 +3147,16 @@ fn search_keyboard_row_continuity_foreign_focus_during_owned_press_breaks_pair()
     let row = continuity_gate(&release, 2);
     assert!(row.double && !row.triple, "{release:?}");
     assert_continuity_quiet(&app, &commands, 2, 0);
+}
+
+// Observe the existing production row gate, including its native classifier.
+pub(super) fn case_row_continuity_frame(
+    app: &mut CedarApp,
+    events: Vec<egui::Event>,
+    discard: bool,
+) -> Option<(bool, bool)> {
+    continuity_frame_with_discard(app, events, 0.01, discard)
+        .into_iter()
+        .find(|row| row.index == 2 && !row.sizing && row.clicked)
+        .map(|row| (row.double, row.triple))
 }

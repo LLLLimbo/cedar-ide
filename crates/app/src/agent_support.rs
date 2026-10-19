@@ -7,7 +7,10 @@ use cedar_protocol::{
 
 impl CedarApp {
     pub(super) fn backend_case_search_supported(&self) -> bool {
-        self.ready() && self.case_search.is_some_and(|descriptor| descriptor.supported())
+        self.ready()
+            && self
+                .case_search
+                .is_some_and(|descriptor| descriptor.supported())
     }
 
     pub(super) fn backend_scoped_search_supported(&self) -> bool {
@@ -67,7 +70,9 @@ impl CedarApp {
     }
     pub(super) fn operation_problem(&self, operation: &Operation) -> Option<String> {
         if let Operation::SearchCase { request } = operation {
-            if !self.backend_case_search_supported() { return Some(search_keyboard::CASE_UNAVAILABLE.into()); }
+            if !self.backend_case_search_supported() {
+                return Some(search_keyboard::CASE_UNAVAILABLE.into());
+            }
             return request.validate().err().map(|error| error.to_string());
         }
         if let Operation::SearchIn { request } = operation {

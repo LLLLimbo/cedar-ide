@@ -3266,7 +3266,12 @@ fn browse_retained_native_tab_and_geometry_at_standard_and_narrow_sizes() {
                 focused(&app),
                 Some(recorded_response(&app, "browse_query").id)
             );
-            for probe in ["browse_text_scope", "browse_masks", "browse_match_case", "browse_submit"] {
+            for probe in [
+                "browse_text_scope",
+                "browse_masks",
+                "browse_match_case",
+                "browse_submit",
+            ] {
                 let response = recorded_response(&app, probe);
                 assert!(response.enabled() && response.sense.is_focusable());
                 frame_at_size(&mut app, size, key(egui::Key::Tab));
@@ -8996,4 +9001,16 @@ fn text_compact_text_tab_capability_disabled_widget_info_matches_native_state() 
         egui::output::OutputEvent::Clicked(info)
             if info.label.as_deref().is_some_and(|label| label.contains("Find in Files")))));
     assert!(commands.try_recv().is_err());
+}
+
+// Expose only the native gate observations for the shared case-search journey.
+pub(super) fn case_row_continuity_frame(
+    app: &mut CedarApp,
+    events: Vec<egui::Event>,
+    discard: bool,
+) -> Option<(bool, bool)> {
+    continuity_frame(app, 0.01, events, discard, Some("browse_row:2"))
+        .into_iter()
+        .find(|row| row.clicked)
+        .map(|row| (row.double, row.triple))
 }

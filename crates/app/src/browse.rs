@@ -361,6 +361,8 @@ struct Input {
     presented: Vec<Presented>,
     held: HashSet<egui::Key>,
     claimed: HashSet<egui::Key>,
+    // Checkbox key ownership survives view retirement until physical release.
+    case_claimed: HashSet<egui::Key>,
     composing: bool,
     files_ime_commit: bool,
     files_ime_cancel: bool,
@@ -839,9 +841,10 @@ impl CedarApp {
                     }
                 } else {
                     self.browse.message = self.search_filter_explanation().or_else(|| {
-                        Some(
-                            format!("Enter a {} literal query, then press Enter to search.", search_keyboard::case_mode(self.search_match_case).to_lowercase()),
-                        )
+                        Some(format!(
+                            "Enter a {} literal query, then press Enter to search.",
+                            search_keyboard::case_mode(self.search_match_case).to_lowercase()
+                        ))
                     });
                     self.restore_browse_text();
                 }
@@ -2024,6 +2027,7 @@ impl CedarApp {
             input.retire();
             input.held.clear();
             input.claimed.clear();
+            input.case_claimed.clear();
             input.composing = false;
             return;
         }
@@ -2142,7 +2146,17 @@ impl CedarApp {
             }
         }
         let mut space_claimed = false;
+        let mut composing = was_composing;
         for (index, event) in raw.events.iter().enumerate() {
+            match event {
+                egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_)) => {
+                    composing = true
+                }
+                egui::Event::Ime(egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled) => {
+                    composing = false
+                }
+                _ => {}
+            }
             let egui::Event::Key {
                 key,
                 physical_key,
@@ -2179,6 +2193,7 @@ impl CedarApp {
             if !pressed {
                 input.held.remove(key);
                 input.claimed.remove(key);
+                input.case_claimed.remove(key);
                 consumed[index] |= claimed && !global;
                 continue;
             }
@@ -2193,6 +2208,26 @@ impl CedarApp {
                     input.claimed.insert(*key);
                 }
                 consumed[index] |= !global;
+                let case_owns = owns
+                    && source
+                        .as_ref()
+                        .is_some_and(|item| item.token.target == Target::MatchCase);
+                if case_owns && (fresh || claimed) {
+                    input.case_claimed.insert(*key);
+                }
+                // Consume only this owned Space's native companion. A release,
+                // another key, IME event, or unrelated text ends adjacency; a
+                // pointer move can legitimately occur between the native pair.
+                if *key == egui::Key::Space && input.case_claimed.contains(key) && !composing {
+                    for next in index + 1..raw.events.len() {
+                        match &raw.events[next] {
+                            egui::Event::PointerMoved(_) => continue,
+                            egui::Event::Text(text) if text == " " => consumed[next] = true,
+                            _ => {}
+                        }
+                        break;
+                    }
+                }
                 space_claimed |= *key == egui::Key::Space;
                 if fresh && !repeat && fresh_batch && clean == Some((*key, *modifiers)) {
                     if let Some(provider) = shortcut {
@@ -2642,7 +2677,10 @@ impl CedarApp {
             })
             .inner;
         let response = if target == Target::Text {
-            response.on_hover_text(format!("Project Text: explicitly submitted, {} literal disk search", search_keyboard::case_mode(self.search_match_case).to_lowercase()))
+            response.on_hover_text(format!(
+                "Project Text: explicitly submitted, {} literal disk search",
+                search_keyboard::case_mode(self.search_match_case).to_lowercase()
+            ))
         } else {
             response
         };
@@ -2708,7 +2746,9 @@ impl CedarApp {
             text_rect,
             Target::Text,
             "Find in Files",
-            self.backend_supports("search") || self.backend_scoped_search_supported() || self.backend_case_search_supported(),
+            self.backend_supports("search")
+                || self.backend_scoped_search_supported()
+                || self.backend_case_search_supported(),
         ) {
             actions.switch = Some(Provider::ProjectText);
         }
@@ -2730,8 +2770,10 @@ impl CedarApp {
         // from results or preview. Creation order below controls native Tab.
         let case_size = search_keyboard::match_case_size(ui);
         let case_rect = egui::Rect::from_min_size(
-            egui::pos2(find_rect.left() - gap - case_size.x,
-                query_band.center().y - case_size.y * 0.5),
+            egui::pos2(
+                find_rect.left() - gap - case_size.x,
+                query_band.center().y - case_size.y * 0.5,
+            ),
             case_size,
         );
         let query_rect = egui::Rect::from_min_max(
@@ -2779,7 +2821,8 @@ impl CedarApp {
         }
         self.browse_response(&filters_ui, Target::TextScope, &scope);
         self.browse_response(&filters_ui, Target::Masks, &masks);
-        let mut match_case = search_keyboard::match_case_response(ui, case_rect, self.browse.id(&Target::MatchCase));
+        let mut match_case =
+            search_keyboard::match_case_response(ui, case_rect, self.browse.id(&Target::MatchCase));
         if self.browse_response(ui, Target::MatchCase, &match_case) {
             self.search_match_case = !self.search_match_case;
             self.browse_query_changed();
@@ -2821,7 +2864,16 @@ impl CedarApp {
             )
             .on_hover_text(format!(
                 "Project Text · {} literal disk search. Workspace: {}",
-                search_keyboard::case_mode(self.search_state.accepted.as_ref().map_or(self.search_match_case, |source| source.specification.case_sensitive)).to_lowercase(), self.root
+                search_keyboard::case_mode(
+                    self.search_state
+                        .accepted
+                        .as_ref()
+                        .map_or(self.search_match_case, |source| source
+                            .specification
+                            .case_sensitive)
+                )
+                .to_lowercase(),
+                self.root
             ));
         } else {
             let workspace = self
@@ -2861,7 +2913,10 @@ impl CedarApp {
                 .clone()
                 .unwrap_or_else(|| "Enter literal text, then press Enter or Find".into())
         } else {
-            format!("{} · Literal · Disk search", search_keyboard::case_mode(self.search_match_case))
+            format!(
+                "{} · Literal · Disk search",
+                search_keyboard::case_mode(self.search_match_case)
+            )
         };
         // Keep the current conclusion outside the scrolling details. A wheel
         // gesture may still have smooth input after a query/reply changes; its
@@ -3305,7 +3360,9 @@ impl CedarApp {
             text_rect,
             Target::Text,
             "Project Text",
-            self.backend_supports("search") || self.backend_scoped_search_supported() || self.backend_case_search_supported(),
+            self.backend_supports("search")
+                || self.backend_scoped_search_supported()
+                || self.backend_case_search_supported(),
         ) {
             actions.switch = Some(Provider::ProjectText);
         }

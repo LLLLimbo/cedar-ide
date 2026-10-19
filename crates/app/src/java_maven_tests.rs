@@ -1350,3 +1350,104 @@ fn actual_model_view_removes_snapshot_rows_after_closed() {
     }
     assert!(rx.try_recv().is_err());
 }
+
+#[test]
+fn retired_search_open_keeps_pom_disk_evidence_without_navigation_or_draft_mutation() {
+    for cache in ["new", "existing", "full", "exhausted"] {
+        let (mut app, rx) = app();
+        start(&mut app, &rx);
+        app.documents.push(Document::new(
+            1,
+            "origin.txt".into(),
+            "origin".into(),
+            "c".repeat(64),
+        ));
+        app.active_document = Some(1);
+        app.next_document = 2;
+        app.search_query = "project".into();
+        app.search();
+        let search = rx.try_recv().unwrap();
+        let Some(crate::Job::Search { specification }) = app.pending.remove(&search.id) else {
+            panic!("expected a pending search");
+        };
+        app.apply_search_response(
+            search.id,
+            specification,
+            Ok(Payload::Matches {
+                matches: vec![cedar_protocol::SearchMatch {
+                    path: "pom.xml".into(),
+                    line: 1,
+                    text: POM.into(),
+                }],
+                truncated: false,
+            }),
+        );
+        assert!(app.search_rows_active());
+        app.open_search_result(0);
+        let read = rx.try_recv().unwrap();
+        assert!(matches!(&read.op, Operation::Read { path } if path == "pom.xml"));
+        assert!(matches!(
+            app.pending.get(&read.id),
+            Some(crate::Job::SearchOpen { .. })
+        ));
+        app.search_match_case = false;
+        app.search_filters_changed();
+        app.search_match_case = true;
+        app.search_filters_changed();
+        let expected_documents = match cache {
+            "existing" => {
+                let mut draft = Document::new(2, "pom.xml".into(), POM.into(), pom_hash());
+                draft.text = "dirty POM stays here".into();
+                app.documents.push(draft);
+                app.next_document = 3;
+                2
+            }
+            "full" => {
+                for id in 2..=32 {
+                    app.documents.push(Document::new(
+                        id,
+                        format!("file-{id}.txt"),
+                        "cached".into(),
+                        "c".repeat(64),
+                    ));
+                }
+                app.next_document = 33;
+                32
+            }
+            "exhausted" => {
+                app.next_document = u64::MAX;
+                1
+            }
+            _ => 2,
+        };
+        let epoch = app.navigation_epoch;
+        app.error = Some("current error".into());
+        let changed = "changed on-disk POM";
+        reply(
+            &mut app,
+            read,
+            Ok(Payload::File {
+                path: "pom.xml".into(),
+                text: changed.into(),
+                revision: format!("{:x}", Sha256::digest(changed.as_bytes())),
+            }),
+        );
+        assert!(app.language.maven_model.restart_required(), "{cache}");
+        assert_eq!(app.active_document, Some(1));
+        assert_eq!(app.navigation_epoch, epoch);
+        assert_eq!(app.documents.len(), expected_documents);
+        assert!(app
+            .documents
+            .iter()
+            .all(|document| document.jump_to.is_none()));
+        if cache == "existing" {
+            assert_eq!(app.documents[1].text, "dirty POM stays here");
+            assert_eq!(app.documents[1].saved_text, POM);
+        }
+        assert_eq!(app.error.as_deref(), Some("current error"));
+        assert!(app.location_history.pending.is_none());
+        assert!(app.location_history.back.is_empty());
+        assert!(app.pending.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+}

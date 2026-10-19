@@ -2,7 +2,9 @@
 //! A row is historical evidence from one workspace/session/request/index. Its
 //! line is an ordinary Open hint, never a claim about current disk or draft text.
 use crate::{CedarApp, Tool, WorkspaceKey, AMBER, GREEN, MUTED};
-use cedar_protocol::{CaseSearchRequest, Payload, ScopedSearchIncompleteReason, ScopedSearchRequest, SearchMatch};
+use cedar_protocol::{
+    CaseSearchRequest, Payload, ScopedSearchIncompleteReason, ScopedSearchRequest, SearchMatch,
+};
 use eframe::egui::{self, RichText};
 use std::collections::HashSet;
 
@@ -14,39 +16,89 @@ pub(super) const SCOPED_UNAVAILABLE: &str = "Directory and file masks require sc
 pub(super) const CASE_UNAVAILABLE: &str = "Case-insensitive search is not available from this agent. Turn on Match case to use its existing search, or upgrade the agent.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Route { Legacy, ScopedV1, CaseV1 }
+pub(super) enum Route {
+    Legacy,
+    ScopedV1,
+    CaseV1,
+}
 
 pub(super) const MATCH_CASE_HINT: &str = "Match letter case in file contents. Turn off for Unicode simple-fold literal search. Directory paths and file masks remain case-sensitive. Changing this option does not run a search.";
 
 pub(super) fn match_case_size(ui: &egui::Ui) -> egui::Vec2 {
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let text = ui.fonts(|fonts| fonts.layout_no_wrap("Match case".into(), font, MUTED).size());
-    egui::vec2(text.x + ui.spacing().icon_width + ui.spacing().icon_spacing,
-        text.y.max(ui.spacing().icon_width).max(ui.spacing().interact_size.y))
+    let text = ui.fonts(|fonts| {
+        fonts
+            .layout_no_wrap("Match case".into(), font, MUTED)
+            .size()
+    });
+    egui::vec2(
+        text.x + ui.spacing().icon_width + ui.spacing().icon_spacing,
+        text.y
+            .max(ui.spacing().icon_width)
+            .max(ui.spacing().interact_size.y),
+    )
 }
 
 // Preserve native focus/accessibility, but mutate only after original-input admission.
-pub(super) fn match_case_response(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id) -> egui::Response {
+pub(super) fn match_case_response(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: egui::Id,
+) -> egui::Response {
     ui.interact(rect, id, egui::Sense::click())
 }
 
 pub(super) fn paint_match_case(ui: &egui::Ui, response: &egui::Response, checked: bool) {
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), checked, "Match case"));
-    if !ui.is_rect_visible(response.rect) { return; }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Checkbox,
+            ui.is_enabled(),
+            checked,
+            "Match case",
+        )
+    });
+    if !ui.is_rect_visible(response.rect) {
+        return;
+    }
     let visuals = ui.style().interact(response);
     let (small, big) = ui.spacing().icon_rectangles(response.rect);
-    ui.painter().rect(big.expand(visuals.expansion), visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+    ui.painter().rect(
+        big.expand(visuals.expansion),
+        visuals.corner_radius,
+        visuals.bg_fill,
+        visuals.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
     if checked {
-        ui.painter().add(egui::Shape::line(vec![egui::pos2(small.left(), small.center().y),
-            egui::pos2(small.center().x, small.bottom()), egui::pos2(small.right(), small.top())], visuals.fg_stroke));
+        ui.painter().add(egui::Shape::line(
+            vec![
+                egui::pos2(small.left(), small.center().y),
+                egui::pos2(small.center().x, small.bottom()),
+                egui::pos2(small.right(), small.top()),
+            ],
+            visuals.fg_stroke,
+        ));
     }
-    let galley = ui.fonts(|fonts| fonts.layout_no_wrap("Match case".into(), egui::TextStyle::Button.resolve(ui.style()), visuals.text_color()));
-    let pos = egui::pos2(response.rect.left() + ui.spacing().icon_width + ui.spacing().icon_spacing, response.rect.center().y - galley.size().y * 0.5);
+    let galley = ui.fonts(|fonts| {
+        fonts.layout_no_wrap(
+            "Match case".into(),
+            egui::TextStyle::Button.resolve(ui.style()),
+            visuals.text_color(),
+        )
+    });
+    let pos = egui::pos2(
+        response.rect.left() + ui.spacing().icon_width + ui.spacing().icon_spacing,
+        response.rect.center().y - galley.size().y * 0.5,
+    );
     ui.painter().galley(pos, galley, visuals.text_color());
 }
 
 pub(super) fn case_mode(sensitive: bool) -> &'static str {
-    if sensitive { "Case-sensitive" } else { "Case-insensitive" }
+    if sensitive {
+        "Case-sensitive"
+    } else {
+        "Case-insensitive"
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,8 +122,10 @@ impl Specification {
     }
     pub(super) fn case_request(&self) -> CaseSearchRequest {
         CaseSearchRequest {
-            query: self.request.query.clone(), scope: self.request.scope.clone(),
-            masks: self.request.masks.clone(), limit: self.request.limit,
+            query: self.request.query.clone(),
+            scope: self.request.scope.clone(),
+            masks: self.request.masks.clone(),
+            limit: self.request.limit,
             case_sensitive: self.case_sensitive,
         }
     }
@@ -88,7 +142,9 @@ impl Specification {
         };
         format!(
             "{:?} · {directory} · {masks} · {} · limit {}",
-            self.request.query, case_mode(self.case_sensitive), self.request.limit
+            self.request.query,
+            case_mode(self.case_sensitive),
+            self.request.limit
         )
     }
 }
@@ -161,6 +217,8 @@ pub(super) struct Search {
     selected: Option<usize>,
     active: bool,
     layout: u64,
+    draft_revision: u64,
+    case_control: CaseControl,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -174,6 +232,30 @@ pub(super) struct FocusIdentity {
     query: String,
     scope: String,
     masks: String,
+    match_case: bool,
+    draft_revision: u64,
+}
+
+#[derive(Clone)]
+struct CasePresented {
+    id: egui::Id,
+    rect: egui::Rect,
+    clip: egui::Rect,
+    identity: FocusIdentity,
+}
+
+#[derive(Default)]
+struct CaseControl {
+    presented: Option<CasePresented>,
+    captured: Option<FocusIdentity>,
+    input_pass: Option<u64>,
+    pressed: Option<CasePresented>,
+    released: Option<CasePresented>,
+    native_key: Option<egui::Key>,
+    attempted: bool,
+    held: HashSet<egui::Key>,
+    owned: HashSet<egui::Key>,
+    composing: bool,
 }
 
 #[cfg(test)]
@@ -538,22 +620,35 @@ impl CedarApp {
         };
         request.validate().map_err(|error| error.to_string())?;
         let route = if !self.search_match_case {
-            if !self.backend_case_search_supported() { return Err(CASE_UNAVAILABLE.into()); }
+            if !self.backend_case_search_supported() {
+                return Err(CASE_UNAVAILABLE.into());
+            }
             Route::CaseV1
         } else {
-            if !self.backend_scoped_search_supported() { return Err(SCOPED_UNAVAILABLE.into()); }
+            if !self.backend_scoped_search_supported() {
+                return Err(SCOPED_UNAVAILABLE.into());
+            }
             Route::ScopedV1
         };
-        Ok(Specification { request, route, case_sensitive: self.search_match_case })
+        Ok(Specification {
+            request,
+            route,
+            case_sensitive: self.search_match_case,
+        })
     }
 
     pub(super) fn search_filters_changed(&mut self) {
+        self.search_state.draft_revision = self.search_state.draft_revision.saturating_add(1);
+        self.search_state.case_control.pressed = None;
         self.search_state.deactivate();
         self.retire_project_text_preview();
+        self.retire_search_result_opens();
     }
 
     pub(super) fn search_submission_supported(&self) -> bool {
-        if !self.search_match_case { return self.backend_case_search_supported(); }
+        if !self.search_match_case {
+            return self.backend_case_search_supported();
+        }
         if self.search_scope.is_empty() && self.search_masks.is_empty() {
             self.backend_supports("search")
         } else {
@@ -660,7 +755,9 @@ impl CedarApp {
         if !self.search_match_case && !self.backend_case_search_supported() {
             return Some(CASE_UNAVAILABLE.into());
         }
-        if self.search_scope.is_empty() && self.search_masks.is_empty() { return None; }
+        if self.search_scope.is_empty() && self.search_masks.is_empty() {
+            return None;
+        }
         if self.search_match_case && !self.backend_scoped_search_supported() {
             return Some(SCOPED_UNAVAILABLE.into());
         }
@@ -727,6 +824,8 @@ impl CedarApp {
             query: self.search_query.clone(),
             scope: self.search_scope.clone(),
             masks: self.search_masks.clone(),
+            match_case: self.search_match_case,
+            draft_revision: self.search_state.draft_revision,
         }
     }
 
@@ -850,10 +949,15 @@ impl CedarApp {
                     return;
                 }
                 let status = ScanStatus {
-                    reasons: result.reasons, examined_entries: result.examined_entries,
+                    reasons: result.reasons,
+                    examined_entries: result.examined_entries,
                     read_bytes: result.read_bytes,
                 };
-                (result.matches.into_iter().map(Into::into).collect(), result.incomplete, Some(status))
+                (
+                    result.matches.into_iter().map(Into::into).collect(),
+                    result.incomplete,
+                    Some(status),
+                )
             }
             Ok(_) => {
                 self.error = Some("Unexpected search response; no results were accepted".into());
@@ -884,6 +988,198 @@ impl CedarApp {
         self.search_state.accepted = Some(source);
     }
 
+    fn case_control_allowed(&self, ctx: &egui::Context) -> bool {
+        self.tools_open
+            && self.tool == Tool::Search
+            && !self.open_form
+            && !self.new_file
+            && !self.navigation.blocks_editor()
+            && !self.navigation.restore_focus
+            && !self.foreign_modal_owns_input(ctx)
+            && !self.find_focus
+            && self.close_tab_requested.is_none()
+            && !self.close_after_language_stop
+            && !self.allow_close
+            && !self
+                .active()
+                .is_some_and(|doc| doc.jump_to.is_some() || doc.edit_version == u64::MAX)
+    }
+
+    fn capture_case_control(
+        &mut self,
+        ctx: &egui::Context,
+        raw: &egui::RawInput,
+        consumed: &mut [bool],
+    ) {
+        let identity = self.search_focus_identity();
+        let allowed = self.case_control_allowed(ctx);
+        let focused = ctx.memory(|memory| memory.focused());
+        let case = &mut self.search_state.case_control;
+        case.captured = Some(identity.clone());
+        case.input_pass = Some(ctx.cumulative_pass_nr());
+        case.attempted = false;
+        case.released = None;
+        case.native_key = None;
+        if !raw.focused
+            || raw
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::WindowFocused(false)))
+        {
+            case.pressed = None;
+            case.held.clear();
+            case.owned.clear();
+            case.composing = false;
+            return;
+        }
+        let composing_before = case.composing;
+        for event in &raw.events {
+            match event {
+                egui::Event::Ime(egui::ImeEvent::Preedit(_)) => case.composing = true,
+                egui::Event::Ime(egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled) => {
+                    case.composing = false
+                }
+                _ => {}
+            }
+        }
+        let presented = case
+            .presented
+            .clone()
+            .filter(|presented| allowed && presented.identity == identity);
+        let focused_here = presented
+            .as_ref()
+            .is_some_and(|presented| focused == Some(presented.id));
+        let clean =
+            clean_key(&raw.events).filter(|key| matches!(key, egui::Key::Enter | egui::Key::Space));
+        let fresh_batch = !composing_before
+            && !case.composing
+            && case.held.is_empty()
+            && raw.modifiers.is_none()
+            && !ctx.input(|input| input.pointer.any_down() || !input.keys_down.is_empty());
+        let pointer_only = crate::browse::pointer_only(&raw.events);
+        let pointer_clear = !composing_before
+            && !case.composing
+            && case.held.is_empty()
+            && raw.modifiers.is_none()
+            && !ctx.input(|input| !input.keys_down.is_empty());
+        if !pointer_only || !pointer_clear || presented.is_none() {
+            case.pressed = None;
+        } else {
+            let edges: Vec<_> = raw
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::PointerButton {
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        ..
+                    } => Some(*pressed),
+                    _ => None,
+                })
+                .collect();
+            if edges.len() > 2 || (edges.len() == 2 && edges[0] == edges[1]) {
+                case.pressed = None;
+            } else {
+                for event in &raw.events {
+                    if let egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers,
+                    } = event
+                    {
+                        if !modifiers.is_none() {
+                            case.pressed = None;
+                            continue;
+                        }
+                        if *pressed {
+                            case.pressed = presented
+                                .clone()
+                                .filter(|target| target.rect.intersect(target.clip).contains(*pos));
+                        } else if let Some(press) = case.pressed.take() {
+                            if presented.as_ref().is_some_and(|target| {
+                                target.id == press.id
+                                    && target.rect == press.rect
+                                    && target.identity == press.identity
+                                    && target.rect.intersect(target.clip).contains(*pos)
+                            }) {
+                                case.released = Some(press);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Rejected checkbox-origin keys still own their physical lifetime. A
+        // mixed pointer batch must not replay Enter/Space into the new editor.
+        // Only an ordered exact Space companion is removed; IME and arbitrary
+        // text remain untouched. Release ends the fence before a fresh press.
+        let mut space_companion = false;
+        for (index, event) in raw.events.iter().enumerate() {
+            match event {
+                egui::Event::Key {
+                    key: key @ (egui::Key::Enter | egui::Key::Space),
+                    pressed,
+                    repeat,
+                    modifiers,
+                    ..
+                } => {
+                    space_companion = false;
+                    if !pressed {
+                        case.held.remove(key);
+                        case.owned.remove(key);
+                        continue; // Keep native release to clear egui's keys_down.
+                    }
+                    let fresh = case.held.insert(*key);
+                    let owned = case.owned.contains(key);
+                    if focused_here && modifiers.is_none() && ((fresh && !repeat) || owned) {
+                        case.owned.insert(*key);
+                    }
+                    if case.owned.contains(key) {
+                        let admit_native =
+                            focused_here && fresh && !repeat && fresh_batch && clean == Some(*key);
+                        if admit_native {
+                            case.native_key = Some(*key);
+                        } else {
+                            consumed[index] = true;
+                            space_companion = *key == egui::Key::Space;
+                        }
+                    }
+                }
+                egui::Event::Text(text) if space_companion && text == " " => {
+                    consumed[index] = true;
+                    space_companion = false;
+                }
+                egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_) => {}
+                _ => space_companion = false,
+            }
+        }
+    }
+
+    fn admit_case_control(&mut self, ui: &egui::Ui, response: &egui::Response) -> bool {
+        let identity = self.search_focus_identity();
+        let case = &self.search_state.case_control;
+        let base_pass = ui
+            .ctx()
+            .cumulative_pass_nr()
+            .saturating_sub(ui.ctx().output(|output| output.num_completed_passes) as u64);
+        let captured =
+            case.captured.as_ref() == Some(&identity) && case.input_pass == Some(base_pass);
+        let pointer = case.released.as_ref().is_some_and(|target| {
+            target.id == response.id && target.rect == response.rect && target.identity == identity
+        });
+        let key = case.native_key.is_some() && response.has_focus();
+        let eligible = !case.attempted
+            && captured
+            && (pointer || key)
+            && self.case_control_allowed(ui.ctx())
+            && ui.ctx().input(|input| input.focused);
+        if response.clicked() && !ui.is_sizing_pass() {
+            self.search_state.case_control.attempted = true;
+        }
+        eligible && crate::workspace_access::claim_menu_activation(self, ui, response)
+    }
+
     // Every surface sees the immutable original sequence. The raw hook applies
     // the union of per-event removals only after all lifetimes were observed.
     pub(super) fn capture_search_input(
@@ -892,6 +1188,7 @@ impl CedarApp {
         input: &egui::RawInput,
         consumed: &mut [bool],
     ) {
+        self.capture_case_control(ctx, input, consumed);
         let allowed = self.search_input_allowed(ctx);
         let review_escape = self.search_review_armed();
         let current = View::of(self);
@@ -1220,6 +1517,7 @@ impl CedarApp {
             return;
         }
         if self.search_state.selected != Some(index) {
+            self.retire_search_result_opens();
             self.clear_search_selection_preview();
         }
         self.search_state.selected = Some(index);
@@ -1248,39 +1546,53 @@ impl CedarApp {
         if self.ready()
             && !self.backend_supports("search")
             && !self.backend_scoped_search_supported()
+            && !self.backend_case_search_supported()
         {
             ui.colored_label(AMBER, self.unsupported_message("search"));
         }
         let mut submit_requested = false;
-        ui.horizontal(|ui| {
-            let button_font = egui::TextStyle::Button.resolve(ui.style());
-            let button_width = ui.fonts(|fonts| {
-                fonts
-                    .layout_no_wrap("Search".into(), button_font, MUTED)
-                    .size()
-                    .x
-            }) + ui.spacing().button_padding.x * 2.0;
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut self.search_query)
-                    .hint_text("Case-sensitive literal text")
-                    .desired_width(
-                        (ui.available_width() - button_width - ui.spacing().item_spacing.x)
-                            .max(1.0),
-                    ),
-            );
-            #[cfg(test)]
-            crate::workspace_access_tests::record(ui, "search_query", &edit);
-            self.record_find_access(ui, None, &edit);
-            if edit.changed() {
-                self.search_filters_changed();
-            }
-            let enter = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            let enabled = self.search_submission_supported() && !self.search_busy();
-            let submit = ui.add_enabled(enabled, egui::Button::new("Search"));
-            #[cfg(test)]
-            crate::workspace_access_tests::record(ui, "search_submit", &submit);
-            submit_requested = enabled && (submit.clicked() || enter);
-        });
+        // Reserve both actions in the existing query band. Their native
+        // responses are registered after the filters to preserve Tab order.
+        let (case_rect, submit_rect) = ui
+            .horizontal(|ui| {
+                let button_width = ui.fonts(|fonts| {
+                    fonts
+                        .layout_no_wrap(
+                            "Search".into(),
+                            egui::TextStyle::Button.resolve(ui.style()),
+                            MUTED,
+                        )
+                        .size()
+                        .x
+                }) + ui.spacing().button_padding.x * 2.0;
+                let case_size = match_case_size(ui);
+                let width = (ui.available_width()
+                    - button_width
+                    - case_size.x
+                    - 2.0 * ui.spacing().item_spacing.x)
+                    .max(1.0);
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut self.search_query)
+                        .hint_text(format!(
+                            "{} literal text",
+                            case_mode(self.search_match_case)
+                        ))
+                        .desired_width(width),
+                );
+                #[cfg(test)]
+                crate::workspace_access_tests::record(ui, "search_query", &edit);
+                self.record_find_access(ui, None, &edit);
+                if edit.changed() {
+                    self.search_filters_changed();
+                }
+                submit_requested =
+                    edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                let (_, case_rect) = ui.allocate_space(case_size);
+                let (_, submit_rect) =
+                    ui.allocate_space(egui::vec2(button_width, edit.rect.height()));
+                (case_rect, submit_rect)
+            })
+            .inner;
         let scope_id = ui.id().with("search_scope");
         let masks_id = ui.id().with("search_masks");
         let (scope, masks) = self.search_filter_controls(ui, scope_id, masks_id);
@@ -1295,8 +1607,40 @@ impl CedarApp {
         } else if (scope.lost_focus() || masks.lost_focus())
             && ui.input(|input| input.key_pressed(egui::Key::Enter))
         {
-            submit_requested = self.search_submission_supported() && !self.search_busy();
+            submit_requested = true;
         }
+        let case_id = ui.id().with("search_match_case");
+        let mut checkbox = match_case_response(ui, case_rect, case_id);
+        let case_changed = self.admit_case_control(ui, &checkbox);
+        if case_changed {
+            self.search_match_case = !self.search_match_case;
+            self.search_filters_changed();
+            checkbox.mark_changed();
+            ui.ctx().request_repaint();
+        }
+        paint_match_case(ui, &checkbox, self.search_match_case);
+        self.search_state.case_control.presented = Some(CasePresented {
+            id: checkbox.id,
+            rect: checkbox.rect,
+            clip: ui.clip_rect(),
+            identity: self.search_focus_identity(),
+        });
+        #[cfg(test)]
+        crate::workspace_access_tests::record(ui, "search_match_case", &checkbox);
+        checkbox.on_hover_text_at_pointer(MATCH_CASE_HINT);
+        let enabled = self.search_submission_supported() && !self.search_busy();
+        let mut submit_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("search_submit_band")
+                .max_rect(submit_rect),
+        );
+        let submit = submit_ui.add_enabled(
+            enabled,
+            egui::Button::new("Search").min_size(submit_rect.size()),
+        );
+        #[cfg(test)]
+        crate::workspace_access_tests::record(ui, "search_submit", &submit);
+        submit_requested = !case_changed && enabled && (submit_requested || submit.clicked());
         if let Some(explanation) = self.search_filter_explanation() {
             ui.colored_label(AMBER, explanation);
         }
@@ -1563,7 +1907,7 @@ impl CedarApp {
                     if app.search_results.is_empty() {
                         ui.label(
                             RichText::new(
-                                "Case-sensitive literal disk search. Submit a query to find text.",
+                                format!("{} literal disk search. Submit a query to find text.", case_mode(app.search_match_case)),
                             )
                             .small()
                             .color(MUTED),
@@ -1622,9 +1966,7 @@ impl CedarApp {
             if let Some(index) =
                 open.filter(|index| self.search_rendered_row_visible(*index, ui.ctx()))
             {
-                if let Some(result) = self.search_results.get(index) {
-                    self.open(result.path.clone(), Some(result.line));
-                }
+                self.open_search_result(index);
             }
         }
     }

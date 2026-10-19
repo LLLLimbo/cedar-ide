@@ -49,6 +49,7 @@ impl CedarApp {
                 | Job::List { .. }
                 | Job::TreeList { .. }
                 | Job::Open { .. }
+                | Job::SearchOpen { .. }
                 | Job::LanguageOpen { .. }
                 | Job::BuildProblemOpen { .. }
                 | Job::JavaImplementationOpen { .. }

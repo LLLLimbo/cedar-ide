@@ -8,8 +8,8 @@ use egui::text::{CCursor, CCursorRange};
 pub(super) const SIZE: egui::Vec2 = egui::vec2(1100.0, 800.0);
 const SAVED: &str = "saved Ω😀\r\nneedle second\nlast\n";
 const DRAFT: &str = "dirty Ω😀\r\nneedle second\nlast\n";
-type SelectionKey = (usize, bool, usize, bool);
-type HistorySnapshot = [Vec<(SelectionKey, String)>; 2];
+pub(super) type SelectionKey = (usize, bool, usize, bool);
+pub(super) type HistorySnapshot = [Vec<(SelectionKey, String)>; 2];
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Surface {
@@ -91,7 +91,11 @@ pub(super) fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
         },
     ]
 }
-pub(super) fn frame_at(app: &mut CedarApp, size: egui::Vec2, events: Vec<egui::Event>) -> egui::FullOutput {
+pub(super) fn frame_at(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
     captured_frame(app, size, events, |_| {})
 }
 pub(super) fn captured_frame(
@@ -281,7 +285,11 @@ pub(super) fn payload(request: ScopedSearchRequest, matches: Vec<SearchMatch>) -
         },
     }
 }
-pub(super) fn submit(app: &mut CedarApp, commands: &Receiver<Command>, surface: Surface) -> Command {
+pub(super) fn submit(
+    app: &mut CedarApp,
+    commands: &Receiver<Command>,
+    surface: Surface,
+) -> Command {
     click(app, surface.submit());
     let command = commands
         .try_recv()
@@ -289,7 +297,11 @@ pub(super) fn submit(app: &mut CedarApp, commands: &Receiver<Command>, surface: 
     assert!(commands.try_recv().is_err());
     command
 }
-pub(super) fn scoped(app: &mut CedarApp, commands: &Receiver<Command>, surface: Surface) -> Command {
+pub(super) fn scoped(
+    app: &mut CedarApp,
+    commands: &Receiver<Command>,
+    surface: Surface,
+) -> Command {
     replace(app, surface.query(), "needle");
     replace(app, surface.scope(), "src");
     replace(app, surface.masks(), "*.rs");
@@ -322,7 +334,11 @@ pub(super) fn has_text(output: &egui::FullOutput, expected: &str) -> bool {
 }
 // Status details are reachable through the real bounded native ScrollArea.
 // Do not call has_text on clipped-away galleys or remove the old exact counters.
-pub(super) fn browse_status_scroll(app: &mut CedarApp, size: egui::Vec2, to_end: bool) -> egui::FullOutput {
+pub(super) fn browse_status_scroll(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    to_end: bool,
+) -> egui::FullOutput {
     let (id, rect, content): (egui::Id, egui::Rect, egui::Vec2) = app
         .editor_ctx
         .data(|data| data.get_temp(egui::Id::new("text_status_scroll_probe")))
@@ -522,7 +538,7 @@ pub(super) fn browse_assert_status_fields_reachable(
     );
 }
 
-fn selection(app: &CedarApp) -> SelectionKey {
+pub(super) fn selection(app: &CedarApp) -> SelectionKey {
     let value = egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 1_u64)))
         .unwrap()
         .cursor
@@ -535,7 +551,7 @@ fn selection(app: &CedarApp) -> SelectionKey {
         value.secondary.prefer_next_row,
     )
 }
-fn history(app: &CedarApp) -> HistorySnapshot {
+pub(super) fn history(app: &CedarApp) -> HistorySnapshot {
     let state =
         egui::TextEdit::load_state(&app.editor_ctx, egui::Id::new(("editor", 1_u64))).unwrap();
     let current = (
