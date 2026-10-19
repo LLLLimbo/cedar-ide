@@ -2189,18 +2189,21 @@ fn gutter_loaded_frames(
     );
     reply(app, &request, source);
     // Fixed lifecycle boundaries, never a loop that waits for a passing frame:
-    // 1. ready context lays out and requests its one-shot target reveal;
-    // 2. the next App frame applies that nonanimated native ScrollArea reveal;
-    // 3. three fixed quiet updates establish the settled checkpoint.
-    let reply_paint = gutter_frame(app, metrics, 0.01, vec![]);
+    // 1. browse_finish_frame accepts the reply only after this frame's paint;
+    // 2. ready context first paints and requests its one-shot target reveal;
+    // 3. the next App frame applies that nonanimated native ScrollArea reveal;
+    // 4. three fixed quiet updates establish the settled checkpoint.
+    let completion_paint = gutter_frame(app, metrics, 0.01, vec![]);
     assert!(!app.project_text_review_pending());
     assert!(app.project_text_preview_context().is_some());
+    assert!(gutter_shapes(&completion_paint).iter().any(|(shape, _)| matches!(shape, egui::epaint::Shape::Text(draw) if draw.galley.text().contains("Preview requested"))));
+    let reply_paint = gutter_frame(app, metrics, 0.01, vec![]);
     assert!(gutter_shapes(&reply_paint).iter().any(|(shape, _)| matches!(shape, egui::epaint::Shape::Text(draw) if draw.galley.text().contains("Historical requested line"))), "bottom={bottom} metrics={metrics:?} context={:?} paint={:?}", app.project_text_preview_context(), gutter_shapes(&reply_paint).iter().filter_map(|(shape, clip)| if let egui::epaint::Shape::Text(draw) = shape { Some((draw.galley.text(), draw.pos, clip)) } else {None}).collect::<Vec<_>>());
     let reply_paint = gutter_capture(app, bottom, reply_paint);
     let reveal_paint = gutter_frame(app, metrics, 0.01, vec![]);
     let reveal_paint = gutter_capture(app, bottom, reveal_paint);
     // Preserve the earliest complete target row if a surface was already able
-    // to display it in the reply frame. Otherwise the single next reveal frame
+    // to display it in its first context-paint frame. The single next reveal frame
     // must prove visibility; no third or later frame can rescue this checkpoint.
     let first_visible = if reply_paint.target.top() >= reply_paint.viewport.top()
         && reply_paint.target.bottom() <= reply_paint.viewport.bottom()
