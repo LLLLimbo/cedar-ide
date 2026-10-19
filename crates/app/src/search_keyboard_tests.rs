@@ -5469,7 +5469,7 @@ fn snippet_highlight_native_two_surface_unicode_literal_ellipsis_truncation_matr
                     let editor = result_style_editor(&app); // after Browse entry
                     snippet_highlight_replace(&mut app, browse, size, query);
                     if app.search_match_case != *sensitive {
-                        result_style_click(
+                        crate::scoped_search_tests::click_at_size(
                             &mut app,
                             size,
                             &format!("{}_match_case", snippet_highlight_prefix(browse)),
@@ -5672,7 +5672,7 @@ fn snippet_highlight_aba_and_case_toggle_never_revive_accepted_cache() {
             assert_eq!(app.search_highlight_accounting(), accounting);
         }
         for sensitive in [false, true, false] {
-            result_style_click(
+            crate::scoped_search_tests::click_at_size(
                 &mut app,
                 size,
                 &format!("{}_match_case", snippet_highlight_prefix(browse)),
