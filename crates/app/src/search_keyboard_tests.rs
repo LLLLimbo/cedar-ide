@@ -6037,6 +6037,25 @@ fn snippet_highlight_cost_workloads() -> Vec<SnippetHighlightCostWorkload> {
     ]
 }
 
+fn snippet_highlight_current_paint_response(
+    app: &CedarApp,
+    probe: &str,
+) -> (bool, egui::Sense, bool, egui::Rect, u64) {
+    let id = recorded_response(app, probe).id;
+    let observation = app.editor_ctx.data(|data| {
+        data.get_temp::<(bool, egui::Sense, bool, egui::Rect, u64)>(
+            id.with("snippet_highlight_current_paint_response"),
+        )
+        .expect("current shared row paint must record its real response")
+    });
+    assert_eq!(observation.3, recorded_rect(app, probe));
+    assert!(
+        !observation.2,
+        "first actual visible row is not a sizing pass"
+    );
+    observation
+}
+
 struct SnippetHighlightObservedAcceptance {
     output: egui::FullOutput,
     before: crate::search_keyboard::highlights::TestObservations,
@@ -6212,7 +6231,9 @@ fn snippet_highlight_actual_app_cost_observations() {
                             );
                             let actual_font =
                                 format!("{:?}", actual.galley.job.sections[0].format.font_id);
-                            assert!(recorded_response(&app, &row_probe).enabled());
+                            let current_response =
+                                snippet_highlight_current_paint_response(&app, &row_probe);
+                            assert!(current_response.0 && current_response.1.is_focusable());
                             assert_eq!(result_style_editor(&app), editor);
                             assert!(
                                 commands.try_recv().is_err(),
@@ -6356,17 +6377,15 @@ fn snippet_highlight_legacy_admission_fallback_keeps_rows_enabled_without_buildi
             assert!(snippet_highlight_all_backgrounds(&observed.output).is_empty());
             let probe = format!("{}_row:0", snippet_highlight_prefix(browse));
             let row = recorded_response(&app, &probe);
-            let current = app.editor_ctx.data(|data| {
-                data.get_temp::<(bool, egui::Sense, bool, egui::Rect, u64)>(
-                    row.id.with("snippet_highlight_current_paint_response"),
-                )
-            });
-            eprintln!("SNIPPET_FALLBACK_RESPONSE case={name} browse={browse} current={current:?} read_enabled={} read_sense={:?} native_observation={}", row.enabled(), row.sense, crate::workspace_access_tests::recorded_observation(&app, &probe));
+            // Context::read_response can still expose the preceding interaction
+            // pass. The current paint's response is the first-frame witness; real
+            // pointer press/release assertions remain below in result_style_click.
+            let current = snippet_highlight_current_paint_response(&app, &probe);
             assert!(
-                row.enabled() && row.sense.is_focusable(),
-                "fallback is decoration-only, never navigation rejection: case={name} browse={browse} frame_count={} enabled={} sense={:?} rect={:?} clip={:?} active={} browse_query={:?} search_query={:?}",
-                observed.frame_count, row.enabled(), row.sense, row.rect, recorded_clip(&app, &probe), app.search_rows_active(), app.browse.query(), app.search_query
+                current.0 && current.1.is_focusable(),
+                "fallback keeps its current native row enabled and focusable"
             );
+            assert_eq!(current.3, row.rect);
             result_style_draw(
                 &app,
                 &observed.output,
