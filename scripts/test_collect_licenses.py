@@ -794,6 +794,25 @@ class MaterialReviewContractTests(unittest.TestCase):
         self.assertEqual(status['blocking_reasons'], ['unresolved-material:optional@1.0.0'])
         self.assertEqual(review['packages'][1]['state'], 'unresolved')
 
+    def test_imported_fixture_origin_requires_complete_exact_source_provenance(self):
+        import copy
+        materials, review, _, _, _ = self.review_fixture()
+        origin = {'kind': 'source', 'package': None, 'path': 'third-party-licenses/fixture/LICENSE',
+                  'bytes': 5, 'sha256': materials.digest(b'exact'), 'start': 0, 'end': 5,
+                  'repository': 'https://github.com/LLLLimbo/cedar-ide',
+                  'commit': 'a' * 40, 'blob': 'b' * 40,
+                  'stored_path': 'scripts/license-material-sources/fixtures/fixture/LICENSE'}
+        self.assertEqual(materials.validate_origin(origin, set()), origin)
+        for field, value in [('repository', 'https://example.invalid/fake'), ('commit', None),
+                             ('blob', 'short'), ('package', 'example@1.0.0'),
+                             ('stored_path', 'third-party-licenses/fixture/LICENSE')]:
+            changed = copy.deepcopy(origin)
+            changed[field] = value
+            with self.subTest(field=field), self.assertRaises(materials.MaterialError):
+                materials.validate_review({**review, 'materials': [{
+                    'path': 'third-party-licenses/fixture/LICENSE', 'bytes': 5,
+                    'sha256': materials.digest(b'exact'), 'origins': [changed]}]})
+
     def test_json_duplicates_noncanonical_and_oversized_inputs_fail_closed(self):
         materials, _, raw, _, _ = self.review_fixture()
         for bad in (b'{"x":1,"x":2}\n', raw + b' ', b'NaN\n', b' ' * (materials.MAX_JSON_BYTES + 1)):

@@ -11,6 +11,7 @@ REVIEW_PATH = 'scripts/license_materials_review.json'
 COVERAGE_PATH = 'LICENSE-MATERIAL-COVERAGE.json'
 README_PATH = 'LICENSE-MATERIALS-README.md'
 NOTICE_PATH = 'THIRD_PARTY_NOTICES.md'
+MARKER_PATH = '.license-materials-transaction.json'
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_JSON_DEPTH = 16
 MAX_JSON_NODES = 150000
@@ -179,8 +180,17 @@ def validate_origin(origin, package_ids):
         require(origin['stored_path'].startswith('scripts/license-material-sources/'),
                 'Upstream bytes are outside retained input namespace')
     else:
-        require(origin['package'] in (None, 'egui@0.31.1') and all(origin[x] is None for x in
-                ('repository', 'commit', 'blob')), 'Invalid source origin')
+        require(origin['package'] in (None, 'egui@0.31.1'), 'Invalid source origin package')
+        provenance = [origin[key] for key in ('repository', 'commit', 'blob')]
+        if any(value is not None for value in provenance):
+            # An imported, already-reviewed fixture material is pinned to its
+            # actual Cedar source revision, not claimed as upstream license proof.
+            require(origin['package'] is None
+                    and origin['repository'] == 'https://github.com/LLLLimbo/cedar-ide'
+                    and type(origin['commit']) is str and COMMIT.fullmatch(origin['commit'])
+                    and type(origin['blob']) is str and COMMIT.fullmatch(origin['blob'])
+                    and origin['stored_path'].startswith('scripts/license-material-sources/fixtures/'),
+                    'Unpinned imported fixture source')
         relative(origin['stored_path'])
     return origin
 
