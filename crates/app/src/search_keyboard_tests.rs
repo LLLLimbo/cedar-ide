@@ -6356,6 +6356,12 @@ fn snippet_highlight_legacy_admission_fallback_keeps_rows_enabled_without_buildi
             assert!(snippet_highlight_all_backgrounds(&observed.output).is_empty());
             let probe = format!("{}_row:0", snippet_highlight_prefix(browse));
             let row = recorded_response(&app, &probe);
+            let current = app.editor_ctx.data(|data| {
+                data.get_temp::<(bool, egui::Sense, bool, egui::Rect, u64)>(
+                    row.id.with("snippet_highlight_current_paint_response"),
+                )
+            });
+            eprintln!("SNIPPET_FALLBACK_RESPONSE case={name} browse={browse} current={current:?} read_enabled={} read_sense={:?} native_observation={}", row.enabled(), row.sense, crate::workspace_access_tests::recorded_observation(&app, &probe));
             assert!(
                 row.enabled() && row.sense.is_focusable(),
                 "fallback is decoration-only, never navigation rejection: case={name} browse={browse} frame_count={} enabled={} sense={:?} rect={:?} clip={:?} active={} browse_query={:?} search_query={:?}",

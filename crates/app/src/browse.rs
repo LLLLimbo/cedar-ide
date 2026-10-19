@@ -4475,6 +4475,22 @@ impl TextResultRow {
         selected: bool,
         highlights: &[std::ops::Range<usize>],
     ) {
+        #[cfg(test)]
+        {
+            let observation = (
+                response.enabled(),
+                response.sense,
+                ui.is_sizing_pass(),
+                rect,
+                ui.ctx().cumulative_pass_nr(),
+            );
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(
+                    response.id.with("snippet_highlight_current_paint_response"),
+                    observation,
+                )
+            });
+        }
         if !ui.is_rect_visible(rect) {
             return;
         }
