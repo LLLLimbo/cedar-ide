@@ -824,14 +824,21 @@ impl CedarApp {
     }
 
     pub(super) fn search_highlight_ranges(&self, index: usize) -> &[std::ops::Range<usize>] {
+        let Some((source, prepared)) = self.search_state.highlights.as_ref() else {
+            return &[];
+        };
+        let ranges = prepared.row(index);
+        // Empty decoration must remain constant work, including accepted Legacy
+        // queries outside the display cap. Do not clone/validate them per row.
+        if ranges.is_empty() || self.search_state.accepted.as_ref() != Some(source) {
+            return &[];
+        }
+        #[cfg(test)]
+        highlights::test_record_authority_check();
         if !self.search_rows_active() {
             return &[];
         }
-        self.search_state
-            .highlights
-            .as_ref()
-            .filter(|(source, _)| self.search_state.accepted.as_ref() == Some(source))
-            .map_or(&[], |(_, prepared)| prepared.row(index))
+        ranges
     }
 
     #[cfg(test)]

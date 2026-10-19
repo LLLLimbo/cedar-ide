@@ -5923,3 +5923,44 @@ fn snippet_highlight_same_workspace_reconnect_and_old_generation_cannot_revive()
         assert_eq!(result_style_editor(&app), reentered);
     }
 }
+
+#[test]
+fn snippet_highlight_inconsistent_source_query_is_decoration_only_fail_closed() {
+    for browse in [false, true] {
+        let size = egui::vec2(1180.0, 812.0);
+        let hit = SearchMatch {
+            path: "first-parent/duplicate.rs".into(),
+            line: 42,
+            text: "second K second".into(),
+        };
+        let (mut app, commands, _, _hold) =
+            result_style_fixture(browse, size, 13.0, vec![hit.clone()], |_, _| {});
+        let editor = result_style_editor(&app);
+        let command = snippet_highlight_submit(&mut app, &commands, browse, size);
+        // Explicit internal fault injection; real captured Source normally agrees
+        // with its specification. Preserve old acceptance while decoration fails closed.
+        app.search_state.pending.as_mut().unwrap().query = "different captured query".into();
+        let before = snippet_highlight_counts();
+        snippet_highlight_queue(
+            &app,
+            app.generation,
+            command.id,
+            Ok(snippet_highlight_payload(&command, vec![hit.clone()])),
+            true,
+        );
+        for _ in 0..4 {
+            let output = result_style_frame(&mut app, size, vec![]);
+            assert!(snippet_highlight_all_backgrounds(&output).is_empty());
+        }
+        assert_eq!(
+            app.search_state.accepted.as_ref().unwrap().request,
+            command.id
+        );
+        assert_eq!(app.search_results, [hit]);
+        assert!(app.search_highlight_accounting().is_none());
+        assert!(app.search_highlight_ranges(0).is_empty());
+        assert_eq!(snippet_highlight_counts(), before);
+        assert_eq!(result_style_editor(&app), editor);
+        assert!(commands.try_recv().is_err());
+    }
+}

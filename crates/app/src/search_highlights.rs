@@ -330,6 +330,7 @@ pub(crate) struct TestObservations {
     pub scan_calls: usize,
     pub scanned_bytes: usize,
     pub map_calls: usize,
+    pub authority_checks: usize,
     pub prepare_ns: u128,
     pub map_ns: u128,
     pub max_prepare_ns: u128,
@@ -338,12 +339,20 @@ pub(crate) struct TestObservations {
 #[cfg(test)]
 thread_local! {
     static TEST_OBSERVATIONS: std::cell::Cell<TestObservations> = const { std::cell::Cell::new(TestObservations {
-        prepares:0,builds:0,scan_calls:0,scanned_bytes:0,map_calls:0,prepare_ns:0,map_ns:0,max_prepare_ns:0,max_map_ns:0,
+        prepares:0,builds:0,scan_calls:0,scanned_bytes:0,map_calls:0,authority_checks:0,prepare_ns:0,map_ns:0,max_prepare_ns:0,max_map_ns:0,
     }) };
 }
 #[cfg(test)]
 pub(crate) fn test_observations() -> TestObservations {
     TEST_OBSERVATIONS.with(std::cell::Cell::get)
+}
+#[cfg(test)]
+pub(crate) fn test_record_authority_check() {
+    TEST_OBSERVATIONS.with(|observations| {
+        let mut value = observations.get();
+        value.authority_checks += 1;
+        observations.set(value);
+    });
 }
 #[cfg(test)]
 struct MapObservation(std::time::Instant);
@@ -588,5 +597,22 @@ mod tests {
             "unreliable zero-width span is not expanded"
         );
         assert!(rectangles(&galley("second\tsecond", 300.0, 13.0), 0, &spans).is_empty());
+    }
+    #[test]
+    fn synthetic_overflow_equal_to_next_original_ellipsis_is_never_decorated() {
+        let original = "aa…zzzzzzzzzzzzzzzzzzzz";
+        let prepared = Prepared::prepare("…", true, &rows(&[original]));
+        assert_eq!(prepared.row(0), [2..5]);
+        // Find an actual native truncation where the synthetic overflow scalar
+        // happens to equal the next original scalar. Glyph.chr alone is ambiguous.
+        let clipped = (1..100)
+            .map(|width| galley(original, width as f32, 13.0))
+            .find(|g| g.elided && g.rows[0].glyphs.len() == 3)
+            .expect("native font fixture must expose two original glyphs plus overflow");
+        assert_eq!(clipped.rows[0].glyphs[2].chr, '…');
+        assert_eq!(original.chars().nth(2), Some('…'));
+        let unchanged = clipped.clone();
+        assert!(rectangles(&clipped, 0, prepared.row(0)).is_empty());
+        assert_eq!(clipped, unchanged);
     }
 }
