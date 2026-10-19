@@ -78,7 +78,7 @@ class FixedContractTests(unittest.TestCase):
         self.assertEqual(proof.PROGRESS_PREFIX, "case_search_progress ")
         self.assertEqual(value["acceptance"], "case_search")
         self.assertEqual(value["schema"], 1)
-        self.assertEqual(value["source_version"], "0.79.0")
+        self.assertEqual(value["source_version"], "0.80.0")
         self.assertEqual(value["cases"], [
             "trust_off_normal_agent", "checked_legacy_root", "checked_filtered_route",
             "shared_native_case_controls_local", "unchecked_directory_echo",

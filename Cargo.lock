@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-agent"
-version = "0.79.0"
+version = "0.80.0"
 dependencies = [
  "cedar-protocol",
  "cedar-workspace",
@@ -298,7 +298,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-app"
-version = "0.79.0"
+version = "0.80.0"
 dependencies = [
  "ab_glyph",
  "cedar-client",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-client"
-version = "0.79.0"
+version = "0.80.0"
 dependencies = [
  "cedar-protocol",
  "cedar-tasks",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-debugger"
-version = "0.79.0"
+version = "0.80.0"
 dependencies = [
  "cedar-language",
  "serde",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-language"
-version = "0.79.0"
+version = "0.80.0"
 dependencies = [
  "cedar-winprocess",
  "libc",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-protocol"
-version = "0.79.0"
+version = "0.80.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-recovery"
-version = "0.79.0"
+version = "0.80.0"
 dependencies = [
  "libc",
  "serde",
@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-tasks"
-version = "0.79.0"
+version = "0.80.0"
 dependencies = [
  "cedar-winprocess",
  "libc",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-winprocess"
-version = "0.79.0"
+version = "0.80.0"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "cedar-workspace"
-version = "0.79.0"
+version = "0.80.0"
 dependencies = [
  "cedar-language",
  "cedar-protocol",

@@ -27,7 +27,7 @@ PREFIX = "case_search_acceptance "
 PROGRESS_PREFIX = "case_search_progress "
 COMPILE_TIMEOUT = 120
 RUNTIME_TIMEOUT = 420
-SOURCE_VERSION = "0.79.0"
+SOURCE_VERSION = "0.80.0"
 QUERY = "K [x].* café 😀"
 CASES = [
     "trust_off_normal_agent",
