@@ -4317,18 +4317,33 @@ fn result_style_tooltip_diagnostic(app: &CedarApp, probe: &str) -> String {
             response.id,
         )))
     });
+    let lower = ctx.data(|data| {
+        data.get_temp::<(egui::Id, egui::Rect, egui::Vec2)>(egui::Id::new(
+            if probe.starts_with("browse") {
+                "browse_results_scroll_probe"
+            } else {
+                "bottom_results_scroll_probe"
+            },
+        ))
+    });
+    let bar = lower.and_then(|(id, _, _)| ctx.read_response(id.with(1_usize)));
+    let time = ctx.input(|i| {
+        (
+            i.time,
+            i.time_since_last_scroll(),
+            i.pointer.time_since_last_click(),
+            i.pointer.time_since_last_movement(),
+            i.pointer.any_down(),
+            i.smooth_scroll_delta,
+        )
+    });
     let areas = ctx.memory(|memory| {
         memory
             .layer_ids()
-            .map(|layer| {
-                (
-                    layer,
-                    egui::AreaState::load(ctx, layer.id).map(|area| area.rect()),
-                )
-            })
+            .map(|layer| (layer, memory.area_rect(layer.id)))
             .collect::<Vec<_>>()
     });
-    format!("probe={probe} screen={:?} font={} theme={:?} response={response:?} clip={:?} transform={:?} pointer={pos:?} layer={:?} geometry={geometry:?} areas={areas:?}", ctx.screen_rect(), app.font_size, ctx.theme(), recorded_clip(app, probe), ctx.layer_transform_to_global(response.layer_id), pos.and_then(|pos|ctx.layer_id_at(pos)))
+    format!("probe={probe} screen={:?} font={} theme={:?} response={response:?} actual_rect={:?} clip={:?} transform={:?} pointer={pos:?} layer={:?} geometry={geometry:?} lower={lower:?} bar={bar:?} time={time:?} areas={areas:?}", ctx.screen_rect(), app.font_size, ctx.theme(), recorded_rect(app, probe), recorded_clip(app, probe), ctx.layer_transform_to_global(response.layer_id), pos.and_then(|pos|ctx.layer_id_at(pos)))
 }
 
 fn result_style_tooltip_paint(
