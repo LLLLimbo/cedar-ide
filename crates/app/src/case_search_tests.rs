@@ -1850,6 +1850,18 @@ fn kelvin_assert_painted<'a>(
     expected_font: &FontId,
     label: &str,
 ) -> &'a egui::Galley {
+    kelvin_assert_painted_in_clip(app, output, expected, viewport, expected_font, label, None)
+}
+
+fn kelvin_assert_painted_in_clip<'a>(
+    app: &CedarApp,
+    output: &'a egui::FullOutput,
+    expected: &str,
+    viewport: egui::Rect,
+    expected_font: &FontId,
+    label: &str,
+    expected_clip: Option<egui::Rect>,
+) -> &'a egui::Galley {
     fn collect<'a>(
         shape: &'a egui::epaint::Shape,
         clip: egui::Rect,
@@ -1872,12 +1884,24 @@ fn kelvin_assert_painted<'a>(
     for shape in &output.shapes {
         collect(&shape.shape, shape.clip_rect, expected, &mut found);
     }
-    let (draw, clip) = found
+    let visible = found
         .into_iter()
-        .find(|(draw, clip)| {
+        .filter(|(draw, clip)| {
             let bounds = egui::Rect::from_min_size(draw.pos, draw.galley.size());
-            viewport.intersect(*clip).intersects(bounds)
+            expected_clip.is_none_or(|expected| expected == *clip)
+                && viewport.intersect(*clip).intersects(bounds)
         })
+        .collect::<Vec<_>>();
+    if expected_clip.is_some() {
+        assert_eq!(
+            visible.len(),
+            1,
+            "{label}: one exact code Galley in the actual preview clip"
+        );
+    }
+    let (draw, clip) = visible
+        .into_iter()
+        .next()
         .unwrap_or_else(|| panic!("{label}: no actual visible text shape for {expected:?}"));
     assert_eq!(
         draw.galley.text().as_bytes(),
@@ -2031,13 +2055,14 @@ fn case_search_kelvin_glyph_rows_and_shared_preview_survive_native_frames() {
                     )))
                 })
                 .expect("actual shared preview viewport");
-            kelvin_assert_painted(
+            kelvin_assert_painted_in_clip(
                 &app,
                 &output,
                 KELVIN_SNIPPET,
                 viewport,
                 &FontId::monospace(font_size),
                 &label,
+                Some(recorded_clip(&app, "project_text_context_target")),
             );
             assert_eq!(
                 triples(&app),

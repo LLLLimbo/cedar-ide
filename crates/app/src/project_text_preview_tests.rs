@@ -633,9 +633,26 @@ fn open_target_repaint_journey(bottom: bool) {
         assert!(app.find_preview_identity() == ticket);
     }
     assert_eq!(repaint_delay(&output), std::time::Duration::MAX);
-    assert!(has_text(&output, "B source line 160"));
     let target = recorded_rect(&app, "project_text_context_target");
     let clip = recorded_clip(&app, "project_text_context_target");
+    let exact_code = preview_gutter_text_shapes(&output)
+        .into_iter()
+        .filter(|(draw, actual_clip)| {
+            draw.galley.text() == "B source line 160"
+                && *actual_clip == clip
+                && draw
+                    .galley
+                    .rect
+                    .translate(draw.pos.to_vec2())
+                    .intersect(clip)
+                    .is_positive()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        exact_code.len(),
+        1,
+        "one exact code Galley in this preview's native clip"
+    );
     assert!(
         clip.contains(egui::pos2(target.min.x + 1.0, target.center().y)),
         "the emitted paint must reveal B's historical target marker"

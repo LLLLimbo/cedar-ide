@@ -5292,3 +5292,208 @@ fn put_files_text_edit(
 #[cfg(test)]
 #[path = "files_ime_widget_tests.rs"]
 mod files_ime_widget_tests;
+
+#[cfg(test)]
+mod preview_gutter_tests {
+    use super::*;
+    use crate::workspace_access_tests::{begin, record, recorded_response};
+
+    #[test]
+    fn preview_gutter_parser_preserves_code_and_formatter_limits() {
+        let context = project_text_context(" \t▶ 10 | 界😀K\r\n\r\nlast\n", 2);
+        let original = context.text.clone();
+        let rows = context_lines(&context).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.number, row.code, row.target))
+                .collect::<Vec<_>>(),
+            [
+                ("1", " \t▶ 10 | 界😀K", false),
+                ("2", "", true),
+                ("3", "last", false),
+                ("4", "", false)
+            ]
+        );
+        assert_eq!(context.text, original);
+        let context = project_text_context(&"界".repeat(100_000), 1);
+        assert!(context.text.len() <= MAX_PROJECT_TEXT_CONTEXT_BYTES);
+        let rows = context_lines(&context).unwrap();
+        assert!(rows[0].code.ends_with(" … [line truncated]"));
+        assert_eq!(
+            rows[0].code.as_bytes(),
+            context.text.strip_prefix("▶ 1 | ").unwrap().as_bytes()
+        );
+        let text = (1..=200)
+            .map(|line| format!("row {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let context = project_text_context(&text, 100);
+        let rows = context_lines(&context).unwrap();
+        assert_eq!(rows.len(), 41);
+        assert_eq!(rows.first().unwrap().number, "80");
+        assert_eq!(rows.last().unwrap().number, "120");
+        assert_eq!(rows.iter().filter(|row| row.target).count(), 1);
+        assert!(context_lines(&project_text_context("one", 2))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn preview_gutter_parser_rejects_whole_malformed_context() {
+        let huge_number = format!("▶ {}0 | code", usize::MAX);
+        for text in [
+            "▶ 0 | code",
+            "▶ 01 | code",
+            "▶ +1 | code",
+            "▶ １ | code",
+            "▶ 1| code",
+            "▶ 1 |code",
+            " ▶ 1 | code",
+            "  1 | no marker",
+            "▶ 1 | a\n▶ 2 | b",
+            "▶ 1 | a\n  3 | b",
+            "▶ 2 | a\n  1 | b",
+            huge_number.as_str(),
+        ] {
+            let context = ProjectTextContext {
+                text: text.into(),
+                note: String::new(),
+            };
+            assert!(context_lines(&context).is_none(), "{text:?}");
+        }
+        let text = (1..=42)
+            .map(|line| format!("{} {line} | code", if line == 1 { "▶" } else { " " }))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(context_lines(&ProjectTextContext {
+            text,
+            note: String::new()
+        })
+        .is_none());
+        assert!(context_lines(&ProjectTextContext {
+            text: format!("▶ 1 | {}", "x".repeat(MAX_PROJECT_TEXT_CONTEXT_BYTES)),
+            note: String::new()
+        })
+        .is_none());
+    }
+
+    fn draw(app: &CedarApp, context: &ProjectTextContext, legacy: bool) -> egui::FullOutput {
+        let ctx = &app.editor_ctx;
+        begin(ctx);
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(780.0, 540.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if legacy {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            for row in context_lines(context).unwrap() {
+                                let response = ui.add(
+                                    egui::Label::new(RichText::new(row.full).monospace())
+                                        .selectable(false)
+                                        .wrap_mode(egui::TextWrapMode::Extend),
+                                );
+                                record(
+                                    ui,
+                                    &format!("project_text_context_row:{}", row.number),
+                                    &response,
+                                );
+                            }
+                        });
+                    } else {
+                        draw_project_text_context(ui, context, false);
+                    }
+                });
+            },
+        )
+    }
+
+    #[test]
+    fn preview_gutter_retains_label_ids_sense_height_and_accessibility() {
+        let context = project_text_context("😀 K first\n\n▶ 10 | code", 2);
+        for screen_reader in [false, true] {
+            let legacy = CedarApp::empty();
+            let candidate = CedarApp::empty();
+            for app in [&legacy, &candidate] {
+                app.editor_ctx.set_fonts(crate::system_fonts::base_fonts());
+                app.editor_ctx
+                    .memory_mut(|memory| memory.options.screen_reader = screen_reader);
+            }
+            for _ in 0..2 {
+                draw(&legacy, &context, true);
+                draw(&candidate, &context, false);
+            }
+            for line in 1..=3 {
+                let probe = format!("project_text_context_row:{line}");
+                let before = recorded_response(&legacy, &probe);
+                let after = recorded_response(&candidate, &probe);
+                assert_eq!(before.id, after.id, "one unchanged auto-ID per row");
+                assert_eq!(before.sense, after.sense);
+                assert_eq!(
+                    after.sense,
+                    if screen_reader {
+                        egui::Sense::focusable_noninteractive()
+                    } else {
+                        egui::Sense::hover()
+                    }
+                );
+                assert_eq!(before.rect.height(), after.rect.height());
+            }
+            if screen_reader {
+                recorded_response(&candidate, "project_text_context_row:2").request_focus();
+                let output = draw(&candidate, &context, false);
+                let infos = output
+                    .platform_output
+                    .events
+                    .iter()
+                    .filter_map(|event| {
+                        if let egui::OutputEvent::FocusGained(info) = event {
+                            Some(info)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(infos.len(), 1);
+                assert_eq!(infos[0].typ, egui::WidgetType::Label);
+                assert_eq!(infos[0].label.as_deref(), Some("▶ 2 | "));
+                assert!(recorded_response(&candidate, "project_text_context_row:2").has_focus());
+            }
+        }
+    }
+
+    #[test]
+    fn preview_gutter_malformed_context_paints_all_original_lines() {
+        let app = CedarApp::empty();
+        let context = ProjectTextContext {
+            text: "▶ 1 | Ω first\n  3 | ▶ 10 | second".into(),
+            note: String::new(),
+        };
+        let output = draw(&app, &context, false);
+        fn visit(shape: &egui::epaint::Shape, text: &mut Vec<String>) {
+            match shape {
+                egui::epaint::Shape::Text(draw) => text.push(draw.galley.text().into()),
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        visit(shape, text);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut painted = Vec::new();
+        for shape in &output.shapes {
+            visit(&shape.shape, &mut painted);
+        }
+        assert_eq!(
+            painted,
+            context.text.lines().map(str::to_owned).collect::<Vec<_>>()
+        );
+    }
+}

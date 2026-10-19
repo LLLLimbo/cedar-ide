@@ -8179,6 +8179,7 @@ fn text_compact_first_visible_footer_stays_fixed_through_all_states() {
                 .iter()
                 .filter(|(text, rect, clip, _)| {
                     text.starts_with("needle line ")
+                        && *clip == recorded_clip(&app, "project_text_context_target")
                         && rect.top() >= first_viewport.top()
                         && rect.bottom() <= first_viewport.bottom()
                         && rect.top() >= clip.top()
@@ -8228,6 +8229,7 @@ fn text_compact_first_visible_footer_stays_fixed_through_all_states() {
                 .iter()
                 .filter(|(text, rect, clip, _)| {
                     text.starts_with("needle line ")
+                        && *clip == recorded_clip(&app, "project_text_context_target")
                         && rect.top() >= viewport.top()
                         && rect.bottom() <= viewport.bottom()
                         && rect.top() >= clip.top()
