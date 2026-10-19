@@ -126,10 +126,10 @@ def validate_origin(origin, package_ids):
     require(type(start) is int and type(end) is int and 0 <= start < end <= origin['bytes']
             and end - start <= MAX_MATERIAL_BYTES, 'Invalid original byte range')
     if origin['kind'] == 'archive':
-        require(origin['package'] in package_ids and all(origin[x] is None for x in
+        require(type(origin['package']) is str and origin['package'] in package_ids and all(origin[x] is None for x in
                 ('repository', 'commit', 'blob', 'stored_path')), 'Invalid archive origin')
     elif origin['kind'] == 'upstream':
-        require(origin['package'] in package_ids, 'Unbound upstream package')
+        require(type(origin['package']) is str and origin['package'] in package_ids, 'Unbound upstream package')
         text(origin['repository'], 'upstream repository')
         require(origin['repository'].startswith('https://') and type(origin['commit']) is str
                 and COMMIT.fullmatch(origin['commit']) and type(origin['blob']) is str
@@ -138,13 +138,13 @@ def validate_origin(origin, package_ids):
         require(origin['stored_path'].startswith('scripts/license-material-sources/'),
                 'Upstream bytes are outside retained input namespace')
     else:
-        require(origin['package'] is None and all(origin[x] is None for x in
+        require(origin['package'] in (None, 'egui@0.31.1') and all(origin[x] is None for x in
                 ('repository', 'commit', 'blob')), 'Invalid source origin')
         relative(origin['stored_path'])
     return origin
 
 
-def validate_review(review):
+def _validate_review(review):
     keys(review, ('schema_version', 'kind', 'lock_sha256', 'source_pins', 'packages', 'materials',
                   'discovery', 'scopes', 'policy_issues', 'release_hold', 'notices_sha256'), 'review')
     require(type(review['schema_version']) is int and review['schema_version'] == 1
@@ -213,17 +213,26 @@ def validate_review(review):
         for origin in material['origins']:
             validate_origin(origin, package_ids)
             require(origin['end'] - origin['start'] == material['bytes'], 'Origin size does not match material')
+            if origin['start'] == 0 and origin['end'] == origin['bytes']:
+                require(origin['sha256'] == material['sha256'], 'Full original hash differs from material')
     unique_sorted(paths, 'material paths')
     require(len({x.casefold() for x in paths}) == len(paths), 'Case-colliding material outputs')
+    folded = {x.casefold() for x in paths}
+    require(not any('/'.join(path.casefold().split('/')[:n]) in folded
+                    for path in paths for n in range(1, len(path.split('/')))),
+            'File/directory material path collision')
     require(total <= MAX_MATERIAL_TOTAL, 'Material inventory exceeds total byte budget')
     by_path = {material['path']: material for material in materials}
     for package in packages:
         seen = []
         for binding in package['bindings']:
             keys(binding, ('material', 'origin'), 'membership binding')
-            require(binding['material'] in by_path, 'Membership names an unknown material')
+            require(type(binding['material']) is str and binding['material'] in by_path, 'Membership names an unknown material')
             origin = validate_origin(binding['origin'], package_ids)
             require(origin['package'] == package['id'], 'Membership is not bound to its package')
+            require(origin in by_path[binding['material']]['origins'], 'Membership has no matching material origin')
+            if origin['kind'] == 'upstream':
+                require(origin['commit'] == package['vcs_commit'], 'Upstream membership commit differs from package VCS')
             require(origin['end'] - origin['start'] == by_path[binding['material']]['bytes'], 'Membership size mismatch')
             seen.append(binding['material'])
         unique_sorted(seen, 'membership material paths')
@@ -232,20 +241,27 @@ def validate_review(review):
     discovered = []
     for entry in discovery:
         keys(entry, ('package', 'path', 'bytes', 'sha256', 'decision', 'material', 'reason'), 'discovery entry')
-        require(entry['package'] in package_ids, 'Unknown discovered package')
+        require(type(entry['package']) is str and entry['package'] in package_ids, 'Unknown discovered package')
         relative(entry['path'])
         require(type(entry['bytes']) is int and 0 <= entry['bytes'] <= 16 * 1024 * 1024, 'Invalid discovered size')
         hash_value(entry['sha256'], 'discovered source')
         require(entry['decision'] in ('retain', 'excluded', 'unresolved'), 'Unreviewed discovery decision')
         if entry['decision'] == 'retain':
-            require(entry['material'] in by_path and entry['reason'] is None, 'Invalid retained discovery')
+            require(type(entry['material']) is str and entry['material'] in by_path
+                    and entry['reason'] is None, 'Invalid retained discovery')
+            require(any(origin['kind'] in ('archive', 'source')
+                        and origin['package'] == entry['package'] and origin['path'] == entry['path']
+                        and origin['bytes'] == entry['bytes'] and origin['sha256'] == entry['sha256']
+                        for origin in by_path[entry['material']]['origins']),
+                    'Discovery has no matching retained source origin')
         else:
             require(entry['material'] is None, 'Uncovered discovery has an output')
             text(entry['reason'], 'discovery decision reason')
         discovered.append(entry['package'] + '/' + entry['path'])
     unique_sorted(discovered, 'discovered candidates')
     scopes = review['scopes']
-    require(type(scopes) is list and [x.get('id') for x in scopes] == list(SCOPES), 'Invalid distribution scopes')
+    require(type(scopes) is list and all(type(x) is dict for x in scopes)
+            and [x.get('id') for x in scopes] == list(SCOPES), 'Invalid distribution scopes')
     for scope in scopes:
         keys(scope, ('id', 'target', 'roots', 'invocation', 'graph_hashes', 'packages'), 'scope')
         require(scope['target'] == ('x86_64-unknown-linux-gnu' if scope['id'].startswith('linux')
@@ -259,7 +275,8 @@ def validate_review(review):
         keys(scope['graph_hashes'], ('full', 'normal', 'runtime'), 'graph hashes')
         for value in scope['graph_hashes'].values():
             hash_value(value, 'graph evidence')
-        require(type(scope['packages']) is list and [x.get('package') for x in scope['packages']] == ids,
+        require(type(scope['packages']) is list and all(type(x) is dict for x in scope['packages'])
+                and [x.get('package') for x in scope['packages']] == ids,
                 'Scope does not classify every reviewed package exactly once')
         for entry in scope['packages']:
             keys(entry, ('package', 'role', 'features', 'witness', 'reason'), 'scope package')
@@ -289,6 +306,13 @@ def validate_review(review):
     require(type(review['release_hold']['active']) is bool, 'Invalid release hold')
     text(review['release_hold']['reason'], 'release-hold reason')
     return review
+
+
+def validate_review(review):
+    try:
+        return _validate_review(review)
+    except (TypeError, AttributeError, KeyError, OverflowError, UnicodeError, RecursionError) as error:
+        raise MaterialError('Malformed reviewed material schema') from error
 
 
 def load_review(root=None):

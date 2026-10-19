@@ -710,6 +710,35 @@ class MaterialReviewContractTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     materials.validate_review(review)
 
+    def test_disconnected_membership_and_discovery_cannot_claim_material_coverage(self):
+        import copy
+        materials, original, _, _, _ = self.review_fixture()
+        for kind in ('binding-path', 'binding-hash', 'discovery-path', 'discovery-hash'):
+            with self.subTest(kind=kind):
+                review = copy.deepcopy(original)
+                if kind.startswith('binding'):
+                    origin = review['packages'][0]['bindings'][0]['origin']
+                    origin['path' if kind.endswith('path') else 'sha256'] = 'OTHER-LICENSE' if kind.endswith('path') else 'e' * 64
+                else:
+                    entry = review['discovery'][0]
+                    entry['path' if kind.endswith('path') else 'sha256'] = 'OTHER-LICENSE' if kind.endswith('path') else 'e' * 64
+                with self.assertRaisesRegex(materials.MaterialError, 'matching'):
+                    materials.validate_review(review)
+
+    def test_malformed_nested_values_always_raise_material_error(self):
+        import copy
+        materials, original, _, _, _ = self.review_fixture()
+        for kind in ('scope', 'scope-package', 'origin-package', 'binding-material', 'discovery-package'):
+            with self.subTest(kind=kind):
+                review = copy.deepcopy(original)
+                if kind == 'scope': review['scopes'][0] = None
+                elif kind == 'scope-package': review['scopes'][0]['packages'][0] = 4
+                elif kind == 'origin-package': review['materials'][0]['origins'][0]['package'] = []
+                elif kind == 'binding-material': review['packages'][0]['bindings'][0]['material'] = []
+                else: review['discovery'][0]['package'] = {}
+                with self.assertRaises(materials.MaterialError):
+                    materials.validate_review(review)
+
     def test_material_exclusion_and_missing_material_are_not_the_same_state(self):
         import copy
         materials, original, _, _, _ = self.review_fixture()
