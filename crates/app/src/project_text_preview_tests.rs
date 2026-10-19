@@ -1699,3 +1699,819 @@ fn preview_gutter_browse_code_column_9_to_10_native_frame() {
 fn preview_gutter_browse_code_column_99_to_100_native_frame() {
     preview_gutter_native_digit_boundary(false, 100);
 }
+// Native preview rendering regression matrix. All frames, including fixture
+// setup, use the selected
+// logical window, fonts, theme and pixels-per-point. No old frame()/idle()/click()
+// helper is used by these journeys. CJK is retained and baseline-compared in a
+// controlled bundled-font environment; this is not installed-CJK glyph proof.
+
+#[derive(Clone, Copy, Debug)]
+struct GutterMetrics {
+    size: egui::Vec2,
+    body: f32,
+    mono: f32,
+    scale: f32,
+    dark: bool,
+}
+
+fn gutter_frame(
+    app: &mut CedarApp,
+    metrics: GutterMetrics,
+    delta: f64,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    let ctx = app.editor_ctx.clone();
+    let mut raw = egui::RawInput {
+        time: Some(now(app) + delta),
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, metrics.size)),
+        events,
+        ..Default::default()
+    };
+    raw.viewports
+        .get_mut(&egui::ViewportId::ROOT)
+        .unwrap()
+        .native_pixels_per_point = Some(metrics.scale);
+    eframe::App::raw_input_hook(app, &ctx, &mut raw);
+    let mut native = eframe::Frame::_new_kittest();
+    let output = ctx.run(raw, |ctx| eframe::App::update(app, ctx, &mut native));
+    assert_eq!(output.pixels_per_point, metrics.scale);
+    assert_eq!(ctx.screen_rect().size(), metrics.size);
+    assert_eq!(ctx.style().visuals.dark_mode, metrics.dark);
+    assert_eq!(
+        egui::TextStyle::Body.resolve(&ctx.style()),
+        FontId::proportional(metrics.body)
+    );
+    assert_eq!(
+        egui::TextStyle::Monospace.resolve(&ctx.style()),
+        FontId::monospace(metrics.mono)
+    );
+    output
+}
+
+fn gutter_click(app: &mut CedarApp, metrics: GutterMetrics, probe: &str) {
+    let rect = recorded_rect(app, probe);
+    let clip = recorded_clip(app, probe);
+    let visible = rect.intersect(clip);
+    assert!(visible.is_positive(), "native click target {probe}");
+    let pos = visible.center();
+    gutter_frame(app, metrics, 0.01, vec![egui::Event::PointerMoved(pos)]);
+    assert_eq!(
+        recorded_rect(app, probe),
+        rect,
+        "stable native click target"
+    );
+    for pressed in [true, false] {
+        gutter_frame(
+            app,
+            metrics,
+            0.01,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        if pressed {
+            assert!(recorded_response(app, probe).is_pointer_button_down_on());
+        }
+    }
+    assert!(recorded_response(app, probe).clicked_by(egui::PointerButton::Primary));
+}
+
+fn gutter_fixture(
+    bottom: bool,
+    target: usize,
+    metrics: GutterMetrics,
+) -> (CedarApp, Receiver<Command>, Box<dyn FnOnce()>) {
+    let mut app = CedarApp::empty();
+    app.editor_ctx.set_fonts(system_fonts::base_fonts());
+    let (fonts, hold_font_probe) = system_fonts::SystemFonts::pending_failure_for_test();
+    app.system_fonts = fonts;
+    // Native DPI input avoids set_pixels_per_point's next-pass zoom/resize rewrite.
+    app.editor_ctx.set_theme(if metrics.dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    });
+    app.editor_ctx.set_visuals(if metrics.dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    });
+    app.editor_ctx.style_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        for kind in [egui::TextStyle::Body, egui::TextStyle::Button] {
+            style
+                .text_styles
+                .insert(kind, FontId::proportional(metrics.body));
+        }
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, FontId::monospace(metrics.mono));
+    });
+    app.font_size = metrics.mono;
+    let form = ConnectForm {
+        local_root: "/workspace".into(),
+        allow_run: false,
+        ..Default::default()
+    };
+    app.workspace_key = Some(form.key());
+    app.active_form = Some(form);
+    app.root = "/workspace".into();
+    app.agent_info = Some(agent_support::full_test_agent());
+    app.state = ConnectionState::Ready;
+    app.open_form = false;
+    app.documents.push(Document::new(
+        1,
+        "origin.txt".into(),
+        SAVED.into(),
+        "a".repeat(64),
+    ));
+    app.active_document = Some(1);
+    app.next_document = 2;
+    let (worker, commands) = Worker::recording();
+    app.worker = Some(worker);
+    app.tools_open = true;
+    app.tool = Tool::Search;
+    gutter_frame(&mut app, metrics, 1.0, vec![]);
+    editor_state::commit(&app.editor_ctx, &mut app.documents[0], DRAFT.into(), 8);
+    let mut state = editor_state::load(&app.editor_ctx, &mut app.documents[0]);
+    state
+        .cursor
+        .set_char_range(Some(CCursorRange::two(CCursor::new(1), CCursor::new(8))));
+    state.store(&app.editor_ctx, egui::Id::new(("editor", 1_u64)));
+    app.search_query = "needle".into();
+    app.search();
+    let search = commands.try_recv().expect("fixture Search");
+    assert!(matches!(search.op, Operation::Search { .. }));
+    assert!(commands.try_recv().is_err());
+    app.apply_event(Event {
+        generation: app.generation,
+        id: search.id,
+        connected: true,
+        result: Ok(Payload::Matches {
+            matches: [("origin.txt", 2), ("a.txt", target), ("b.txt", 2)]
+                .into_iter()
+                .map(|(path, line)| SearchMatch {
+                    path: path.into(),
+                    line,
+                    text: "needle historical match".into(),
+                })
+                .collect(),
+            truncated: false,
+        }),
+    });
+    gutter_frame(&mut app, metrics, 0.01, vec![]);
+    if !bottom {
+        app.show_browse(browse::Provider::ProjectText);
+    }
+    for _ in 0..4 {
+        gutter_frame(&mut app, metrics, 0.01, vec![]);
+    }
+    gutter_click(&mut app, metrics, &row_probe(bottom, 0));
+    assert!(commands.try_recv().is_err());
+    (app, commands, Box::new(hold_font_probe))
+}
+
+// Observed flattening order also proves that the target background precedes
+// its code. Vec shapes inherit their real enclosing ClippedShape's exact clip.
+fn gutter_shapes(output: &egui::FullOutput) -> Vec<(&egui::epaint::Shape, egui::Rect)> {
+    fn visit<'a>(
+        shape: &'a egui::epaint::Shape,
+        clip: egui::Rect,
+        out: &mut Vec<(&'a egui::epaint::Shape, egui::Rect)>,
+    ) {
+        if let egui::epaint::Shape::Vec(shapes) = shape {
+            for shape in shapes {
+                visit(shape, clip, out);
+            }
+        } else {
+            out.push((shape, clip));
+        }
+    }
+    let mut out = Vec::new();
+    for shape in &output.shapes {
+        visit(&shape.shape, shape.clip_rect, &mut out);
+    }
+    out
+}
+
+fn gutter_close(actual: f32, expected: f32, label: &str) {
+    // Only floating-point addition/subtraction roundoff, never a pixel allowance.
+    let roundoff = 8.0 * f32::EPSILON * actual.abs().max(expected.abs()).max(1.0);
+    assert!(
+        (actual - expected).abs() <= roundoff,
+        "{label}: {actual} != {expected}; roundoff={roundoff}"
+    );
+}
+
+struct GutterPaintFrame {
+    output: egui::FullOutput,
+    rows: std::collections::BTreeMap<usize, (egui::Rect, egui::Rect)>,
+    target: egui::Rect,
+    target_clip: egui::Rect,
+    viewport: egui::Rect,
+}
+
+fn gutter_capture(app: &CedarApp, bottom: bool, output: egui::FullOutput) -> GutterPaintFrame {
+    let context = app
+        .project_text_preview_context()
+        .expect("loaded context for native receipts");
+    let rows = context
+        .text
+        .lines()
+        .map(|full| {
+            let prefix = full.split_once(" | ").unwrap().0;
+            let line: usize = prefix.split_whitespace().last().unwrap().parse().unwrap();
+            let probe = format!("project_text_context_row:{line}");
+            (
+                line,
+                (recorded_rect(app, &probe), recorded_clip(app, &probe)),
+            )
+        })
+        .collect();
+    GutterPaintFrame {
+        output,
+        rows,
+        target: recorded_rect(app, "project_text_context_target"),
+        target_clip: recorded_clip(app, "project_text_context_target"),
+        viewport: context_scroll(app, bottom).1,
+    }
+}
+
+fn gutter_row_draw<'a>(
+    paint: &'a GutterPaintFrame,
+    line: usize,
+    text: &str,
+) -> (usize, &'a egui::epaint::TextShape) {
+    let (row, clip) = paint.rows[&line];
+    let found = gutter_shapes(&paint.output)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(order, (shape, paint_clip))| {
+            let egui::epaint::Shape::Text(draw) = shape else {
+                return None;
+            };
+            // Bind an empty code Galley by its real numbered row and clip, without
+            // treating a zero-width rectangle as a positive visible intersection.
+            let bounds = draw.galley.rect.translate(draw.pos.to_vec2());
+            (draw.galley.text().as_bytes() == text.as_bytes()
+                && paint_clip == clip
+                && bounds.center().y >= row.top()
+                && bounds.center().y < row.bottom())
+            .then_some((order, draw))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found.len(),
+        1,
+        "row={line}, text={text:?}, row_rect={row:?}, native_clip={clip:?}: unique owned Galley"
+    );
+    found[0]
+}
+
+fn gutter_reference(app: &CedarApp, full: &str) -> std::sync::Arc<egui::Galley> {
+    let style = app.editor_ctx.style();
+    // Exact old Label layout, in the shared draw's top-down / left aligned UI.
+    // Deliberately do not use the candidate context_layout/context_piece_offset.
+    let mut job = egui::WidgetText::from(RichText::new(full).monospace()).into_layout_job(
+        &style,
+        egui::FontSelection::Default,
+        style.override_text_valign.unwrap_or(egui::Align::Center),
+    );
+    job.wrap.max_width = f32::INFINITY;
+    job.halign = egui::Align::Min;
+    job.justify = false;
+    app.editor_ctx.fonts(|fonts| fonts.layout_job(job))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GutterRowGeometry {
+    code_x: f32,
+    number_right: f32,
+    row: egui::Rect,
+}
+
+fn gutter_assert_row(
+    app: &CedarApp,
+    output: &GutterPaintFrame,
+    _bottom: bool,
+    line: usize,
+    target: usize,
+    code: &str,
+    start_visible: bool,
+) -> GutterRowGeometry {
+    let (row, clip) = output.rows[&line];
+    let viewport = output.viewport;
+    assert!(row.height() > 0.0 && row.is_finite());
+    assert!(clip.contains_rect(viewport));
+    assert!(
+        row.top() >= viewport.top() && row.bottom() <= viewport.bottom(),
+        "complete native row {line}: {row:?} in {viewport:?}"
+    );
+    assert_eq!(clip, output.target_clip);
+    let number = line.to_string();
+    let (_, number_draw) = gutter_row_draw(output, line, &number);
+    let (_, code_draw) = gutter_row_draw(output, line, code);
+    let full = format!("{} {line} | {code}", if line == target { "▶" } else { " " });
+    let reference = gutter_reference(app, &full);
+    assert_eq!(reference.rows.len(), 1);
+    gutter_close(
+        row.height(),
+        reference.size().y,
+        "original full-line row height",
+    );
+    let style = app.editor_ctx.style();
+    let font = egui::TextStyle::Monospace.resolve(&style);
+    let gray = style.visuals.weak_text_color();
+    assert_eq!(gray.r(), gray.g());
+    assert_eq!(gray.g(), gray.b());
+    assert_ne!(
+        gray,
+        style.visuals.text_color(),
+        "line numbers remain visually muted"
+    );
+    for draw in [number_draw, code_draw] {
+        assert_eq!(draw.angle, 0.0);
+        assert!(draw.opacity_factor > 0.0);
+        assert_eq!(draw.galley.rows.len(), 1);
+        for section in &draw.galley.job.sections {
+            assert_eq!(section.format.font_id, font);
+        }
+    }
+    for section in &number_draw.galley.job.sections {
+        assert_eq!(section.format.color, gray);
+    }
+    for section in &code_draw.galley.job.sections {
+        assert_eq!(section.format.color, style.visuals.text_color());
+    }
+    assert_eq!(code_draw.galley.text().as_bytes(), code.as_bytes());
+    assert_eq!(
+        code_draw.galley.rows[0]
+            .glyphs
+            .iter()
+            .map(|glyph| glyph.chr)
+            .collect::<String>(),
+        code
+    );
+    let prefix = full.chars().count() - code.chars().count();
+    for (draw, start) in [(number_draw, 2), (code_draw, prefix)] {
+        for (index, glyph) in draw.galley.rows[0].glyphs.iter().enumerate() {
+            let original = &reference.rows[0].glyphs[start + index];
+            assert_eq!(glyph.chr, original.chr);
+            assert_eq!(
+                glyph.uv_rect, original.uv_rect,
+                "same original font outline and size"
+            );
+            assert_eq!(glyph.advance_width, original.advance_width);
+            assert_eq!(glyph.line_height, original.line_height);
+            assert_eq!(glyph.font_ascent, original.font_ascent);
+            assert_eq!(glyph.font_height, original.font_height);
+            assert_eq!(glyph.font_impl_ascent, original.font_impl_ascent);
+            assert_eq!(glyph.font_impl_height, original.font_impl_height);
+            gutter_close(
+                draw.pos.y + glyph.pos.y,
+                row.top() + original.pos.y,
+                "matching full-line glyph Y, not marker baseline",
+            );
+        }
+    }
+    if start_visible {
+        let number_ink = number_draw.visual_bounding_rect();
+        assert!(
+            number_ink.is_positive()
+                && viewport.contains_rect(number_ink)
+                && clip.contains_rect(number_ink)
+        );
+        if code.is_empty() {
+            assert!(code_draw.galley.rows[0].glyphs.is_empty());
+            assert_eq!(code_draw.galley.size().x, 0.0);
+            // Positive real row and its visible number above are the evidence.
+        } else {
+            // Leading tabs/spaces have no ink. Require one actual visible code
+            // glyph, and compare every glyph's baseline independently above.
+            let visible_ink = code_draw.galley.rows[0].glyphs.iter().any(|glyph| {
+                let uv = glyph.uv_rect;
+                let ink = egui::Rect::from_min_size(
+                    code_draw.pos + glyph.pos.to_vec2() + uv.offset,
+                    uv.size,
+                );
+                uv.size.x > 0.0
+                    && uv.size.y > 0.0
+                    && viewport.contains_rect(ink)
+                    && clip.contains_rect(ink)
+            });
+            assert!(
+                visible_ink,
+                "nonempty code has actual ink in its native viewport"
+            );
+        }
+    } else {
+        let visible = code_draw
+            .galley
+            .rect
+            .translate(code_draw.pos.to_vec2())
+            .intersect(viewport)
+            .intersect(clip);
+        assert!(
+            visible.is_positive(),
+            "horizontally scrolled code still intersects its clip"
+        );
+    }
+    GutterRowGeometry {
+        code_x: code_draw.pos.x,
+        number_right: number_draw.pos.x + number_draw.galley.size().x,
+        row,
+    }
+}
+
+fn gutter_assert_target_background(
+    app: &CedarApp,
+    output: &GutterPaintFrame,
+    target: usize,
+    code: &str,
+) {
+    let rect = output.target;
+    let clip = output.target_clip;
+    assert_eq!(rect, output.rows[&target].0);
+    let style = app.editor_ctx.style();
+    let fill = style.visuals.selection.bg_fill.gamma_multiply(0.15);
+    assert_ne!(fill, style.visuals.selection.bg_fill);
+    assert!(fill.a() > 0);
+    let backgrounds = gutter_shapes(&output.output)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(order, (shape, paint_clip))| {
+            let egui::epaint::Shape::Rect(shape) = shape else {
+                return None;
+            };
+            (paint_clip == clip && shape.fill == fill).then_some((order, shape))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        backgrounds.len(),
+        1,
+        "one faint historical row fill, no per-match fills"
+    );
+    assert_eq!(backgrounds[0].1.rect, rect);
+    assert_eq!(backgrounds[0].1.stroke, egui::Stroke::NONE);
+    let (code_order, _) = gutter_row_draw(output, target, code);
+    assert!(
+        backgrounds[0].0 < code_order,
+        "background is behind actual target code"
+    );
+}
+
+fn gutter_loaded_frames(
+    app: &mut CedarApp,
+    commands: &Receiver<Command>,
+    bottom: bool,
+    metrics: GutterMetrics,
+    source: &str,
+) -> (GutterPaintFrame, GutterPaintFrame, u64, Option<egui::Id>) {
+    gutter_frame(app, metrics, 0.01, key(egui::Key::Space));
+    gutter_frame(app, metrics, 0.001, vec![]);
+    assert!(app.project_text_review_armed());
+    assert!(commands.try_recv().is_err(), "dirty Origin needs no Read");
+    gutter_frame(app, metrics, 0.01, key(egui::Key::ArrowDown));
+    assert_eq!(selected(app, bottom), Some(1));
+    assert!(app.project_text_review_pending());
+    assert!(commands.try_recv().is_err());
+    gutter_frame(app, metrics, 0.151, vec![]);
+    let request = read(commands, "a.txt");
+    let next_request = app.next_request;
+    let row_focus = focus(app);
+    assert_eq!(
+        row_focus,
+        Some(recorded_response(app, &row_probe(bottom, 1)).id)
+    );
+    reply(app, &request, source);
+    // Fixed lifecycle boundaries, never a loop that waits for a passing frame:
+    // 1. ready context lays out and requests its one-shot target reveal;
+    // 2. the next App frame applies that nonanimated native ScrollArea reveal;
+    // 3. three fixed quiet updates establish the settled checkpoint.
+    let reply_paint = gutter_frame(app, metrics, 0.01, vec![]);
+    assert!(!app.project_text_review_pending());
+    assert!(app.project_text_preview_context().is_some());
+    assert!(gutter_shapes(&reply_paint).iter().any(|(shape, _)| matches!(shape, egui::epaint::Shape::Text(draw) if draw.galley.text().contains("Historical requested line"))));
+    let reply_paint = gutter_capture(app, bottom, reply_paint);
+    let reveal_paint = gutter_frame(app, metrics, 0.01, vec![]);
+    let reveal_paint = gutter_capture(app, bottom, reveal_paint);
+    // Preserve the earliest complete target row if a surface was already able
+    // to display it in the reply frame. Otherwise the single next reveal frame
+    // must prove visibility; no third or later frame can rescue this checkpoint.
+    let first_visible = if reply_paint.target.top() >= reply_paint.viewport.top()
+        && reply_paint.target.bottom() <= reply_paint.viewport.bottom()
+    {
+        reply_paint
+    } else {
+        reveal_paint
+    };
+    for _ in 0..2 {
+        gutter_frame(app, metrics, 0.01, vec![]);
+    }
+    let settled = gutter_frame(app, metrics, 0.01, vec![]);
+    let settled = gutter_capture(app, bottom, settled);
+    (first_visible, settled, next_request, row_focus)
+}
+
+fn gutter_assert_readonly(
+    app: &CedarApp,
+    commands: &Receiver<Command>,
+    shell: &serde_json::Value,
+    navigation: u64,
+    request: u64,
+    row_focus: Option<egui::Id>,
+) {
+    assert_eq!(&review_shell_snapshot(app), shell, "exact dirty bytes, saved bytes, cursor/selection, Undo/Redo, locations and accepted search snapshot");
+    assert_eq!(app.navigation_epoch, navigation);
+    assert_eq!(app.next_request, request);
+    assert_eq!(app.documents.len(), 1);
+    assert_eq!(app.active().unwrap().text, DRAFT);
+    assert!(app.active().unwrap().dirty());
+    assert_eq!(focus(app), row_focus);
+    assert!(app.project_text_review_armed());
+    assert!(!app.project_text_review_pending());
+    assert!(
+        commands.try_recv().is_err(),
+        "no extra Read, Search or other command"
+    );
+}
+
+#[test]
+fn preview_gutter_native_metrics_theme_matrix() {
+    let mut cases = 0;
+    // Exact Cartesian product: 96 cases, two paint checkpoints each.
+    for bottom in [false, true] {
+        for size in [egui::vec2(1180.0, 812.0), egui::vec2(780.0, 540.0)] {
+            for (body, mono) in [(13.0, 14.0), (18.0, 19.0)] {
+                for scale in [1.0, 1.25, 2.0] {
+                    for dark in [true, false] {
+                        for target in [10, 100] {
+                            let metrics = GutterMetrics {
+                                size,
+                                body,
+                                mono,
+                                scale,
+                                dark,
+                            };
+                            let (mut app, commands, _hold_fonts) =
+                                gutter_fixture(bottom, target, metrics);
+                            let before = review_shell_snapshot(&app);
+                            let navigation = app.navigation_epoch;
+                            let source = (1..=130)
+                                .map(preview_gutter_code)
+                                .collect::<Vec<_>>()
+                                .join("\r\n");
+                            let (first, settled, request, row_focus) =
+                                gutter_loaded_frames(&mut app, &commands, bottom, metrics, &source);
+                            let expected = browse::project_text_context(&source, target);
+                            let context = app.project_text_preview_context().unwrap();
+                            assert_eq!(context.text.as_bytes(), expected.text.as_bytes());
+                            assert_eq!(context.note, expected.note);
+                            for (stage, output) in
+                                [("first-target-visible", first), ("settled", settled)]
+                            {
+                                // Each output carries its own same-frame native row and
+                                // clip receipts, never a later frame's geometry.
+                                let rows = [target - 1, target, target + 1].map(|line| {
+                                    gutter_assert_row(
+                                        &app,
+                                        &output,
+                                        bottom,
+                                        line,
+                                        target,
+                                        &preview_gutter_code(line),
+                                        true,
+                                    )
+                                });
+                                assert_eq!(rows[0].code_x, rows[1].code_x);
+                                assert_eq!(rows[1].code_x, rows[2].code_x);
+                                gutter_close(
+                                    rows[0].number_right,
+                                    rows[1].number_right,
+                                    "right-aligned decimal edge",
+                                );
+                                gutter_close(
+                                    rows[1].number_right,
+                                    rows[2].number_right,
+                                    "right-aligned decimal edge",
+                                );
+                                gutter_close(
+                                    rows[0].row.bottom(),
+                                    rows[1].row.top(),
+                                    "no extra row-height budget",
+                                );
+                                gutter_close(
+                                    rows[1].row.bottom(),
+                                    rows[2].row.top(),
+                                    "no extra row-height budget",
+                                );
+                                gutter_assert_target_background(
+                                    &app,
+                                    &output,
+                                    target,
+                                    &preview_gutter_code(target),
+                                );
+                                eprintln!("PREVIEW_GUTTER_MATRIX bottom={bottom} target={target} metrics={metrics:?} stage={stage} rows={rows:?}");
+                            }
+                            gutter_assert_readonly(
+                                &app, &commands, &before, navigation, request, row_focus,
+                            );
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 96);
+}
+
+#[test]
+fn preview_gutter_native_blank_tabs_fake_prefix_and_unicode() {
+    let metrics = GutterMetrics {
+        size: egui::vec2(1180.0, 812.0),
+        body: 18.0,
+        mono: 19.0,
+        scale: 1.25,
+        dark: true,
+    };
+    let mut lines = (1..=8).map(preview_gutter_code).collect::<Vec<_>>();
+    lines.extend([
+        String::new(),
+        "\t  tab_code();".into(),
+        "  ▶ 999 | 中文😀K ; literal | source".into(),
+        String::new(),
+    ]);
+    let source = lines.join("\r\n"); // Last empty element is an actual EOF blank row.
+    for bottom in [false, true] {
+        for target in [10, 12] {
+            let (mut app, commands, _hold_fonts) = gutter_fixture(bottom, target, metrics);
+            let before = review_shell_snapshot(&app);
+            let navigation = app.navigation_epoch;
+            let (first, settled, request, row_focus) =
+                gutter_loaded_frames(&mut app, &commands, bottom, metrics, &source);
+            let context = app.project_text_preview_context().unwrap();
+            assert_eq!(
+                context.text,
+                browse::project_text_context(&source, target).text
+            );
+            assert_eq!(
+                if bottom {
+                    app.search_preview_text()
+                } else {
+                    app.browse_preview_text()
+                },
+                Some(source.as_str())
+            );
+            let visible_lines = if target == 10 {
+                [9, 10, 11]
+            } else {
+                [10, 11, 12]
+            };
+            for (stage, output) in [("first-target-visible", first), ("settled", settled)] {
+                let rows = visible_lines.map(|line| {
+                    gutter_assert_row(&app, &output, bottom, line, target, &lines[line - 1], true)
+                });
+                assert_eq!(rows[0].code_x, rows[1].code_x);
+                assert_eq!(rows[1].code_x, rows[2].code_x);
+                gutter_assert_target_background(&app, &output, target, &lines[target - 1]);
+                eprintln!("PREVIEW_GUTTER_SOURCE_CASE bottom={bottom} target={target} stage={stage} rows={rows:?} retained={:?}", visible_lines.map(|line| &lines[line - 1]));
+            }
+            gutter_assert_readonly(&app, &commands, &before, navigation, request, row_focus);
+        }
+    }
+}
+
+fn gutter_wheel(
+    app: &mut CedarApp,
+    bottom: bool,
+    metrics: GutterMetrics,
+    delta: egui::Vec2,
+) -> GutterPaintFrame {
+    let (_, viewport) = context_scroll(app, bottom);
+    gutter_frame(
+        app,
+        metrics,
+        0.01,
+        vec![
+            egui::Event::PointerMoved(viewport.center()),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    // Fixed 0.6 s drain exceeds egui's native exponential wheel smoothing for
+    // these bounded deltas. Assert the input is quiet; never poll until green.
+    for _ in 0..11 {
+        gutter_frame(app, metrics, 0.05, vec![]);
+    }
+    let output = gutter_frame(app, metrics, 0.05, vec![]);
+    assert_eq!(
+        app.editor_ctx.input(|input| input.smooth_scroll_delta),
+        egui::Vec2::ZERO
+    );
+    gutter_capture(app, bottom, output)
+}
+
+#[test]
+fn preview_gutter_native_horizontal_wheel_and_manual_scroll_stay_owned() {
+    let metrics = GutterMetrics {
+        size: egui::vec2(780.0, 540.0),
+        body: 13.0,
+        mono: 14.0,
+        scale: 1.0,
+        dark: false,
+    };
+    let target = 60;
+    let lines = (1..=120)
+        .map(|line| {
+            format!(
+                "{} {}",
+                preview_gutter_code(line),
+                "long_code(); ".repeat(64)
+            )
+        })
+        .collect::<Vec<_>>();
+    let source = lines.join("\n");
+    for bottom in [false, true] {
+        let (mut app, commands, _hold_fonts) = gutter_fixture(bottom, target, metrics);
+        let before = review_shell_snapshot(&app);
+        let navigation = app.navigation_epoch;
+        let (_, loaded, request, row_focus) =
+            gutter_loaded_frames(&mut app, &commands, bottom, metrics, &source);
+        let (id, viewport) = context_scroll(&app, bottom);
+        let offset = |app: &CedarApp| {
+            egui::scroll_area::State::load(&app.editor_ctx, id)
+                .unwrap()
+                .offset
+        };
+        let initial = offset(&app);
+        assert_eq!(initial.x, 0.0);
+        assert!(
+            initial.y > 0.0,
+            "historical line was actually revealed once"
+        );
+        let initial_rows = [59, 60, 61].map(|line| {
+            gutter_assert_row(&app, &loaded, bottom, line, target, &lines[line - 1], true)
+        });
+        assert!(initial_rows[1].row.width() > viewport.width());
+        let identity = app.find_preview_identity();
+        let output = gutter_wheel(&mut app, bottom, metrics, egui::vec2(-160.0, 0.0));
+        let horizontal = offset(&app);
+        assert!(
+            horizontal.x > initial.x,
+            "real native wheel moved the actual ScrollArea"
+        );
+        gutter_close(
+            horizontal.y,
+            initial.y,
+            "horizontal wheel preserves vertical offset",
+        );
+        let after_rows = [59, 60, 61].map(|line| {
+            gutter_assert_row(&app, &output, bottom, line, target, &lines[line - 1], false)
+        });
+        for (before, after) in initial_rows.into_iter().zip(after_rows) {
+            gutter_close(
+                after.code_x - before.code_x,
+                -(horizontal.x - initial.x),
+                "code follows native horizontal offset",
+            );
+            gutter_close(
+                after.number_right - before.number_right,
+                -(horizontal.x - initial.x),
+                "gutter follows same native offset",
+            );
+        }
+        assert_eq!(after_rows[0].code_x, after_rows[1].code_x);
+        assert_eq!(after_rows[1].code_x, after_rows[2].code_x);
+        gutter_wheel(&mut app, bottom, metrics, egui::vec2(0.0, 72.0));
+        let manual = offset(&app);
+        assert!(
+            manual.y < horizontal.y,
+            "real native vertical wheel moves away from target"
+        );
+        gutter_close(
+            manual.x,
+            horizontal.x,
+            "vertical wheel preserves horizontal offset",
+        );
+        for _ in 0..3 {
+            gutter_frame(&mut app, metrics, 0.1, vec![]);
+        }
+        assert_eq!(
+            offset(&app),
+            manual,
+            "quiet paints must not reapply historical reveal"
+        );
+        assert!(app.find_preview_identity() == identity);
+        assert_eq!(selected(&app, bottom), Some(1));
+        gutter_assert_readonly(&app, &commands, &before, navigation, request, row_focus);
+        eprintln!("PREVIEW_GUTTER_NATIVE_SCROLL bottom={bottom} metrics={metrics:?} initial={initial:?} horizontal={horizontal:?} manual={manual:?}");
+    }
+}
