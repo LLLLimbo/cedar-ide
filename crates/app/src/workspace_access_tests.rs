@@ -1282,6 +1282,7 @@ fn capture_origin_changes_before_update_and_missing_metadata_fail_closed() {
         "query",
         "scope",
         "masks",
+        "case_mode",
         "tool",
         "focus",
         "missing",
@@ -1306,6 +1307,7 @@ fn capture_origin_changes_before_update_and_missing_metadata_fail_closed() {
             "query" => app.search_query.push_str("changed"),
             "scope" => app.search_scope = "changed".into(),
             "masks" => app.search_masks = "*.changed".into(),
+            "case_mode" => app.search_match_case = !app.search_match_case,
             "tool" => app.tool = Tool::Git,
             "focus" => {
                 ctx.memory_mut(|memory| memory.request_focus(egui::Id::new(("editor", 1u64))))
@@ -1676,6 +1678,7 @@ fn witnessed_ready_retirement_rejects_every_unrelated_transition_and_overflow() 
         "query",
         "scope",
         "masks",
+        "case_mode",
         "focus",
         "missing_reply",
         "unowned_reply",
@@ -1732,6 +1735,7 @@ fn witnessed_ready_retirement_rejects_every_unrelated_transition_and_overflow() 
                 "query" => app.search_query.push_str("changed"),
                 "scope" => app.search_scope = "changed".into(),
                 "masks" => app.search_masks = "*.changed".into(),
+                "case_mode" => app.search_match_case = !app.search_match_case,
                 "focus" => ctx.memory_mut(|memory| {
                     memory.request_focus(egui::Id::new("new retirement owner"))
                 }),

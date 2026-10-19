@@ -363,6 +363,7 @@ struct Input {
     claimed: HashSet<egui::Key>,
     // Checkbox key ownership survives view retirement until physical release.
     case_claimed: HashSet<egui::Key>,
+    case_attempted: bool,
     composing: bool,
     files_ime_commit: bool,
     files_ime_cancel: bool,
@@ -2002,6 +2003,7 @@ impl CedarApp {
         input.row_click_committed = false;
         input.pass = Some(ctx.cumulative_pass_nr());
         input.key = None;
+        input.case_attempted = false;
         input.click = None;
         input.shortcut = None;
         input.global_edges.clear();
@@ -2034,7 +2036,9 @@ impl CedarApp {
         let was_composing = input.composing;
         for event in &raw.events {
             match event {
-                egui::Event::Ime(egui::ImeEvent::Preedit(_)) => input.composing = true,
+                egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_)) => {
+                    input.composing = true
+                }
                 egui::Event::Ime(egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled) => {
                     input.composing = false
                 }
@@ -2198,6 +2202,16 @@ impl CedarApp {
                 continue;
             }
             let fresh = input.held.insert(*key);
+            if matches!(key, egui::Key::Enter | egui::Key::Space)
+                && (input.case_claimed.contains(key)
+                    || source
+                        .as_ref()
+                        .is_some_and(|item| item.token.target == Target::MatchCase))
+            {
+                // Consult ownership at this exact ordered press, after any
+                // preceding release. A new editor key cannot inherit old ownership.
+                input.case_attempted = true;
+            }
             let owns = source
                 .as_ref()
                 .is_some_and(|item| owns_key(&item.token.target, *key) && modifiers.is_none());
@@ -2216,19 +2230,21 @@ impl CedarApp {
                     input.case_claimed.insert(*key);
                 }
                 // Consume only this owned Space's native companion. A release,
-                // another key, IME event, or unrelated text ends adjacency; a
-                // pointer move can legitimately occur between the native pair.
+                // another key, IME event, or unrelated text ends adjacency.
+                // Pointer input cannot transfer an already-owned physical key.
                 if *key == egui::Key::Space && input.case_claimed.contains(key) && !composing {
                     for next in index + 1..raw.events.len() {
                         match &raw.events[next] {
-                            egui::Event::PointerMoved(_) => continue,
+                            egui::Event::PointerMoved(_)
+                            | egui::Event::MouseMoved(_)
+                            | egui::Event::PointerButton { .. } => continue,
                             egui::Event::Text(text) if text == " " => consumed[next] = true,
                             _ => {}
                         }
                         break;
                     }
                 }
-                space_claimed |= *key == egui::Key::Space;
+                space_claimed |= *key == egui::Key::Space && !input.case_claimed.contains(key);
                 if fresh && !repeat && fresh_batch && clean == Some((*key, *modifiers)) {
                     if let Some(provider) = shortcut {
                         input.shortcut =
@@ -2823,7 +2839,9 @@ impl CedarApp {
         self.browse_response(&filters_ui, Target::Masks, &masks);
         let mut match_case =
             search_keyboard::match_case_response(ui, case_rect, self.browse.id(&Target::MatchCase));
-        if self.browse_response(ui, Target::MatchCase, &match_case) {
+        if self.browse_response(ui, Target::MatchCase, &match_case)
+            && self.search_case_draft_available()
+        {
             self.search_match_case = !self.search_match_case;
             self.browse_query_changed();
             match_case.mark_changed();
@@ -3865,7 +3883,7 @@ impl CedarApp {
                 toggle_group = actions.toggle_group.or(toggle_group);
                 // Case changes never share an activation frame with submission
                 // or a result action. Preserve ordinary text-edit + Enter behavior.
-                if actions.case_changed {
+                if actions.case_changed || self.browse.input.case_attempted {
                     submit = false;
                     select = None;
                     preview = false;

@@ -253,6 +253,7 @@ struct CaseControl {
     released: Option<CasePresented>,
     native_key: Option<egui::Key>,
     attempted: bool,
+    raw_attempted: bool,
     held: HashSet<egui::Key>,
     owned: HashSet<egui::Key>,
     composing: bool,
@@ -266,6 +267,10 @@ pub(super) struct PointerProbe {
 }
 
 impl Search {
+    #[cfg(test)]
+    pub(super) fn exhaust_draft_revision(&mut self) {
+        self.draft_revision = u64::MAX;
+    }
     #[cfg(test)]
     pub(super) fn claims(&self, key: egui::Key) -> bool {
         self.keyboard.claimed.contains(&key)
@@ -988,8 +993,13 @@ impl CedarApp {
         self.search_state.accepted = Some(source);
     }
 
+    pub(super) fn search_case_draft_available(&self) -> bool {
+        self.search_state.draft_revision != u64::MAX
+    }
+
     fn case_control_allowed(&self, ctx: &egui::Context) -> bool {
-        self.tools_open
+        self.search_case_draft_available()
+            && self.tools_open
             && self.tool == Tool::Search
             && !self.open_form
             && !self.new_file
@@ -1018,6 +1028,7 @@ impl CedarApp {
         case.captured = Some(identity.clone());
         case.input_pass = Some(ctx.cumulative_pass_nr());
         case.attempted = false;
+        case.raw_attempted = false;
         case.released = None;
         case.native_key = None;
         if !raw.focused
@@ -1035,7 +1046,9 @@ impl CedarApp {
         let composing_before = case.composing;
         for event in &raw.events {
             match event {
-                egui::Event::Ime(egui::ImeEvent::Preedit(_)) => case.composing = true,
+                egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_)) => {
+                    case.composing = true
+                }
                 egui::Event::Ime(egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled) => {
                     case.composing = false
                 }
@@ -1049,6 +1062,26 @@ impl CedarApp {
         let focused_here = presented
             .as_ref()
             .is_some_and(|presented| focused == Some(presented.id));
+        // Key ownership follows the actual original focus even when a stale
+        // identity rejects activation; it must not leak through a focus move.
+        let focused_origin_here = case
+            .presented
+            .as_ref()
+            .is_some_and(|target| focused == Some(target.id));
+        case.raw_attempted = raw.events.iter().any(|event| match event {
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                ..
+            } => {
+                case.pressed.is_some()
+                    || case
+                        .presented
+                        .as_ref()
+                        .is_some_and(|target| target.rect.intersect(target.clip).contains(*pos))
+            }
+            _ => false,
+        });
         let clean =
             clean_key(&raw.events).filter(|key| matches!(key, egui::Key::Enter | egui::Key::Space));
         let fresh_batch = !composing_before
@@ -1132,7 +1165,8 @@ impl CedarApp {
                     }
                     let fresh = case.held.insert(*key);
                     let owned = case.owned.contains(key);
-                    if focused_here && modifiers.is_none() && ((fresh && !repeat) || owned) {
+                    case.raw_attempted |= focused_origin_here || owned;
+                    if focused_origin_here && modifiers.is_none() && ((fresh && !repeat) || owned) {
                         case.owned.insert(*key);
                     }
                     if case.owned.contains(key) {
@@ -1150,7 +1184,9 @@ impl CedarApp {
                     consumed[index] = true;
                     space_companion = false;
                 }
-                egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_) => {}
+                egui::Event::PointerMoved(_)
+                | egui::Event::MouseMoved(_)
+                | egui::Event::PointerButton { .. } => {}
                 _ => space_companion = false,
             }
         }
@@ -1640,7 +1676,10 @@ impl CedarApp {
         );
         #[cfg(test)]
         crate::workspace_access_tests::record(ui, "search_submit", &submit);
-        submit_requested = !case_changed && enabled && (submit_requested || submit.clicked());
+        submit_requested = !case_changed
+            && !self.search_state.case_control.raw_attempted
+            && enabled
+            && (submit_requested || submit.clicked());
         if let Some(explanation) = self.search_filter_explanation() {
             ui.colored_label(AMBER, explanation);
         }

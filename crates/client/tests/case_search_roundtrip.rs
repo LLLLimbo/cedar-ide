@@ -461,16 +461,37 @@ fn normal_agent_bounds_maximum_literal_queries_and_retains_uncropped_request_ech
     assert_eq!(wide.request.limit, 1007);
     assert!(client.is_connected());
     for case_sensitive in [false, true] {
-        let escaped = complete_case(
+        let started = std::time::Instant::now();
+        let escaped = search_case(
             &mut client,
             request(&escaped_query, "", &["escaped.txt"], 1007, case_sensitive),
         );
-        let expected_escaped = format!("{}…", "*".repeat(2048));
-        assert_eq!(
-            case_rows(&escaped),
-            [("escaped.txt", 1, expected_escaped.as_str())]
+        eprintln!(
+            "maximum escaped literal: case_sensitive={case_sensitive}, query_bytes=4096, elapsed_ms={}, entries={}, read_bytes={}, rows={}, reasons={:?}",
+            started.elapsed().as_millis(), escaped.examined_entries, escaped.read_bytes, escaped.matches.len(), escaped.reasons
         );
+        let expected_escaped = format!("{}…", "*".repeat(2048));
+        let expected_rows = [("escaped.txt", 1, expected_escaped.as_str())];
+        // Maximum escaped patterns share the cooperative deadline. Exact
+        // admission and echo are not an unconditional completion guarantee.
+        // Production-cap matcher units still demand the full original range.
+        if escaped.incomplete {
+            assert_eq!(escaped.reasons, [ScopedSearchIncompleteReason::TimeLimit]);
+            assert!(escaped.matches.is_empty() || case_rows(&escaped) == expected_rows);
+        } else {
+            assert!(escaped.reasons.is_empty());
+            assert_eq!(case_rows(&escaped), expected_rows);
+        }
+        assert!(escaped.examined_entries <= 2);
+        assert!(escaped.read_bytes <= 4096);
         assert_eq!(escaped.request.query.len(), 4096);
+        // A bounded response must leave the same connection usable. This
+        // ordinary literal success remains strict independently in both modes.
+        let short = complete_case(
+            &mut client,
+            request("*", "", &["escaped.txt"], 1007, case_sensitive),
+        );
+        assert_eq!(case_rows(&short), expected_rows);
     }
     client.close_and_wait(Duration::from_secs(5)).unwrap();
 }

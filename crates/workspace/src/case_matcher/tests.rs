@@ -109,6 +109,12 @@ fn production_limits_accept_maximum_literal_and_escaped_patterns() {
         for sensitive in [true, false] {
             let matcher = CaseMatcher::new(&query, sensitive).unwrap();
             assert_eq!(matcher.find(&query), Some(0..query.len()));
+            let prefix = "😀é";
+            let prefixed = format!("{prefix}{query}");
+            assert_eq!(
+                matcher.find(&prefixed),
+                Some(prefix.len()..prefix.len() + query.len())
+            );
         }
     }
     for invalid in [

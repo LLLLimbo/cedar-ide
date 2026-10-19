@@ -1174,7 +1174,7 @@ fn case_search_accepted_native_double_click_not_triple_opens_once_across_discard
         let open = commands.try_recv().unwrap();
         assert!(matches!(&open.op, Operation::Read { path } if path == "src/target.rs"));
         assert!(matches!(
-            app.jobs.get(&open.id),
+            app.pending.get(&open.id),
             Some(Job::SearchOpen { .. })
         ));
         assert!(commands.try_recv().is_err());
@@ -1287,7 +1287,7 @@ fn editor_snapshot(app: &CedarApp) -> EditorSnapshot {
 fn case_search_rejected_checkbox_key_lifetime_cannot_replay_after_editor_focus_transfer() {
     for surface in [Surface::Browse, Surface::Bottom] {
         for activation in [egui::Key::Space, egui::Key::Enter] {
-            for key_first in [false, true] {
+            for ordering in ["key first", "pointer first", "pointer between key and text"] {
                 let (mut app, commands) = fixture();
                 // Bottom uses an actual native pointer transfer. Browse is modal:
                 // its separate branch deliberately tests view-loss then focus transfer.
@@ -1313,10 +1313,17 @@ fn case_search_rejected_checkbox_key_lifetime_cannot_replay_after_editor_focus_t
                     press.push(egui::Event::Text(" ".into()));
                 }
                 let pointing = pointer(pos, true);
-                let events = if key_first {
-                    [press, pointing].concat()
-                } else {
-                    [pointing, press].concat()
+                let events = match ordering {
+                    "key first" => [press, pointing].concat(),
+                    "pointer first" => [pointing, press].concat(),
+                    _ => {
+                        let mut events = vec![edge(activation, true, false)];
+                        events.extend(pointing);
+                        if activation == egui::Key::Space {
+                            events.push(egui::Event::Text(" ".into()));
+                        }
+                        events
+                    }
                 };
                 if matches!(surface, Surface::Browse) {
                     captured_frame(&mut app, SIZE, events, |app| {
@@ -1329,7 +1336,7 @@ fn case_search_rejected_checkbox_key_lifetime_cannot_replay_after_editor_focus_t
                 assert_eq!(
                     editor_snapshot(&app),
                     before,
-                    "{surface:?}, {activation:?}, key_first={key_first}: mixed batch"
+                    "{surface:?}, {activation:?}, ordering={ordering}: mixed batch"
                 );
                 frame(&mut app, pointer(pos, false));
                 assert_eq!(
@@ -1374,6 +1381,283 @@ fn case_search_rejected_checkbox_key_lifetime_cannot_replay_after_editor_focus_t
                 );
                 assert_eq!(app.documents[0].edit_version, before.version + 1);
                 assert_eq!(app.documents[0].saved_text, before.saved);
+                assert!(commands.try_recv().is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn case_search_first_ever_pointer_checkbox_press_is_native_and_tooltip_cannot_steal_it() {
+    for surface in [Surface::Browse, Surface::Bottom] {
+        for separate_hover in [false, true] {
+            let (mut app, commands) = fixture();
+            enter(&mut app, surface);
+            replace(&mut app, surface.query(), "needle");
+            assert!(
+                app.editor_ctx
+                    .input(|input| input.pointer.latest_pos().is_none()),
+                "fixture must not prewarm pointer state"
+            );
+            let pos = recorded_rect(&app, checkbox(surface)).center();
+            if separate_hover {
+                frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+            }
+            frame(&mut app, pointer(pos, true));
+            assert!(
+                recorded_response(&app, checkbox(surface)).is_pointer_button_down_on(),
+                "{surface:?}, separate_hover={separate_hover}: native press"
+            );
+            assert!(app.search_match_case);
+            frame(&mut app, pointer(pos, false));
+            assert!(
+                recorded_response(&app, checkbox(surface)).clicked(),
+                "{surface:?}: native release"
+            );
+            assert!(!app.search_match_case);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn case_search_case_only_peer_files_provider_exposes_enabled_text_entry() {
+    let (mut app, commands) = fixture();
+    app.scoped_search = None;
+    app.agent_info
+        .as_mut()
+        .unwrap()
+        .capabilities
+        .retain(|name| name != "search");
+    assert!(!app.backend_supports("search"));
+    assert!(app.backend_case_search_supported());
+    app.show_browse(browse::Provider::Files);
+    settle(&mut app);
+    assert!(recorded_response(&app, "browse_text").enabled());
+    click(&mut app, "browse_text");
+    settle(&mut app);
+    assert!(recorded_response(&app, "browse_match_case").enabled());
+    configure(&mut app, &commands, Surface::Browse);
+    let command = submit(&mut app, &commands, Surface::Browse);
+    assert!(
+        matches!(&command.op, Operation::SearchCase { request: actual } if *actual == request("src", &["*.rs", "*.md"]))
+    );
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn case_search_owned_space_filters_only_ordered_single_companion_and_respects_release() {
+    for surface in [Surface::Browse, Surface::Bottom] {
+        for scenario in [
+            "adjacent",
+            "motion",
+            "pointer",
+            "reversed",
+            "unrelated",
+            "ime",
+            "release/repress",
+        ] {
+            let (mut app, commands) = fixture();
+            enter(&mut app, surface);
+            focus(&mut app, checkbox(surface));
+            // Rejected mixed key is nevertheless owned until its physical release.
+            frame(
+                &mut app,
+                vec![edge(egui::Key::Space, true, false), egui::Event::Copy],
+            );
+            assert!(app.search_match_case);
+            if matches!(surface, Surface::Browse) {
+                app.browse_dismiss();
+                settle(&mut app);
+            }
+            focus(&mut app, "editor");
+            let space = egui::Event::Text(" ".into());
+            let repeat = edge(egui::Key::Space, true, true);
+            let (events, expected) = match scenario {
+                "adjacent" => (
+                    vec![repeat, space.clone(), space.clone()],
+                    vec![space.clone()],
+                ),
+                "motion" => {
+                    let moved = egui::Event::PointerMoved(egui::pos2(3.0, 4.0));
+                    let relative = egui::Event::MouseMoved(egui::vec2(1.0, 2.0));
+                    let text = egui::Event::Text("tail".into());
+                    (
+                        vec![
+                            repeat,
+                            moved.clone(),
+                            relative.clone(),
+                            space.clone(),
+                            text.clone(),
+                        ],
+                        vec![moved, relative, text],
+                    )
+                }
+                "pointer" => {
+                    let pointing = pointer(egui::pos2(3.0, 4.0), true);
+                    let mut events = vec![repeat];
+                    events.extend(pointing.clone());
+                    events.push(space.clone());
+                    (events, pointing)
+                }
+                "reversed" => (
+                    vec![space.clone(), edge(egui::Key::Space, true, false)],
+                    vec![space.clone()],
+                ),
+                "unrelated" => {
+                    let text = egui::Event::Text("unrelated".into());
+                    (
+                        vec![repeat, text.clone(), space.clone()],
+                        vec![text, space.clone()],
+                    )
+                }
+                "ime" => {
+                    let ime = vec![
+                        egui::Event::Ime(egui::ImeEvent::Enabled),
+                        egui::Event::Ime(egui::ImeEvent::Preedit("draft".into())),
+                        space.clone(),
+                        egui::Event::Ime(egui::ImeEvent::Commit("語".into())),
+                        egui::Event::Ime(egui::ImeEvent::Disabled),
+                    ];
+                    let mut events = vec![repeat];
+                    events.extend(ime.clone());
+                    (events, ime)
+                }
+                "release/repress" => {
+                    let events = vec![
+                        edge(egui::Key::Space, false, false),
+                        edge(egui::Key::Space, true, false),
+                        space.clone(),
+                        edge(egui::Key::Space, false, false),
+                    ];
+                    let expected = if matches!(surface, Surface::Browse) {
+                        events[1..].to_vec()
+                    } else {
+                        events.clone()
+                    };
+                    (events, expected)
+                }
+                _ => unreachable!(),
+            };
+            let ctx = app.editor_ctx.clone();
+            let mut raw = egui::RawInput {
+                time: Some(ctx.input(|input| input.time) + 0.1),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SIZE)),
+                events,
+                focused: true,
+                ..Default::default()
+            };
+            eframe::App::raw_input_hook(&mut app, &ctx, &mut raw);
+            assert_eq!(
+                raw.events, expected,
+                "{surface:?}, {scenario}: preserve native ordering and unrelated input"
+            );
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn case_search_rejected_checkbox_key_and_native_submit_click_never_search() {
+    for surface in [Surface::Browse, Surface::Bottom] {
+        for activation in [egui::Key::Enter, egui::Key::Space] {
+            for key_first in [false, true] {
+                let (mut app, commands) = fixture();
+                enter(&mut app, surface);
+                replace(&mut app, surface.query(), "needle");
+                let pos = recorded_rect(&app, surface.submit()).center();
+                frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+                frame(&mut app, pointer(pos, true));
+                assert!(recorded_response(&app, surface.submit()).is_pointer_button_down_on());
+                // The raw release batch begins with the checkbox actually focused.
+                focus(&mut app, checkbox(surface));
+                let release = pointer(pos, false);
+                let mut activation_events = vec![edge(activation, true, false)];
+                if activation == egui::Key::Space {
+                    activation_events.push(egui::Event::Text(" ".into()));
+                }
+                activation_events.push(edge(activation, false, false));
+                let events = if key_first {
+                    [activation_events, release].concat()
+                } else {
+                    [release, activation_events].concat()
+                };
+                frame(&mut app, events);
+                assert!(
+                    recorded_response(&app, surface.submit()).clicked(),
+                    "{surface:?}, {activation:?}: real native submit click"
+                );
+                assert!(app.search_match_case, "mixed checkbox key was rejected");
+                assert!(app.search_state.pending.is_none());
+                assert!(commands.try_recv().is_err(), "{surface:?}, {activation:?}, key_first={key_first}: rejected checkbox gesture cannot submit");
+            }
+        }
+    }
+}
+
+#[test]
+fn case_search_ime_enabled_without_preedit_blocks_checkbox_until_disabled_and_fresh_gesture() {
+    for surface in [Surface::Browse, Surface::Bottom] {
+        for activation in [egui::Key::Enter, egui::Key::Space] {
+            let (mut app, commands) = fixture();
+            enter(&mut app, surface);
+            replace(&mut app, surface.query(), "needle");
+            focus(&mut app, checkbox(surface));
+            frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Enabled)]);
+            frame(&mut app, key(activation, egui::Modifiers::NONE));
+            assert!(
+                app.search_match_case,
+                "{surface:?}, {activation:?}: Enabled is composing before first Preedit"
+            );
+            assert_eq!(app.search_query, "needle");
+            assert!(app.search_state.pending.is_none());
+            assert!(commands.try_recv().is_err());
+            frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Disabled)]);
+            frame(&mut app, key(activation, egui::Modifiers::NONE));
+            assert!(
+                !app.search_match_case,
+                "{surface:?}, {activation:?}: fresh gesture recovers after Disabled"
+            );
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn case_search_exhausted_draft_revision_rejects_fresh_and_captured_checkbox_gestures() {
+    for surface in [Surface::Browse, Surface::Bottom] {
+        for activation in [None, Some(egui::Key::Enter), Some(egui::Key::Space)] {
+            for captured_before_exhaustion in [false, true] {
+                let (mut app, commands) = fixture();
+                enter(&mut app, surface);
+                replace(&mut app, surface.query(), "needle");
+                if !captured_before_exhaustion {
+                    app.search_state.exhaust_draft_revision();
+                    settle(&mut app);
+                }
+                let events = if let Some(activation) = activation {
+                    focus(&mut app, checkbox(surface));
+                    key(activation, egui::Modifiers::NONE)
+                } else {
+                    let pos = recorded_rect(&app, checkbox(surface)).center();
+                    frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+                    frame(&mut app, pointer(pos, true));
+                    assert!(recorded_response(&app, checkbox(surface)).is_pointer_button_down_on());
+                    pointer(pos, false)
+                };
+                if captured_before_exhaustion {
+                    captured_frame(&mut app, SIZE, events, |app| {
+                        app.search_state.exhaust_draft_revision();
+                        app.search_match_case = false;
+                        app.search_filters_changed();
+                        app.search_match_case = true;
+                        app.search_filters_changed();
+                    });
+                } else {
+                    frame(&mut app, events);
+                }
+                assert!(app.search_match_case, "{surface:?}, {activation:?}, captured={captured_before_exhaustion}: exhausted identity cannot authorize toggle");
+                assert!(app.search_state.pending.is_none());
                 assert!(commands.try_recv().is_err());
             }
         }
