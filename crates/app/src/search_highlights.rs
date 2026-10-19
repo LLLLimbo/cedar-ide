@@ -26,6 +26,7 @@ pub(super) struct Prepared {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Accounting {
+    #[cfg(test)]
     builds: usize,
     scanned: usize,
     calls: usize,
@@ -90,10 +91,11 @@ impl Prepared {
             return Self::default();
         }
         result.offsets.resize(rows.len(), 0..0);
-        let mut accounting = Accounting {
-            builds: 1,
-            ..Default::default()
-        };
+        let mut accounting = Accounting::default();
+        #[cfg(test)]
+        {
+            accounting.builds = 1;
+        }
         let matcher = RegexBuilder::new(&pattern)
             .unicode(true)
             .case_insensitive(!case_sensitive)
@@ -175,6 +177,17 @@ impl Prepared {
             result.accounting = accounting;
         }
         result
+    }
+
+    #[cfg(test)]
+    pub(super) fn counts(&self) -> [usize; 5] {
+        [
+            self.accounting.builds,
+            self.accounting.scanned,
+            self.accounting.calls,
+            self.accounting.visits,
+            self.accounting.work,
+        ]
     }
 
     pub(super) fn row(&self, index: usize) -> &[Range<usize>] {

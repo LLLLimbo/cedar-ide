@@ -209,6 +209,7 @@ impl Source {
 #[derive(Default)]
 pub(super) struct Search {
     pub accepted: Option<Source>,
+    highlights: Option<(Source, highlights::Prepared)>,
     pub pending: Option<Source>,
     completed: Option<(u64, Specification, Result<Payload, String>)>,
     pub status: Option<ScanStatus>,
@@ -360,6 +361,7 @@ impl Search {
 
     pub(super) fn clear_owned(&mut self) {
         self.accepted = None;
+        self.highlights = None;
         self.status = None;
         self.groups.clear();
         self.collapsed.clear();
@@ -821,6 +823,25 @@ impl CedarApp {
             })
     }
 
+    pub(super) fn search_highlight_ranges(&self, index: usize) -> &[std::ops::Range<usize>] {
+        if !self.search_rows_active() {
+            return &[];
+        }
+        self.search_state
+            .highlights
+            .as_ref()
+            .filter(|(source, _)| self.search_state.accepted.as_ref() == Some(source))
+            .map_or(&[], |(_, prepared)| prepared.row(index))
+    }
+
+    #[cfg(test)]
+    pub(super) fn search_highlight_accounting(&self) -> Option<[usize; 5]> {
+        self.search_state
+            .highlights
+            .as_ref()
+            .map(|(_, prepared)| prepared.counts())
+    }
+
     pub(super) fn search_focus_identity(&self) -> FocusIdentity {
         FocusIdentity {
             accepted: self.search_state.accepted.clone(),
@@ -989,6 +1010,15 @@ impl CedarApp {
             matches.len(),
             source.specification.description()
         );
+        self.search_state.highlights =
+            (source.query == source.specification.request.query).then(|| {
+                let prepared = highlights::Prepared::prepare(
+                    &source.query,
+                    source.specification.case_sensitive,
+                    &matches,
+                );
+                (source.clone(), prepared)
+            });
         self.search_state.status = status;
         self.search_state.install(&matches);
         self.search_results = matches;
@@ -1902,7 +1932,7 @@ impl CedarApp {
                         let response = ui
                             .add_enabled_ui(active, |ui| {
                                 let row = crate::browse::TextResultRow::group(ui, &result.path, group.len(), expanded);
-                                row_control(ui, id, &label, false, row)
+                                row_control(ui, id, &label, false, row, &[])
                             })
                             .inner;
                         let response = crate::browse::text_result_tooltip(response, &result.path);
@@ -1944,6 +1974,7 @@ impl CedarApp {
                                         &label,
                                         app.search_state.selected == Some(index),
                                         row,
+                                        app.search_highlight_ranges(index),
                                     )
                                 })
                                 .inner;
@@ -2075,6 +2106,7 @@ fn row_control(
     label: &str,
     selected: bool,
     row: crate::browse::TextResultRow,
+    highlights: &[std::ops::Range<usize>],
 ) -> egui::Response {
     let (_, rect) = ui.allocate_space(row.size());
     let response = ui.interact(rect, id, egui::Sense::click());
@@ -2092,7 +2124,7 @@ fn row_control(
             )
         });
     }
-    row.paint(ui, rect, &response, selected);
+    row.paint(ui, rect, &response, selected, highlights);
     response
 }
 

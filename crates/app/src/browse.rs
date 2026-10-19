@@ -2612,6 +2612,11 @@ impl CedarApp {
                                         hit,
                                         self.browse_search_snippet(hit).unwrap_or(""),
                                         line_width,
+                                        if current {
+                                            self.search_highlight_ranges(hit.index())
+                                        } else {
+                                            &[]
+                                        },
                                     )
                                 } else {
                                     navigation::candidate_row(
@@ -4354,6 +4359,7 @@ enum TextResultContent {
         number: Arc<egui::Galley>,
         snippet: Arc<egui::Galley>,
         line_width: f32,
+        trim_start: usize,
     },
 }
 
@@ -4434,6 +4440,7 @@ impl TextResultRow {
             f32::INFINITY,
             egui::TextStyle::Monospace,
         );
+        let trim_start = snippet.len() - snippet.trim_start().len();
         let snippet =
             egui::WidgetText::from(RichText::new(snippet.trim()).monospace().color(foreground))
                 .into_galley(
@@ -4451,6 +4458,7 @@ impl TextResultRow {
                 number,
                 snippet,
                 line_width,
+                trim_start,
             },
         }
     }
@@ -4465,6 +4473,7 @@ impl TextResultRow {
         rect: egui::Rect,
         response: &egui::Response,
         selected: bool,
+        highlights: &[std::ops::Range<usize>],
     ) {
         if !ui.is_rect_visible(rect) {
             return;
@@ -4532,6 +4541,7 @@ impl TextResultRow {
                 number,
                 snippet,
                 line_width,
+                trim_start,
             } => {
                 ui.painter().galley(
                     egui::pos2(
@@ -4541,14 +4551,30 @@ impl TextResultRow {
                     number.clone(),
                     chrome::MUTED,
                 );
-                ui.painter().galley(
-                    egui::pos2(
-                        rect.left() + 46.0 + line_width + 12.0,
-                        rect.center().y - snippet.size().y / 2.0,
-                    ),
-                    snippet.clone(),
-                    self.foreground,
+                let origin = egui::pos2(
+                    rect.left() + 46.0 + line_width + 12.0,
+                    rect.center().y - snippet.size().y / 2.0,
                 );
+                if ui.is_enabled() && !highlights.is_empty() {
+                    let clip = ui
+                        .clip_rect()
+                        .intersect(rect)
+                        .intersect(snippet.rect.translate(origin.to_vec2()));
+                    for highlight in
+                        search_keyboard::highlights::rectangles(snippet, *trim_start, highlights)
+                    {
+                        let highlight = highlight.translate(origin.to_vec2());
+                        if clip.contains_rect(highlight) {
+                            ui.painter().rect_filled(
+                                highlight,
+                                0.0,
+                                search_keyboard::highlights::BACKGROUND,
+                            );
+                        }
+                    }
+                }
+                ui.painter()
+                    .galley(origin, snippet.clone(), self.foreground);
             }
         }
     }
@@ -4685,7 +4711,7 @@ fn text_result_group(
             &accessible,
         )
     });
-    row.paint(ui, rect, &response, false);
+    row.paint(ui, rect, &response, false, &[]);
     text_result_tooltip(response, &accessible)
 }
 
@@ -4716,6 +4742,7 @@ fn text_result_hit(
     hit: &search_keyboard::BrowseHit,
     snippet: &str,
     line_width: f32,
+    highlights: &[std::ops::Range<usize>],
 ) -> egui::Response {
     let row = TextResultRow::hit(ui, hit.line(), snippet, line_width);
     let (_, rect) = ui.allocate_space(row.size());
@@ -4728,7 +4755,7 @@ fn text_result_hit(
             &accessible,
         )
     });
-    row.paint(ui, rect, &response, selected);
+    row.paint(ui, rect, &response, selected, highlights);
     text_result_tooltip(response, &accessible)
 }
 
