@@ -3181,7 +3181,12 @@ fn result_style_fixture(
     font: f32,
     matches: Vec<SearchMatch>,
     mut first_visible: impl FnMut(&CedarApp, &egui::FullOutput),
-) -> (CedarApp, Receiver<Command>, egui::FullOutput, impl FnOnce()) {
+) -> (
+    CedarApp,
+    Receiver<Command>,
+    egui::FullOutput,
+    Box<dyn FnOnce()>,
+) {
     let (mut app, commands) = app(0);
     app.editor_ctx.set_fonts(system_fonts::base_fonts());
     // Keep the controlled sender alive for the complete measured journey.
@@ -3282,7 +3287,7 @@ fn result_style_fixture(
         commands.try_recv().is_err(),
         "painting must not Search or Read"
     );
-    (app, commands, output, hold_font_probe)
+    (app, commands, output, Box::new(hold_font_probe))
 }
 
 fn result_style_texts(output: &egui::FullOutput) -> Vec<(&egui::epaint::TextShape, egui::Rect)> {
@@ -3604,12 +3609,53 @@ fn result_style_panel(
 }
 
 fn result_style_click(app: &mut CedarApp, size: egui::Vec2, probe: &str) -> egui::FullOutput {
-    let pos = recorded_rect(app, probe)
-        .intersect(recorded_clip(app, probe))
-        .center();
+    let rect = recorded_rect(app, probe);
+    let clip = recorded_clip(app, probe);
+    let visible = rect.intersect(clip);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+    assert!(
+        rect.is_finite() && clip.is_finite() && visible.is_positive(),
+        "{probe}"
+    );
+    assert!(
+        screen.contains_rect(visible),
+        "{probe}: click must be on screen"
+    );
+    let pos = visible.center();
+    let response = recorded_response(app, probe);
+    let id = response.id;
+    let enabled = response.enabled();
     result_style_frame(app, size, vec![egui::Event::PointerMoved(pos)]);
+    assert_eq!(
+        recorded_rect(app, probe),
+        rect,
+        "{probe}: hover preserves geometry"
+    );
+    assert_eq!(recorded_response(app, probe).id, id);
     result_style_frame(app, size, pointer(pos, true));
-    result_style_frame(app, size, pointer(pos, false))
+    let down = recorded_response(app, probe);
+    assert_eq!(
+        down.is_pointer_button_down_on(),
+        enabled,
+        "{probe}: native press ownership"
+    );
+    if enabled {
+        assert!(
+            down.has_focus(),
+            "{probe}: the native press must focus its control"
+        );
+    } else {
+        assert_ne!(
+            focused(app),
+            Some(id),
+            "{probe}: disabled control cannot gain focus"
+        );
+    }
+    let output = result_style_frame(app, size, pointer(pos, false));
+    let released = recorded_response(app, probe);
+    assert_eq!(released.id, id);
+    assert_eq!(released.clicked(), enabled, "{probe}: native release click");
+    output
 }
 
 fn result_style_editor(app: &CedarApp) -> serde_json::Value {
@@ -3815,6 +3861,158 @@ fn search_result_style_actual_paint_matrix_and_narrow_lifecycle() {
                 );
                 eprintln!("RESULT_STYLE_MATRIX browse={browse} size={size:?} font={font} geometry={geometry:?} first_visible=true disabled=true");
             }
+        }
+    }
+}
+
+#[test]
+fn search_result_style_bottom_native_navigation_and_undo_redo_matrix() {
+    for size in [egui::vec2(1180.0, 812.0), egui::vec2(780.0, 540.0)] {
+        for font in [13.0, 18.0] {
+            // Repeated exact triples must still be separate native row targets.
+            // Eighty hits force the production ScrollArea at both sizes.
+            let matches = vec![
+                SearchMatch {
+                    path: "same-parent/second-中文😀K.rs".into(),
+                    line: 7,
+                    text: "  second 中文😀K retained  ".into(),
+                };
+                80
+            ];
+            let (mut app, commands, _, _hold_font_probe) =
+                result_style_fixture(false, size, font, matches, |_, _| {});
+            let editor = result_style_editor(&app);
+            let saved = app.documents[0].saved_text.clone();
+            let dirty = app.documents[0].text.clone();
+            let source = app.search_state.accepted.clone();
+            let departure = app.navigation_epoch;
+            let identities = (0..80)
+                .map(|index| {
+                    let response = recorded_response(&app, &format!("search_row:{index}"));
+                    assert_eq!(response.id, id(&app, index));
+                    response.id
+                })
+                .collect::<std::collections::HashSet<_>>();
+            assert_eq!(identities.len(), 80);
+            result_style_click(&mut app, size, "search_query");
+            for probe in [
+                "search_scope",
+                "search_masks",
+                "search_match_case",
+                "search_submit",
+            ] {
+                let response = recorded_response(&app, probe);
+                assert!(response.enabled() && response.sense.is_focusable());
+                result_style_frame(&mut app, size, key(egui::Key::Tab));
+                assert_eq!(focused(&app), Some(response.id), "native Tab to {probe}");
+            }
+            let area = recorded_scroll_id(&app).with("area");
+            let area_response = app.editor_ctx.read_response(area).unwrap();
+            assert!(
+                area_response.sense.is_focusable(),
+                "overflow must have a native Tab stop"
+            );
+            result_style_frame(&mut app, size, key(egui::Key::Tab));
+            assert_eq!(focused(&app), Some(area));
+            let group = recorded_response(&app, "search_group:0").id;
+            for target in [group, id(&app, 0)] {
+                result_style_frame(&mut app, size, key(egui::Key::Tab));
+                assert_eq!(focused(&app), Some(target));
+            }
+            for (key_name, index) in [(egui::Key::End, 79), (egui::Key::Home, 0)] {
+                result_style_frame(&mut app, size, key(key_name));
+                for _ in 0..3 {
+                    result_style_frame(&mut app, size, vec![]);
+                }
+                assert_eq!(focused(&app), Some(id(&app, index)));
+                let probe = format!("search_row:{index}");
+                let rect = recorded_rect(&app, &probe);
+                let clip = recorded_clip(&app, &probe);
+                assert!(
+                    clip.is_positive() && clip.contains_rect(rect),
+                    "{probe}: native reveal"
+                );
+                assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(rect));
+                assert_eq!(app.search_state.selected_index(), Some(index));
+                assert_eq!(result_style_editor(&app), editor);
+                assert!(commands.try_recv().is_err());
+            }
+            result_style_frame(&mut app, size, key(egui::Key::Enter));
+            for _ in 0..3 {
+                result_style_frame(&mut app, size, vec![]);
+            }
+            assert_eq!(app.navigation_epoch, departure + 1);
+            assert_eq!(app.active_document, Some(1));
+            assert_eq!(app.documents[0].cursor, (7, 1));
+            assert_eq!(app.documents[0].text, dirty);
+            assert_eq!(app.documents[0].saved_text, saved);
+            assert!(app.documents[0].dirty());
+            assert_eq!(app.location_history.back.len(), 1);
+            assert!(
+                commands.try_recv().is_err(),
+                "Open reuses the dirty open buffer"
+            );
+            let command = egui::Modifiers {
+                ctrl: true,
+                command: true,
+                ..egui::Modifiers::NONE
+            };
+            result_style_frame(
+                &mut app,
+                size,
+                modified_key(egui::Key::OpenBracket, command),
+            );
+            for _ in 0..3 {
+                result_style_frame(&mut app, size, vec![]);
+            }
+            assert_eq!(app.navigation_epoch, departure + 2);
+            assert_eq!(focused(&app), Some(egui::Id::new(("editor", 1_u64))));
+            assert_eq!(
+                result_style_editor(&app)["documents"],
+                editor["documents"],
+                "Back restores exact selection, cursor affinity, draft and Undo state"
+            );
+            assert!(app.location_history.back.is_empty());
+            assert_eq!(app.location_history.forward.len(), 1);
+            assert_eq!(app.search_state.accepted, source);
+            assert!(commands.try_recv().is_err());
+
+            let before_undo_version = app.documents[0].edit_version;
+            result_style_frame(&mut app, size, modified_key(egui::Key::Z, command));
+            assert_eq!(app.documents[0].text, saved);
+            assert!(!app.documents[0].dirty());
+            let undo_version = app.documents[0].edit_version;
+            assert!(undo_version > before_undo_version);
+            result_style_frame(
+                &mut app,
+                size,
+                modified_key(
+                    egui::Key::Z,
+                    egui::Modifiers {
+                        shift: true,
+                        ..command
+                    },
+                ),
+            );
+            assert_eq!(app.documents[0].text, dirty);
+            assert!(app.documents[0].dirty());
+            assert!(app.documents[0].edit_version > undo_version);
+            // Real Undo/Redo advances edit versions and can retire old locations.
+            // Compare later idle paints with this new, observed baseline.
+            let after_redo = result_style_editor(&app);
+            let redo_history = pointer_editor_history(&app);
+            for _ in 0..3 {
+                result_style_frame(&mut app, size, vec![]);
+            }
+            assert_eq!(result_style_editor(&app), after_redo);
+            assert_eq!(pointer_editor_history(&app), redo_history);
+            assert_eq!(app.search_state.accepted, source);
+            assert_eq!(app.system_fonts.probe_state_for_test(), "loading");
+            assert!(
+                commands.try_recv().is_err(),
+                "navigation and Undo/Redo must not Search/Read"
+            );
+            eprintln!("RESULT_STYLE_NATIVE_MATRIX size={size:?} font={font} tab=true home_end=true open_back=true undo_redo=true");
         }
     }
 }
