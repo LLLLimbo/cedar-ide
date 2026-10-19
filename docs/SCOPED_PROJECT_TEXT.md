@@ -16,9 +16,9 @@ not normalization, full multi-character folding, regex or whole-word matching.
 Directory paths and basename masks remain case-sensitive. This option does not
 alter current-file Find, Project-name search or filename-discovery matching.
 Original source snippets and byte offsets remain original text, including K.
-See [the UI contract](CASE_SEARCH_UI_STAGE3_R2.md),
-[backend contract](CASE_SEARCH_BACKEND_STAGE2.md) and
-[new-version acceptance boundary](TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md).
+See [the UI contract](https://github.com/LLLLimbo/cedar-ide/blob/8fa34ae8c5966c9c684ddd96037b17e4c4d69ce4/docs/CASE_SEARCH_UI_STAGE3_R2.md),
+[backend contract](https://github.com/LLLLimbo/cedar-ide/blob/8fa34ae8c5966c9c684ddd96037b17e4c4d69ce4/docs/CASE_SEARCH_BACKEND_STAGE2.md) and
+[sealed source acceptance boundary](https://github.com/LLLLimbo/cedar-ide/blob/39291fd7431f9bf31a7d4140ee01881e0ce26285/docs/TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md).
 
 The following 0.62.2 evidence is historical. Its wire/routing contract describes
 the checked mode, not an assertion that all current text search is case-sensitive.

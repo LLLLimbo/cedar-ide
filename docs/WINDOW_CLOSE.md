@@ -7,7 +7,7 @@ and a bounded cloud-Linux native run with normal close and disappearance of its
 observed frontend/agent PIDs. Those observations are not a comprehensive native
 close/descendant-cleanup matrix or a fix for the historical unattributed zombie.
 Final 0.80.0 results require their own external source-bound receipt; see
-[the checkpoint report](TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md). This is the contract, not a
+[the sealed source checkpoint report](https://github.com/LLLLimbo/cedar-ide/blob/39291fd7431f9bf31a7d4140ee01881e0ce26285/docs/TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md). This is the contract, not a
 platform-wide cleanup guarantee.
 
 Native window Close keeps the existing task, language, mutation and exact draft

@@ -7,7 +7,7 @@ IntelliJ IDEA 的完整替代品。请从本项目对应提交的 GitHub Actions
 
 ## 当前 0.80.0 开发检查点候选
 
-本轮汇总Flat 列表 Home/End、仅已加载 Project 行的区分大小写字面量名称搜索、两个项目文本视图共享的 Match case，以及 Kelvin 字形回退，仅更新版本和说明。直接父提交 [`8fa34ae8`](https://github.com/LLLLimbo/cedar-ide/commit/8fa34ae8c5966c9c684ddd96037b17e4c4d69ce4) 的 [CI193](https://github.com/LLLLimbo/cedar-ide/actions/runs/39190113556) 四项通过，并有精确 Linux 包审计和限定原生复测；它们仍属于 0.79.0。源码封存时，最终 0.80.0 检查、CI、Windows/Linux 新包审计和最终 Linux 包最小版本/原生 smoke 待独立回执，不把旧包重命名交付。请核对 BUNDLE_MANIFEST.json 的 version、source.commit 与 ci.run_url；范围与完成条件见 [TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md](TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md)。
+本轮汇总Flat 列表 Home/End、仅已加载 Project 行的区分大小写字面量名称搜索、两个项目文本视图共享的 Match case，以及 Kelvin 字形回退，仅更新版本和说明。直接父提交 [`8fa34ae8`](https://github.com/LLLLimbo/cedar-ide/commit/8fa34ae8c5966c9c684ddd96037b17e4c4d69ce4) 的 [CI193](https://github.com/LLLLimbo/cedar-ide/actions/runs/39190113556) 四项通过，并有精确 Linux 包审计和限定原生复测；它们仍属于 0.79.0。源码封存时，最终 0.80.0 检查、CI、Windows/Linux 新包审计和最终 Linux 包最小版本/原生 smoke 待独立回执，不把旧包重命名交付。请核对 BUNDLE_MANIFEST.json 的 version、source.commit 与 ci.run_url；范围与完成条件补充见 [已封存的源码阶段报告](https://github.com/LLLLimbo/cedar-ide/blob/39291fd7431f9bf31a7d4140ee01881e0ce26285/docs/TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md)。
 
 Project 的 Search names 只查当前 Flat 或已展开 Tree 的已接受名称，保持列表顺序且高亮匹配，不递归扫描未加载/折叠目录。项目文本的 Match case 默认勾选；取消勾选后显式提交使用 Unicode 16.0 简单大小写折叠，不做规范化或完整多字符折叠。两个文本视图共用此开关，切换不会自动搜索；Directory、文件名掩码和 Project 名称搜索仍区分大小写。没有正则或整词模式。Kelvin K 保留原始字符，仅由已有 Inter 补缺字；不承诺全部 Unicode 等宽。Windows CI 或包内容校验不代表 Windows 原生 GUI 验收，也无性能优势声明。下文历史段落保留原状态。
 

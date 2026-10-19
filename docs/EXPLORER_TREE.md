@@ -86,4 +86,4 @@ Escape 退出，后续独立 Enter 通过原有路径打开精确文件或进入
 
 刷新、快照替换、折叠、模式/目录/连接变化以及失去查询焦点会取消旧意图。
 输入框保留焦点，匹配行滚入视口；无匹配和组合期间不显示可激活的搜索选择。
-实现已继承自 0.79 父提交；0.80 的完整检查、独立审查、精确提交 CI 和新包原生 smoke 需自己的回执，见[阶段报告](TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md)。Project Text 的 Match case 不改变这里区分大小写的名称匹配。
+实现已继承自 0.79 父提交；0.80 的完整检查、独立审查、精确提交 CI 和新包原生 smoke 需自己的回执，补充见[已封存的源码阶段报告](https://github.com/LLLLimbo/cedar-ide/blob/39291fd7431f9bf31a7d4140ee01881e0ce26285/docs/TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md)。Project Text 的 Match case 不改变这里区分大小写的名称匹配。

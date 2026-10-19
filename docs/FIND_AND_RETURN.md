@@ -9,7 +9,7 @@ automatically search, normalize text, perform full folding, enable regex or
 whole-word matching, or change Directory/mask/filename/Project-name semantics.
 The checked legacy routes and unsupported-peer fail-closed behavior are retained.
 See [the current scoped/text contract](SCOPED_PROJECT_TEXT.md#current-match-case-control-080-development-checkpoint)
-and [checkpoint scope and fresh acceptance criteria](TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md).
+and [sealed source checkpoint scope and fresh acceptance criteria](https://github.com/LLLLimbo/cedar-ide/blob/39291fd7431f9bf31a7d4140ee01881e0ce26285/docs/TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md).
 The historical sections below retain their original version and evidence.
 
 Find and return brings filename discovery, project text results and an explicit
