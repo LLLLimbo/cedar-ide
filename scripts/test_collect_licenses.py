@@ -438,5 +438,136 @@ class LicenseCollectionTests(unittest.TestCase):
             self.assertNotIn('| cedar-example |', (root / 'THIRD_PARTY_NOTICES.md').read_text())
 
 
+class LicenseMaterialSafetyRegressionTests(unittest.TestCase):
+    """The 673a collector admitted these invalid synthetic material generations."""
+
+    def material_fixture(self, root):
+        (root / 'Cargo.toml').write_text('[workspace]\nmembers = []\n')
+        fonts = root / 'crates/app/assets/fonts'
+        fonts.mkdir(parents=True)
+        (fonts / 'manifest.json').write_text('{"assets":[]}\n')
+        base = root / 'registry/example-1.0.0'
+        base.mkdir(parents=True)
+        (base / 'Cargo.toml').write_text(
+            '[package]\nname="example"\nversion="1.0.0"\n')
+        (base / 'LICENSE').write_bytes(b'Synthetic original license\n')
+        package = {'id': 'registry+example#example@1.0.0',
+                   'name': 'example', 'version': '1.0.0',
+                   'source': 'registry+https://example.invalid/index',
+                   'manifest_path': str(base / 'Cargo.toml'), 'license': 'MIT',
+                   'license_file': None, 'repository': 'https://example.invalid/source'}
+        metadata = {'workspace_members': [], 'packages': [package]}
+        self.assertEqual(collector.collect(root, metadata), 1)
+        self.assertEqual((root / 'third-party-licenses/example-1.0.0/LICENSE').read_bytes(),
+                         b'Synthetic original license\n')
+        return base, metadata
+
+    def material_outputs(self, root):
+        outputs = {}
+        for name in ('THIRD_PARTY_NOTICES.md', 'LICENSE-MATERIAL-COVERAGE.json',
+                     'LICENSE-MATERIALS-README.md'):
+            path = root / name
+            if path.is_file():
+                outputs[name] = path.read_bytes()
+        notice_root = root / 'third-party-licenses'
+        if notice_root.exists():
+            for path in notice_root.rglob('*'):
+                if path.is_symlink():
+                    outputs[path.relative_to(root).as_posix()] = ('link', str(path.readlink()))
+                elif path.is_file():
+                    outputs[path.relative_to(root).as_posix()] = path.read_bytes()
+        return outputs
+
+    def reject_unchanged(self, root, metadata):
+        before = self.material_outputs(root)
+        with self.assertRaises(ValueError):
+            collector.collect(root, metadata)
+        self.assertEqual(self.material_outputs(root), before)
+
+    def test_missing_material_cannot_be_hidden_by_prior_output(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-license-missing-') as directory:
+            root = Path(directory).resolve()
+            base, metadata = self.material_fixture(root)
+            (base / 'LICENSE').unlink()
+            self.reject_unchanged(root, metadata)
+
+    def test_missing_declared_material_is_rejected_before_mutation(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-license-declared-') as directory:
+            root = Path(directory).resolve()
+            _, metadata = self.material_fixture(root)
+            metadata['packages'][0]['license_file'] = 'MISSING.txt'
+            self.reject_unchanged(root, metadata)
+
+    def test_stale_package_output_is_not_silently_retained_as_current(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-license-stale-') as directory:
+            root = Path(directory).resolve()
+            _, metadata = self.material_fixture(root)
+            metadata['packages'] = []
+            self.reject_unchanged(root, metadata)
+
+    def test_declared_absolute_and_parent_escape_are_rejected(self):
+        for kind in ('absolute', 'parent'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix='cedar-license-escape-') as directory:
+                root = Path(directory).resolve()
+                base, metadata = self.material_fixture(root)
+                outside = base.parent / 'outside.txt'
+                outside.write_bytes(b'Synthetic outside package sentinel\n')
+                metadata['packages'][0]['license_file'] = str(outside) if kind == 'absolute' else '../outside.txt'
+                self.reject_unchanged(root, metadata)
+                self.assertEqual(outside.read_bytes(), b'Synthetic outside package sentinel\n')
+
+    def test_unreviewed_nested_basename_cannot_overwrite_root_material(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-license-collision-') as directory:
+            root = Path(directory).resolve()
+            base, metadata = self.material_fixture(root)
+            (base / 'nested').mkdir()
+            (base / 'nested/LICENSE').write_bytes(b'Different nested author and license\n')
+            metadata['packages'][0]['license_file'] = 'nested/LICENSE'
+            self.reject_unchanged(root, metadata)
+
+    def test_registry_identity_collision_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-license-identity-') as directory:
+            root = Path(directory).resolve()
+            _, metadata = self.material_fixture(root)
+            second = root / 'registry/other-source'
+            second.mkdir()
+            (second / 'Cargo.toml').write_text('[package]\nname="example"\nversion="1.0.0"\n')
+            (second / 'LICENSE').write_bytes(b'Second source must not overwrite first\n')
+            metadata['packages'].append(dict(metadata['packages'][0],
+                id='registry+second#example@1.0.0', source='registry+https://second.invalid/index',
+                manifest_path=str(second / 'Cargo.toml')))
+            self.reject_unchanged(root, metadata)
+
+    def test_material_source_and_destination_symlinks_are_rejected(self):
+        for kind in ('source', 'destination'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix='cedar-license-link-') as directory:
+                root = Path(directory).resolve()
+                base, metadata = self.material_fixture(root)
+                outside = root / 'outside.txt'
+                outside.write_bytes(b'Synthetic outside sentinel stays unchanged\n')
+                path = (base / 'LICENSE' if kind == 'source' else
+                        root / 'third-party-licenses/example-1.0.0/LICENSE')
+                saved = path.read_bytes()
+                path.unlink()
+                try:
+                    path.symlink_to(outside)
+                except (OSError, NotImplementedError):
+                    path.write_bytes(saved)
+                    self.skipTest('This test host cannot create a symlink')
+                self.reject_unchanged(root, metadata)
+                self.assertEqual(outside.read_bytes(), b'Synthetic outside sentinel stays unchanged\n')
+
+    def test_late_invalid_font_input_does_not_publish_partial_materials(self):
+        with tempfile.TemporaryDirectory(prefix='cedar-license-late-') as directory:
+            root = Path(directory).resolve()
+            base, metadata = self.material_fixture(root)
+            before = self.material_outputs(root)
+            (base / 'LICENSE').write_bytes(b'Changed material must remain staged\n')
+            (root / 'crates/app/assets/fonts/manifest.json').write_text('{invalid')
+            with self.assertRaises(ValueError):
+                collector.collect(root, metadata)
+            self.assertEqual(self.material_outputs(root), before)
+
+
 if __name__ == '__main__':
     unittest.main()
