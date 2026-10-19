@@ -5967,3 +5967,544 @@ fn snippet_highlight_inconsistent_source_query_is_decoration_only_fail_closed() 
         assert!(commands.try_recv().is_err());
     }
 }
+
+struct SnippetHighlightCostWorkload {
+    name: &'static str,
+    query: String,
+    rows: Vec<SearchMatch>,
+}
+
+fn snippet_highlight_cost_workloads() -> Vec<SnippetHighlightCostWorkload> {
+    let rows = |texts: Vec<String>| {
+        texts
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| SearchMatch {
+                path: "diagnostic.rs".into(),
+                line: index + 1,
+                text,
+            })
+            .collect::<Vec<_>>()
+    };
+    let long_prefix_query = format!("{}z", "a".repeat(63));
+    assert_eq!(long_prefix_query.len(), 64);
+    let fold_query = "kſσßI".repeat(8);
+    assert_eq!(fold_query.len(), 64);
+    let folded = "Ksςẞi".repeat(8);
+    let mut positive = format!("{fold_query} {folded} ");
+    positive.push_str(&"x".repeat(2054 - positive.len()));
+    // A breaking X occurs at least once per eight atoms, so even the insensitive
+    // matcher cannot find the entire eight-atom query in this negative text.
+    let negative = format!("{}KsςẞX", "Ksςẞi".repeat(7)).repeat(25);
+    assert_eq!(negative.len(), 2000);
+    let cap_row = format!("needle {}", "x".repeat(2047));
+    assert_eq!(cap_row.len(), 2054);
+    vec![
+        SnippetHighlightCostWorkload {
+            name: "64_byte_long_prefix_tail_negative",
+            query: long_prefix_query,
+            rows: rows(vec!["a".repeat(2054); 16]),
+        },
+        SnippetHighlightCostWorkload {
+            name: "heterogeneous_unicode_fold_positive",
+            query: fold_query.clone(),
+            rows: rows(vec![positive; 16]),
+        },
+        SnippetHighlightCostWorkload {
+            name: "heterogeneous_unicode_fold_negative",
+            query: fold_query,
+            rows: rows(vec![negative; 16]),
+        },
+        SnippetHighlightCostWorkload {
+            name: "dense_alternating_64_65_matches",
+            query: "a".into(),
+            rows: rows(
+                (0..32)
+                    .map(|index| "a".repeat(if index % 2 == 0 { 64 } else { 65 }))
+                    .collect(),
+            ),
+        },
+        SnippetHighlightCostWorkload {
+            name: "500_short_no_match",
+            query: "needle".into(),
+            rows: rows((0..500).map(|index| format!("x{index:03}")).collect()),
+        },
+        SnippetHighlightCostWorkload {
+            name: "2054_byte_rows_stop_at_32_kib_cap",
+            query: "needle".into(),
+            rows: rows(vec![cap_row; 32]),
+        },
+    ]
+}
+
+struct SnippetHighlightObservedAcceptance {
+    output: egui::FullOutput,
+    before: crate::search_keyboard::highlights::TestObservations,
+    after: crate::search_keyboard::highlights::TestObservations,
+    sequence_elapsed_ns: u128,
+    frame_elapsed_ns: u128,
+    frame_count: usize,
+}
+
+// Unlike snippet_highlight_accept, this accepts budget/ineligible batches without
+// assuming every input byte was admitted or a matcher was necessarily built.
+// The payload is prepared outside the observed interval. The response is queued
+// before the first real App update, so validation and preparation are measured.
+fn snippet_highlight_observe_acceptance(
+    app: &mut CedarApp,
+    browse: bool,
+    size: egui::Vec2,
+    command: Command,
+    matches: Vec<SearchMatch>,
+) -> SnippetHighlightObservedAcceptance {
+    assert!(!matches.is_empty());
+    let first = matches[0].text.clone();
+    let request = command.id;
+    let generation = app.generation;
+    let payload = snippet_highlight_payload(&command, matches);
+    let before = crate::search_keyboard::highlights::test_observations();
+    let started = std::time::Instant::now();
+    snippet_highlight_queue(app, generation, request, Ok(payload), true);
+    let mut frame_elapsed_ns = 0;
+    for frame_count in 1..=8 {
+        let frame_started = std::time::Instant::now();
+        let output = result_style_frame(app, size, vec![]);
+        frame_elapsed_ns += frame_started.elapsed().as_nanos();
+        if app
+            .search_state
+            .accepted
+            .as_ref()
+            .is_some_and(|source| source.request == request)
+            && snippet_highlight_has_current_draw(app, &output, browse, &first)
+        {
+            let after = crate::search_keyboard::highlights::test_observations();
+            let sequence_elapsed_ns = started.elapsed().as_nanos();
+            return SnippetHighlightObservedAcceptance {
+                output,
+                before,
+                after,
+                sequence_elapsed_ns,
+                frame_elapsed_ns,
+                frame_count,
+            };
+        }
+    }
+    panic!("request {request} never produced its first current native snippet draw");
+}
+
+fn snippet_highlight_cost_assert_caps(
+    app: &CedarApp,
+    observation: &SnippetHighlightObservedAcceptance,
+) -> (usize, usize) {
+    let accounting = app
+        .search_highlight_accounting()
+        .expect("accepted batch owns a cache, including empty fallback");
+    assert_eq!(observation.after.prepares - observation.before.prepares, 1);
+    assert!(observation.after.builds - observation.before.builds <= 1);
+    assert!(accounting[0] <= 1);
+    assert!(accounting[1] <= 32 * 1024);
+    assert!(accounting[2] <= 2048);
+    assert!(accounting[3] <= 512 * 1024);
+    assert!(accounting[4] <= 8 * 1024 * 1024);
+    assert_eq!(
+        observation.after.builds - observation.before.builds,
+        accounting[0]
+    );
+    assert_eq!(
+        observation.after.scanned_bytes - observation.before.scanned_bytes,
+        accounting[1]
+    );
+    assert_eq!(
+        observation.after.scan_calls - observation.before.scan_calls,
+        accounting[2]
+    );
+    let mut range_count = 0;
+    let mut decorated_rows = 0;
+    for index in 0..app.search_results.len() {
+        let ranges = app.search_highlight_ranges(index);
+        assert!(ranges.len() <= 64);
+        range_count += ranges.len();
+        decorated_rows += usize::from(!ranges.is_empty());
+    }
+    assert!(range_count <= 1024);
+    (range_count, decorated_rows)
+}
+
+#[test]
+#[ignore = "nonshipping 480-sample App acceptance/paint timing diagnostic; explicitly run debug and release"]
+fn snippet_highlight_actual_app_cost_observations() {
+    let workloads = snippet_highlight_cost_workloads();
+    assert_eq!(workloads.len(), 6);
+    let mut samples = 0;
+    for repeat in 0..5 {
+        for browse in [false, true] {
+            for size in [egui::vec2(1180.0, 812.0), egui::vec2(780.0, 540.0)] {
+                for font in [13.0, 18.0] {
+                    for sensitive in [true, false] {
+                        for workload in &workloads {
+                            let baseline = SearchMatch {
+                                path: "diagnostic.rs".into(),
+                                line: 7,
+                                text: "second baseline".into(),
+                            };
+                            let (mut app, commands, _, _hold) =
+                                result_style_fixture(browse, size, font, vec![baseline], |_, _| {});
+                            app.case_search = Some(cedar_protocol::CaseSearchDescriptor::V1);
+                            let editor = result_style_editor(&app); // after genuine Browse entry
+                            snippet_highlight_replace(&mut app, browse, size, &workload.query);
+                            if app.search_match_case != sensitive {
+                                crate::scoped_search_tests::click_at_size(
+                                    &mut app,
+                                    size,
+                                    &format!("{}_match_case", snippet_highlight_prefix(browse)),
+                                );
+                            }
+                            assert_eq!(app.search_match_case, sensitive);
+                            assert!(commands.try_recv().is_err());
+                            let command =
+                                snippet_highlight_submit(&mut app, &commands, browse, size);
+                            let request = command.id;
+                            let observed = snippet_highlight_observe_acceptance(
+                                &mut app,
+                                browse,
+                                size,
+                                command,
+                                workload.rows.clone(),
+                            );
+                            assert!(app.search_rows_active());
+                            assert_eq!(app.search_results.len(), workload.rows.len());
+                            let source = app.search_state.accepted.as_ref().unwrap();
+                            assert_eq!(source.request, request);
+                            assert_eq!(source.query, workload.query);
+                            assert_eq!(source.specification.case_sensitive, sensitive);
+                            let (range_count, decorated_rows) =
+                                snippet_highlight_cost_assert_caps(&app, &observed);
+                            let accounting = app.search_highlight_accounting().unwrap();
+                            match workload.name {
+                                "64_byte_long_prefix_tail_negative"
+                                | "heterogeneous_unicode_fold_negative"
+                                | "500_short_no_match" => assert_eq!(range_count, 0),
+                                "dense_alternating_64_65_matches" => {
+                                    assert_eq!(app.search_highlight_ranges(0).len(), 64);
+                                    assert!(
+                                        app.search_highlight_ranges(1).is_empty(),
+                                        "a 65th match discards that complete row"
+                                    );
+                                    assert_eq!(range_count, 1024);
+                                }
+                                "2054_byte_rows_stop_at_32_kib_cap" => {
+                                    assert_eq!(accounting[1], 15 * 2054);
+                                    assert_eq!(decorated_rows, 15);
+                                    assert_eq!(app.search_highlight_ranges(14).len(), 1);
+                                    assert!(app.search_highlight_ranges(15).is_empty());
+                                }
+                                "heterogeneous_unicode_fold_positive" => assert!(range_count > 0),
+                                _ => unreachable!(),
+                            }
+                            let row_probe = format!("{}_row:0", snippet_highlight_prefix(browse));
+                            let actual = result_style_draw(
+                                &app,
+                                &observed.output,
+                                &row_probe,
+                                workload.rows[0].text.trim(),
+                                FontId::monospace(font),
+                                chrome::TEXT,
+                            );
+                            let actual_font =
+                                format!("{:?}", actual.galley.job.sections[0].format.font_id);
+                            assert!(recorded_response(&app, &row_probe).enabled());
+                            assert_eq!(result_style_editor(&app), editor);
+                            assert!(
+                                commands.try_recv().is_err(),
+                                "acceptance and painting cannot Search/Read"
+                            );
+                            let cache_counts = snippet_highlight_counts();
+                            result_style_frame(&mut app, size, vec![]);
+                            assert_eq!(
+                                snippet_highlight_counts(),
+                                cache_counts,
+                                "later frame cannot rebuild or rescan an identical cache"
+                            );
+                            assert_eq!(app.search_highlight_accounting(), Some(accounting));
+                            assert_eq!(result_style_editor(&app), editor);
+                            assert!(commands.try_recv().is_err());
+                            let record = serde_json::json!({
+                                "kind": "snippet_highlight_actual_app_cost", "sample": samples, "repeat": repeat,
+                                "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+                                "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
+                                "surface": if browse { "browse" } else { "bottom" },
+                                "width": size.x, "height": size.y, "ui_font": font, "actual_mono_font": actual_font,
+                                "case_sensitive": sensitive, "workload": workload.name,
+                                "query_bytes": workload.query.len(), "query_scalars": workload.query.chars().count(),
+                                "rows": workload.rows.len(), "snippet_bytes": workload.rows.iter().map(|row| row.text.len()).sum::<usize>(),
+                                "scanned": accounting[1], "calls": accounting[2], "charged_visits": accounting[3], "work_units": accounting[4],
+                                "cache_ranges": range_count, "decorated_rows": decorated_rows,
+                                "prepares": observed.after.prepares - observed.before.prepares,
+                                "builds": observed.after.builds - observed.before.builds,
+                                "map_calls": observed.after.map_calls - observed.before.map_calls,
+                                "authority_checks": observed.after.authority_checks - observed.before.authority_checks,
+                                "prepare_ns": observed.after.prepare_ns - observed.before.prepare_ns,
+                                "map_ns": observed.after.map_ns - observed.before.map_ns,
+                                "frame_elapsed_ns": observed.frame_elapsed_ns,
+                                "accepted_to_first_visible_sequence_ns": observed.sequence_elapsed_ns,
+                                "frame_count": observed.frame_count,
+                                "timing_scope": "queued response through first current native snippet paint; preparation/map deltas cover the same interval"
+                            });
+                            println!("{}", serde_json::to_string(&record).unwrap());
+                            samples += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(samples, 480);
+}
+
+#[test]
+fn snippet_highlight_legacy_admission_fallback_keeps_rows_enabled_without_building() {
+    let size = egui::vec2(1180.0, 812.0);
+    let path = "legacy.rs";
+    // Existing admission counts BOTH path and snippet bytes. With a nonempty
+    // navigable path, an exactly 512-KiB snippet is over-budget. The accepted
+    // boundary below is exactly 512 KiB aggregate, not 512 KiB snippet alone.
+    let accepted_near_cap = MAX_TEXT_BYTES - path.len();
+    let cases = vec![
+        (
+            "query_65_bytes",
+            "q".repeat(65),
+            "legacy accepted row".to_owned(),
+        ),
+        (
+            "query_embedded_cr",
+            "a\rb".to_owned(),
+            "legacy accepted row".to_owned(),
+        ),
+        (
+            "query_embedded_lf",
+            "a\nb".to_owned(),
+            "legacy accepted row".to_owned(),
+        ),
+        (
+            "query_embedded_nul",
+            "a\0b".to_owned(),
+            "legacy accepted row".to_owned(),
+        ),
+        ("snippet_2055_bytes", "x".to_owned(), "x".repeat(2055)),
+        (
+            "aggregate_exact_512_kib",
+            "x".to_owned(),
+            "x".repeat(accepted_near_cap),
+        ),
+    ];
+    for browse in [false, true] {
+        for (name, query, snippet) in &cases {
+            let baseline = SearchMatch {
+                path: path.into(),
+                line: 7,
+                text: "second baseline".into(),
+            };
+            let (mut app, commands, _, _hold) =
+                result_style_fixture(browse, size, 13.0, vec![baseline], |_, _| {});
+            let editor = result_style_editor(&app);
+            snippet_highlight_replace(&mut app, browse, size, query);
+            assert!(app.search_match_case);
+            assert!(app.search_scope.is_empty() && app.search_masks.is_empty());
+            let specification = app
+                .search_specification()
+                .expect("existing Legacy specification permits this exact query");
+            assert_eq!(specification.route, crate::search_keyboard::Route::Legacy);
+            assert_eq!(specification.request.query, *query);
+            let hit = SearchMatch {
+                path: path.into(),
+                line: 7,
+                text: snippet.clone(),
+            };
+            assert!(
+                validate(&[hit.clone()]).is_ok(),
+                "{name}: preexisting whole-batch admission"
+            );
+            let command = snippet_highlight_submit(&mut app, &commands, browse, size);
+            assert!(
+                matches!(&command.op, Operation::Search { query: actual, limit: 500 } if actual == query)
+            );
+            let observed =
+                snippet_highlight_observe_acceptance(&mut app, browse, size, command, vec![hit]);
+            let source = app.search_state.accepted.as_ref().unwrap();
+            assert_eq!(source.query, *query);
+            assert_eq!(source.specification.request.query, *query);
+            assert_eq!(
+                source.specification.route,
+                crate::search_keyboard::Route::Legacy
+            );
+            assert!(app.search_rows_active());
+            assert_eq!(app.search_results[0].text, *snippet);
+            // The preceding historical nonempty cache may have been inspected
+            // before the queued replacement was applied. Zero-work proof starts
+            // with the accepted empty cache and includes every read/paint below.
+            let authority_after_acceptance =
+                crate::search_keyboard::highlights::test_observations().authority_checks;
+            let (ranges, decorated) = snippet_highlight_cost_assert_caps(&app, &observed);
+            assert_eq!((ranges, decorated), (0, 0));
+            assert_eq!(observed.after.builds - observed.before.builds, 0);
+            assert_eq!(observed.after.scan_calls - observed.before.scan_calls, 0);
+            assert_eq!(
+                observed.after.scanned_bytes - observed.before.scanned_bytes,
+                0
+            );
+            assert_eq!(app.search_highlight_accounting(), Some([0; 5]));
+            assert!(snippet_highlight_all_backgrounds(&observed.output).is_empty());
+            let probe = format!("{}_row:0", snippet_highlight_prefix(browse));
+            let row = recorded_response(&app, &probe);
+            assert!(
+                row.enabled() && row.sense.is_focusable(),
+                "fallback is decoration-only, never navigation rejection"
+            );
+            result_style_draw(
+                &app,
+                &observed.output,
+                &probe,
+                snippet.trim(),
+                FontId::monospace(13.0),
+                chrome::TEXT,
+            );
+            let counts = snippet_highlight_counts();
+            result_style_click(&mut app, size, &probe);
+            assert_eq!(app.search_state.selected_index(), Some(0));
+            result_style_frame(&mut app, size, key(egui::Key::Space));
+            for _ in 0..3 {
+                result_style_frame(&mut app, size, vec![]);
+            }
+            let preview = if browse {
+                app.browse_preview_text()
+            } else {
+                app.search_preview_text()
+            };
+            assert_eq!(
+                preview,
+                Some(app.documents[0].text.as_str()),
+                "native Space still reviews the dirty open buffer"
+            );
+            result_style_frame(&mut app, size, key(egui::Key::Escape));
+            for _ in 0..3 {
+                result_style_frame(&mut app, size, vec![]);
+            }
+            assert_eq!(focused(&app), Some(recorded_response(&app, &probe).id));
+            assert_eq!(snippet_highlight_counts(), counts);
+            assert_eq!(
+                crate::search_keyboard::highlights::test_observations().authority_checks,
+                authority_after_acceptance,
+                "empty cached rows must not perform Source/active authority checks during reads, paint, selection or preview"
+            );
+            assert_eq!(result_style_editor(&app), editor);
+            assert!(
+                commands.try_recv().is_err(),
+                "fallback, selection and dirty preview never issue Search/Read"
+            );
+            eprintln!("SNIPPET_LEGACY_FALLBACK case={name} browse={browse} query_bytes={} snippet_bytes={} active=true prepares=1 builds=0", query.len(), snippet.len());
+        }
+    }
+}
+
+#[test]
+fn snippet_highlight_exact_512_kib_snippet_plus_path_remains_rejected_before_preparation() {
+    let size = egui::vec2(1180.0, 812.0);
+    for browse in [false, true] {
+        let baseline = SearchMatch {
+            path: "legacy.rs".into(),
+            line: 7,
+            text: "second baseline".into(),
+        };
+        let (mut app, commands, _, _hold) =
+            result_style_fixture(browse, size, 13.0, vec![baseline], |_, _| {});
+        let editor = result_style_editor(&app);
+        let source = app.search_state.accepted.clone();
+        let cached = snippet_highlight_counts();
+        let hit = SearchMatch {
+            path: "legacy.rs".into(),
+            line: 7,
+            text: "x".repeat(MAX_TEXT_BYTES),
+        };
+        assert!(
+            validate(&[hit.clone()]).is_err(),
+            "unchanged aggregate path+snippet admission cap"
+        );
+        let command = snippet_highlight_submit(&mut app, &commands, browse, size);
+        snippet_highlight_queue(
+            &app,
+            app.generation,
+            command.id,
+            Ok(Payload::Matches {
+                matches: vec![hit],
+                truncated: false,
+            }),
+            true,
+        );
+        snippet_highlight_retired(&mut app, &commands, size, cached, &editor);
+        assert_eq!(app.search_state.accepted, source);
+        assert!(app.search_state.pending.is_none());
+        assert!(app
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("512 KiB path and snippet")));
+    }
+}
+
+#[test]
+fn snippet_highlight_large_legacy_query_empty_cache_avoids_500_per_row_authority_checks() {
+    let size = egui::vec2(1180.0, 812.0);
+    let baseline = SearchMatch {
+        path: "legacy.rs".into(),
+        line: 7,
+        text: "second baseline".into(),
+    };
+    let (mut app, commands, _, _hold) =
+        result_style_fixture(false, size, 13.0, vec![baseline], |_, _| {});
+    let editor = result_style_editor(&app);
+    let query = "q".repeat(8192);
+    snippet_highlight_replace(&mut app, false, size, &query);
+    let command = snippet_highlight_submit(&mut app, &commands, false, size);
+    assert!(
+        matches!(&command.op, Operation::Search { query: actual, limit: 500 } if actual == &query)
+    );
+    let specification = app.search_specification().unwrap();
+    assert_eq!(specification.route, crate::search_keyboard::Route::Legacy);
+    let matches = (0..500)
+        .map(|index| SearchMatch {
+            path: "legacy.rs".into(),
+            line: index + 1,
+            text: "small legacy row".into(),
+        })
+        .collect::<Vec<_>>();
+    let before = crate::search_keyboard::highlights::test_observations();
+    // Target the real validated acceptance entry after a real native request.
+    // No Source/cache fields are written. Deliberately inspect the cache before
+    // another frame, avoiding an unrelated 500-row layout in this narrow test.
+    app.apply_search_response(
+        command.id,
+        specification,
+        Ok(snippet_highlight_payload(&command, matches)),
+    );
+    assert!(app.search_rows_active());
+    assert_eq!(app.search_results.len(), 500);
+    assert_eq!(app.search_state.accepted.as_ref().unwrap().query, query);
+    let accepted = crate::search_keyboard::highlights::test_observations();
+    assert_eq!(accepted.prepares - before.prepares, 1);
+    assert_eq!(accepted.builds - before.builds, 0);
+    assert_eq!(accepted.scan_calls - before.scan_calls, 0);
+    assert_eq!(accepted.scanned_bytes - before.scanned_bytes, 0);
+    assert_eq!(app.search_highlight_accounting(), Some([0; 5]));
+    for index in 0..500 {
+        assert!(app.search_highlight_ranges(index).is_empty());
+    }
+    assert!(app.search_highlight_ranges(500).is_empty());
+    assert!(app.search_highlight_ranges(usize::MAX).is_empty());
+    let after = crate::search_keyboard::highlights::test_observations();
+    assert_eq!(after.authority_checks, accepted.authority_checks);
+    assert_eq!(after.prepares, accepted.prepares);
+    assert_eq!(after.builds, accepted.builds);
+    assert_eq!(after.scan_calls, accepted.scan_calls);
+    assert_eq!(after.scanned_bytes, accepted.scanned_bytes);
+    assert_eq!(result_style_editor(&app), editor);
+    assert!(commands.try_recv().is_err());
+}
