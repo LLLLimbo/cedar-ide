@@ -19,8 +19,13 @@ font files. The Cargo license collector regenerates this font section from the m
 
 `system_fonts::base_fonts()` places Inter first in the proportional family and
 JetBrains Mono first in the monospace family, retaining egui symbol/emoji
-fallbacks. An optional installed CJK face is appended to this same base; OS
-fonts are never redistributed. `syntax::editor_line_height()` supplies the
+fallbacks. The same embedded Inter is also appended after all existing monospace
+fallbacks, supplying previously missing glyphs such as Kelvin sign U+212A (K).
+Existing supported code glyphs retain their original face and metrics. Missing
+glyphs use Inter's own advance; this does not promise a uniform cell width for
+all Unicode. Text is not normalized or replaced, and no additional font bytes
+are included. An optional installed CJK face is appended after this same base;
+OS fonts are never redistributed. `syntax::editor_line_height()` supplies the
 shared 1.2 × code-size logical line height for code and the one-point-smaller
 gutter. egui rounds each row to the same physical pixel height at the active
 scale; the gutter also uses measured glyph-baseline compensation.

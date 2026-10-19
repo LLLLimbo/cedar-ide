@@ -34,6 +34,14 @@ pub fn base_fonts() -> egui::FontDefinitions {
             .or_default()
             .insert(0, name.into());
     }
+    // Reuse our embedded UI face only after every existing monospace fallback.
+    // It supplies missing glyphs such as U+212A without changing supported code
+    // glyphs or their metrics. Missing glyphs retain the fallback's own advance.
+    definitions
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push(UI_FONT_NAME.into());
     definitions
 }
 
@@ -365,7 +373,13 @@ mod tests {
         ] {
             let fonts = &base.families[&family];
             assert_eq!(fonts[0], name);
-            assert_eq!(&fonts[1..], defaults.families[&family]);
+            let builtin = &defaults.families[&family];
+            assert_eq!(&fonts[1..1 + builtin.len()], builtin);
+            if family == egui::FontFamily::Monospace {
+                assert_eq!(&fonts[1 + builtin.len()..], [UI_FONT_NAME]);
+            } else {
+                assert_eq!(fonts.len(), 1 + builtin.len());
+            }
         }
         for (name, data) in defaults.font_data {
             assert_eq!(base.font_data[&name], data);
