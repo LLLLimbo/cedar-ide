@@ -4377,7 +4377,7 @@ fn result_style_tooltip_paint(
     assert!(inner.is_positive() && area.contains_rect(inner));
     assert!(
         content.y > inner.height(),
-        "long original text needs native scrolling"
+        "{probe}: long original text needs native scrolling: inner={inner:?}, content={content:?}; {}", result_style_tooltip_diagnostic(app, probe)
     );
     let native_clip = app.editor_ctx.data(|data| {
         data.get_temp::<egui::Rect>(egui::Id::new((
@@ -4469,14 +4469,17 @@ fn result_style_delayed_tooltip(
         ))
     });
     let bar = lower_scroll.and_then(|(id, _, _)| app.editor_ctx.read_response(id.with(1_usize)));
-    let right = bar
-        .as_ref()
-        .filter(|bar| bar.rect.intersect(row).is_positive())
-        .map_or(row.right(), |bar| row.right().min(bar.rect.left()));
+    let full_bar = bar.as_ref().map(|bar| {
+        bar.rect
+            .with_min_x(bar.rect.right() - app.editor_ctx.style().spacing.scroll.bar_width)
+    });
+    let right = full_bar
+        .filter(|bar| bar.intersect(row).is_positive())
+        .map_or(row.right(), |bar| row.right().min(bar.left()));
     let pos = egui::pos2(right - 3.0, row.center().y);
     assert!(row.contains(pos));
     assert!(
-        !bar.as_ref().is_some_and(|bar| bar.rect.contains(pos)),
+        !full_bar.is_some_and(|bar| bar.contains(pos)),
         "tooltip hover belongs to the row, not its native scrollbar"
     );
     let output = result_style_tooltip_frame(app, size, 0.016, vec![egui::Event::PointerMoved(pos)]);
@@ -4511,6 +4514,7 @@ fn search_result_style_original_tooltips_native_scroll_matrix() {
         for font in [13.0, 18.0] {
             for theme in [egui::Theme::Dark, egui::Theme::Light] {
                 for kind in ["browse_row", "browse_group", "search_group"] {
+                    eprintln!("RESULT_TOOLTIP_SCROLL_BEGIN size={size:?} font={font} theme={theme:?} kind={kind}");
                     let matches = (0..16)
                         .map(|index| SearchMatch {
                             path: format!(
@@ -4692,6 +4696,7 @@ fn search_result_style_original_tooltips_resize_and_restore_style() {
     for font in [13.0, 18.0] {
         for theme in [egui::Theme::Dark, egui::Theme::Light] {
             for kind in ["browse_row", "browse_group", "search_group"] {
+                eprintln!("RESULT_TOOLTIP_RESIZE_BEGIN font={font} theme={theme:?} kind={kind}");
                 let (mut app, commands, text, _hold_font_probe) =
                     result_style_single_tooltip_fixture(kind, large, font, theme);
                 let probe = format!("{kind}:0");
