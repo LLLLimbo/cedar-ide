@@ -209,7 +209,7 @@ impl Source {
 #[derive(Default)]
 pub(super) struct Search {
     pub accepted: Option<Source>,
-    highlights: Option<(Source, highlights::Prepared)>,
+    highlights: Option<(Option<Source>, highlights::Prepared)>,
     pub pending: Option<Source>,
     completed: Option<(u64, Specification, Result<Payload, String>)>,
     pub status: Option<ScanStatus>,
@@ -830,7 +830,10 @@ impl CedarApp {
         let ranges = prepared.row(index);
         // Empty decoration must remain constant work, including accepted Legacy
         // queries outside the display cap. Do not clone/validate them per row.
-        if ranges.is_empty() || self.search_state.accepted.as_ref() != Some(source) {
+        if ranges.is_empty()
+            || source.as_ref().is_none()
+            || self.search_state.accepted.as_ref() != source.as_ref()
+        {
             return &[];
         }
         #[cfg(test)]
@@ -847,6 +850,14 @@ impl CedarApp {
             .highlights
             .as_ref()
             .map(|(_, prepared)| prepared.counts())
+    }
+
+    #[cfg(test)]
+    pub(super) fn search_highlight_has_source(&self) -> bool {
+        self.search_state
+            .highlights
+            .as_ref()
+            .is_some_and(|(source, _)| source.is_some())
     }
 
     pub(super) fn search_focus_identity(&self) -> FocusIdentity {
@@ -1024,7 +1035,10 @@ impl CedarApp {
                     source.specification.case_sensitive,
                     &matches,
                 );
-                (source.clone(), prepared)
+                // Empty decoration must not retain another copy of a Legacy
+                // query/specification outside the display admission cap.
+                let identity = (!prepared.is_empty()).then(|| source.clone());
+                (identity, prepared)
             });
         self.search_state.status = status;
         self.search_state.install(&matches);

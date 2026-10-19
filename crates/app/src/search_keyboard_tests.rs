@@ -5596,6 +5596,7 @@ fn snippet_highlight_cache_reused_across_hover_resize_grouping_and_surfaces() {
     let cached = snippet_highlight_counts();
     let accounting = app.search_highlight_accounting();
     assert_eq!(accounting.unwrap()[0], 1);
+    assert!(app.search_highlight_has_source());
     let addresses = (0..3)
         .map(|index| app.search_highlight_ranges(index).as_ptr() as usize)
         .collect::<Vec<_>>();
@@ -6545,6 +6546,7 @@ fn snippet_highlight_large_legacy_query_empty_cache_avoids_500_per_row_authority
     assert_eq!(accepted.scan_calls - before.scan_calls, 0);
     assert_eq!(accepted.scanned_bytes - before.scanned_bytes, 0);
     assert_eq!(app.search_highlight_accounting(), Some([0; 5]));
+    assert!(!app.search_highlight_has_source());
     for index in 0..500 {
         assert!(app.search_highlight_ranges(index).is_empty());
     }

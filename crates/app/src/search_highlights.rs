@@ -205,6 +205,10 @@ impl Prepared {
         ]
     }
 
+    pub(super) fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
     pub(super) fn row(&self, index: usize) -> &[Range<usize>] {
         self.offsets
             .get(index)
