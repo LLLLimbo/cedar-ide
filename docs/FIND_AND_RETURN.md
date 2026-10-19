@@ -110,6 +110,44 @@ This is a separately identified tooltip constraint fix, not a search or input
 policy change or a defect introduced by sharing the row paint.
 
 
+## Result-snippet match shading (development candidate)
+
+Both Project Text result lists shade complete, visible occurrences of the
+**accepted search query** in their monospaced snippets. Shading follows the
+accepted Match case setting, using the same Unicode simple-fold literal rules
+when unchecked. It does not use an unsubmitted draft query. Changing the query
+or options retires old shading along with the old active results; painting never
+submits Search or Read. Context preview, the editor, filenames, line numbers,
+accessible labels and full tooltip text keep their existing behavior.
+
+**Unshaded text can still be a valid search result.** Shading is a bounded,
+best-effort decoration and does not determine result counts or whether a row can
+be opened. It is prepared once per accepted batch for queries up to **64 UTF-8
+bytes**, snippets up to **2,054 bytes**, and at most **32 KiB** of eligible snippet
+text in original accepted order. Rows with more than 64 nonoverlapping matches
+stay unshaded; the whole cache stores at most 1,024 ranges. A later row may remain
+plain when a preparation budget is exhausted. Longer queries still search using
+the existing search contract, with their result text displayed normally.
+
+Preparation also caps iterator attempts at 2,048, charged full-haystack visits
+at 512 KiB, and scalar-count × charged-byte accounting at 8 Mi units per batch.
+These are accounting bounds, not a hard elapsed-time or total-memory guarantee.
+The existing pinned regex packages gain an App runtime dependency edge; this
+has build and binary-size costs, not a claimed performance advantage.
+
+Only whole matches inside the existing trimmed, visible snippet are shaded.
+A leading or trailing original `…` is conservatively excluded because the wire
+format cannot distinguish a crop marker from a real ellipsis; real edge
+ellipses can therefore be under-highlighted. Middle ellipses remain literal.
+A generated display-overflow `…` is never shaded. Unsupported or unreliable
+glyph mappings, zero-width spans and recoverable preparation failures leave the
+text unchanged. Unicode matches retain their original scalar/UTF-8 ranges;
+shading does not expand them to a grapheme or add normalization/full folding.
+The original Galley, row geometry, selection, native input and Open authority
+are retained. Exact-source tests, CI, package audits and a fresh bounded native
+check remain separate acceptance gates for this candidate.
+
+
 ## Files native IME acceptance (0.76 candidate)
 
 Files query and Directory keep their native single-line String editors. A Commit

@@ -258,7 +258,9 @@ pub(crate) fn rectangles(
         if character != glyph.chr
             || !glyph.pos.is_finite()
             || !glyph.advance_width.is_finite()
+            || !glyph.max_x().is_finite()
             || glyph.advance_width < 0.0
+            || glyph.pos.x < 0.0
             || glyph.pos.x < prior_x
         {
             return Vec::new();
@@ -306,7 +308,10 @@ pub(crate) fn rectangles(
             egui::pos2(row.glyphs[first].pos.x, row.rect.top()),
             egui::pos2(row.glyphs[after - 1].max_x(), row.rect.bottom()),
         );
-        if !rect.is_finite() || !rect.is_positive() || !row.rect.contains_rect(rect) {
+        // Row/Galley measurement bounds are GUI-rounded; glyph advances are
+        // not. The caller checks the exact rectangle against the real native
+        // row/snippet clip instead of treating rounded measurements as a clip.
+        if !rect.is_finite() || !rect.is_positive() {
             continue;
         }
         if galley.elided && rect.right() > row.glyphs[count].pos.x {
@@ -483,5 +488,105 @@ mod tests {
         );
         assert_eq!(p.row(0).len(), 32);
         assert!(p.row(1).is_empty());
+    }
+    fn galley(text: &str, width: f32, font: f32) -> egui::Galley {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::system_fonts::base_fonts());
+        let mut result = None;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let value = egui::WidgetText::from(
+                    egui::RichText::new(text).font(egui::FontId::monospace(font)),
+                )
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Truncate),
+                    width,
+                    egui::TextStyle::Monospace,
+                );
+                result = Some((*value).clone());
+            });
+        });
+        result.unwrap()
+    }
+
+    #[test]
+    fn mapped_original_unicode_ranges_preserve_the_complete_galley() {
+        for font in [13.0, 18.0] {
+            let original = "  K k  ";
+            let prepared = Prepared::prepare("k", false, &rows(&[original]));
+            let g = galley(original.trim(), 200.0, font);
+            let before = g.clone();
+            let painted = rectangles(&g, 2, prepared.row(0));
+            let row = &g.rows[0];
+            let expected = [0usize, 2].map(|index| {
+                egui::Rect::from_min_max(
+                    egui::pos2(row.glyphs[index].pos.x, row.rect.top()),
+                    egui::pos2(row.glyphs[index].max_x(), row.rect.bottom()),
+                )
+            });
+            assert_eq!(painted, expected);
+            assert_eq!(
+                g, before,
+                "mapping cannot reshape, recolor or replace any Galley data"
+            );
+        }
+    }
+
+    #[test]
+    fn elision_only_skips_incomplete_spans_and_never_colors_overflow() {
+        let original = "needle needle needle needle";
+        let prepared = Prepared::prepare("needle", true, &rows(&[original]));
+        let full = galley(original, 1000.0, 13.0);
+        let width = full.rows[0].glyphs[10].max_x();
+        let clipped = galley(original, width, 13.0);
+        assert!(clipped.elided);
+        let painted = rectangles(&clipped, 0, prepared.row(0));
+        assert_eq!(
+            painted.len(),
+            1,
+            "first complete match survives, second partial match does not"
+        );
+        let overflow = clipped.rows[0].glyphs.last().unwrap();
+        assert_eq!(overflow.chr, '…');
+        assert!(painted[0].right() <= overflow.pos.x);
+        let only_overflow = galley(original, 0.0, 13.0);
+        assert!(only_overflow.elided);
+        assert!(rectangles(&only_overflow, 0, prepared.row(0)).is_empty());
+        let middle = "a…b and very long remainder";
+        let g = galley(middle, 50.0, 13.0);
+        let p = Prepared::prepare("…", true, &rows(&[middle]));
+        let painted = rectangles(&g, 0, p.row(0));
+        assert_eq!(painted.len(), 1, "real middle ellipsis remains eligible");
+        if let Some(rect) = painted.first() {
+            assert!(rect.right() <= g.rows[0].glyphs.last().unwrap().pos.x);
+        }
+    }
+
+    #[test]
+    fn malformed_prefix_or_offsets_fail_closed_without_partial_paint() {
+        let g = galley("second second", 300.0, 13.0);
+        let spans = [0..6, 7..13];
+        assert_eq!(rectangles(&g, 0, &spans).len(), 2);
+        let mut wrong = g.clone();
+        wrong.rows[0].glyphs[8].chr = 'x';
+        assert!(rectangles(&wrong, 0, &spans).is_empty());
+        let mut nonfinite = g.clone();
+        nonfinite.rows[0].glyphs[8].pos.x = f32::NAN;
+        assert!(rectangles(&nonfinite, 0, &spans).is_empty());
+        let mut reversed = g.clone();
+        reversed.rows[0].glyphs[8].pos.x = -1.0;
+        assert!(rectangles(&reversed, 0, &spans).is_empty());
+        let unicode = galley("K k", 200.0, 13.0);
+        assert!(rectangles(&unicode, 0, &[0..1, 4..5]).is_empty());
+        assert!(rectangles(&g, 0, &[7..13, 0..6]).is_empty());
+        let mut zero = g.clone();
+        zero.rows[0].glyphs[0].advance_width = 0.0;
+        assert_eq!(
+            rectangles(&zero, 0, &spans).len(),
+            1,
+            "unreliable zero-width span is not expanded"
+        );
+        assert!(rectangles(&galley("second\tsecond", 300.0, 13.0), 0, &spans).is_empty());
     }
 }

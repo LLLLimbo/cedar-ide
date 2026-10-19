@@ -4556,10 +4556,11 @@ impl TextResultRow {
                     rect.center().y - snippet.size().y / 2.0,
                 );
                 if ui.is_enabled() && !highlights.is_empty() {
-                    let clip = ui
-                        .clip_rect()
-                        .intersect(rect)
-                        .intersect(snippet.rect.translate(origin.to_vec2()));
+                    let snippet_clip = egui::Rect::from_min_max(
+                        egui::pos2(origin.x, rect.top()),
+                        egui::pos2(rect.right() - 6.0, rect.bottom()),
+                    );
+                    let clip = ui.clip_rect().intersect(rect).intersect(snippet_clip);
                     for highlight in
                         search_keyboard::highlights::rectangles(snippet, *trim_start, highlights)
                     {
