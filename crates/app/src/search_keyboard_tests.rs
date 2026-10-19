@@ -3650,7 +3650,7 @@ fn result_style_click(app: &mut CedarApp, size: egui::Vec2, probe: &str) -> egui
     let response = recorded_response(app, probe);
     let id = response.id;
     let enabled = response.enabled();
-    result_style_frame(app, size, vec![egui::Event::PointerMoved(pos)]);
+    let hover_output = result_style_frame(app, size, vec![egui::Event::PointerMoved(pos)]);
     assert_eq!(
         recorded_rect(app, probe),
         rect,
@@ -3659,6 +3659,56 @@ fn result_style_click(app: &mut CedarApp, size: egui::Vec2, probe: &str) -> egui
     assert_eq!(recorded_response(app, probe).id, id);
     result_style_frame(app, size, pointer(pos, true));
     let down = recorded_response(app, probe);
+    if enabled && !down.is_pointer_button_down_on() {
+        let ctx = &app.editor_ctx;
+        eprintln!(
+            "RESULT_STYLE_POINTER probe={probe} pos={pos:?} rect={rect:?} clip={clip:?} id={id:?} tooltip_id={:?} response_layer={:?} pointer_layer={:?} default_area_size={:?} areas={:?}",
+            id.with(0_usize), down.layer_id, ctx.layer_id_at(pos),
+            ctx.style().spacing.default_area_size,
+            ctx.memory(|memory| memory.layer_ids().map(|layer|
+                (layer, memory.area_rect(layer.id))).collect::<Vec<_>>())
+        );
+        for (draw, paint_clip) in result_style_texts(&hover_output) {
+            let text = &draw.galley.job.text;
+            if draw.galley.rows.len() > 1 || text.chars().count() > 80 {
+                eprintln!(
+                    "RESULT_STYLE_HOVER_TEXT prefix={:?} bytes={} rows={} clip={paint_clip:?} painted={:?}",
+                    text.chars().take(80).collect::<String>(), text.len(),
+                    draw.galley.rows.len(), draw.galley.rect.translate(draw.pos.to_vec2())
+                );
+            }
+        }
+        let mut owners = vec![
+            (probe, id),
+            (
+                "search_group:0",
+                recorded_response(app, "search_group:0").id,
+            ),
+        ];
+        if probe.starts_with("browse") {
+            owners.extend(
+                ["browse_row:0", "browse_group:0"]
+                    .map(|name| (name, recorded_response(app, name).id)),
+            );
+        }
+        for (name, owner) in owners {
+            let (scroll, geometry) = ctx.data(|data| {
+                (
+                    data.get_temp::<(egui::Id, egui::Rect, egui::Vec2)>(egui::Id::new((
+                        "text_result_tooltip_probe",
+                        owner,
+                    ))),
+                    data.get_temp::<(egui::Rect, egui::Vec2, f32, f32, f32, f32, f32)>(
+                        egui::Id::new(("text_result_tooltip_geometry_probe", owner)),
+                    ),
+                )
+            });
+            eprintln!(
+                "RESULT_STYLE_TOOLTIP_OWNER name={name} id={owner:?} tooltip_id={:?} scroll={scroll:?} geometry={geometry:?}",
+                owner.with(0_usize)
+            );
+        }
+    }
     assert_eq!(
         down.is_pointer_button_down_on(),
         enabled,

@@ -4603,6 +4603,10 @@ pub(super) fn text_result_tooltip(response: egui::Response, text: &str) -> egui:
         #[cfg(test)]
         ui.ctx().data_mut(|data| {
             data.insert_temp(
+                egui::Id::new(("text_result_tooltip_geometry_probe", id)),
+                (origin, expected, above, below, space, width, height),
+            );
+            data.insert_temp(
                 egui::Id::new(("text_result_tooltip_probe", id)),
                 (scroll.id, scroll.inner_rect, scroll.content_size),
             );
