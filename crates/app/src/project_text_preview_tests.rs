@@ -1414,3 +1414,274 @@ fn continuous_preview_modal_hide_keeps_physical_flight_and_rejects_late_reply() 
         assert!(commands.try_recv().is_err());
     }
 }
+
+// APPEND-ONLY TEST DRAFT. Append this block to
+// crates/app/src/project_text_preview_tests.rs in a disposable baseline test
+// checkout first. No production change is needed to collect the witnesses.
+//
+// The four desired-behavior tests intentionally FAIL on the current combined,
+// unpadded Label renderer. Preserve their PREVIEW_GUTTER_WITNESS output as the
+// original evidence, then run these same tests against a candidate renderer.
+// Matching a unique code suffix deliberately accepts either the old combined
+// Galley or a future independent code Galley. Formatter/model checks remain
+// separate and retain the existing exact, bounded text contract.
+
+#[derive(Debug)]
+struct PreviewGutterGlyphWitness {
+    line: usize,
+    original_galley_text: String,
+    code: String,
+    code_glyph_index: usize,
+    galley_origin: egui::Pos2,
+    code_origin: egui::Pos2,
+    code_ink: egui::Rect,
+    painted_row: egui::Rect,
+    native_clip: egui::Rect,
+    viewport: egui::Rect,
+}
+
+fn preview_gutter_code(line: usize) -> String {
+    // Fixed-length ASCII suffixes keep the first code glyph identical and
+    // cannot accidentally match the historical result snippet or editor.
+    format!("gutter_probe_code_line_{line:03}();")
+}
+
+fn preview_gutter_text_shapes(
+    output: &egui::FullOutput,
+) -> Vec<(&egui::epaint::TextShape, egui::Rect)> {
+    fn visit<'a>(
+        shape: &'a egui::epaint::Shape,
+        clip: egui::Rect,
+        out: &mut Vec<(&'a egui::epaint::TextShape, egui::Rect)>,
+    ) {
+        match shape {
+            egui::epaint::Shape::Text(draw) => out.push((draw, clip)),
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    visit(shape, clip, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for shape in &output.shapes {
+        visit(&shape.shape, shape.clip_rect, &mut out);
+    }
+    out
+}
+
+fn preview_gutter_glyph_witness(
+    app: &CedarApp,
+    output: &egui::FullOutput,
+    bottom: bool,
+    line: usize,
+) -> PreviewGutterGlyphWitness {
+    let code = preview_gutter_code(line);
+    let native_clip = recorded_clip(app, "project_text_context_target");
+    let (_, viewport) = context_scroll(app, bottom);
+    assert!(native_clip.is_finite() && native_clip.is_positive());
+    assert!(viewport.is_finite() && viewport.is_positive());
+    assert!(app.editor_ctx.screen_rect().contains_rect(viewport));
+    assert!(native_clip.contains_rect(viewport));
+
+    let same_suffix = preview_gutter_text_shapes(output)
+        .into_iter()
+        .filter(|(draw, _)| draw.galley.text().ends_with(&code))
+        .collect::<Vec<_>>();
+    let owned = same_suffix
+        .iter()
+        .copied()
+        .filter(|(draw, clip)| {
+            let painted = draw.galley.rect.translate(draw.pos.to_vec2());
+            let visible = painted.intersect(viewport).intersect(*clip);
+            // A modal and the underlying bottom panel can coexist in the same
+            // output. An overlapping or merely touching clip is insufficient.
+            *clip == native_clip && visible.width() > 0.0 && visible.height() > 0.0
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        owned.len(),
+        1,
+        "bottom={bottom}, line={line}: require one actual code Galley in this native preview clip; native_clip={native_clip:?}, viewport={viewport:?}, candidates={:?}",
+        same_suffix
+            .iter()
+            .map(|(draw, clip)| (
+                draw.galley.text(),
+                *clip,
+                draw.galley.rect.translate(draw.pos.to_vec2())
+            ))
+            .collect::<Vec<_>>()
+    );
+    let (draw, clip) = owned[0];
+    assert_eq!(clip, native_clip);
+    assert_eq!(draw.angle, 0.0, "unrotated native preview coordinates");
+    assert!(
+        draw.opacity_factor > 0.0,
+        "code shape must be painted visibly"
+    );
+    assert_eq!(draw.galley.rows.len(), 1, "unwrapped preview source row");
+    let row = &draw.galley.rows[0];
+    let original = draw.galley.text();
+    let suffix_byte = original.len() - code.len();
+    assert_eq!(&original[suffix_byte..], code);
+    // Count Unicode scalar values, not UTF-8 bytes: the old target prefix has
+    // the multibyte ▶ marker. A code-only Galley naturally gives index zero.
+    let code_glyph_index = original[..suffix_byte].chars().count();
+    let painted_characters = row.glyphs.iter().map(|glyph| glyph.chr).collect::<String>();
+    assert_eq!(painted_characters, original, "actual glyph sequence");
+    let glyph = row.glyphs.get(code_glyph_index).expect("first code glyph");
+    assert_eq!(glyph.chr, 'g');
+    let code_origin = draw.pos + glyph.pos.to_vec2();
+    let uv = glyph.uv_rect;
+    assert!(uv.offset.is_finite() && uv.size.is_finite());
+    assert!(uv.size.x > 0.0 && uv.size.y > 0.0);
+    assert!(uv.min[0] < uv.max[0] && uv.min[1] < uv.max[1]);
+    let code_ink = egui::Rect::from_min_size(code_origin + uv.offset, uv.size);
+    assert!(code_ink.is_finite() && viewport.contains_rect(code_ink));
+    assert!(native_clip.contains_rect(code_ink));
+    let painted_row = row.rect.translate(draw.pos.to_vec2());
+    assert!(painted_row.top() >= viewport.top());
+    assert!(painted_row.bottom() <= viewport.bottom());
+    let font = egui::TextStyle::Monospace.resolve(&app.editor_ctx.style());
+    let section = &draw.galley.job.sections[glyph.section_index as usize];
+    assert_eq!(section.format.font_id, font, "actual code glyph font");
+
+    PreviewGutterGlyphWitness {
+        line,
+        original_galley_text: original.to_owned(),
+        code,
+        code_glyph_index,
+        galley_origin: draw.pos,
+        code_origin,
+        code_ink,
+        painted_row,
+        native_clip,
+        viewport,
+    }
+}
+
+fn preview_gutter_native_digit_boundary(bottom: bool, target: usize) {
+    assert!(matches!(target, 10 | 100));
+    let (mut app, commands) = fixture_with_target_line(bottom, target);
+    let shell_before = review_shell_snapshot(&app);
+    let navigation_before = app.navigation_epoch;
+    assert_eq!(app.documents.len(), 1);
+    assert_eq!(app.active().unwrap().path, "origin.txt");
+    assert_eq!(app.active().unwrap().text, DRAFT);
+    assert!(app.active().unwrap().dirty());
+    assert!(commands.try_recv().is_err());
+
+    // Existing fixture clicks Origin natively. Space arms its dirty draft
+    // without I/O, then ArrowDown follows the unopened historical a.txt row.
+    arm(&mut app, &commands, bottom);
+    press(&mut app, egui::Key::ArrowDown);
+    assert_eq!(selected(&app, bottom), Some(1));
+    assert!(app.project_text_review_pending());
+    assert!(commands.try_recv().is_err(), "no premature Read or Search");
+    idle(&mut app, 0.151);
+    let request = read(&commands, "a.txt"); // Exact one Read; rejects another command.
+    let requests_after_read = app.next_request;
+    let target_focus = focus(&app);
+    assert_eq!(
+        target_focus,
+        Some(recorded_response(&app, &row_probe(bottom, 1)).id)
+    );
+    let source = (1..=130)
+        .map(preview_gutter_code)
+        .collect::<Vec<_>>()
+        .join("\n");
+    reply(&mut app, &request, &source);
+    for _ in 0..3 {
+        idle(&mut app, 0.01);
+    }
+    let output = idle(&mut app, 0.01);
+    assert_eq!(
+        output.pixels_per_point, 1.0,
+        "baseline logical-point metrics"
+    );
+
+    // Preserve the formatter contract while testing the independent paint
+    // concern. These exact assertions should not need changes after a fix.
+    let context = app.project_text_preview_context().expect("loaded context");
+    assert!(context.text.len() <= browse::MAX_PROJECT_TEXT_CONTEXT_BYTES);
+    assert!(context.text.lines().count() <= browse::MAX_PROJECT_TEXT_CONTEXT_LINES);
+    assert!(context
+        .text
+        .lines()
+        .any(|line| line == format!("▶ {target} | {}", preview_gutter_code(target))));
+    assert!(context
+        .text
+        .lines()
+        .any(|line| line == format!("  {} | {}", target - 1, preview_gutter_code(target - 1))));
+    assert!(context
+        .note
+        .contains(&format!("Historical requested line {target}")));
+    let native_target = recorded_rect(&app, "project_text_context_target");
+    let (scroll_id, viewport) = context_scroll(&app, bottom);
+    assert!(viewport.contains(egui::pos2(
+        native_target.left() + 1.0,
+        native_target.center().y
+    )));
+
+    let witnesses = [target - 1, target, target + 1]
+        .map(|line| preview_gutter_glyph_witness(&app, &output, bottom, line));
+    let surface = if bottom { "Bottom" } else { "Browse" };
+    for witness in &witnesses {
+        // Keep the original text, glyph-prefix index, x/y, actual paint clip,
+        // native viewport and adjacent same-digit control in retained logs.
+        eprintln!(
+            "PREVIEW_GUTTER_WITNESS surface={surface} target={target} screen={:?} pixels_per_point={} scroll_id={scroll_id:?} target_rect={native_target:?} line={} original_text={:?} code={:?} prefix_glyphs={} galley_origin={:?} first_code_glyph={:?} first_code_ink={:?} painted_row={:?} clip={:?} viewport={:?}",
+            app.editor_ctx.screen_rect(), output.pixels_per_point,
+            witness.line, witness.original_galley_text, witness.code,
+            witness.code_glyph_index, witness.galley_origin,
+            witness.code_origin, witness.code_ink, witness.painted_row,
+            witness.native_clip, witness.viewport,
+        );
+    }
+    assert_eq!(review_shell_snapshot(&app), shell_before, "dirty Origin, native selection, Undo/Redo, location history and accepted results must remain exact");
+    assert_eq!(app.navigation_epoch, navigation_before);
+    assert_eq!(app.documents.len(), 1, "preview must not open a.txt");
+    assert_eq!(focus(&app), target_focus);
+    assert!(app.project_text_review_armed());
+    assert!(!app.project_text_review_pending());
+    assert_eq!(
+        app.next_request, requests_after_read,
+        "paint must issue no request"
+    );
+    assert!(
+        commands.try_recv().is_err(),
+        "no additional Read, Search or other command after draw"
+    );
+    assert!(witnesses[0].code_origin.y < witnesses[1].code_origin.y);
+    assert!(witnesses[1].code_origin.y < witnesses[2].code_origin.y);
+    assert_eq!(
+        witnesses[0].code_origin.x, witnesses[1].code_origin.x,
+        "{surface} {previous}→{target}: code columns must match exactly in the real App frame; original witnesses above are baseline evidence",
+        previous = target - 1,
+    );
+    assert_eq!(
+        witnesses[1].code_origin.x, witnesses[2].code_origin.x,
+        "{surface}: the historical target marker must not move the code column",
+    );
+}
+
+#[test]
+fn preview_gutter_bottom_code_column_9_to_10_native_frame() {
+    preview_gutter_native_digit_boundary(true, 10);
+}
+
+#[test]
+fn preview_gutter_bottom_code_column_99_to_100_native_frame() {
+    preview_gutter_native_digit_boundary(true, 100);
+}
+
+#[test]
+fn preview_gutter_browse_code_column_9_to_10_native_frame() {
+    preview_gutter_native_digit_boundary(false, 10);
+}
+
+#[test]
+fn preview_gutter_browse_code_column_99_to_100_native_frame() {
+    preview_gutter_native_digit_boundary(false, 100);
+}
