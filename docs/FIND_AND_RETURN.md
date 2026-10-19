@@ -1096,3 +1096,10 @@ Project is still an explicitly loaded snapshot and does not automatically follow
 that navigation or issue another List/Read. The success line is truncated to one
 row when needed; hover shows its complete path. Pending, cancellation and failure
 messages retain their existing replacement and layout behavior.
+
+
+### Read-only preview columns
+
+Project Text previews in both Find surfaces show a separate gray, right-aligned line-number gutter and a consistent code column. The arrow and faint row background mark the historical requested line named in the existing caption; they do not assert that the query still matches the current source. Code remains plain, without syntax colors or query-match backgrounds.
+
+The gutter and code share the existing horizontal and vertical scroll area. Manual scrolling is retained after the one-time target reveal. The existing 41-line / 64-KiB context window, UTF-8 truncation markers, current-draft or disk source, and read-only behavior remain unchanged.

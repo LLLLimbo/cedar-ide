@@ -1792,7 +1792,6 @@ fn case_search_ime_enabled_retires_checkbox_pointer_press_without_laundering_rel
 const KELVIN_SAVED: &str = "let kelvin = \"K K k\";\r\n// K saved\r\n";
 const KELVIN_DRAFT: &str = "let kelvin = \"K K k\";\r\n// K draft\r\n";
 const KELVIN_SNIPPET: &str = "let kelvin = \"K K k\";";
-const KELVIN_PREVIEW_LINE: &str = "▶ 1 | let kelvin = \"K K k\";";
 
 fn kelvin_metrics() -> [(egui::Vec2, f32, f32); 3] {
     [
@@ -2035,7 +2034,7 @@ fn case_search_kelvin_glyph_rows_and_shared_preview_survive_native_frames() {
             kelvin_assert_painted(
                 &app,
                 &output,
-                KELVIN_PREVIEW_LINE,
+                KELVIN_SNIPPET,
                 viewport,
                 &FontId::monospace(font_size),
                 &label,
