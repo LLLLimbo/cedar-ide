@@ -569,5 +569,181 @@ class LicenseMaterialSafetyRegressionTests(unittest.TestCase):
             self.assertEqual(self.material_outputs(root), before)
 
 
+class MaterialReviewContractTests(unittest.TestCase):
+    def review_fixture(self):
+        import copy
+        import license_materials as materials
+        notices = b'# Synthetic original notices\n'
+        original = b'Copyright Synthetic Original Author\nSynthetic license text\n'
+        nested = b'Copyright Synthetic Nested Author\nSeparate license text\n'
+        def origin(path, data):
+            return {'kind': 'archive', 'package': 'example@1.0.0', 'path': path,
+                    'bytes': len(data), 'sha256': materials.digest(data), 'start': 0, 'end': len(data),
+                    'repository': None, 'commit': None, 'blob': None, 'stored_path': None}
+        outputs = [('third-party-licenses/example-1.0.0/LICENSE', 'LICENSE', original),
+                   ('third-party-licenses/example-1.0.0/src/spin/LICENSE', 'src/spin/LICENSE', nested)]
+        package = {'id': 'example@1.0.0', 'name': 'example', 'version': '1.0.0',
+                   'source': 'registry+https://github.com/rust-lang/crates.io-index',
+                   'checksum': 'a' * 64, 'license': 'MIT', 'license_file': None,
+                   'repository': 'https://example.invalid/source', 'manifest_sha256': 'b' * 64,
+                   'vcs_commit': None, 'state': 'direct',
+                   'bindings': [{'material': path, 'origin': origin(member, data)}
+                                for path, member, data in outputs], 'unresolved_reason': None}
+        optional = {**copy.deepcopy(package), 'id': 'optional@1.0.0', 'name': 'optional',
+                    'state': 'unresolved', 'bindings': [], 'unresolved_reason': 'No verified original text'}
+        scopes = []
+        for scope in materials.SCOPES:
+            scopes.append({'id': scope, 'target': 'x86_64-unknown-linux-gnu' if scope.startswith('linux')
+                           else 'x86_64-pc-windows-msvc',
+                           'roots': ['cedar-agent'] if scope.endswith('agent') else ['cedar-agent', 'cedar-app'],
+                           'invocation': ['cargo', 'tree', '--locked', '--offline'],
+                           'graph_hashes': dict.fromkeys(('full', 'normal', 'runtime'), 'c' * 64),
+                           'packages': [
+                               {'package': 'example@1.0.0', 'role': 'normal', 'features': [],
+                                'witness': ['example@1.0.0'], 'reason': None},
+                               {'package': 'optional@1.0.0', 'role': 'excluded', 'features': [],
+                                'witness': [], 'reason': 'Absent from this pinned default-feature graph'}]})
+        lock = b'Synthetic lock input\n'
+        review = {'schema_version': 1, 'kind': 'cedar-license-material-review',
+                  'lock_sha256': materials.digest(lock),
+                  'source_pins': [{'path': 'Cargo.lock', 'bytes': len(lock), 'sha256': materials.digest(lock)}],
+                  'packages': [package, optional],
+                  'materials': [{'path': path, 'bytes': len(data), 'sha256': materials.digest(data),
+                                 'origins': [origin(member, data)]} for path, member, data in outputs],
+                  'discovery': [{'package': package['id'], 'path': member, 'bytes': len(data),
+                                 'sha256': materials.digest(data), 'decision': 'retain', 'material': path,
+                                 'reason': None} for path, member, data in outputs],
+                  'scopes': scopes, 'policy_issues': [],
+                  'release_hold': {'active': True, 'reason': 'Independent policy review remains pending'},
+                  'notices_sha256': materials.digest(notices)}
+        raw = materials.canonical(review)
+        materials.validate_review(review)
+        payload = {path: data for path, _, data in outputs}
+        payload.update({materials.NOTICE_PATH: notices,
+                        materials.COVERAGE_PATH: materials.coverage_bytes(review, raw),
+                        materials.README_PATH: materials.readme_bytes(review)})
+        return materials, review, raw, payload, lock
+
+    def test_exact_payload_and_pending_status_are_separate_from_readiness(self):
+        materials, review, raw, payload, _ = self.review_fixture()
+        self.assertEqual(materials.parse(raw, 'fixture'), review)
+        for scope in materials.SCOPES:
+            status = materials.validate_payload(payload, scope, review, raw)
+            self.assertIs(status['distribution_ready'], False)
+            self.assertEqual(status['blocking_reasons'],
+                             ['release-hold:Independent policy review remains pending'])
+            with self.assertRaisesRegex(ValueError, 'Distribution blocked'):
+                materials.require_distribution_ready(status)
+        self.assertIn(b'distribution_ready=false', payload[materials.README_PATH])
+        self.assertIn(b'--require-distribution-ready', payload[materials.README_PATH])
+        self.assertEqual(review['packages'][1]['state'], 'unresolved')
+
+    def test_archive_self_report_cannot_replace_the_trusted_review(self):
+        materials, review, raw, payload, _ = self.review_fixture()
+        name = review['materials'][0]['path']
+        forged = dict(payload)
+        forged[name] = b'Different authors and grant\n'
+        receipt = json.loads(forged[materials.COVERAGE_PATH])
+        receipt['material_inventory'][0].update(bytes=len(forged[name]), sha256=materials.digest(forged[name]))
+        receipt['distribution_status'][0]['distribution_ready'] = True
+        forged[materials.COVERAGE_PATH] = materials.canonical(receipt)
+        with self.assertRaisesRegex(ValueError, 'Material bytes differ'):
+            materials.validate_payload(forged, 'linux-agent', review, raw)
+        forged = dict(payload)
+        forged[materials.COVERAGE_PATH] = materials.canonical(receipt)
+        with self.assertRaisesRegex(ValueError, 'coverage receipt'):
+            materials.validate_payload(forged, 'linux-agent', review, raw)
+
+    def test_exact_set_rejects_missing_supplement_and_stale_legal_basename(self):
+        materials, review, raw, payload, _ = self.review_fixture()
+        for kind in ('missing-supplement', 'stale-version', 'unreviewed-nested'):
+            with self.subTest(kind=kind):
+                changed = dict(payload)
+                if kind == 'missing-supplement':
+                    del changed[review['materials'][1]['path']]
+                    self.assertIn(review['materials'][0]['path'], changed)
+                else:
+                    changed['third-party-licenses/' + ('example-0.9.0/LICENSE' if kind == 'stale-version'
+                            else 'example-1.0.0/unknown/LICENSE')] = b'Unreviewed\n'
+                with self.assertRaisesRegex(ValueError, 'inventory'):
+                    materials.validate_payload(changed, 'linux-agent', review, raw)
+
+    def test_old_package_without_coverage_or_status_readme_never_defaults_ready(self):
+        materials, review, raw, payload, _ = self.review_fixture()
+        for name in (materials.COVERAGE_PATH, materials.README_PATH):
+            with self.subTest(name=name):
+                changed = dict(payload)
+                del changed[name]
+                with self.assertRaises(ValueError):
+                    materials.validate_payload(changed, 'windows-desktop', review, raw)
+
+    def test_source_only_pins_and_trusted_review_are_checked_exactly(self):
+        materials, review, raw, _, lock = self.review_fixture()
+        inputs = {'Cargo.lock': lock, materials.REVIEW_PATH: raw}
+        materials.validate_source_inputs(inputs, review, raw)
+        for name in inputs:
+            with self.subTest(name=name):
+                changed = dict(inputs)
+                changed[name] += b' '
+                with self.assertRaises(ValueError):
+                    materials.validate_source_inputs(changed, review, raw)
+        with self.assertRaises(ValueError):
+            materials.validate_source_inputs({**inputs, 'unused.txt': b'unknown'}, review, raw)
+
+    def test_review_rejects_bad_identity_membership_paths_and_unknown_schema(self):
+        import copy
+        materials, original, _, _, _ = self.review_fixture()
+        for mutation in ('schema-bool', 'unknown-field', 'missing-member', 'wrong-member',
+                         'case-collision', 'traversal', 'source-collision', 'bad-hash'):
+            with self.subTest(mutation=mutation):
+                review = copy.deepcopy(original)
+                if mutation == 'schema-bool': review['schema_version'] = True
+                elif mutation == 'unknown-field': review['allow_unknown'] = True
+                elif mutation == 'missing-member': review['packages'][0]['bindings'] = []
+                elif mutation == 'wrong-member': review['packages'][0]['bindings'][0]['origin']['package'] = 'optional@1.0.0'
+                elif mutation == 'case-collision':
+                    item = copy.deepcopy(review['materials'][0]); item['path'] = item['path'].replace('LICENSE', 'License')
+                    review['materials'].append(item); review['materials'].sort(key=lambda x: x['path'])
+                elif mutation == 'traversal': review['materials'][0]['path'] = 'third-party-licenses/../LICENSE'
+                elif mutation == 'source-collision': review['packages'].append(copy.deepcopy(review['packages'][0]))
+                else: review['lock_sha256'] = 'not-a-hash'
+                with self.assertRaises(ValueError):
+                    materials.validate_review(review)
+
+    def test_material_exclusion_and_missing_material_are_not_the_same_state(self):
+        import copy
+        materials, original, _, _, _ = self.review_fixture()
+        review = copy.deepcopy(original)
+        review['release_hold']['active'] = False
+        self.assertTrue(materials.distribution_status(review, 'linux-agent')['distribution_ready'])
+        optional = review['scopes'][0]['packages'][1]
+        optional.update(role='normal', witness=['optional@1.0.0'], reason=None)
+        status = materials.distribution_status(review, 'linux-agent')
+        self.assertFalse(status['distribution_ready'])
+        self.assertEqual(status['blocking_reasons'], ['unresolved-material:optional@1.0.0'])
+        self.assertEqual(review['packages'][1]['state'], 'unresolved')
+
+    def test_json_duplicates_noncanonical_and_oversized_inputs_fail_closed(self):
+        materials, _, raw, _, _ = self.review_fixture()
+        for bad in (b'{"x":1,"x":2}\n', raw + b' ', b'NaN\n', b' ' * (materials.MAX_JSON_BYTES + 1)):
+            with self.subTest(bytes=len(bad)), self.assertRaises(ValueError):
+                materials.parse(bad, 'fixture')
+
+    def test_material_file_read_rejects_link_and_retains_exact_original_bytes(self):
+        materials, _, _, _, _ = self.review_fixture()
+        with tempfile.TemporaryDirectory(prefix='cedar-material-read-') as directory:
+            root = Path(directory).resolve()
+            original = root / 'LICENSE'
+            original.write_bytes(b'Exact original\r\nCopyright Author\n')
+            self.assertEqual(materials.regular_bytes(original), original.read_bytes())
+            alias = root / 'alias'
+            try:
+                alias.symlink_to(original)
+            except (OSError, NotImplementedError):
+                self.skipTest('This host cannot create a symlink')
+            with self.assertRaisesRegex(ValueError, 'Linked'):
+                materials.regular_bytes(alias)
+
+
 if __name__ == '__main__':
     unittest.main()
