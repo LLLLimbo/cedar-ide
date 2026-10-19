@@ -3338,10 +3338,19 @@ fn result_style_draw<'a>(
     let painted = draw.galley.rect.translate(draw.pos.to_vec2());
     assert_eq!(draw.galley.rows.len(), 1, "{probe}: one painted line");
     assert!(painted.height() > 0.0 && painted.width() > 0.0);
-    assert!(painted.top() >= row_clip.top() - 1.0);
-    assert!(painted.bottom() <= row_clip.bottom() + 1.0);
-    assert!(painted.left() >= row_clip.left() - 1.0);
-    assert!(painted.right() <= row_clip.right() + 1.0);
+    let original_prefix = original.chars().take(64).collect::<String>();
+    let context = format!("probe={probe} font={font:?} original={original_prefix:?} bytes={} row={row:?} recorded_clip={:?} row_clip={row_clip:?} paint_clip={clip:?} painted={painted:?} screen={:?}",
+        original.len(), recorded_clip(app, probe), app.editor_ctx.screen_rect());
+    assert!(painted.top() >= row_clip.top() - 1.0, "top: {context}");
+    assert!(
+        painted.bottom() <= row_clip.bottom() + 1.0,
+        "bottom: {context}"
+    );
+    assert!(painted.left() >= row_clip.left() - 1.0, "left: {context}");
+    assert!(
+        painted.right() <= row_clip.right() + 1.0,
+        "right: {context}"
+    );
     assert!(
         clip.contains_rect(row_clip),
         "{probe}: paint must retain row clipping"
@@ -3703,6 +3712,7 @@ fn search_result_style_actual_paint_matrix_and_narrow_lifecycle() {
                 .collect::<Vec<_>>();
             let mut across_surfaces = None;
             for browse in [true, false] {
+                eprintln!("RESULT_STYLE_MATRIX_BEGIN browse={browse} size={size:?} font={font}");
                 let mut first_geometry = None;
                 let mut first_ids = Vec::new();
                 let (mut app, commands, output, _hold_font_probe) =
