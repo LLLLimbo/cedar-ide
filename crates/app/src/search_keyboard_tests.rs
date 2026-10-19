@@ -5260,6 +5260,7 @@ fn snippet_highlight_assert_row(
         .intersect(native_row)
         .intersect(snippet_clip);
     let mut expected = vec![];
+    let mut local_rectangles = vec![];
     for span in spans {
         assert!(original.is_char_boundary(span.start) && original.is_char_boundary(span.end));
         assert!(span.start >= trim_start);
@@ -5275,11 +5276,11 @@ fn snippet_highlight_assert_row(
         {
             continue;
         }
-        let rect = egui::Rect::from_min_max(
+        let local = egui::Rect::from_min_max(
             egui::pos2(row.glyphs[first].pos.x, row.rect.top()),
             egui::pos2(row.glyphs[after - 1].max_x(), row.rect.bottom()),
-        )
-        .translate(draw.pos.to_vec2());
+        );
+        let rect = local.translate(draw.pos.to_vec2());
         if draw.galley.elided && rect.right() > draw.pos.x + row.glyphs[visible_glyphs].pos.x {
             continue;
         }
@@ -5291,6 +5292,7 @@ fn snippet_highlight_assert_row(
             "fixture match must be wholly inside native snippet clip: {rect:?}, {clip:?}"
         );
         expected.push(rect);
+        local_rectangles.push(local);
     }
     let painted = snippet_highlight_shapes(
         output,
@@ -5305,12 +5307,10 @@ fn snippet_highlight_assert_row(
         app.search_results[index].text.as_bytes(),
         original.as_bytes()
     );
-    // Relative rectangles permit an honest cross-surface comparison for short
-    // rows; Browse and Bottom intentionally have different absolute origins.
-    painted
-        .into_iter()
-        .map(|rect| rect.translate(-draw.pos.to_vec2()))
-        .collect()
+    // Each surface's actual absolute paint was compared exactly above. Compare
+    // original local glyph geometry across surfaces, avoiding a lossy f32
+    // (local + different absolute origin) - origin roundtrip.
+    local_rectangles
 }
 
 fn snippet_highlight_galley_signature(
@@ -5453,89 +5453,112 @@ fn snippet_highlight_native_two_surface_unicode_literal_ellipsis_truncation_matr
     ];
     for size in [egui::vec2(1180.0, 812.0), egui::vec2(780.0, 540.0)] {
         for font in [13.0, 18.0] {
-            for (name, query, sensitive, original, spans, elided) in &cases {
-                let mut across: Option<Vec<egui::Rect>> = None;
-                for browse in [false, true] {
-                    let hit = SearchMatch {
-                        path: "first-parent/duplicate.rs".into(),
-                        line: 42,
-                        text: original.clone(),
-                    };
-                    let (mut app, commands, _, _hold) =
-                        result_style_fixture(browse, size, font, vec![hit.clone()], |_, _| {});
-                    // Negotiated capability fixture only. Accepted Source/cache are
-                    // always created by genuine explicit submission plus validation.
-                    app.case_search = Some(cedar_protocol::CaseSearchDescriptor::V1);
-                    let editor = result_style_editor(&app); // after Browse entry
-                    snippet_highlight_replace(&mut app, browse, size, query);
-                    if app.search_match_case != *sensitive {
-                        crate::scoped_search_tests::click_at_size(
-                            &mut app,
-                            size,
-                            &format!("{}_match_case", snippet_highlight_prefix(browse)),
-                        );
-                    }
-                    assert_eq!(app.search_match_case, *sensitive);
-                    assert!(commands.try_recv().is_err(), "edit/toggle do not submit");
-                    let command = snippet_highlight_submit(&mut app, &commands, browse, size);
-                    let output = snippet_highlight_accept(
-                        &mut app,
-                        &commands,
-                        browse,
-                        size,
-                        command,
-                        vec![hit],
-                    );
-                    let source = app.search_state.accepted.as_ref().unwrap();
-                    assert_eq!(source.query, *query);
-                    assert_eq!(source.specification.request.query, *query);
-                    assert_eq!(source.specification.case_sensitive, *sensitive);
-                    let relative = snippet_highlight_assert_row(
-                        &app, &output, browse, font, 0, original, spans,
-                    );
-                    let signature =
-                        snippet_highlight_galley_signature(&app, &output, browse, font, original);
-                    assert_eq!(signature["elided"], serde_json::json!(elided));
-                    assert!(
-                        !relative.is_empty(),
-                        "{name}: positive actual-paint witness required"
-                    );
-                    if !elided {
-                        if let Some(previous) = across.as_ref() {
-                            if &relative != previous {
-                                let bits = |rects: &[egui::Rect]| {
-                                    rects
-                                        .iter()
-                                        .map(|rect| {
-                                            [
-                                                rect.min.x.to_bits(),
-                                                rect.min.y.to_bits(),
-                                                rect.max.x.to_bits(),
-                                                rect.max.y.to_bits(),
-                                            ]
-                                        })
-                                        .collect::<Vec<_>>()
-                                };
-                                eprintln!("SNIPPET_RELATIVE_DIAGNOSTIC case={name} size={size:?} font={font} bottom_bits={:?} browse_bits={:?} browse_galley={signature}", bits(previous), bits(&relative));
+            for theme in [egui::Theme::Dark, egui::Theme::Light] {
+                for (name, query, sensitive, original, spans, elided) in &cases {
+                    let mut across: Option<Vec<egui::Rect>> = None;
+                    for browse in [false, true] {
+                        let hit = SearchMatch {
+                            path: "first-parent/duplicate.rs".into(),
+                            line: 42,
+                            text: original.clone(),
+                        };
+                        let (mut app, commands, _, _hold) =
+                            result_style_fixture(browse, size, font, vec![hit.clone()], |_, _| {});
+                        // Negotiated capability fixture only. Accepted Source/cache are
+                        // always created by genuine explicit submission plus validation.
+                        app.case_search = Some(cedar_protocol::CaseSearchDescriptor::V1);
+                        app.editor_ctx.set_theme(theme);
+                        app.editor_ctx.style_mut(|style| {
+                            for text in [egui::TextStyle::Body, egui::TextStyle::Button] {
+                                style.text_styles.insert(text, FontId::proportional(font));
                             }
-                            assert_eq!(&relative, previous, "same scalar shading on both surfaces");
+                            style
+                                .text_styles
+                                .insert(egui::TextStyle::Monospace, FontId::monospace(font));
+                        });
+                        for _ in 0..3 {
+                            result_style_frame(&mut app, size, vec![]);
                         }
-                        across = Some(relative);
-                    }
-                    let cached = snippet_highlight_counts();
-                    for _ in 0..4 {
-                        let idle = result_style_frame(&mut app, size, vec![]);
-                        snippet_highlight_assert_row(&app, &idle, browse, font, 0, original, spans);
-                        assert_eq!(
-                            snippet_highlight_galley_signature(&app, &idle, browse, font, original),
-                            signature,
-                            "original Galley/font/glyph/geometry/ID/clip stays unchanged"
+                        assert_eq!(app.editor_ctx.theme(), theme);
+                        let editor = result_style_editor(&app); // after Browse entry
+                        snippet_highlight_replace(&mut app, browse, size, query);
+                        if app.search_match_case != *sensitive {
+                            crate::scoped_search_tests::click_at_size(
+                                &mut app,
+                                size,
+                                &format!("{}_match_case", snippet_highlight_prefix(browse)),
+                            );
+                        }
+                        assert_eq!(app.search_match_case, *sensitive);
+                        assert!(commands.try_recv().is_err(), "edit/toggle do not submit");
+                        let command = snippet_highlight_submit(&mut app, &commands, browse, size);
+                        let output = snippet_highlight_accept(
+                            &mut app,
+                            &commands,
+                            browse,
+                            size,
+                            command,
+                            vec![hit],
                         );
-                        assert_eq!(snippet_highlight_counts(), cached);
-                        assert_eq!(result_style_editor(&app), editor);
-                        assert!(commands.try_recv().is_err());
+                        let source = app.search_state.accepted.as_ref().unwrap();
+                        assert_eq!(source.query, *query);
+                        assert_eq!(source.specification.request.query, *query);
+                        assert_eq!(source.specification.case_sensitive, *sensitive);
+                        let relative = snippet_highlight_assert_row(
+                            &app, &output, browse, font, 0, original, spans,
+                        );
+                        let signature = snippet_highlight_galley_signature(
+                            &app, &output, browse, font, original,
+                        );
+                        assert_eq!(signature["elided"], serde_json::json!(elided));
+                        assert!(
+                            !relative.is_empty(),
+                            "{name}: positive actual-paint witness required"
+                        );
+                        if !elided {
+                            if let Some(previous) = across.as_ref() {
+                                if &relative != previous {
+                                    let bits = |rects: &[egui::Rect]| {
+                                        rects
+                                            .iter()
+                                            .map(|rect| {
+                                                [
+                                                    rect.min.x.to_bits(),
+                                                    rect.min.y.to_bits(),
+                                                    rect.max.x.to_bits(),
+                                                    rect.max.y.to_bits(),
+                                                ]
+                                            })
+                                            .collect::<Vec<_>>()
+                                    };
+                                    eprintln!("SNIPPET_RELATIVE_DIAGNOSTIC case={name} size={size:?} font={font} bottom_bits={:?} browse_bits={:?} browse_galley={signature}", bits(previous), bits(&relative));
+                                }
+                                assert_eq!(
+                                    &relative, previous,
+                                    "same scalar shading on both surfaces"
+                                );
+                            }
+                            across = Some(relative);
+                        }
+                        let cached = snippet_highlight_counts();
+                        for _ in 0..4 {
+                            let idle = result_style_frame(&mut app, size, vec![]);
+                            snippet_highlight_assert_row(
+                                &app, &idle, browse, font, 0, original, spans,
+                            );
+                            assert_eq!(
+                                snippet_highlight_galley_signature(
+                                    &app, &idle, browse, font, original
+                                ),
+                                signature,
+                                "original Galley/font/glyph/geometry/ID/clip stays unchanged"
+                            );
+                            assert_eq!(snippet_highlight_counts(), cached);
+                            assert_eq!(result_style_editor(&app), editor);
+                            assert!(commands.try_recv().is_err());
+                        }
+                        eprintln!("SNIPPET_NATIVE_MATRIX case={name} browse={browse} size={size:?} ui_font={font} theme={theme:?} mono_font={:?} cached={cached:?}", FontId::monospace(font));
                     }
-                    eprintln!("SNIPPET_NATIVE_MATRIX case={name} browse={browse} size={size:?} ui_font={font} mono_font={:?} cached={cached:?}", FontId::monospace(font));
                 }
             }
         }
