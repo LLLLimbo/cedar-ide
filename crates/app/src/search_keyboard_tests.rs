@@ -5956,7 +5956,10 @@ fn snippet_highlight_inconsistent_source_query_is_decoration_only_fail_closed() 
             app.search_state.accepted.as_ref().unwrap().request,
             command.id
         );
-        assert_eq!(app.search_results, [hit]);
+        assert_eq!(app.search_results.len(), 1);
+        assert_eq!(app.search_results[0].path, hit.path);
+        assert_eq!(app.search_results[0].line, hit.line);
+        assert_eq!(app.search_results[0].text.as_bytes(), hit.text.as_bytes());
         assert!(app.search_highlight_accounting().is_none());
         assert!(app.search_highlight_ranges(0).is_empty());
         assert_eq!(snippet_highlight_counts(), before);

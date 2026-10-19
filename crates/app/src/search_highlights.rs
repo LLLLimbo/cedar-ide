@@ -272,6 +272,18 @@ pub(crate) fn rectangles(
     if !galley.elided && characters.next().is_some() {
         return Vec::new();
     }
+    if galley.elided {
+        let overflow = &row.glyphs[count];
+        if !overflow.pos.is_finite()
+            || !overflow.advance_width.is_finite()
+            || overflow.advance_width <= 0.0
+            || !overflow.max_x().is_finite()
+            || overflow.pos.x < 0.0
+            || overflow.pos.x < prior_x
+        {
+            return Vec::new();
+        }
+    }
     let visible_end = boundaries[count];
     let mut previous_end = 0;
     for span in ranges {
@@ -614,5 +626,23 @@ mod tests {
         let unchanged = clipped.clone();
         assert!(rectangles(&clipped, 0, prepared.row(0)).is_empty());
         assert_eq!(clipped, unchanged);
+    }
+    #[test]
+    fn malformed_synthetic_overflow_geometry_disables_the_whole_row() {
+        let original = "needle needle needle needle";
+        let prepared = Prepared::prepare("needle", true, &rows(&[original]));
+        let g = galley(original, 90.0, 13.0);
+        assert!(g.elided);
+        assert_eq!(rectangles(&g, 0, prepared.row(0)).len(), 1);
+        for x in [f32::NAN, f32::INFINITY, -1.0] {
+            let mut broken = g.clone();
+            broken.rows[0].glyphs.last_mut().unwrap().pos.x = x;
+            assert!(rectangles(&broken, 0, prepared.row(0)).is_empty());
+        }
+        for width in [f32::NAN, f32::INFINITY, 0.0, -1.0] {
+            let mut broken = g.clone();
+            broken.rows[0].glyphs.last_mut().unwrap().advance_width = width;
+            assert!(rectangles(&broken, 0, prepared.row(0)).is_empty());
+        }
     }
 }
