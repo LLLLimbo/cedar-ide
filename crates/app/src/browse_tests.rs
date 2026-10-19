@@ -9014,3 +9014,43 @@ pub(super) fn case_row_continuity_frame(
         .find(|row| row.clicked)
         .map(|row| (row.double, row.triple))
 }
+
+#[test]
+fn browse_ime_enabled_without_preedit_keeps_existing_noncheckbox_activation_policy() {
+    // Stage2's generic composing flag begins at Preedit, not Enabled. The new
+    // checkbox fence must not silently change either existing provider's keys.
+    for text_provider in [false, true] {
+        let (mut app, commands) = fixture();
+        let departure = selection_signature(selection(&app));
+        let undo = undo_texts(&app);
+        enter(&mut app, text_provider);
+        if text_provider {
+            query(&mut app, "needle");
+        } else {
+            click(&mut app, "browse_row:0");
+        }
+        assert!(commands.try_recv().is_err());
+        frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Enabled)]);
+        frame(
+            &mut app,
+            key(if text_provider {
+                egui::Key::Enter
+            } else {
+                egui::Key::Space
+            }),
+        );
+        settle(&mut app);
+        let command = commands
+            .try_recv()
+            .expect("generic Enabled-only is not Preedit composition");
+        if text_provider {
+            assert!(
+                matches!(&command.op, Operation::Search { query, limit: 500 } if query == "needle")
+            );
+        } else {
+            assert!(matches!(&command.op, Operation::Read { path } if path == "a.txt"));
+        }
+        assert_draft(&app, departure, &undo);
+        assert!(commands.try_recv().is_err());
+    }
+}

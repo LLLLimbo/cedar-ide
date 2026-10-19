@@ -1755,3 +1755,34 @@ fn case_search_captured_checkbox_identity_cannot_revive_after_draft_away_and_bac
         }
     }
 }
+
+#[test]
+fn case_search_ime_enabled_retires_checkbox_pointer_press_without_laundering_release() {
+    for surface in [Surface::Browse, Surface::Bottom] {
+        for enabled_before_press in [false, true] {
+            let (mut app, commands) = fixture();
+            enter(&mut app, surface);
+            let pos = recorded_rect(&app, checkbox(surface)).center();
+            frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+            if enabled_before_press {
+                frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Enabled)]);
+            }
+            frame(&mut app, pointer(pos, true));
+            if !enabled_before_press {
+                frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Enabled)]);
+            }
+            frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Disabled)]);
+            frame(&mut app, pointer(pos, false));
+            assert!(
+                app.search_match_case,
+                "{surface:?}: ending composition cannot authorize an older press"
+            );
+            click(&mut app, checkbox(surface));
+            assert!(
+                !app.search_match_case,
+                "a fresh native pointer gesture recovers"
+            );
+            assert!(commands.try_recv().is_err());
+        }
+    }
+}

@@ -367,6 +367,8 @@ struct Input {
     // Checkbox key ownership survives view retirement until physical release.
     case_claimed: HashSet<egui::Key>,
     case_attempted: bool,
+    case_composing: bool,
+    case_ime_blocked: bool,
     composing: bool,
     files_ime_commit: bool,
     files_ime_cancel: bool,
@@ -2033,20 +2035,54 @@ impl CedarApp {
             input.held.clear();
             input.claimed.clear();
             input.case_claimed.clear();
+            input.case_composing = false;
+            input.case_ime_blocked = false;
             input.composing = false;
             return;
         }
         let was_composing = input.composing;
+        let was_case_composing = input.case_composing;
         for event in &raw.events {
+            // Preserve the established generic Browse composition policy.
             match event {
-                egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_)) => {
-                    input.composing = true
-                }
+                egui::Event::Ime(egui::ImeEvent::Preedit(_)) => input.composing = true,
                 egui::Event::Ime(egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled) => {
                     input.composing = false
                 }
                 _ => {}
             }
+            // Match case owns a stricter fence from Enabled, even before the
+            // first Preedit. This must not alter Files or other controls.
+            match event {
+                egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_)) => {
+                    input.case_composing = true
+                }
+                egui::Event::Ime(egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled) => {
+                    input.case_composing = false
+                }
+                _ => {}
+            }
+        }
+        input.case_ime_blocked = was_case_composing
+            || input.case_composing
+            || raw.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Ime(
+                        egui::ImeEvent::Enabled
+                            | egui::ImeEvent::Preedit(_)
+                            | egui::ImeEvent::Commit(_)
+                    )
+                )
+            });
+        if input.case_ime_blocked
+            && input
+                .pressed
+                .as_ref()
+                .is_some_and(|press| press.token.target == Target::MatchCase)
+        {
+            input.pressed = None;
+            input.pressed_row_eligible = false;
         }
         let source = allowed
             .then(|| {
@@ -2118,6 +2154,9 @@ impl CedarApp {
                             .presented
                             .iter()
                             .find(|item| item.rect.intersect(item.clip).contains(*pos))
+                            .filter(|item| {
+                                item.token.target != Target::MatchCase || !input.case_ime_blocked
+                            })
                             .cloned();
                         if !input.pressed.as_ref().is_some_and(|press| {
                             matches!(press.token.target, Target::Row(_))
@@ -2153,7 +2192,7 @@ impl CedarApp {
             }
         }
         let mut space_claimed = false;
-        let mut composing = was_composing;
+        let mut composing = was_case_composing;
         for (index, event) in raw.events.iter().enumerate() {
             match event {
                 egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_)) => {
@@ -2431,7 +2470,11 @@ impl CedarApp {
             crate::workspace_access_tests::record(ui, &name, response);
             crate::browse_tests::record_row_click_response(ui, &name, response);
         }
-        if !response.enabled() || ui.is_sizing_pass() || !self.browse_input_current(ui.ctx()) {
+        if !response.enabled()
+            || ui.is_sizing_pass()
+            || !self.browse_input_current(ui.ctx())
+            || (target == Target::MatchCase && self.browse.input.case_ime_blocked)
+        {
             return false;
         }
         let click = self.browse.input.click.as_ref().is_some_and(|click| {
