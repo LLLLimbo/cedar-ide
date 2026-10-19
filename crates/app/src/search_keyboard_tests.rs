@@ -4197,7 +4197,7 @@ fn result_style_tooltip_lower_geometry(app: &CedarApp) -> Vec<(egui::Rect, egui:
     let visible = editor.rect.intersect(recorded_clip(app, "editor"));
     assert!(
         visible.is_positive() && app.editor_ctx.screen_rect().contains_rect(visible),
-        "automatic tools layout leaves a real visible editor: {:?} / {:?}",
+        "controlled tools layout leaves a real visible editor: {:?} / {:?}",
         editor.rect,
         recorded_clip(app, "editor")
     );
@@ -4492,9 +4492,21 @@ fn result_style_delayed_tooltip(
             ),
         "ordinary movement must preserve the native hover delay"
     );
+    let assert_not_scrollbar = |app: &CedarApp| {
+        if let Some(bar) =
+            lower_scroll.and_then(|(id, _, _)| app.editor_ctx.read_response(id.with(1_usize)))
+        {
+            assert!(
+                !bar.hovered() && !bar.contains_pointer(),
+                "the same hover point must remain outside the native expanded scrollbar"
+            );
+        }
+    };
+    assert_not_scrollbar(app);
     let frames = ((app.editor_ctx.style().interaction.tooltip_delay + 0.2) / 0.016).ceil() as usize;
     for _ in 0..frames {
         let output = result_style_tooltip_frame(app, size, 0.016, vec![]);
+        assert_not_scrollbar(app);
         if result_style_texts(&output).iter().any(|(draw, _)| {
             draw.galley.job.text.as_bytes() == original.as_bytes() && draw.galley.rows.len() > 1
         }) {
@@ -4536,7 +4548,9 @@ fn search_result_style_original_tooltips_native_scroll_matrix() {
                     let browse = kind.starts_with("browse");
                     let (mut app, commands, _, _hold_font_probe) =
                         result_style_fixture(browse, size, font, matches, |_, _| {});
-                    app.tools_height = None;
+                    // A controlled native height leaves both results and editor visible.
+                    // This isolates tooltip style/geometry leakage from automatic sizing.
+                    app.tools_height = Some(250.0);
                     app.editor_ctx.set_theme(theme);
                     app.editor_ctx.style_mut(|style| {
                         for text in [egui::TextStyle::Body, egui::TextStyle::Button] {
@@ -4658,7 +4672,7 @@ fn result_style_single_tooltip_fixture(
     theme: egui::Theme,
 ) -> (CedarApp, Receiver<Command>, String, Box<dyn FnOnce()>) {
     let hit = SearchMatch {
-        path: format!("root/{}/TAIL_PATH.rs", "中文😀K-parent/".repeat(40)),
+        path: format!("root/{}/TAIL_PATH.rs", "中文😀K-parent/".repeat(80)),
         line: 7,
         text: format!(
             "  second {}TAIL_SNIPPET  ",
@@ -4673,7 +4687,9 @@ fn result_style_single_tooltip_fixture(
     };
     let (mut app, commands, _, hold) =
         result_style_fixture(kind.starts_with("browse"), size, font, vec![hit], |_, _| {});
-    app.tools_height = None;
+    // A controlled native height leaves both results and editor visible.
+    // This isolates tooltip style/geometry leakage from automatic sizing.
+    app.tools_height = Some(250.0);
     app.editor_ctx.set_theme(theme);
     app.editor_ctx.style_mut(|style| {
         for text in [egui::TextStyle::Body, egui::TextStyle::Button] {
