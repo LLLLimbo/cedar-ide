@@ -1,6 +1,26 @@
-# Verification checkpoint — 0.79.0 development candidate
+# Verification checkpoint — 0.80.0 development candidate
 
-## Current 0.79.0 development checkpoint candidate
+## Current 0.80.0 development checkpoint candidate
+
+The [phase 80 report](TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md) consolidates Flat Home/End,
+loaded Project-name literal search, shared Project Text Match case and the Kelvin
+fallback already present in the exact parent [`8fa34ae8`](https://github.com/LLLLimbo/cedar-ide/commit/8fa34ae8c5966c9c684ddd96037b17e4c4d69ce4).
+Only version identity, necessary exact-version assertions and documentation
+change in this checkpoint; runtime, dependencies, vendored code, workflow,
+helper logic, request counts and acceptance predicates remain unchanged.
+
+The parent's [CI193](https://github.com/LLLLimbo/cedar-ide/actions/runs/39190113556) passed all four jobs. Its
+Linux desktop package and bounded native retest separately verified readable
+U+212A in actual results/preview/editor while retaining the original text.
+These are **0.79.0 parent results**, not new-version acceptance. Final 0.80.0
+full gates, exact-commit CI, Windows and Linux package audits, and a minimal
+Linux native/version smoke remain **PENDING at source sealing**. Later outcomes
+belong to separate source-bound receipts. Windows CI/content verification is
+not Windows GUI acceptance; no performance comparison is claimed.
+
+Historical sections below retain their original evidence and pending language.
+
+## Prior 0.79.0 development checkpoint preparation
 
 The [phase 79 report](TEST_REPORT_PHASE79_DEVELOPMENT_CHECKPOINT.md) consolidates
 the exact inherited Java keyboard, welcome overflow, focused type-search and

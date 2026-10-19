@@ -1,5 +1,27 @@
 # Public source development checkpoint candidate
 
+This source snapshot identifies **0.80.0 DEVELOPMENT CANDIDATE**. It consolidates
+Flat Home/End, loaded Project-name literal search, shared Project Text Match case
+and the embedded Kelvin glyph fallback. Only workspace version identity,
+necessary exact-version assertions and current documentation change here.
+The exact parent is [`8fa34ae8c5966c9c684ddd96037b17e4c4d69ce4`](https://github.com/LLLLimbo/cedar-ide/commit/8fa34ae8c5966c9c684ddd96037b17e4c4d69ce4),
+source tree `2d72c294d5b84a70019f96b1eefecdc66c9433ff`.
+Its [four-job CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/39190113556), package audit and bounded
+cloud-Linux native retest still belong to version 0.79.0.
+
+At source sealing, final 0.80.0 aggregate checks, exact-commit CI, new-version
+Windows/Linux packages and final Linux-pair native smoke are **PENDING**.
+Each requires its own source/commit/package-bound receipt; old binaries are not
+renamed or relabeled. See the [checkpoint report](docs/TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md).
+This is a development checkpoint, without a main merge, tag or formal release.
+No Windows/macOS native GUI, broad OS IME, real SSH, full IDEA compatibility or
+performance advantage is claimed.
+
+## Historical 0.79 preparation note
+
+The following source-seal statements retain their original version and time.
+They do not supersede the direct parent's later, separately recorded evidence.
+
 This source snapshot identifies **0.79.0 DEVELOPMENT CANDIDATE**. It consolidates
 the version and current documentation on the exact tested development parent
 [`817c341eacc54645ce9376f3b6dfa0359782efb5`](https://github.com/LLLLimbo/cedar-ide/commit/817c341eacc54645ce9376f3b6dfa0359782efb5).

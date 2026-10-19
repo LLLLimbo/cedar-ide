@@ -1,5 +1,28 @@
 # Scoped Project Text search
 
+## Current Match case control (0.80 development checkpoint)
+
+The Project Text window and bottom Find Results share **Match case**, checked by
+default. Checked requests preserve the Search/SearchIn behavior described below.
+Unchecked requests always require the independent exact `case_search` v1
+Hello descriptor and use `SearchCase`, including an empty scope/mask tuple.
+An unsupported peer gets an explanation, with no silent broadening or legacy
+fallback. Toggling changes only the retained draft; submit with a fresh explicit
+gesture. Historical counts/rows keep their submitted mode and become inactive
+after an edit; toggling back cannot revive old result, preview or Open authority.
+
+Unchecked text is matched literally with Unicode 16.0 **simple case folding**,
+not normalization, full multi-character folding, regex or whole-word matching.
+Directory paths and basename masks remain case-sensitive. This option does not
+alter current-file Find, Project-name search or filename-discovery matching.
+Original source snippets and byte offsets remain original text, including K.
+See [the UI contract](CASE_SEARCH_UI_STAGE3_R2.md),
+[backend contract](CASE_SEARCH_BACKEND_STAGE2.md) and
+[new-version acceptance boundary](TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md).
+
+The following 0.62.2 evidence is historical. Its wire/routing contract describes
+the checked mode, not an assertion that all current text search is case-sensitive.
+
 **0.62.2 is the accepted bounded baseline.** This document defines its directory
 and filename-mask addition to Project Text and its same-row double-click guard.
 The exact public source passed dual-platform CI and all three package audits;
@@ -66,7 +89,7 @@ characters are rejected. Other punctuation is literal, for example
 semantics; `**` does not create recursive path matching. Use Directory to
 choose a subtree, not a path embedded in a mask.
 
-The text query remains a **case-sensitive literal substring** of disk text.
+With Match case checked, the text query is a **case-sensitive literal substring** of disk text.
 For the scoped operation it is nonempty, at most 4,096 UTF-8 bytes, and contains
 no CR, LF or NUL. The interface does not submit a whitespace-only query.
 Query whitespace is otherwise preserved. Each matching line contributes one

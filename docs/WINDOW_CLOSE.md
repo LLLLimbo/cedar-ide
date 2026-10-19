@@ -1,14 +1,14 @@
 # Window close and local connection cleanup
 
-This contract was introduced in the 0.78 candidate and is unchanged by the 0.79.0
-version/documentation checkpoint. The exact development parent
-[`817c341`](https://github.com/LLLLimbo/cedar-ide/commit/817c341eacc54645ce9376f3b6dfa0359782efb5)
-has [passing four-job CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/39124400977)
-and bounded cloud-Linux native runs; it is no longer an uncompiled source stage.
-Those observations do not establish a comprehensive native close/cleanup matrix
-or a fix for the historical unattributed zombie. Final 0.79.0 results remain
-pending at source sealing and require their own external receipt. The following
-describes the contract, not a platform-wide validation guarantee.
+This contract was introduced in the 0.78 candidate and remains unchanged by the
+0.80.0 version/documentation checkpoint. Its direct 0.79.0 parent
+[`8fa34ae8`](https://github.com/LLLLimbo/cedar-ide/commit/8fa34ae8c5966c9c684ddd96037b17e4c4d69ce4) has [passing four-job CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/39190113556)
+and a bounded cloud-Linux native run with normal close and disappearance of its
+observed frontend/agent PIDs. Those observations are not a comprehensive native
+close/descendant-cleanup matrix or a fix for the historical unattributed zombie.
+Final 0.80.0 results require their own external source-bound receipt; see
+[the checkpoint report](TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md). This is the contract, not a
+platform-wide cleanup guarantee.
 
 Native window Close keeps the existing task, language, mutation and exact draft
 recovery guards. Once those approvals are confirmed, the app retires its current

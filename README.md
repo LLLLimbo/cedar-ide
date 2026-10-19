@@ -2,9 +2,11 @@
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](PUBLICATION.md#verification-evidence).
 
-当前 **0.79.0 开发检查点候选（DEVELOPMENT CANDIDATE）**汇总已实现的 Java 类型键盘导航、欢迎页溢出提示、专注类型搜索入口及按实际内容测量的结果自动高度。本次仅整理版本、精确版本断言与文档，不改变生产行为。基于 [`817c341`](https://github.com/LLLLimbo/cedar-ide/commit/817c341eacc54645ce9376f3b6dfa0359782efb5) 的 0.78.0 源码及其[四项通过的 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/39124400977)；该父提交还有限定云端 Linux 原生验证，但这些结果不重标为 0.79.0。本文封存时，最终 0.79.0 的全量检查、精确提交 CI、三个开发包与最终包原生复核仍待独立回执确认。见[0.79 检查点范围与完成条件](docs/TEST_REPORT_PHASE79_DEVELOPMENT_CHECKPOINT.md)。这不是正式发布，不代表 Windows/macOS GUI、真实 SSH 或完整 IDEA 功能已验收。
+当前 **0.80.0 开发检查点候选（DEVELOPMENT CANDIDATE）**汇总Flat 列表 Home/End、仅已加载 Project 行的区分大小写字面量名称搜索、两个项目文本视图共享的 Match case，以及 Kelvin 字形回退。本次仅整理版本、精确版本断言与文档，不改变运行逻辑。直接基于 [`8fa34ae8`](https://github.com/LLLLimbo/cedar-ide/commit/8fa34ae8c5966c9c684ddd96037b17e4c4d69ce4) 的 0.79.0 源码及其[四项通过的 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/39190113556)、精确 Linux 包审计与限定原生复测；这些父版本结果不重标为 0.80.0。本文封存时，0.80.0 的全量检查、精确提交 CI、Windows/Linux 开发包与最终 Linux 包最小原生复核仍待各自新回执确认。见[0.80 检查点范围与完成条件](docs/TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md)。这不是正式发布，不合并 main、不打 tag，也不代表 Windows/macOS GUI、真实 SSH、完整 IDEA 功能或性能优势已验收。
 
-以下历史段落保留各阶段封存时的状态，不能将其中“未编译”或“待验收”当作当前父提交的最新结论，也不能把旧成绩当作最终 0.79.0 的成绩。
+以下历史段落保留各阶段封存时的状态，不能将其中“未编译”或“待验收”当作当前父提交的最新结论，也不能把旧成绩当作最终 0.80.0 的成绩。
+
+历史 **0.79.0 开发检查点候选（DEVELOPMENT CANDIDATE）**汇总已实现的 Java 类型键盘导航、欢迎页溢出提示、专注类型搜索入口及按实际内容测量的结果自动高度。本次仅整理版本、精确版本断言与文档，不改变生产行为。基于 [`817c341`](https://github.com/LLLLimbo/cedar-ide/commit/817c341eacc54645ce9376f3b6dfa0359782efb5) 的 0.78.0 源码及其[四项通过的 CI](https://github.com/LLLLimbo/cedar-ide/actions/runs/39124400977)；该父提交还有限定云端 Linux 原生验证，但这些结果不重标为 0.79.0。本文封存时，最终 0.79.0 的全量检查、精确提交 CI、三个开发包与最终包原生复核仍待独立回执确认。见[0.79 检查点范围与完成条件](docs/TEST_REPORT_PHASE79_DEVELOPMENT_CHECKPOINT.md)。这不是正式发布，不代表 Windows/macOS GUI、真实 SSH 或完整 IDEA 功能已验收。
 
 历史 **0.78.0 退出清理屏障候选**将本地连接所有者的清理回执与退出确认分离，等待当前及已退休连接的结果后才允许最终关闭窗口；Keep editing 保留草稿，不把超时或新连接成功当成旧进程退出证明。此源码阶段尚未本地编译、运行测试或发布，官方候选分支验证仍待授权；不借用旧验收成绩。见[退出边界](docs/WINDOW_CLOSE.md)及[0.78 阶段范围](docs/TEST_REPORT_PHASE78_CLOSE_BARRIER.md)。
 

@@ -1,4 +1,18 @@
-# 功能矩阵与后续验收 · 0.76 Files 输入法接纳修复候选
+# 功能矩阵与后续验收 · 0.80.0 开发检查点候选
+
+当前版本仅整合既有功能与版本说明；最终 0.80.0 的独立全量检查、精确 CI、Windows/Linux 新包和 Linux 最小原生复核仍需新回执。父版本依据与边界见[0.80 阶段报告](TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md)，不能把 0.79 包成绩改标为新版本。
+
+| 本轮整合的既有功能 | 明确边界 |
+|---|---|
+| Flat 的 Home/End | 焦点位于当前已接受行时到首/末行，边界停止并显示；移动不打开、不发请求 |
+| Project Search names | 区分大小写的字面子串，高亮且保留原列表；只查已接受 Flat / 已展开 Tree 行，不查折叠或未加载行，不递归扫描、不自动 Open |
+| 两处 Project Text 的 Match case | 默认勾选保留旧 Search/SearchIn；取消勾选显式 SearchCase v1，Unicode 16.0 简单折叠；开关不自动提交、不影响当前文件 Find、目录或掩码，无不支持时的静默回退 |
+| Kelvin K 显示 | 原字节保留，既有 Mono 全链之后使用已内嵌 Inter；原内嵌链支持的字形优先级不变，缺字用 Inter 自身宽度，不保证全部 Unicode 等宽 |
+
+Windows CI/包内容校验与 Windows GUI 分开；不新增正则、整词、规范化、完整多字符折叠、Project 名称/路径/掩码的 case-fold 开关或性能优势结论。下列旧矩阵保留历史版本归属，不是 0.80 的新验收。
+
+## 历史 0.76 Files 输入法接纳修复候选
+
 
 > Public-source note: named raw logs, screenshots and measurement payloads are omitted from this repository. See [verification evidence](../PUBLICATION.md#verification-evidence).
 

@@ -1,5 +1,17 @@
 # Find and return
 
+## 0.80 development checkpoint: text matching options
+
+Project Text in the shared Find window and bottom Find Results uses one
+**Match case** draft, checked by default. Uncheck it, then explicitly submit for
+Unicode 16.0 simple-fold literal matching on a `case_search` v1 agent. It does not
+automatically search, normalize text, perform full folding, enable regex or
+whole-word matching, or change Directory/mask/filename/Project-name semantics.
+The checked legacy routes and unsupported-peer fail-closed behavior are retained.
+See [the current scoped/text contract](SCOPED_PROJECT_TEXT.md#current-match-case-control-080-development-checkpoint)
+and [checkpoint scope and fresh acceptance criteria](TEST_REPORT_PHASE80_DEVELOPMENT_CHECKPOINT.md).
+The historical sections below retain their original version and evidence.
+
 Find and return brings filename discovery, project text results and an explicit
 read-only preview into one window. You can inspect a file, open it in the editor
 and return to the selection you left, while keeping unsaved drafts intact.
