@@ -316,6 +316,9 @@ struct Token {
 #[derive(Clone)]
 struct Presented {
     token: Token,
+    // Only the shared case control carries search-draft authority. Files and
+    // other Browse controls keep their established token identity unchanged.
+    case_identity: Option<search_keyboard::FocusIdentity>,
     id: egui::Id,
     rect: egui::Rect,
     clip: egui::Rect,
@@ -2390,9 +2393,11 @@ impl CedarApp {
         response: &egui::Response,
     ) -> bool {
         let token = self.browse.token(target.clone());
+        let case_identity = (target == Target::MatchCase).then(|| self.search_focus_identity());
         if !ui.is_sizing_pass() {
             self.browse.input.presented.push(Presented {
                 token: token.clone(),
+                case_identity: case_identity.clone(),
                 id: response.id,
                 rect: response.rect,
                 clip: ui.clip_rect(),
@@ -2429,15 +2434,12 @@ impl CedarApp {
         if !response.enabled() || ui.is_sizing_pass() || !self.browse_input_current(ui.ctx()) {
             return false;
         }
-        let click = self
-            .browse
-            .input
-            .click
-            .as_ref()
-            .is_some_and(|click| click.token == token && click.id == response.id)
-            && response.clicked_by(egui::PointerButton::Primary);
+        let click = self.browse.input.click.as_ref().is_some_and(|click| {
+            click.token == token && click.id == response.id && click.case_identity == case_identity
+        }) && response.clicked_by(egui::PointerButton::Primary);
         let key = self.browse.input.key.as_ref().is_some_and(|intent| {
             intent.source.token == token
+                && intent.source.case_identity == case_identity
                 && intent.source.id == response.id
                 && matches!(intent.key, egui::Key::Enter | egui::Key::Space)
                 && ui.ctx().memory(|memory| memory.focused()) == Some(response.id)

@@ -1663,3 +1663,95 @@ fn case_search_exhausted_draft_revision_rejects_fresh_and_captured_checkbox_gest
         }
     }
 }
+
+fn draft_away_and_back(app: &mut CedarApp, field: &str) {
+    match field {
+        "query" => {
+            let original = app.search_query.clone();
+            app.search_query.push('x');
+            app.search_filters_changed();
+            app.search_query = original;
+        }
+        "scope" => {
+            let original = app.search_scope.clone();
+            app.search_scope = "other".into();
+            app.search_filters_changed();
+            app.search_scope = original;
+        }
+        "masks" => {
+            let original = app.search_masks.clone();
+            app.search_masks = "*.txt".into();
+            app.search_filters_changed();
+            app.search_masks = original;
+        }
+        "boolean" => {
+            app.search_match_case = !app.search_match_case;
+            app.search_filters_changed();
+            app.search_match_case = !app.search_match_case;
+        }
+        _ => unreachable!(),
+    }
+    app.search_filters_changed();
+}
+
+#[test]
+fn case_search_captured_checkbox_identity_cannot_revive_after_draft_away_and_back() {
+    for surface in [Surface::Browse, Surface::Bottom] {
+        for field in ["query", "scope", "masks", "boolean"] {
+            for gesture in [
+                "captured Enter",
+                "captured Space",
+                "captured release",
+                "cross-frame press",
+            ] {
+                let (mut app, commands) = fixture();
+                enter(&mut app, surface);
+                accepted(&mut app, &commands, surface);
+                let source = app.search_state.accepted.clone();
+                let before = app.search_match_case;
+                let events = match gesture {
+                    "captured Enter" | "captured Space" => {
+                        focus(&mut app, checkbox(surface));
+                        key(
+                            if gesture == "captured Enter" {
+                                egui::Key::Enter
+                            } else {
+                                egui::Key::Space
+                            },
+                            egui::Modifiers::NONE,
+                        )
+                    }
+                    _ => {
+                        let pos = recorded_rect(&app, checkbox(surface)).center();
+                        frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+                        frame(&mut app, pointer(pos, true));
+                        assert!(
+                            recorded_response(&app, checkbox(surface)).is_pointer_button_down_on()
+                        );
+                        pointer(pos, false)
+                    }
+                };
+                if gesture == "cross-frame press" {
+                    draft_away_and_back(&mut app, field);
+                    settle(&mut app);
+                    frame(&mut app, events);
+                } else {
+                    captured_frame(&mut app, SIZE, events, |app| {
+                        draft_away_and_back(app, field)
+                    });
+                }
+                assert_eq!(
+                    app.search_match_case, before,
+                    "{surface:?}, {field}, {gesture}: stale gesture cannot toggle"
+                );
+                assert_eq!(app.search_query, "needle");
+                assert_eq!(app.search_scope, "src");
+                assert_eq!(app.search_masks, "*.rs; *.md");
+                assert_eq!(app.search_state.accepted, source);
+                assert!(!app.search_rows_active());
+                assert!(app.search_state.pending.is_none());
+                assert!(commands.try_recv().is_err());
+            }
+        }
+    }
+}
