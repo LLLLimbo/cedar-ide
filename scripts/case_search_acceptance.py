@@ -152,6 +152,9 @@ def expected_receipt(platform="linux"):
 
 def validate_execution(data, platform="linux"):
     text = decode_output(data, MAX_RUNTIME_BYTES)
+    # The native owner emits this marker only when success was not established.
+    # Reject it anywhere, even beside an otherwise exact success receipt.
+    require(PROGRESS_PREFIX not in text, "failure_progress_in_success_output")
     lines = text.splitlines()
     require([line for line in lines if line.startswith("running ")] == ["running 1 test"],
             "exact_one_test_not_executed")

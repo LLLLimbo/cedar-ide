@@ -1373,13 +1373,13 @@ fn normal_agent_case_search_is_explicit_local_and_source_bound() -> Check<()> {
     h.click("browse_files", false)?;
     h.settle()?;
     require(
-        h.app.browse.provider == browse::Provider::Files && !h.app.search_match_case,
+        h.app.browse.query().is_empty() && !h.app.search_match_case,
         "Files provider reset shared case draft",
     )?;
     h.click("browse_text", false)?;
     h.settle()?;
     require(
-        h.app.browse.provider == browse::Provider::ProjectText && !h.app.search_match_case,
+        h.app.browse.query() == QUERY && !h.app.search_match_case,
         "Text provider reset shared case draft",
     )?;
     h.frame(key(egui::Key::Escape, egui::Modifiers::NONE))?;
@@ -1463,24 +1463,30 @@ fn normal_agent_case_search_is_explicit_local_and_source_bound() -> Check<()> {
         "cases":h.cases,"cases_executed":16,"operation_ledger":h.ledger,"source_hashes":hashes,"search_observations":h.observations,
         "requests":12,"hello":1,"list":1,"read":3,"search":1,"search_in":1,"search_case":5,"write":0,"other_operations":0,
         "connection_attempts":h.connection_attempts,"connections":h.connected,"agents_reaped":h.reaped,"fixture_files":6});
-    let facts = serde_json::json!({
-        "movement_operations":0,"filter_edit_operations":0,"toggle_operations":0,"dirty_preview_reads":0,"unopened_preview_reads":1,
-        "retired_unopened_open_reads":1,"fresh_cached_open_reads":0,"shell_transition_operations":h.ledger.len()-before_shell,
-        "trust_off":true,"no_language_session":true,"no_recovery_actor":true,"production_native_frames":true,"recording_worker_client_bridge":true,
-        "default_match_case_checked":true,"shared_match_case_controls":true,"native_pointer_space_enter_toggle":true,
-        "exact_scoped_and_case_echo_validated":true,"literal_metacharacters_preserved":true,"original_unicode_snippets_preserved":true,
-        "mask_case_sensitive":true,"complete_no_match":true,"toggle_back_does_not_revive":true,"retired_open_cached_inactive":true,
-        "retired_open_no_activation_or_history":true,"retired_case_app_job_drained":true,"retired_case_no_active_rows_preview_or_error":true,
+    let facts = [
+        serde_json::json!({
+            "movement_operations":0,"filter_edit_operations":0,"toggle_operations":0,"dirty_preview_reads":0,"unopened_preview_reads":1,
+            "retired_unopened_open_reads":1,"fresh_cached_open_reads":0,"shell_transition_operations":h.ledger.len()-before_shell,
+            "trust_off":true,"no_language_session":true,"no_recovery_actor":true,"production_native_frames":true,"recording_worker_client_bridge":true,
+            "default_match_case_checked":true,"shared_match_case_controls":true,"native_pointer_space_enter_toggle":true,
+            "exact_scoped_and_case_echo_validated":true,"literal_metacharacters_preserved":true,"original_unicode_snippets_preserved":true,
+            "mask_case_sensitive":true,"complete_no_match":true,"toggle_back_does_not_revive":true,"retired_open_cached_inactive":true,
+            "retired_open_no_activation_or_history":true,"retired_case_app_job_drained":true,"retired_case_no_active_rows_preview_or_error":true,
+        }),
+        serde_json::json!({
         "dirty_text_and_baseline_preserved":true,"edit_version_preserved_between_edits":true,"full_selection_affinity_preserved":true,
         "complete_native_history_preserved":true,"native_undo_redo_preserved":true,"source_disk_unchanged":true,"exact_operation_ledger_verified":true,
         "optional_font_probe_untriggered":true,"shell_project_focus_retains_find":true,"shell_find_reopen_query_fallback":true,
         "shell_hide_exact_editor_return":true,"shell_provider_retains_match_case":true,"shell_state_preserved":true,
         "shared_active_seconds":340,"request_admission_seconds":30,"cleanup_timeout_seconds":30,"proof_watchdog_seconds":390,
-        "owned_children_reaped":true,"watchdog_joined":true,"fixture_removed":true});
-    receipt
-        .as_object_mut()
-        .ok_or("receipt object absent")?
-        .extend(facts.as_object().ok_or("facts object absent")?.clone());
+        "owned_children_reaped":true,"watchdog_joined":true,"fixture_removed":true}),
+    ];
+    for facts in facts {
+        receipt
+            .as_object_mut()
+            .ok_or("receipt object absent")?
+            .extend(facts.as_object().ok_or("facts object absent")?.clone());
+    }
     h.receipt_emitted = true;
     println!("case_search_acceptance {receipt}");
     Ok(())

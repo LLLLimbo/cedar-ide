@@ -297,6 +297,32 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(data=data[:200]), self.assertRaises(proof.AcceptanceError):
                 proof.validate_execution(data)
 
+    def test_failure_progress_before_or_after_success_never_becomes_success(self):
+        for platform in ("linux", "windows"):
+            for receipt_inline in (False, True):
+                good = execution(platform=platform, inline=receipt_inline)
+                for completed_cases in (0, 5):
+                    progress = (proof.PROGRESS_PREFIX + json.dumps({
+                        "schema": 1, "completed_cases": completed_cases, "requests": 0,
+                        "connection_attempts": 0, "connections": 0, "agents_reaped": 0,
+                        "cleanup_uncertain": False, "failure_stage": "setup",
+                    })).encode("utf-8")
+                    marked_line = next(line for line in good.splitlines() if proof.PREFIX.encode() in line)
+                    variants = {
+                        "separate_before": progress + b"\n" + good,
+                        "separate_after": good + progress + b"\n",
+                        "beside_receipt_before": good.replace(marked_line, progress + b" " + marked_line),
+                        "beside_receipt_after": good.replace(marked_line, marked_line + b" " + progress),
+                        "inline_before": b"diagnostic " + progress + b"\n" + good,
+                        "inline_after": good + b"diagnostic " + progress + b"\n",
+                    }
+                    for position, output in variants.items():
+                        with self.subTest(platform=platform, receipt_inline=receipt_inline,
+                                          completed_cases=completed_cases, position=position), \
+                                self.assertRaisesRegex(proof.AcceptanceError,
+                                                       "^failure_progress_in_success_output$"):
+                            proof.validate_execution(output, platform)
+
     def test_utf8_size_and_unsupported_platform_fail_closed(self):
         for value in (execution() + b"\xff", execution().decode(), bytearray(execution()),
                       b"x" * (proof.MAX_RUNTIME_BYTES + 1)):
@@ -559,6 +585,16 @@ class OutputEncodingTests(unittest.TestCase):
             self.assertEqual(stderr, output + ("Match Case acceptance failed: runtime:subprocess_nonzero; returncode=101; "
                                                "direct_child_cleanup=reaped; native_cleanup=unverified\n").encode("utf-8"))
             self.assertEqual(completed, [])
+
+    def test_cli_rejects_zero_case_failure_progress_even_with_exact_success_receipt(self):
+        output = execution(platform="windows") + (
+            proof.PROGRESS_PREFIX + '{"schema":1,"completed_cases":0}\n').encode("utf-8")
+        result, stdout, stderr, completed = self.cli(output)
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, b"")
+        self.assertEqual(stderr, output + ("Match Case acceptance failed: runtime:failure_progress_in_success_output; "
+                                           "native_cleanup=unverified\n").encode("utf-8"))
+        self.assertEqual(completed, [])
 
 
 if __name__ == "__main__":
