@@ -26,6 +26,7 @@ sha2.workspace = true
 quick-xml = "=0.41.0"
 ab_glyph = "=0.2.32"
 ttf-parser = "=0.25.1"
+regex = { version = "=1.13.1", default-features = false, features = ["std", "unicode-case", "perf-literal", "perf-dfa"] }
 
 [dev-dependencies]
 cedar-workspace = { path = "../workspace" }

@@ -309,6 +309,7 @@ dependencies = [
  "cedar-workspace",
  "eframe",
  "quick-xml",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

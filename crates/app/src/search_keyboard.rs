@@ -8,6 +8,9 @@ use cedar_protocol::{
 use eframe::egui::{self, RichText};
 use std::collections::HashSet;
 
+#[path = "search_highlights.rs"]
+pub(super) mod highlights;
+
 pub(super) const MAX_ROWS: usize = 500;
 pub(super) const MAX_TEXT_BYTES: usize = 512 * 1024;
 
