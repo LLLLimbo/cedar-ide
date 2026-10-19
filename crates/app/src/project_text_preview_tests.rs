@@ -2518,3 +2518,65 @@ fn preview_gutter_native_horizontal_wheel_and_manual_scroll_stay_owned() {
         eprintln!("PREVIEW_GUTTER_NATIVE_SCROLL bottom={bottom} metrics={metrics:?} initial={initial:?} horizontal={horizontal:?} manual={manual:?}");
     }
 }
+
+#[test]
+fn preview_gutter_native_truncated_target_retains_exact_code_and_marker() {
+    let metrics = GutterMetrics {
+        size: egui::vec2(1180.0, 812.0),
+        body: 18.0,
+        mono: 19.0,
+        scale: 1.25,
+        dark: false,
+    };
+    let target = 60;
+    let original = "  😀Ké | ▶ 10 | source ".repeat(2048);
+    let source = (1..=120)
+        .map(|line| {
+            if line == target {
+                original.clone()
+            } else {
+                preview_gutter_code(line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    let expected = browse::project_text_context(&source, target);
+    assert_eq!(expected.text.lines().count(), 41);
+    assert!(expected.text.len() <= 64 * 1024);
+    let prefix = format!("▶ {target} | ");
+    let code = expected
+        .text
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .unwrap();
+    let retained = code
+        .strip_suffix(" … [line truncated]")
+        .expect("real formatter truncation");
+    assert!(original.starts_with(retained));
+    assert!(retained.len() < original.len());
+    for bottom in [false, true] {
+        let (mut app, commands, _hold_fonts) = gutter_fixture(bottom, target, metrics);
+        let before = review_shell_snapshot(&app);
+        let navigation = app.navigation_epoch;
+        let (first, settled, request, row_focus) =
+            gutter_loaded_frames(&mut app, &commands, bottom, metrics, &source);
+        let context = app.project_text_preview_context().unwrap();
+        assert_eq!(context.text.as_bytes(), expected.text.as_bytes());
+        assert_eq!(context.note, expected.note);
+        assert_eq!(
+            if bottom {
+                app.search_preview_text()
+            } else {
+                app.browse_preview_text()
+            },
+            Some(source.as_str())
+        );
+        for (stage, output) in [("first-target-visible", first), ("settled", settled)] {
+            let geometry = gutter_assert_row(&app, &output, bottom, target, target, code, true);
+            assert!(geometry.row.width() > output.viewport.width());
+            gutter_assert_target_background(&app, &output, target, code);
+            eprintln!("PREVIEW_GUTTER_TRUNCATED bottom={bottom} metrics={metrics:?} stage={stage} original_bytes={} retained_code_bytes={} context_bytes={}", original.len(), code.len(), context.text.len());
+        }
+        gutter_assert_readonly(&app, &commands, &before, navigation, request, row_focus);
+    }
+}
