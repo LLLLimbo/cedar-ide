@@ -5453,7 +5453,7 @@ mod preview_gutter_tests {
                     .events
                     .iter()
                     .filter_map(|event| {
-                        if let egui::OutputEvent::FocusGained(info) = event {
+                        if let egui::output::OutputEvent::FocusGained(info) = event {
                             Some(info)
                         } else {
                             None
