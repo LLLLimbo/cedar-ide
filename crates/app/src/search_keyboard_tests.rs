@@ -6395,6 +6395,14 @@ fn snippet_highlight_legacy_admission_fallback_keeps_rows_enabled_without_buildi
                 chrome::TEXT,
             );
             let counts = snippet_highlight_counts();
+            // First-paint timing and actual enabled response were already captured
+            // above. Begin the separate native interaction phase with one idle
+            // frame so the existing click helper reads the current widget map.
+            result_style_frame(&mut app, size, vec![]);
+            assert!(recorded_response(&app, &probe).enabled());
+            assert_eq!(snippet_highlight_counts(), counts);
+            assert_eq!(result_style_editor(&app), editor);
+            assert!(commands.try_recv().is_err());
             result_style_click(&mut app, size, &probe);
             assert_eq!(app.search_state.selected_index(), Some(0));
             result_style_frame(&mut app, size, key(egui::Key::Space));
