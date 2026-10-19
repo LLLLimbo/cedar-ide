@@ -5502,6 +5502,22 @@ fn snippet_highlight_native_two_surface_unicode_literal_ellipsis_truncation_matr
                     );
                     if !elided {
                         if let Some(previous) = across.as_ref() {
+                            if &relative != previous {
+                                let bits = |rects: &[egui::Rect]| {
+                                    rects
+                                        .iter()
+                                        .map(|rect| {
+                                            [
+                                                rect.min.x.to_bits(),
+                                                rect.min.y.to_bits(),
+                                                rect.max.x.to_bits(),
+                                                rect.max.y.to_bits(),
+                                            ]
+                                        })
+                                        .collect::<Vec<_>>()
+                                };
+                                eprintln!("SNIPPET_RELATIVE_DIAGNOSTIC case={name} size={size:?} font={font} bottom_bits={:?} browse_bits={:?} browse_galley={signature}", bits(previous), bits(&relative));
+                            }
                             assert_eq!(&relative, previous, "same scalar shading on both surfaces");
                         }
                         across = Some(relative);
