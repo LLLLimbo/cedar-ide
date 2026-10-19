@@ -11,6 +11,8 @@ COVERAGE_PATH = 'LICENSE-MATERIAL-COVERAGE.json'
 README_PATH = 'LICENSE-MATERIALS-README.md'
 NOTICE_PATH = 'THIRD_PARTY_NOTICES.md'
 MAX_JSON_BYTES = 2 * 1024 * 1024
+MAX_JSON_DEPTH = 16
+MAX_JSON_NODES = 150000
 MAX_MATERIAL_BYTES = 2 * 1024 * 1024
 MAX_MATERIALS = 1600
 MAX_PACKAGES = 1000
@@ -72,8 +74,44 @@ def duplicate_keys(pairs):
     return value
 
 
+def bounded_shape(value):
+    pending = [(value, 0)]
+    scheduled = 1
+    while pending:
+        item, depth = pending.pop()
+        require(depth <= MAX_JSON_DEPTH, 'JSON nesting exceeds material limit')
+        if type(item) in (dict, list):
+            children = len(item) * 2 if type(item) is dict else len(item)
+            scheduled += children
+            require(scheduled <= MAX_JSON_NODES, 'JSON node count exceeds material limit')
+            if type(item) is dict:
+                for key, child in item.items():
+                    require(type(key) is str and len(key) <= 256, 'Invalid JSON field name')
+                    pending.append((key, depth + 1))
+                    pending.append((child, depth + 1))
+            else:
+                pending.extend((child, depth + 1) for child in item)
+        elif type(item) is str:
+            try:
+                require(len(item.encode('utf-8')) <= 65536, 'JSON string exceeds material limit')
+            except UnicodeError as error:
+                raise MaterialError('Invalid Unicode scalar in material JSON') from error
+        elif type(item) is int:
+            require(-(2 ** 63) <= item < 2 ** 63, 'JSON integer exceeds material limit')
+        else:
+            require(item is None or type(item) is bool, 'Unsupported JSON scalar')
+
+
 def canonical(value):
-    return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + '\n').encode('utf-8')
+    bounded_shape(value)
+    encoded = bytearray()
+    encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, indent=2)
+    for part in encoder.iterencode(value):
+        raw = part.encode('utf-8')
+        require(len(encoded) + len(raw) < MAX_JSON_BYTES, 'Canonical material JSON exceeds byte limit')
+        encoded.extend(raw)
+    encoded.extend(b'\n')
+    return bytes(encoded)
 
 
 def parse(data, label):
@@ -81,7 +119,9 @@ def parse(data, label):
     try:
         result = json.loads(data.decode('utf-8'), object_pairs_hook=duplicate_keys,
                             parse_constant=lambda value: (_ for _ in ()).throw(MaterialError('Non-finite JSON')))
-    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
+    except MaterialError:
+        raise
+    except (UnicodeError, ValueError, RecursionError) as error:
         raise MaterialError(f'Invalid {label} JSON') from error
     require(data == canonical(result), f'Noncanonical {label} JSON')
     return result
@@ -347,6 +387,7 @@ def distribution_status(review, scope_id):
 def coverage_bytes(review, review_raw):
     return canonical({'schema_version': 1, 'kind': 'cedar-license-material-coverage',
         'review_sha256': digest(review_raw), 'lock_sha256': review['lock_sha256'],
+        'source_pins': review['source_pins'],
         'material_inventory': material_inventory(review),
         'packages': [{'id': p['id'], 'state': p['state'],
                       'material_paths': [binding['material'] for binding in p['bindings']],

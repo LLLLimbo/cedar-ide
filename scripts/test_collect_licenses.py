@@ -758,6 +758,20 @@ class MaterialReviewContractTests(unittest.TestCase):
             with self.subTest(bytes=len(bad)), self.assertRaises(ValueError):
                 materials.parse(bad, 'fixture')
 
+    def test_json_shape_is_bounded_before_pretty_canonical_expansion(self):
+        materials, _, _, _, _ = self.review_fixture()
+        cases = [b'[' * 20 + b'0' + b']' * 20,
+                 b'{"bad":"\\ud800"}', b'[0.5]',
+                 b'[' + b'0,' * materials.MAX_JSON_NODES + b'0]',
+                 b'{"long":"' + b'x' * 65537 + b'"}']
+        for data in cases:
+            with self.subTest(bytes=len(data)), self.assertRaises(materials.MaterialError):
+                materials.parse(data, 'shape')
+        with self.assertRaisesRegex(materials.MaterialError, 'nesting'):
+            value = None
+            for _ in range(20): value = [value]
+            materials.canonical(value)
+
     def test_material_file_read_rejects_link_and_retains_exact_original_bytes(self):
         materials, _, _, _, _ = self.review_fixture()
         with tempfile.TemporaryDirectory(prefix='cedar-material-read-') as directory:
