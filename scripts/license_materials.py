@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import tomllib
 
 REVIEW_PATH = 'scripts/license_materials_review.json'
 COVERAGE_PATH = 'LICENSE-MATERIAL-COVERAGE.json'
@@ -201,6 +202,10 @@ def _validate_review(review):
         require(type(pin['bytes']) is int and 0 < pin['bytes'] <= 16 * 1024 * 1024, 'Invalid source pin size')
         hash_value(pin['sha256'], 'source pin')
     unique_sorted([pin['path'] for pin in pins], 'source pins')
+    pin_paths = {pin['path'] for pin in pins}
+    require(len({path.casefold() for path in pin_paths}) == len(pin_paths), 'Case-colliding source pins')
+    require({'Cargo.lock', 'Cargo.toml', '.github/workflows/ci.yml'} <= pin_paths,
+            'Missing graph-defining root source pins')
     require(any(pin['path'] == 'Cargo.lock' and pin['sha256'] == review['lock_sha256'] for pin in pins),
             'Cargo.lock is not bound by a source pin')
     packages = review['packages']
@@ -350,6 +355,7 @@ def _validate_review(review):
 
 def validate_review(review):
     try:
+        bounded_shape(review)
         return _validate_review(review)
     except (TypeError, AttributeError, KeyError, OverflowError, UnicodeError, RecursionError) as error:
         raise MaterialError('Malformed reviewed material schema') from error
@@ -448,9 +454,26 @@ def source_input_names(review):
 
 
 def validate_source_inputs(inputs, review, review_raw):
+    validate_review(review)
+    require(review_raw == canonical(review), 'Unbound source review bytes')
     require(set(inputs) == source_input_names(review), 'Source-only input inventory differs from review')
     require(inputs[REVIEW_PATH] == review_raw, 'Source checkout review differs from trusted tool review')
     for pin in review['source_pins']:
         data = inputs[pin['path']]
         require(type(data) is bytes and len(data) == pin['bytes'] and digest(data) == pin['sha256'],
                 'Source-only input changed: ' + pin['path'])
+
+    try:
+        cargo = tomllib.loads(inputs['Cargo.toml'].decode('utf-8'))
+        members = cargo.get('workspace', {}).get('members', [])
+        require(type(members) is list and all(type(member) is str for member in members),
+                'Invalid reviewed workspace members')
+        expected = {relative(member + '/Cargo.toml') for member in members}
+        patches = cargo.get('patch', {}).get('crates-io', {})
+        require(type(patches) is dict, 'Invalid reviewed Cargo patches')
+        for patch in patches.values():
+            if type(patch) is dict and 'path' in patch:
+                expected.add(relative(patch['path'] + '/Cargo.toml'))
+        require(expected <= set(inputs), 'Missing graph-defining workspace/vendor manifest pins')
+    except (UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise MaterialError('Invalid pinned Cargo root manifest') from error

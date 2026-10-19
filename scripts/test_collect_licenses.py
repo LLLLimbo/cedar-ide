@@ -604,9 +604,12 @@ class MaterialReviewContractTests(unittest.TestCase):
                                {'package': 'optional@1.0.0', 'role': 'excluded', 'features': [],
                                 'witness': [], 'reason': 'Absent from this pinned default-feature graph'}]})
         lock = b'Synthetic lock input\n'
+        source_inputs = {'Cargo.lock': lock, 'Cargo.toml': b'[workspace]\nmembers = []\n',
+                         '.github/workflows/ci.yml': b'name: synthetic-test\n'}
         review = {'schema_version': 1, 'kind': 'cedar-license-material-review',
                   'lock_sha256': materials.digest(lock),
-                  'source_pins': [{'path': 'Cargo.lock', 'bytes': len(lock), 'sha256': materials.digest(lock)}],
+                  'source_pins': [{'path': path, 'bytes': len(data), 'sha256': materials.digest(data)}
+                                  for path, data in sorted(source_inputs.items())],
                   'packages': [package, optional],
                   'materials': [{'path': path, 'bytes': len(data), 'sha256': materials.digest(data),
                                  'origins': [origin(member, data)]} for path, member, data in outputs],
@@ -622,7 +625,7 @@ class MaterialReviewContractTests(unittest.TestCase):
         payload.update({materials.NOTICE_PATH: notices,
                         materials.COVERAGE_PATH: materials.coverage_bytes(review, raw),
                         materials.README_PATH: materials.readme_bytes(review)})
-        return materials, review, raw, payload, lock
+        return materials, review, raw, payload, source_inputs
 
     def test_exact_payload_and_pending_status_are_separate_from_readiness(self):
         materials, review, raw, payload, _ = self.review_fixture()
@@ -678,8 +681,8 @@ class MaterialReviewContractTests(unittest.TestCase):
                     materials.validate_payload(changed, 'windows-desktop', review, raw)
 
     def test_source_only_pins_and_trusted_review_are_checked_exactly(self):
-        materials, review, raw, _, lock = self.review_fixture()
-        inputs = {'Cargo.lock': lock, materials.REVIEW_PATH: raw}
+        materials, review, raw, _, source_inputs = self.review_fixture()
+        inputs = {**source_inputs, materials.REVIEW_PATH: raw}
         materials.validate_source_inputs(inputs, review, raw)
         for name in inputs:
             with self.subTest(name=name):
@@ -739,6 +742,45 @@ class MaterialReviewContractTests(unittest.TestCase):
                 with self.assertRaises(materials.MaterialError):
                     materials.validate_review(review)
 
+    def test_upstream_membership_cannot_substitute_a_different_valid_commit(self):
+        import copy
+        materials, review, _, _, _ = self.review_fixture()
+        origin = copy.deepcopy(review['materials'][0]['origins'][0])
+        origin.update(kind='upstream', repository='https://example.invalid/source',
+                      commit='a' * 40, blob='b' * 40,
+                      stored_path='scripts/license-material-sources/example/LICENSE')
+        review['materials'][0]['origins'].append(origin)
+        review['packages'][0]['bindings'][0]['origin'] = origin
+        review['packages'][0]['vcs_commit'] = 'a' * 40
+        materials.validate_review(review)
+        review['packages'][0]['vcs_commit'] = 'c' * 40
+        with self.assertRaisesRegex(materials.MaterialError, 'commit differs'):
+            materials.validate_review(review)
+
+    def test_graph_defining_source_pins_and_raw_review_binding_are_mandatory(self):
+        import copy
+        materials, original, raw, _, source_inputs = self.review_fixture()
+        review = copy.deepcopy(original)
+        review['source_pins'].append({**review['source_pins'][1], 'path': 'cargo.lock'})
+        review['source_pins'].sort(key=lambda x: x['path'])
+        with self.assertRaisesRegex(materials.MaterialError, 'Case-colliding'):
+            materials.validate_review(review)
+        review = copy.deepcopy(original)
+        review['source_pins'] = [pin for pin in review['source_pins'] if pin['path'] != 'Cargo.toml']
+        with self.assertRaisesRegex(materials.MaterialError, 'root source pins'):
+            materials.validate_review(review)
+        inputs = {**source_inputs, materials.REVIEW_PATH: raw}
+        with self.assertRaisesRegex(materials.MaterialError, 'Unbound source review'):
+            materials.validate_source_inputs(inputs, original, raw + b' ')
+        changed = dict(source_inputs)
+        changed['Cargo.toml'] = b'[workspace]\nmembers = ["crates/example"]\n'
+        review = copy.deepcopy(original)
+        for pin in review['source_pins']:
+            pin.update(bytes=len(changed[pin['path']]), sha256=materials.digest(changed[pin['path']]))
+        changed_raw = materials.canonical(review)
+        with self.assertRaisesRegex(materials.MaterialError, 'workspace/vendor'):
+            materials.validate_source_inputs({**changed, materials.REVIEW_PATH: changed_raw}, review, changed_raw)
+
     def test_material_exclusion_and_missing_material_are_not_the_same_state(self):
         import copy
         materials, original, _, _, _ = self.review_fixture()
@@ -761,7 +803,7 @@ class MaterialReviewContractTests(unittest.TestCase):
     def test_json_shape_is_bounded_before_pretty_canonical_expansion(self):
         materials, _, _, _, _ = self.review_fixture()
         cases = [b'[' * 20 + b'0' + b']' * 20,
-                 b'{"bad":"\\ud800"}', b'[0.5]',
+                 b'{"bad":"\\ud800"}', b'[0.5]', b'9' * 5000,
                  b'[' + b'0,' * materials.MAX_JSON_NODES + b'0]',
                  b'{"long":"' + b'x' * 65537 + b'"}']
         for data in cases:
