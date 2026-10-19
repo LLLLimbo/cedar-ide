@@ -5454,7 +5454,7 @@ fn snippet_highlight_native_two_surface_unicode_literal_ellipsis_truncation_matr
     for size in [egui::vec2(1180.0, 812.0), egui::vec2(780.0, 540.0)] {
         for font in [13.0, 18.0] {
             for (name, query, sensitive, original, spans, elided) in &cases {
-                let mut across = None;
+                let mut across: Option<Vec<egui::Rect>> = None;
                 for browse in [false, true] {
                     let hit = SearchMatch {
                         path: "first-parent/duplicate.rs".into(),
