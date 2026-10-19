@@ -4869,3 +4869,97 @@ fn search_result_style_disabled_original_tooltips_preserve_historical_rows() {
         );
     }
 }
+
+fn snippet_highlight_shapes(
+    output: &egui::FullOutput,
+    clip: egui::Rect,
+    row: egui::Rect,
+) -> Vec<egui::Rect> {
+    fn visit(shape: &egui::Shape, result: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Rect(rect)
+                if rect.fill == crate::search_keyboard::highlights::BACKGROUND =>
+            {
+                result.push(rect.rect)
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    visit(shape, result);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut result = Vec::new();
+    for shape in &output.shapes {
+        if shape.clip_rect == clip {
+            visit(&shape.shape, &mut result);
+        }
+    }
+    result
+        .into_iter()
+        .filter(|rect| rect.intersect(row).is_positive())
+        .collect()
+}
+
+fn snippet_highlight_first_painted_matches(browse: bool) {
+    let original = "  second K second  ";
+    let (app, commands, output, _hold) = result_style_fixture(
+        browse,
+        egui::vec2(1180.0, 812.0),
+        13.0,
+        vec![SearchMatch {
+            path: "parent/duplicate.rs".into(),
+            line: 42,
+            text: original.into(),
+        }],
+        |_, _| {},
+    );
+    let probe = if browse {
+        "browse_row:0"
+    } else {
+        "search_row:0"
+    };
+    let draw = result_style_draw(
+        &app,
+        &output,
+        probe,
+        original.trim(),
+        FontId::monospace(13.0),
+        chrome::TEXT,
+    );
+    let glyphs = &draw.galley.rows[0].glyphs;
+    assert_eq!(
+        glyphs.iter().map(|g| g.chr).collect::<String>(),
+        original.trim()
+    );
+    assert!(!draw.galley.elided);
+    let expected = [(0, 5), (9, 14)].map(|(first, last)| {
+        egui::Rect::from_min_max(
+            egui::pos2(glyphs[first].pos.x, draw.galley.rows[0].rect.top()),
+            egui::pos2(glyphs[last].max_x(), draw.galley.rows[0].rect.bottom()),
+        )
+        .translate(draw.pos.to_vec2())
+    });
+    let painted = snippet_highlight_shapes(
+        &output,
+        recorded_clip(&app, probe),
+        recorded_rect(&app, probe),
+    );
+    assert_eq!(painted,expected,"both full accepted-query matches must have actual background shapes; original Galley is retained");
+    assert_eq!(app.search_results[0].text.as_bytes(), original.as_bytes());
+    assert!(
+        commands.try_recv().is_err(),
+        "decoration must not Search or Read"
+    );
+}
+
+#[test]
+fn snippet_highlight_bottom_actual_paint_regression() {
+    snippet_highlight_first_painted_matches(false);
+}
+
+#[test]
+fn snippet_highlight_browse_actual_paint_regression() {
+    snippet_highlight_first_painted_matches(true);
+}
