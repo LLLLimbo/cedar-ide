@@ -2275,12 +2275,12 @@ impl CedarApp {
                 // another key, IME event, or unrelated text ends adjacency.
                 // Pointer input cannot transfer an already-owned physical key.
                 if *key == egui::Key::Space && input.case_claimed.contains(key) && !composing {
-                    for next in index + 1..raw.events.len() {
-                        match &raw.events[next] {
+                    for (consume, event) in consumed.iter_mut().zip(&raw.events).skip(index + 1) {
+                        match event {
                             egui::Event::PointerMoved(_)
                             | egui::Event::MouseMoved(_)
                             | egui::Event::PointerButton { .. } => continue,
-                            egui::Event::Text(text) if text == " " => consumed[next] = true,
+                            egui::Event::Text(text) if text == " " => *consume = true,
                             _ => {}
                         }
                         break;
