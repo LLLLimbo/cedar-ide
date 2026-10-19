@@ -4359,7 +4359,10 @@ fn result_style_tooltip_paint(
         .expect("native tooltip Area")
         .rect();
     let screen = app.editor_ctx.screen_rect();
-    let origin = response.rect.intersect(recorded_clip(app, probe));
+    let mut origin = recorded_rect(app, probe).intersect(recorded_clip(app, probe));
+    if let Some(transform) = app.editor_ctx.layer_transform_to_global(response.layer_id) {
+        origin = transform * origin;
+    }
     let overlap = area.intersect(origin);
     assert!(
         area.is_positive() && screen.contains_rect(area),
@@ -4454,7 +4457,28 @@ fn result_style_delayed_tooltip(
     }
     let row = recorded_rect(app, probe).intersect(recorded_clip(app, probe));
     assert!(row.is_positive() && app.editor_ctx.screen_rect().contains_rect(row));
-    let pos = egui::pos2(row.right() - 3.0, row.center().y);
+    // A floating native scrollbar owns the overlapping rightmost strip.
+    // Exercise the actual row's right edge, immediately before that strip.
+    let lower_scroll = app.editor_ctx.data(|data| {
+        data.get_temp::<(egui::Id, egui::Rect, egui::Vec2)>(egui::Id::new(
+            if probe.starts_with("browse") {
+                "browse_results_scroll_probe"
+            } else {
+                "bottom_results_scroll_probe"
+            },
+        ))
+    });
+    let bar = lower_scroll.and_then(|(id, _, _)| app.editor_ctx.read_response(id.with(1_usize)));
+    let right = bar
+        .as_ref()
+        .filter(|bar| bar.rect.intersect(row).is_positive())
+        .map_or(row.right(), |bar| row.right().min(bar.rect.left()));
+    let pos = egui::pos2(right - 3.0, row.center().y);
+    assert!(row.contains(pos));
+    assert!(
+        !bar.as_ref().is_some_and(|bar| bar.rect.contains(pos)),
+        "tooltip hover belongs to the row, not its native scrollbar"
+    );
     let output = result_style_tooltip_frame(app, size, 0.016, vec![egui::Event::PointerMoved(pos)]);
     assert!(
         !result_style_texts(&output)
@@ -4738,5 +4762,89 @@ fn search_result_style_tooltip_wheel_preserves_native_dismissal() {
             .any(|(draw, _)| draw.galley.job.text == text && draw.galley.rows.len() > 1));
         assert_eq!(result_style_tooltip_quiet(&app), quiet);
         assert!(commands.try_recv().is_err());
+    }
+}
+#[test]
+fn search_result_style_disabled_original_tooltips_preserve_historical_rows() {
+    let size = egui::vec2(780.0, 540.0);
+    for kind in ["browse_row", "browse_group", "search_group"] {
+        let (mut app, commands, text, _hold_font_probe) =
+            result_style_single_tooltip_fixture(kind, size, 18.0, egui::Theme::Dark);
+        let prefix = if kind.starts_with("browse") {
+            "browse"
+        } else {
+            "search"
+        };
+        let query = format!("{prefix}_query");
+        let row = format!("{prefix}_row:0");
+        let group = format!("{prefix}_group:0");
+        let probe = format!("{kind}:0");
+        let originals = app
+            .search_results
+            .iter()
+            .map(|hit| (hit.path.clone(), hit.line, hit.text.clone()))
+            .collect::<Vec<_>>();
+        let accepted = app.search_state.accepted.clone();
+        let editor = result_style_editor(&app);
+        result_style_click(&mut app, size, &query);
+        result_style_frame(
+            &mut app,
+            size,
+            modified_key(
+                egui::Key::A,
+                egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..egui::Modifiers::NONE
+                },
+            ),
+        );
+        result_style_frame(
+            &mut app,
+            size,
+            vec![egui::Event::Text("retired second".into())],
+        );
+        // Query retirement legitimately changes status/automatic tools height.
+        // Capture the inactive layout only after that native change settles.
+        for _ in 0..3 {
+            result_style_frame(&mut app, size, vec![]);
+        }
+        assert_eq!(app.search_query, "retired second");
+        assert!(!app.search_rows_active());
+        assert_eq!(app.search_state.accepted, accepted);
+        assert_eq!(result_style_editor(&app), editor);
+        for probe in [&row, &group] {
+            assert!(!recorded_response(&app, probe).enabled());
+        }
+        assert!(!result_style_tooltip_native_info(&mut app, size, &probe).enabled);
+        let quiet = result_style_tooltip_quiet(&app);
+        let _ = result_style_delayed_tooltip(&mut app, size, &probe, &text);
+        let owner = recorded_response(&app, &probe).id;
+        let scroll = result_style_tooltip_scroll(&app, owner);
+        let output = result_style_drag_scrollbar_to_end(&mut app, size, scroll);
+        result_style_tooltip_paint(&app, &output, &probe, &text, true);
+        assert_eq!(
+            result_style_tooltip_quiet(&app),
+            quiet,
+            "disabled historical tooltip can scroll without activating lower rows"
+        );
+        for target in [&row, &group] {
+            result_style_click(&mut app, size, target);
+            assert!(!recorded_response(&app, target).clicked());
+            assert_eq!(result_style_tooltip_quiet(&app), quiet);
+        }
+        assert_eq!(app.search_state.accepted, accepted);
+        assert_eq!(
+            app.search_results
+                .iter()
+                .map(|hit| (hit.path.clone(), hit.line, hit.text.clone()))
+                .collect::<Vec<_>>(),
+            originals
+        );
+        assert_eq!(result_style_editor(&app), editor);
+        assert!(
+            commands.try_recv().is_err(),
+            "retired tooltip/rows cannot Search or Read"
+        );
     }
 }
