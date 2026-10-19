@@ -9027,7 +9027,18 @@ fn browse_ime_enabled_without_preedit_keeps_existing_noncheckbox_activation_poli
         if text_provider {
             query(&mut app, "needle");
         } else {
-            click(&mut app, "browse_row:0");
+            // Loaded Files puts open buffers first; row zero is the dirty
+            // origin and correctly previews with no Read. Select the exact
+            // unopened file for this distinct disk-preview ledger assertion.
+            let paths = app.browse.paths();
+            assert_eq!(paths.first().copied(), Some("origin.txt"));
+            let index = paths.iter().position(|path| *path == "a.txt").unwrap();
+            assert_eq!(paths[index], "a.txt");
+            assert!(!app
+                .documents
+                .iter()
+                .any(|document| document.path == paths[index]));
+            click(&mut app, &format!("browse_row:{index}"));
         }
         assert!(commands.try_recv().is_err());
         frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Enabled)]);
