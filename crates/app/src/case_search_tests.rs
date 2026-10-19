@@ -1786,3 +1786,353 @@ fn case_search_ime_enabled_retires_checkbox_pointer_press_without_laundering_rel
         }
     }
 }
+
+// Regression for U+212A: retaining a character in LayoutJob::text alone does
+// not prove that the painted glyph is anything other than the missing box.
+const KELVIN_SAVED: &str = "let kelvin = \"K K k\";\r\n// K saved\r\n";
+const KELVIN_DRAFT: &str = "let kelvin = \"K K k\";\r\n// K draft\r\n";
+const KELVIN_SNIPPET: &str = "let kelvin = \"K K k\";";
+const KELVIN_PREVIEW_LINE: &str = "▶ 1 | let kelvin = \"K K k\";";
+
+fn kelvin_metrics() -> [(egui::Vec2, f32, f32); 3] {
+    [
+        (egui::vec2(1100.0, 800.0), 14.0, 1.0),
+        (egui::vec2(900.0, 700.0), 18.0, 1.25),
+        (egui::vec2(1280.0, 900.0), 20.0, 2.0),
+    ]
+}
+
+fn kelvin_fixture(path: &str) -> (CedarApp, Receiver<Command>) {
+    let (mut app, commands) = fixture();
+    app.documents[0] = Document::new(1, path.into(), KELVIN_SAVED.into(), "c".repeat(64));
+    editor_state::commit(
+        &app.editor_ctx,
+        &mut app.documents[0],
+        KELVIN_DRAFT.into(),
+        3,
+    );
+    settle(&mut app);
+    assert_eq!(app.documents[0].text.as_bytes(), KELVIN_DRAFT.as_bytes());
+    assert!(commands.try_recv().is_err());
+    (app, commands)
+}
+
+fn kelvin_frame(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    font_size: f32,
+    pixels_per_point: f32,
+) -> egui::FullOutput {
+    app.font_size = font_size;
+    app.editor_ctx.set_pixels_per_point(pixels_per_point);
+    app.editor_ctx.style_mut(|style| {
+        for kind in [egui::TextStyle::Body, egui::TextStyle::Button] {
+            style
+                .text_styles
+                .insert(kind, FontId::proportional(font_size));
+        }
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, FontId::monospace(font_size));
+    });
+    for _ in 0..3 {
+        frame_at(app, size, vec![]);
+    }
+    let output = frame_at(app, size, vec![]);
+    assert_eq!(output.pixels_per_point, pixels_per_point);
+    output
+}
+
+fn kelvin_assert_painted<'a>(
+    app: &CedarApp,
+    output: &'a egui::FullOutput,
+    expected: &str,
+    viewport: egui::Rect,
+    expected_font: &FontId,
+    label: &str,
+) -> &'a egui::Galley {
+    fn collect<'a>(
+        shape: &'a egui::epaint::Shape,
+        clip: egui::Rect,
+        expected: &str,
+        found: &mut Vec<(&'a egui::epaint::TextShape, egui::Rect)>,
+    ) {
+        match shape {
+            egui::epaint::Shape::Text(draw) if draw.galley.text() == expected => {
+                found.push((draw, clip));
+            }
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, clip, expected, found);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for shape in &output.shapes {
+        collect(&shape.shape, shape.clip_rect, expected, &mut found);
+    }
+    let (draw, clip) = found
+        .into_iter()
+        .find(|(draw, clip)| {
+            let bounds = egui::Rect::from_min_size(draw.pos, draw.galley.size());
+            viewport.intersect(*clip).intersects(bounds)
+        })
+        .unwrap_or_else(|| panic!("{label}: no actual visible text shape for {expected:?}"));
+    assert_eq!(
+        draw.galley.text().as_bytes(),
+        expected.as_bytes(),
+        "{label}"
+    );
+    let mut count = 0;
+    for row in &draw.galley.rows {
+        for glyph in row.glyphs.iter().filter(|glyph| glyph.chr == 'K') {
+            count += 1;
+            let section = &draw.galley.job.sections[glyph.section_index as usize];
+            assert!(draw.galley.text()[section.byte_range.clone()].contains('K'));
+            let font = &section.format.font_id;
+            assert_eq!(font, expected_font, "{label}: actual section font");
+            let uv = glyph.uv_rect;
+            assert!(
+                uv.offset.is_finite()
+                    && uv.size.is_finite()
+                    && uv.size.x > 0.0
+                    && uv.size.y > 0.0
+                    && uv.min[0] < uv.max[0]
+                    && uv.min[1] < uv.max[1],
+                "{label}: Kelvin needs finite, nonempty painted ink: {uv:?}"
+            );
+            let ink =
+                egui::Rect::from_min_size(draw.pos + glyph.pos.to_vec2() + uv.offset, uv.size);
+            assert!(
+                ink.is_finite() && clip.contains_rect(ink) && viewport.contains_rect(ink),
+                "{label}: Kelvin ink must actually be visible: {ink:?}, clip={clip:?}, viewport={viewport:?}"
+            );
+            app.editor_ctx.fonts(|fonts| {
+                assert!(
+                    fonts.has_glyph(font, 'K'),
+                    "{label}: actual section font lacks U+212A"
+                );
+                assert!(!fonts.has_glyph(font, '\u{10ffff}'));
+                let missing =
+                    fonts.layout_no_wrap("\u{10ffff}".into(), font.clone(), Color32::WHITE);
+                let replacement = missing.rows[0].glyphs[0].uv_rect;
+                assert_ne!(
+                    (uv.min, uv.max),
+                    (replacement.min, replacement.max),
+                    "{label}: actual U+212A uses replacement atlas UV"
+                );
+                let supported = fonts.layout_no_wrap("K".into(), font.clone(), Color32::WHITE);
+                assert_eq!(
+                    uv, supported.rows[0].glyphs[0].uv_rect,
+                    "{label}: actual glyph UV"
+                );
+            });
+            // These atlas coordinates also occur in the actual row mesh that
+            // App::update painted; this is not a separately constructed job.
+            for corner in [uv.min, uv.max] {
+                assert!(
+                    row.visuals.mesh.vertices.iter().any(|vertex| {
+                        vertex.uv == egui::pos2(f32::from(corner[0]), f32::from(corner[1]))
+                    }),
+                    "{label}: Kelvin atlas corner absent from painted mesh"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        count,
+        expected.matches('K').count(),
+        "{label}: original Kelvin glyph count"
+    );
+    assert!(count > 0, "{label}: expected Kelvin witness");
+    &draw.galley
+}
+
+#[test]
+fn case_search_kelvin_glyph_rows_and_shared_preview_survive_native_frames() {
+    for surface in [Surface::Browse, Surface::Bottom] {
+        for (size, font_size, pixels_per_point) in kelvin_metrics() {
+            let (mut app, commands) = kelvin_fixture("src/kelvin.rs");
+            let before = editor_snapshot(&app);
+            enter(&mut app, surface);
+            let navigation = app.navigation_epoch;
+            replace(&mut app, surface.query(), "K");
+            click(&mut app, checkbox(surface));
+            let pending = submit(&mut app, &commands, surface);
+            let request = CaseSearchRequest {
+                query: "K".into(),
+                scope: String::new(),
+                masks: vec![],
+                limit: 500,
+                case_sensitive: false,
+            };
+            assert!(
+                matches!(&pending.op, Operation::SearchCase { request: actual } if *actual == request)
+            );
+            reply(
+                &mut app,
+                pending.id,
+                Ok(Payload::CaseMatches {
+                    result: CaseSearchResult {
+                        request,
+                        matches: vec![CaseSearchMatch {
+                            path: "src/kelvin.rs".into(),
+                            line: 1,
+                            text: KELVIN_SNIPPET.into(),
+                        }],
+                        incomplete: false,
+                        reasons: vec![],
+                        examined_entries: 1,
+                        read_bytes: KELVIN_SAVED.len(),
+                    },
+                }),
+            );
+            let output = kelvin_frame(&mut app, size, font_size, pixels_per_point);
+            assert!(app.search_rows_active());
+            assert_eq!(app.search_query.as_bytes(), "K".as_bytes());
+            assert_eq!(
+                triples(&app),
+                vec![("src/kelvin.rs".into(), 1, KELVIN_SNIPPET.into())]
+            );
+            let label =
+                format!("{surface:?}, {size:?}, font={font_size}, scale={pixels_per_point}");
+            let row = recorded_rect(&app, &surface.row(0))
+                .intersect(recorded_clip(&app, &surface.row(0)))
+                .intersect(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+            let (row_text, row_font) = match surface {
+                Surface::Browse => (KELVIN_SNIPPET.to_owned(), FontId::monospace(font_size)),
+                Surface::Bottom => (
+                    format!("    1:  {KELVIN_SNIPPET}"),
+                    FontId::proportional(font_size),
+                ),
+            };
+            kelvin_assert_painted(&app, &output, &row_text, row, &row_font, &label);
+
+            recorded_response(&app, &surface.row(0)).request_focus();
+            frame_at(&mut app, size, vec![]);
+            frame_at(&mut app, size, key(egui::Key::Space, egui::Modifiers::NONE));
+            let output = kelvin_frame(&mut app, size, font_size, pixels_per_point);
+            assert_eq!(
+                match surface {
+                    Surface::Browse => app.browse_preview_text(),
+                    Surface::Bottom => app.search_preview_text(),
+                }
+                .unwrap()
+                .as_bytes(),
+                KELVIN_DRAFT.as_bytes(),
+                "{label}: preview must retain exact current draft bytes"
+            );
+            assert_eq!(
+                app.project_text_preview_context().unwrap().text,
+                "▶ 1 | let kelvin = \"K K k\";\n  2 | // K draft\n  3 | "
+            );
+            let (_, viewport): (egui::Id, egui::Rect) = app
+                .editor_ctx
+                .data(|data| {
+                    data.get_temp(egui::Id::new((
+                        "project_text_context_scroll",
+                        matches!(surface, Surface::Bottom),
+                    )))
+                })
+                .expect("actual shared preview viewport");
+            kelvin_assert_painted(
+                &app,
+                &output,
+                KELVIN_PREVIEW_LINE,
+                viewport,
+                &FontId::monospace(font_size),
+                &label,
+            );
+            assert_eq!(
+                triples(&app),
+                vec![("src/kelvin.rs".into(), 1, KELVIN_SNIPPET.into())]
+            );
+            assert_eq!(
+                editor_snapshot(&app),
+                before,
+                "{label}: read-only surfaces changed editor"
+            );
+            assert_eq!(app.navigation_epoch, navigation);
+            assert_eq!(app.active_document, Some(1));
+            assert_eq!(app.documents.len(), 1);
+            assert_eq!(
+                app.system_fonts.probe_state_for_test(),
+                "unchecked",
+                "{label}: Kelvin must not trigger an OS CJK probe"
+            );
+            assert!(
+                commands.try_recv().is_err(),
+                "{label}: extra worker operation"
+            );
+        }
+    }
+}
+
+#[test]
+fn case_search_kelvin_glyph_plain_and_highlighted_editors_survive_native_frames() {
+    for path in ["src/kelvin.txt", "src/kelvin.rs"] {
+        for (size, font_size, pixels_per_point) in kelvin_metrics() {
+            let (mut app, commands) = kelvin_fixture(path);
+            let before = editor_snapshot(&app);
+            let navigation = app.navigation_epoch;
+            let output = kelvin_frame(&mut app, size, font_size, pixels_per_point);
+            let viewport = recorded_rect(&app, "editor")
+                .intersect(recorded_clip(&app, "editor"))
+                .intersect(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+            let label = format!("{path}, {size:?}, font={font_size}, scale={pixels_per_point}");
+            let galley = kelvin_assert_painted(
+                &app,
+                &output,
+                KELVIN_DRAFT,
+                viewport,
+                &FontId::monospace(font_size),
+                &label,
+            );
+            if path.ends_with(".txt") {
+                assert_eq!(galley.job.sections.len(), 1, "actual plain editor path");
+            } else {
+                assert!(
+                    galley.job.sections.len() > 1,
+                    "actual highlighted editor path"
+                );
+                let colors: std::collections::HashSet<_> = galley
+                    .job
+                    .sections
+                    .iter()
+                    .map(|section| section.format.color)
+                    .collect();
+                assert!(
+                    colors.len() > 1,
+                    "highlighted editor must paint distinct lexical colors"
+                );
+            }
+            assert!(galley.job.sections.iter().all(|section| {
+                section.format.line_height == Some(syntax::editor_line_height(font_size))
+            }));
+            assert_eq!(
+                editor_snapshot(&app),
+                before,
+                "{label}: rendering changed exact source or history"
+            );
+            assert_eq!(
+                app.documents[0].saved_text.as_bytes(),
+                KELVIN_SAVED.as_bytes()
+            );
+            assert_eq!(app.documents[0].path, path);
+            assert_eq!(app.navigation_epoch, navigation);
+            assert_eq!(app.active_document, Some(1));
+            assert_eq!(app.documents.len(), 1);
+            assert_eq!(
+                app.system_fonts.probe_state_for_test(),
+                "unchecked",
+                "{label}: Kelvin must not trigger an OS CJK probe"
+            );
+            assert!(
+                commands.try_recv().is_err(),
+                "{label}: rendering issued worker operation"
+            );
+        }
+    }
+}
