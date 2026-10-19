@@ -4631,6 +4631,13 @@ pub(super) fn text_result_tooltip(response: egui::Response, text: &str) -> egui:
             .max_height(height)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
+                #[cfg(test)]
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(
+                        egui::Id::new(("text_result_tooltip_clip_probe", id)),
+                        ui.clip_rect(),
+                    );
+                });
                 ui.add(egui::Label::new(text).wrap());
             });
         #[cfg(test)]

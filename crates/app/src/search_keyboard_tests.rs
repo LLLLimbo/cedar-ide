@@ -4154,3 +4154,546 @@ fn search_result_style_tooltip_area_height_guard_restores_all_exit_paths() {
     assert_eq!(*ctx.style_of(egui::Theme::Light), *light);
     assert_eq!(*unrelated.style(), *unrelated_style);
 }
+// Additional production-tooltip witnesses. These do not replace the original
+// 100ms first-hover/press sequence in result_style_click.
+fn result_style_tooltip_frame(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    dt: f64,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    let ctx = app.editor_ctx.clone();
+    let dark = ctx.style_of(egui::Theme::Dark);
+    let light = ctx.style_of(egui::Theme::Light);
+    let geometry =
+        (ctx.screen_rect().size() == size).then(|| result_style_tooltip_lower_geometry(app));
+    let mut input = raw(app, events);
+    input.time = Some(ctx.input(|input| input.time) + dt);
+    input.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let output = render(app, input);
+    assert_eq!(
+        *ctx.style_of(egui::Theme::Dark),
+        *dark,
+        "tooltip frame must restore the complete Dark style"
+    );
+    assert_eq!(
+        *ctx.style_of(egui::Theme::Light),
+        *light,
+        "tooltip frame must restore the complete Light style"
+    );
+    if let Some(geometry) = geometry {
+        assert_eq!(
+            result_style_tooltip_lower_geometry(app),
+            geometry,
+            "tooltip frames preserve subsequent tools/editor native rects and clips"
+        );
+    }
+    output
+}
+
+fn result_style_tooltip_lower_geometry(app: &CedarApp) -> Vec<(egui::Rect, egui::Rect)> {
+    let editor = recorded_response(app, "editor");
+    let visible = editor.rect.intersect(recorded_clip(app, "editor"));
+    assert!(
+        visible.is_positive() && app.editor_ctx.screen_rect().contains_rect(visible),
+        "automatic tools layout leaves a real visible editor: {:?} / {:?}",
+        editor.rect,
+        recorded_clip(app, "editor")
+    );
+    ["search_query", "search_submit", "editor"]
+        .map(|probe| (recorded_rect(app, probe), recorded_clip(app, probe)))
+        .to_vec()
+}
+
+fn result_style_tooltip_scroll(
+    app: &CedarApp,
+    owner: egui::Id,
+) -> (egui::Id, egui::Rect, egui::Vec2) {
+    app.editor_ctx.data(|data| {
+        data.get_temp(egui::Id::new(("text_result_tooltip_probe", owner)))
+            .expect("the native tooltip must render its real ScrollArea")
+    })
+}
+
+fn result_style_tooltip_quiet(app: &CedarApp) -> serde_json::Value {
+    serde_json::json!({
+        "editor": result_style_editor(app),
+        "search_selected": app.search_state.selected_index(),
+        "browse_selected": app.browse.selected_index(),
+        "expanded": (0..app.search_results.len()).map(|index|
+            app.search_state.group_expanded(index)).collect::<Vec<_>>(),
+        "query": app.search_query,
+        "search_preview": app.search_preview_text(),
+        "browse_preview": app.browse_preview_text(),
+    })
+}
+
+fn result_style_tooltip_native_info(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    probe: &str,
+) -> egui::WidgetInfo {
+    let ctx = app.editor_ctx.clone();
+    let original = ctx.style().debug.show_interactive_widgets;
+    ctx.style_mut(|style| style.debug.show_interactive_widgets = true);
+    let mut input = raw(app, vec![]);
+    input.time = Some(ctx.input(|input| input.time) + 0.016);
+    input.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    let mut native = eframe::Frame::_new_kittest();
+    let mut info = None;
+    let _ = ctx.run(input, |ctx| {
+        eframe::App::update(app, ctx, &mut native);
+        let id = recorded_response(app, probe).id;
+        info = ctx.viewport(|viewport| viewport.this_pass.widgets.info(id).cloned());
+    });
+    ctx.style_mut(|style| style.debug.show_interactive_widgets = original);
+    info.expect("production WidgetInfo must retain the full original accessible label")
+}
+
+fn result_style_drag_scrollbar_to_end(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    scroll: (egui::Id, egui::Rect, egui::Vec2),
+) -> egui::FullOutput {
+    let (id, inner, content) = scroll;
+    assert!(
+        content.y > inner.height(),
+        "fixture must overflow vertically"
+    );
+    let bar_id = id.with(1_usize);
+    let bar = app
+        .editor_ctx
+        .read_response(bar_id)
+        .expect("native vertical scrollbar");
+    assert!(bar.rect.is_positive());
+    assert!(app.editor_ctx.screen_rect().contains_rect(bar.rect));
+    let before = egui::scroll_area::State::load(&app.editor_ctx, id)
+        .unwrap()
+        .offset
+        .y;
+    let handle_height = bar.rect.height() * inner.height() / content.y;
+    let start = egui::pos2(
+        bar.rect.center().x,
+        bar.rect.top() + bar.rect.height() * before / content.y + handle_height / 2.0,
+    );
+    let end = egui::pos2(start.x, bar.rect.bottom() - 0.5);
+    result_style_tooltip_frame(app, size, 0.016, vec![egui::Event::PointerMoved(start)]);
+    result_style_tooltip_frame(app, size, 0.016, pointer(start, true));
+    assert!(
+        app.editor_ctx
+            .read_response(bar_id)
+            .unwrap()
+            .is_pointer_button_down_on(),
+        "the real scrollbar must own the native press"
+    );
+    result_style_tooltip_frame(app, size, 0.016, vec![egui::Event::PointerMoved(end)]);
+    assert!(
+        app.editor_ctx.read_response(bar_id).unwrap().dragged(),
+        "the native pointer movement must drag the scrollbar"
+    );
+    result_style_tooltip_frame(app, size, 0.016, pointer(end, false));
+    assert!(app.editor_ctx.read_response(bar_id).unwrap().drag_stopped());
+    let output = result_style_tooltip_frame(app, size, 0.016, vec![]);
+    let offset = egui::scroll_area::State::load(&app.editor_ctx, id)
+        .unwrap()
+        .offset
+        .y;
+    assert!(
+        (offset - (content.y - inner.height())).abs() <= 1.0,
+        "native scrollbar reaches the end: offset={offset} content={content:?} inner={inner:?}"
+    );
+    output
+}
+
+fn result_style_tooltip_paint(
+    app: &CedarApp,
+    output: &egui::FullOutput,
+    probe: &str,
+    original: &str,
+    tail: bool,
+) {
+    let response = recorded_response(app, probe);
+    let tooltip_id = response.id.with(0_usize);
+    let area = egui::AreaState::load(&app.editor_ctx, tooltip_id)
+        .expect("native tooltip Area")
+        .rect();
+    let screen = app.editor_ctx.screen_rect();
+    let origin = response.rect.intersect(recorded_clip(app, probe));
+    let overlap = area.intersect(origin);
+    assert!(
+        area.is_positive() && screen.contains_rect(area),
+        "{probe}: tooltip stays on screen: {area:?} / {screen:?}"
+    );
+    assert!(
+        overlap.width() <= 0.0 || overlap.height() <= 0.0,
+        "{probe}: first and settled tooltip cannot cover its origin: {area:?} / {origin:?}"
+    );
+    let (_, inner, content) = result_style_tooltip_scroll(app, response.id);
+    assert!(inner.is_positive() && area.contains_rect(inner));
+    assert!(
+        content.y > inner.height(),
+        "long original text needs native scrolling"
+    );
+    let native_clip = app.editor_ctx.data(|data| {
+        data.get_temp::<egui::Rect>(egui::Id::new((
+            "text_result_tooltip_clip_probe",
+            response.id,
+        )))
+        .expect("the native tooltip content UI must record its actual paint clip")
+    });
+    let candidates = result_style_texts(output)
+        .into_iter()
+        .filter(|(draw, clip)| {
+            draw.galley.job.text.as_bytes() == original.as_bytes()
+                && *clip == native_clip
+                && clip.intersect(inner).is_positive()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "{probe}: exact original full tooltip text must actually paint"
+    );
+    let (draw, clip) = candidates[0];
+    assert_eq!(clip, native_clip);
+    assert!(
+        clip.height() <= area.height() + 2.0,
+        "{probe}: actual tooltip clip must be bounded by its native Area"
+    );
+    assert!(
+        !draw.galley.elided,
+        "bounded viewport must never elide original tooltip bytes"
+    );
+    assert!(draw.galley.rows.len() > 2);
+    assert!(
+        draw.galley
+            .job
+            .sections
+            .iter()
+            .all(|section| section.format.font_id.size == app.font_size),
+        "tooltip uses the requested literal font size"
+    );
+    let row = if tail {
+        draw.galley.rows.last().unwrap()
+    } else {
+        &draw.galley.rows[0]
+    };
+    assert!(!row.visuals.mesh.indices.is_empty());
+    let ink = row.visuals.mesh_bounds.translate(draw.pos.to_vec2());
+    let visible = clip.intersect(inner);
+    assert!(visible.expand(1.0).contains_rect(ink),
+        "{probe}: {} glyph mesh must be inside the real scrolling clip: ink={ink:?}, clip={clip:?}, inner={inner:?}",
+        if tail { "last" } else { "first" });
+}
+
+fn result_style_delayed_tooltip(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    probe: &str,
+    original: &str,
+) -> egui::FullOutput {
+    // Build ordinary 16ms pointer history outside the modal/results, then move
+    // into the native control. No popup state or clock field is manufactured.
+    result_style_tooltip_frame(app, size, 0.016, vec![egui::Event::PointerGone]);
+    let grace = app.editor_ctx.style().interaction.tooltip_grace_time;
+    for _ in 0..((grace + 0.1) / 0.016).ceil() as usize {
+        result_style_tooltip_frame(app, size, 0.016, vec![]);
+    }
+    for step in 0..4 {
+        result_style_tooltip_frame(
+            app,
+            size,
+            0.016,
+            vec![egui::Event::PointerMoved(egui::pos2(
+                size.x - 8.0 + step as f32,
+                size.y - 3.0,
+            ))],
+        );
+    }
+    let row = recorded_rect(app, probe).intersect(recorded_clip(app, probe));
+    assert!(row.is_positive() && app.editor_ctx.screen_rect().contains_rect(row));
+    let pos = egui::pos2(row.right() - 3.0, row.center().y);
+    let output = result_style_tooltip_frame(app, size, 0.016, vec![egui::Event::PointerMoved(pos)]);
+    assert!(
+        !result_style_texts(&output)
+            .iter()
+            .any(
+                |(draw, _)| draw.galley.job.text.as_bytes() == original.as_bytes()
+                    && draw.galley.rows.len() > 1
+            ),
+        "ordinary movement must preserve the native hover delay"
+    );
+    let frames = ((app.editor_ctx.style().interaction.tooltip_delay + 0.2) / 0.016).ceil() as usize;
+    for _ in 0..frames {
+        let output = result_style_tooltip_frame(app, size, 0.016, vec![]);
+        if result_style_texts(&output).iter().any(|(draw, _)| {
+            draw.galley.job.text.as_bytes() == original.as_bytes() && draw.galley.rows.len() > 1
+        }) {
+            result_style_tooltip_paint(app, &output, probe, original, false);
+            return output;
+        }
+    }
+    panic!("{probe}: delayed native tooltip never painted");
+}
+
+#[test]
+fn search_result_style_original_tooltips_native_scroll_matrix() {
+    for size in [egui::vec2(1180.0, 812.0), egui::vec2(780.0, 540.0)] {
+        for font in [13.0, 18.0] {
+            for theme in [egui::Theme::Dark, egui::Theme::Light] {
+                for kind in ["browse_row", "browse_group", "search_group"] {
+                    let matches = (0..16)
+                        .map(|index| SearchMatch {
+                            path: format!(
+                                "parent-{index}/{}/TAIL_PATH.rs",
+                                "中文😀K-long-parent/".repeat(30)
+                            ),
+                            line: 7,
+                            text: format!(
+                                "  second {index} {}TAIL_SNIPPET  ",
+                                "K 中文😀 raw bytes ".repeat(60)
+                            ),
+                        })
+                        .collect::<Vec<_>>();
+                    let hit = matches.last().unwrap().clone();
+                    let originals = matches
+                        .iter()
+                        .map(|hit| (hit.path.clone(), hit.line, hit.text.clone()))
+                        .collect::<Vec<_>>();
+                    let browse = kind.starts_with("browse");
+                    let (mut app, commands, _, _hold_font_probe) =
+                        result_style_fixture(browse, size, font, matches, |_, _| {});
+                    app.tools_height = None;
+                    app.editor_ctx.set_theme(theme);
+                    app.editor_ctx.style_mut(|style| {
+                        for text in [egui::TextStyle::Body, egui::TextStyle::Button] {
+                            style.text_styles.insert(text, FontId::proportional(font));
+                        }
+                        style
+                            .text_styles
+                            .insert(egui::TextStyle::Monospace, FontId::monospace(font));
+                    });
+                    for _ in 0..3 {
+                        result_style_frame(&mut app, size, vec![]);
+                    }
+                    let lower_scroll = app
+                        .editor_ctx
+                        .data(|data| {
+                            data.get_temp::<(egui::Id, egui::Rect, egui::Vec2)>(egui::Id::new(
+                                if browse {
+                                    "browse_results_scroll_probe"
+                                } else {
+                                    "bottom_results_scroll_probe"
+                                },
+                            ))
+                        })
+                        .unwrap();
+                    result_style_drag_scrollbar_to_end(&mut app, size, lower_scroll);
+                    let probe = format!("{kind}:15");
+                    let origin = recorded_rect(&app, &probe).intersect(recorded_clip(&app, &probe));
+                    assert!(
+                        origin.bottom()
+                            >= recorded_clip(&app, &probe).bottom() - 2.0 * origin.height() - 2.0,
+                        "edge fixture must reach the last visible group/row near the bottom"
+                    );
+                    let (tooltip_text, accessible, widget_type) = match kind {
+                        "browse_row" => {
+                            let full = format!("{}:{}\n{}", hit.path, hit.line, hit.text);
+                            (full.clone(), full, egui::WidgetType::SelectableLabel)
+                        }
+                        "browse_group" => {
+                            let full = format!("Expanded {} (1 matching lines)", hit.path);
+                            (full.clone(), full, egui::WidgetType::SelectableLabel)
+                        }
+                        "search_group" => (
+                            hit.path.clone(),
+                            format!("▾ {}  (1)", hit.path),
+                            egui::WidgetType::Button,
+                        ),
+                        _ => unreachable!(),
+                    };
+                    let info = result_style_tooltip_native_info(&mut app, size, &probe);
+                    assert_eq!(info.label.as_deref(), Some(accessible.as_str()));
+                    assert_eq!(info.typ, widget_type);
+                    assert!(info.enabled);
+                    let quiet = result_style_tooltip_quiet(&app);
+                    let accepted = app.search_state.accepted.clone();
+                    let dark = app.editor_ctx.style_of(egui::Theme::Dark);
+                    let light = app.editor_ctx.style_of(egui::Theme::Light);
+                    let lower_before =
+                        egui::scroll_area::State::load(&app.editor_ctx, lower_scroll.0)
+                            .unwrap()
+                            .offset;
+                    let _ = result_style_delayed_tooltip(&mut app, size, &probe, &tooltip_text);
+                    let owner = recorded_response(&app, &probe).id;
+                    let scroll = result_style_tooltip_scroll(&app, owner);
+                    let output = result_style_drag_scrollbar_to_end(&mut app, size, scroll);
+                    result_style_tooltip_paint(&app, &output, &probe, &tooltip_text, true);
+                    let inside = result_style_tooltip_scroll(&app, owner).1.center();
+                    result_style_tooltip_frame(
+                        &mut app,
+                        size,
+                        0.016,
+                        vec![egui::Event::PointerMoved(inside)],
+                    );
+                    assert_eq!(
+                        app.editor_ctx.layer_id_at(inside),
+                        Some(egui::LayerId::new(
+                            egui::Order::Tooltip,
+                            owner.with(0_usize)
+                        ))
+                    );
+                    result_style_tooltip_frame(&mut app, size, 0.016, pointer(inside, true));
+                    result_style_tooltip_frame(&mut app, size, 0.016, pointer(inside, false));
+                    assert_eq!(
+                    result_style_tooltip_quiet(&app),
+                    quiet,
+                    "{kind} {size:?} {font}: tooltip drag/click cannot reach underlying controls"
+                );
+                    assert_eq!(
+                        egui::scroll_area::State::load(&app.editor_ctx, lower_scroll.0)
+                            .unwrap()
+                            .offset,
+                        lower_before,
+                        "tooltip scrollbar must not scroll the underlying results"
+                    );
+                    assert_eq!(app.search_state.accepted, accepted);
+                    assert_eq!(
+                        app.search_results
+                            .iter()
+                            .map(|hit| (hit.path.clone(), hit.line, hit.text.clone()))
+                            .collect::<Vec<_>>(),
+                        originals
+                    );
+                    assert_eq!(*app.editor_ctx.style_of(egui::Theme::Dark), *dark);
+                    assert_eq!(*app.editor_ctx.style_of(egui::Theme::Light), *light);
+                    assert_eq!(app.system_fonts.probe_state_for_test(), "loading");
+                    assert!(
+                        commands.try_recv().is_err(),
+                        "tooltip interaction cannot Search or Read"
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn result_style_single_tooltip_fixture(
+    kind: &str,
+    size: egui::Vec2,
+    font: f32,
+    theme: egui::Theme,
+) -> (CedarApp, Receiver<Command>, String, Box<dyn FnOnce()>) {
+    let hit = SearchMatch {
+        path: format!("root/{}/TAIL_PATH.rs", "中文😀K-parent/".repeat(40)),
+        line: 7,
+        text: format!(
+            "  second {}TAIL_SNIPPET  ",
+            "K 中文😀 raw bytes ".repeat(60)
+        ),
+    };
+    let tooltip_text = match kind {
+        "browse_row" => format!("{}:{}\n{}", hit.path, hit.line, hit.text),
+        "browse_group" => format!("Expanded {} (1 matching lines)", hit.path),
+        "search_group" => hit.path.clone(),
+        _ => unreachable!(),
+    };
+    let (mut app, commands, _, hold) =
+        result_style_fixture(kind.starts_with("browse"), size, font, vec![hit], |_, _| {});
+    app.tools_height = None;
+    app.editor_ctx.set_theme(theme);
+    app.editor_ctx.style_mut(|style| {
+        for text in [egui::TextStyle::Body, egui::TextStyle::Button] {
+            style.text_styles.insert(text, FontId::proportional(font));
+        }
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, FontId::monospace(font));
+    });
+    for _ in 0..3 {
+        result_style_frame(&mut app, size, vec![]);
+    }
+    (app, commands, tooltip_text, hold)
+}
+
+#[test]
+fn search_result_style_original_tooltips_resize_and_restore_style() {
+    let large = egui::vec2(1180.0, 812.0);
+    let small = egui::vec2(780.0, 540.0);
+    for font in [13.0, 18.0] {
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            for kind in ["browse_row", "browse_group", "search_group"] {
+                let (mut app, commands, text, _hold_font_probe) =
+                    result_style_single_tooltip_fixture(kind, large, font, theme);
+                let probe = format!("{kind}:0");
+                let quiet = result_style_tooltip_quiet(&app);
+                let accepted = app.search_state.accepted.clone();
+                let dark = app.editor_ctx.style_of(egui::Theme::Dark);
+                let light = app.editor_ctx.style_of(egui::Theme::Light);
+                let _ = result_style_delayed_tooltip(&mut app, large, &probe, &text);
+                for size in [small, large] {
+                    let output = result_style_tooltip_frame(&mut app, size, 0.016, vec![]);
+                    // Native hover may dismiss during a resize. Any tooltip
+                    // that does paint on that very frame must already be safe.
+                    if result_style_texts(&output)
+                        .iter()
+                        .any(|(draw, _)| draw.galley.job.text == text && draw.galley.rows.len() > 1)
+                    {
+                        result_style_tooltip_paint(&app, &output, &probe, &text, false);
+                    }
+                    for _ in 0..3 {
+                        result_style_frame(&mut app, size, vec![]);
+                    }
+                    let geometry = result_style_tooltip_lower_geometry(&app);
+                    let _ = result_style_delayed_tooltip(&mut app, size, &probe, &text);
+                    assert_eq!(result_style_tooltip_lower_geometry(&app), geometry);
+                    assert_eq!(result_style_tooltip_quiet(&app), quiet);
+                    assert_eq!(app.search_state.accepted, accepted);
+                    assert_eq!(*app.editor_ctx.style_of(egui::Theme::Dark), *dark);
+                    assert_eq!(*app.editor_ctx.style_of(egui::Theme::Light), *light);
+                    assert!(commands.try_recv().is_err());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn search_result_style_tooltip_wheel_preserves_native_dismissal() {
+    let size = egui::vec2(780.0, 540.0);
+    for kind in ["browse_row", "browse_group", "search_group"] {
+        let (mut app, commands, text, _hold_font_probe) =
+            result_style_single_tooltip_fixture(kind, size, 18.0, egui::Theme::Dark);
+        let probe = format!("{kind}:0");
+        let quiet = result_style_tooltip_quiet(&app);
+        let _ = result_style_delayed_tooltip(&mut app, size, &probe, &text);
+        let owner = recorded_response(&app, &probe).id;
+        let inside = result_style_tooltip_scroll(&app, owner).1.center();
+        result_style_tooltip_frame(
+            &mut app,
+            size,
+            0.016,
+            vec![egui::Event::PointerMoved(inside)],
+        );
+        let output = result_style_tooltip_frame(
+            &mut app,
+            size,
+            0.016,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -40.0),
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        // egui intentionally suppresses hover UI immediately after a wheel
+        // event. This is not evidence for wheel-scrolling a tooltip; the
+        // separate native scrollbar journey proves full-text reachability.
+        assert!(!result_style_texts(&output)
+            .iter()
+            .any(|(draw, _)| draw.galley.job.text == text && draw.galley.rows.len() > 1));
+        assert_eq!(result_style_tooltip_quiet(&app), quiet);
+        assert!(commands.try_recv().is_err());
+    }
+}
