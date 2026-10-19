@@ -70,6 +70,35 @@ symbols, real-JDT popup behavior and native Ctrl+F12 remain unmeasured. The
 preserved in the
 [phase report](https://github.com/LLLLimbo/cedar-ide/blob/main/docs/TEST_REPORT_PHASE67_FILE_STRUCTURE.md).
 
+## Shared Project Text result rows (development candidate)
+
+The Find in Files window and bottom Find Results use the same result-row visual
+hierarchy: a painted disclosure arrow and file-type icon, basename with a muted
+parent path and count, then independently aligned muted line numbers and
+monospaced source snippets. Long display fields elide within their row; the
+accepted paths, line numbers and original Unicode source text are unchanged.
+Snippet display retains the existing trim policy. The existing embedded Kelvin
+fallback is retained; this change adds no font or CJK-coverage guarantee.
+
+This is a shared measurement/painting layer. Each surface keeps its existing
+native row IDs, single interaction response, accessibility labels, tooltips,
+keyboard ownership, selection and result/preview/Open authority. Folding and
+scrolling do not change the line-number column, which measures all accepted
+rows. Automatic bottom height uses the measured rows while explicit user heights
+remain user-controlled. Painting does not submit a search or read a file.
+
+The direction follows the grouping and preview concepts in JetBrains'
+[Find tool window](https://www.jetbrains.com/help/idea/find-tool-window.html) and
+[project search](https://www.jetbrains.com/help/idea/finding-and-replacing-text-in-project.html),
+and its [New UI](https://www.jetbrains.com/help/idea/new-ui.html) emphasis on a
+consistent visual hierarchy. This is not a complete IntelliJ IDEA replica and
+adds none of its other search, grouping, toolbar or preview behaviors.
+
+At source sealing, fresh final-tree checks, exact-commit CI, new package audits
+and a bounded Linux native comparison remain separate acceptance gates. Prior
+0.80.0 screenshots document the old visual difference, not this candidate's result.
+
+
 ## Files native IME acceptance (0.76 candidate)
 
 Files query and Directory keep their native single-line String editors. A Commit

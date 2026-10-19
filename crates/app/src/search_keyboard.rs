@@ -1,7 +1,7 @@
 //! Bounded, explicitly submitted Project Search snapshots and native row input.
 //! A row is historical evidence from one workspace/session/request/index. Its
 //! line is an ordinary Open hint, never a claim about current disk or draft text.
-use crate::{CedarApp, Tool, WorkspaceKey, AMBER, GREEN, MUTED};
+use crate::{CedarApp, Tool, WorkspaceKey, AMBER, MUTED};
 use cedar_protocol::{
     CaseSearchRequest, Payload, ScopedSearchIncompleteReason, ScopedSearchRequest, SearchMatch,
 };
@@ -1784,17 +1784,61 @@ impl CedarApp {
         // screen. Scroll within that actual clip so End cannot reveal a row
         // into an invisible extension of the viewport.
         let showing_preview = self.search_preview_current();
+        // Use the full accepted payload, not only expanded/visible rows, so
+        // folding or scrolling cannot move the line-number gutter.
+        let line_width = crate::browse::text_result_line_width(
+            ui,
+            self.search_results.iter().map(|row| row.line).max(),
+        );
         if self.tools_height.is_none() {
             // Auto needs a bounded content request independent of its previous
             // clipped viewport. Explicit user heights remain entirely unchanged.
             let spacing = ui.spacing().item_spacing.y;
-            let row_height = (ui.text_style_height(&egui::TextStyle::Button)
-                + 2.0 * ui.spacing().button_padding.y)
-                .max(ui.spacing().interact_size.y);
-            let controls = (self.search_state.groups.len()
-                + self.search_state.visible_indices().len())
-            .clamp(1, 5) as f32;
-            let results = controls * row_height + (controls - 1.0) * spacing;
+            // Budget the same measured rows that will be painted below. The
+            // first five controls retain the existing automatic-height bound.
+            let mut heights = Vec::with_capacity(5);
+            'groups: for group in self.search_state.group_rows() {
+                let first = group[0];
+                let expanded = self.search_state.group_expanded(first);
+                let Some(result) = self.search_results.get(first) else {
+                    continue;
+                };
+                heights.push(
+                    crate::browse::TextResultRow::group(ui, &result.path, group.len(), expanded)
+                        .size()
+                        .y,
+                );
+                if heights.len() == 5 {
+                    break;
+                }
+                if expanded {
+                    for index in group {
+                        let Some(result) = self.search_results.get(index) else {
+                            continue;
+                        };
+                        heights.push(
+                            crate::browse::TextResultRow::hit(
+                                ui,
+                                result.line,
+                                &result.text,
+                                line_width,
+                            )
+                            .size()
+                            .y,
+                        );
+                        if heights.len() == 5 {
+                            break 'groups;
+                        }
+                    }
+                }
+            }
+            let results = if heights.is_empty() {
+                (ui.text_style_height(&egui::TextStyle::Button)
+                    + 2.0 * ui.spacing().button_padding.y)
+                    .max(ui.spacing().interact_size.y)
+            } else {
+                heights.iter().sum::<f32>() + (heights.len() - 1) as f32 * spacing
+            };
             let preview = if showing_preview {
                 ui.text_style_height(&egui::TextStyle::Small)
                     + spacing
@@ -1853,7 +1897,10 @@ impl CedarApp {
                             group.len()
                         );
                         let response = ui
-                            .add_enabled_ui(active, |ui| row_control(ui, id, &label, false))
+                            .add_enabled_ui(active, |ui| {
+                                let row = crate::browse::TextResultRow::group(ui, &result.path, group.len(), expanded);
+                                row_control(ui, id, &label, false, row)
+                            })
                             .inner
                             .on_hover_text(&result.path)
                             .on_disabled_hover_text(&result.path);
@@ -1888,11 +1935,13 @@ impl CedarApp {
                             let label = format!("    {}:  {}", result.line, result.text.trim());
                             let response = ui
                                 .add_enabled_ui(active, |ui| {
+                                    let row = crate::browse::TextResultRow::hit(ui, result.line, &result.text, line_width);
                                     row_control(
                                         ui,
                                         id,
                                         &label,
                                         app.search_state.selected == Some(index),
+                                        row,
                                     )
                                 })
                                 .inner;
@@ -2018,18 +2067,14 @@ pub(super) fn visible_height(ui: &egui::Ui) -> f32 {
 
 // Give the actual native interaction its batch/index ID, preserving Tab order
 // and accessibility even for duplicate path/line/snippet triples.
-fn row_control(ui: &mut egui::Ui, id: egui::Id, label: &str, selected: bool) -> egui::Response {
-    let padding = ui.spacing().button_padding;
-    let galley = egui::WidgetText::from(RichText::new(label).color(GREEN)).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Truncate),
-        (ui.available_width() - 2.0 * padding.x).max(0.0),
-        egui::TextStyle::Button,
-    );
-    let (_, rect) = ui.allocate_space(egui::vec2(
-        ui.available_width(),
-        (galley.size().y + 2.0 * padding.y).max(ui.spacing().interact_size.y),
-    ));
+fn row_control(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    label: &str,
+    selected: bool,
+    row: crate::browse::TextResultRow,
+) -> egui::Response {
+    let (_, rect) = ui.allocate_space(row.size());
     let response = ui.interact(rect, id, egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
@@ -2045,19 +2090,7 @@ fn row_control(ui: &mut egui::Ui, id: egui::Id, label: &str, selected: bool) -> 
             )
         });
     }
-    if ui.is_rect_visible(rect) {
-        let visuals = ui.style().interact_selectable(&response, selected);
-        if selected || response.hovered() || response.has_focus() {
-            ui.painter().rect(
-                rect,
-                visuals.corner_radius,
-                visuals.weak_bg_fill,
-                visuals.bg_stroke,
-                egui::StrokeKind::Inside,
-            );
-        }
-        ui.painter().galley(rect.min + padding, galley, GREEN);
-    }
+    row.paint(ui, rect, &response, selected);
     response
 }
 

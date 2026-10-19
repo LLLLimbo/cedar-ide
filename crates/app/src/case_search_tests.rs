@@ -2001,13 +2001,8 @@ fn case_search_kelvin_glyph_rows_and_shared_preview_survive_native_frames() {
             let row = recorded_rect(&app, &surface.row(0))
                 .intersect(recorded_clip(&app, &surface.row(0)))
                 .intersect(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
-            let (row_text, row_font) = match surface {
-                Surface::Browse => (KELVIN_SNIPPET.to_owned(), FontId::monospace(font_size)),
-                Surface::Bottom => (
-                    format!("    1:  {KELVIN_SNIPPET}"),
-                    FontId::proportional(font_size),
-                ),
-            };
+            let row_text = KELVIN_SNIPPET.to_owned();
+            let row_font = FontId::monospace(font_size);
             kelvin_assert_painted(&app, &output, &row_text, row, &row_font, &label);
 
             recorded_response(&app, &surface.row(0)).request_focus();

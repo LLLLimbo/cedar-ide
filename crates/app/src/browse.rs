@@ -2520,29 +2520,20 @@ impl CedarApp {
             scroll
         };
         let scroll = scroll.auto_shrink([false, false]);
-        let line_width = self
-            .browse
-            .rows
-            .iter()
-            .filter_map(|row| {
-                if let Row::Text(hit) = row {
-                    Some(hit.line())
-                } else {
-                    None
-                }
-            })
-            .max()
-            .map_or(0.0, |line| {
-                egui::WidgetText::from(RichText::new(line.to_string()).monospace())
-                    .into_galley(
-                        ui,
-                        Some(egui::TextWrapMode::Extend),
-                        f32::INFINITY,
-                        egui::TextStyle::Monospace,
-                    )
-                    .size()
-                    .x
-            });
+        let line_width = text_result_line_width(
+            ui,
+            self.browse
+                .rows
+                .iter()
+                .filter_map(|row| {
+                    if let Row::Text(hit) = row {
+                        Some(hit.line())
+                    } else {
+                        None
+                    }
+                })
+                .max(),
+        );
         let output = scroll
             .animated(false)
             .min_scrolled_height(max_height.min(64.0))
@@ -4343,6 +4334,226 @@ fn owns_key(target: &Target, key: egui::Key) -> bool {
             _ => matches!(key, egui::Key::Enter | egui::Key::Space),
         }
 }
+// Measurement and decoration only. Each surface retains its own allocation,
+// native response, accessibility, focus lock, tooltip and admission policy.
+pub(super) struct TextResultRow {
+    size: egui::Vec2,
+    foreground: egui::Color32,
+    content: TextResultContent,
+}
+
+enum TextResultContent {
+    Group {
+        name: Arc<egui::Galley>,
+        parent: Arc<egui::Galley>,
+        count: Arc<egui::Galley>,
+        expanded: bool,
+        icon: chrome::Icon,
+    },
+    Hit {
+        number: Arc<egui::Galley>,
+        snippet: Arc<egui::Galley>,
+        line_width: f32,
+    },
+}
+
+pub(super) fn text_result_line_width(ui: &egui::Ui, maximum: Option<usize>) -> f32 {
+    maximum.map_or(0.0, |line| {
+        egui::WidgetText::from(RichText::new(line.to_string()).monospace())
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Monospace,
+            )
+            .size()
+            .x
+    })
+}
+
+impl TextResultRow {
+    pub(super) fn group(ui: &egui::Ui, path: &str, count: usize, expanded: bool) -> Self {
+        let (parent, basename) = path.rsplit_once('/').unwrap_or(("", path));
+        let width = ui.available_width();
+        let foreground = if ui.is_enabled() {
+            chrome::TEXT
+        } else {
+            chrome::MUTED
+        };
+        let galley = |text: &str, width: f32, color| {
+            egui::WidgetText::from(RichText::new(text).color(color)).into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                width.max(0.0),
+                egui::TextStyle::Button,
+            )
+        };
+        let count = galley(&count.to_string(), width * 0.2, chrome::MUTED);
+        let text_width = (width - 48.0 - count.size().x - 18.0).max(0.0);
+        let name_width = if parent.is_empty() {
+            text_width
+        } else {
+            files_text_width(ui, basename).min(text_width * 0.6)
+        };
+        let name = galley(basename, name_width, foreground);
+        let parent = galley(
+            parent,
+            (text_width - name.size().x - 12.0).max(0.0),
+            chrome::MUTED,
+        );
+        let height = (name.size().y.max(parent.size().y).max(count.size().y) + 6.0)
+            .max(ui.spacing().interact_size.y);
+        Self {
+            size: egui::vec2(width, height),
+            foreground,
+            content: TextResultContent::Group {
+                name,
+                parent,
+                count,
+                expanded,
+                icon: chrome::file_icon(path, false),
+            },
+        }
+    }
+
+    pub(super) fn hit(ui: &egui::Ui, line: usize, snippet: &str, line_width: f32) -> Self {
+        let width = ui.available_width();
+        let foreground = if ui.is_enabled() {
+            chrome::TEXT
+        } else {
+            chrome::MUTED
+        };
+        let number = egui::WidgetText::from(
+            RichText::new(line.to_string())
+                .monospace()
+                .color(chrome::MUTED),
+        )
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Monospace,
+        );
+        let snippet =
+            egui::WidgetText::from(RichText::new(snippet.trim()).monospace().color(foreground))
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Truncate),
+                    (width - 46.0 - line_width - 12.0 - 6.0).max(0.0),
+                    egui::TextStyle::Monospace,
+                );
+        let height =
+            (number.size().y.max(snippet.size().y) + 6.0).max(ui.spacing().interact_size.y);
+        Self {
+            size: egui::vec2(width, height),
+            foreground,
+            content: TextResultContent::Hit {
+                number,
+                snippet,
+                line_width,
+            },
+        }
+    }
+
+    pub(super) fn size(&self) -> egui::Vec2 {
+        self.size
+    }
+
+    pub(super) fn paint(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        response: &egui::Response,
+        selected: bool,
+    ) {
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        text_row_background(ui, rect, response, selected);
+        match &self.content {
+            TextResultContent::Group {
+                name,
+                parent,
+                count,
+                expanded,
+                icon,
+            } => {
+                let center = egui::pos2(rect.left() + 12.0, rect.center().y);
+                let points = if *expanded {
+                    vec![
+                        center + egui::vec2(-3.0, -2.0),
+                        center + egui::vec2(3.0, -2.0),
+                        center + egui::vec2(0.0, 2.0),
+                    ]
+                } else {
+                    vec![
+                        center + egui::vec2(-2.0, -3.0),
+                        center + egui::vec2(2.0, 0.0),
+                        center + egui::vec2(-2.0, 3.0),
+                    ]
+                };
+                ui.painter().add(egui::Shape::convex_polygon(
+                    points,
+                    chrome::MUTED,
+                    egui::Stroke::NONE,
+                ));
+                chrome::paint_icon(
+                    ui,
+                    egui::Rect::from_center_size(
+                        egui::pos2(rect.left() + 32.0, rect.center().y),
+                        egui::vec2(16.0, 16.0),
+                    ),
+                    *icon,
+                    chrome::MUTED,
+                );
+                ui.painter().galley(
+                    egui::pos2(rect.left() + 46.0, rect.center().y - name.size().y / 2.0),
+                    name.clone(),
+                    self.foreground,
+                );
+                ui.painter().galley(
+                    egui::pos2(
+                        rect.left() + 46.0 + name.size().x + 12.0,
+                        rect.center().y - parent.size().y / 2.0,
+                    ),
+                    parent.clone(),
+                    chrome::MUTED,
+                );
+                ui.painter().galley(
+                    egui::pos2(
+                        rect.right() - count.size().x - 6.0,
+                        rect.center().y - count.size().y / 2.0,
+                    ),
+                    count.clone(),
+                    chrome::MUTED,
+                );
+            }
+            TextResultContent::Hit {
+                number,
+                snippet,
+                line_width,
+            } => {
+                ui.painter().galley(
+                    egui::pos2(
+                        rect.left() + 46.0 + line_width - number.size().x,
+                        rect.center().y - number.size().y / 2.0,
+                    ),
+                    number.clone(),
+                    chrome::MUTED,
+                );
+                ui.painter().galley(
+                    egui::pos2(
+                        rect.left() + 46.0 + line_width + 12.0,
+                        rect.center().y - snippet.size().y / 2.0,
+                    ),
+                    snippet.clone(),
+                    self.foreground,
+                );
+            }
+        }
+    }
+}
+
 // Text rows keep their accepted index IDs. All painted pieces belong to one
 // native response, so decoration cannot become another navigation target.
 fn text_result_group(
@@ -4352,43 +4563,8 @@ fn text_result_group(
     count: usize,
     expanded: bool,
 ) -> egui::Response {
-    let (parent, basename) = path.rsplit_once('/').unwrap_or(("", path));
-    let width = ui.available_width();
-    let foreground = if ui.is_enabled() {
-        chrome::TEXT
-    } else {
-        chrome::MUTED
-    };
-    let count_text = format!("{count}");
-    let galley = |text: &str, width: f32, color| {
-        egui::WidgetText::from(RichText::new(text).color(color)).into_galley(
-            ui,
-            Some(egui::TextWrapMode::Truncate),
-            width.max(0.0),
-            egui::TextStyle::Button,
-        )
-    };
-    let count_galley = galley(&count_text, width * 0.2, chrome::MUTED);
-    let text_width = (width - 48.0 - count_galley.size().x - 18.0).max(0.0);
-    let name_width = if parent.is_empty() {
-        text_width
-    } else {
-        files_text_width(ui, basename).min(text_width * 0.6)
-    };
-    let name = galley(basename, name_width, foreground);
-    let parent = galley(
-        parent,
-        (text_width - name.size().x - 12.0).max(0.0),
-        chrome::MUTED,
-    );
-    let height = (name
-        .size()
-        .y
-        .max(parent.size().y)
-        .max(count_galley.size().y)
-        + 6.0)
-        .max(ui.spacing().interact_size.y);
-    let (_, rect) = ui.allocate_space(egui::vec2(width, height));
+    let row = TextResultRow::group(ui, path, count, expanded);
+    let (_, rect) = ui.allocate_space(row.size());
     let response = ui.interact(rect, id, egui::Sense::click());
     let accessible = format!(
         "{} {path} ({count} matching lines)",
@@ -4401,58 +4577,7 @@ fn text_result_group(
             &accessible,
         )
     });
-    if ui.is_rect_visible(rect) {
-        text_row_background(ui, rect, &response, false);
-        let center = egui::pos2(rect.left() + 12.0, rect.center().y);
-        let points = if expanded {
-            vec![
-                center + egui::vec2(-3.0, -2.0),
-                center + egui::vec2(3.0, -2.0),
-                center + egui::vec2(0.0, 2.0),
-            ]
-        } else {
-            vec![
-                center + egui::vec2(-2.0, -3.0),
-                center + egui::vec2(2.0, 0.0),
-                center + egui::vec2(-2.0, 3.0),
-            ]
-        };
-        ui.painter().add(egui::Shape::convex_polygon(
-            points,
-            chrome::MUTED,
-            egui::Stroke::NONE,
-        ));
-        chrome::paint_icon(
-            ui,
-            egui::Rect::from_center_size(
-                egui::pos2(rect.left() + 32.0, rect.center().y),
-                egui::vec2(16.0, 16.0),
-            ),
-            chrome::file_icon(path, false),
-            chrome::MUTED,
-        );
-        ui.painter().galley(
-            egui::pos2(rect.left() + 46.0, rect.center().y - name.size().y / 2.0),
-            name.clone(),
-            foreground,
-        );
-        ui.painter().galley(
-            egui::pos2(
-                rect.left() + 46.0 + name.size().x + 12.0,
-                rect.center().y - parent.size().y / 2.0,
-            ),
-            parent,
-            chrome::MUTED,
-        );
-        ui.painter().galley(
-            egui::pos2(
-                rect.right() - count_galley.size().x - 6.0,
-                rect.center().y - count_galley.size().y / 2.0,
-            ),
-            count_galley,
-            chrome::MUTED,
-        );
-    }
+    row.paint(ui, rect, &response, false);
     response
         .on_hover_text(&accessible)
         .on_disabled_hover_text(accessible)
@@ -4486,34 +4611,8 @@ fn text_result_hit(
     snippet: &str,
     line_width: f32,
 ) -> egui::Response {
-    let width = ui.available_width();
-    let foreground = if ui.is_enabled() {
-        chrome::TEXT
-    } else {
-        chrome::MUTED
-    };
-    let number = egui::WidgetText::from(
-        RichText::new(hit.line().to_string())
-            .monospace()
-            .color(chrome::MUTED),
-    )
-    .into_galley(
-        ui,
-        Some(egui::TextWrapMode::Extend),
-        f32::INFINITY,
-        egui::TextStyle::Monospace,
-    );
-    let snippet_galley =
-        egui::WidgetText::from(RichText::new(snippet.trim()).monospace().color(foreground))
-            .into_galley(
-                ui,
-                Some(egui::TextWrapMode::Truncate),
-                (width - 46.0 - line_width - 12.0 - 6.0).max(0.0),
-                egui::TextStyle::Monospace,
-            );
-    let height =
-        (number.size().y.max(snippet_galley.size().y) + 6.0).max(ui.spacing().interact_size.y);
-    let (_, rect) = ui.allocate_space(egui::vec2(width, height));
+    let row = TextResultRow::hit(ui, hit.line(), snippet, line_width);
+    let (_, rect) = ui.allocate_space(row.size());
     let response = ui.interact(rect, id, egui::Sense::click());
     let accessible = format!("{}:{}\n{snippet}", hit.path(), hit.line());
     response.widget_info(|| {
@@ -4523,25 +4622,7 @@ fn text_result_hit(
             &accessible,
         )
     });
-    if ui.is_rect_visible(rect) {
-        text_row_background(ui, rect, &response, selected);
-        ui.painter().galley(
-            egui::pos2(
-                rect.left() + 46.0 + line_width - number.size().x,
-                rect.center().y - number.size().y / 2.0,
-            ),
-            number,
-            chrome::MUTED,
-        );
-        ui.painter().galley(
-            egui::pos2(
-                rect.left() + 46.0 + line_width + 12.0,
-                rect.center().y - snippet_galley.size().y / 2.0,
-            ),
-            snippet_galley,
-            foreground,
-        );
-    }
+    row.paint(ui, rect, &response, selected);
     response
         .on_hover_text(&accessible)
         .on_disabled_hover_text(accessible)
