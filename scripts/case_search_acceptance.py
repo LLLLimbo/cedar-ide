@@ -188,6 +188,7 @@ def run(root, runner=bounded_process):
     artifacts = checked_stage("compile", compile_command(), root, environment,
                               COMPILE_TIMEOUT, MAX_COMPILE_BYTES,
                               lambda data: select_artifacts(data, root, platform), runner)
+    require(agent_digest(agent) == original_agent, "release_agent_changed")
     command = [str(artifacts["cedar_app"]), TEST_NAME, "--ignored", "--exact",
                "--test-threads=1", "--nocapture"]
     receipt = checked_stage("runtime", command, root, environment,

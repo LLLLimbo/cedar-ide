@@ -16,6 +16,8 @@ mod build_problems;
 #[cfg(test)]
 mod case_search_open_tests;
 #[cfg(test)]
+mod case_search_process_tests;
+#[cfg(test)]
 mod case_search_tests;
 mod chrome;
 mod close_transport;
@@ -117,8 +119,6 @@ mod save_close_process_tests;
 mod save_close_tests;
 #[cfg(test)]
 mod scoped_search_process_tests;
-#[cfg(test)]
-mod case_search_process_tests;
 #[cfg(test)]
 mod scoped_search_tests;
 mod search_keyboard;
