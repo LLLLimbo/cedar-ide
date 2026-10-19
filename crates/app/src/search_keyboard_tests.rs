@@ -4307,6 +4307,30 @@ fn result_style_drag_scrollbar_to_end(
     output
 }
 
+fn result_style_tooltip_diagnostic(app: &CedarApp, probe: &str) -> String {
+    let ctx = &app.editor_ctx;
+    let response = recorded_response(app, probe);
+    let pos = ctx.input(|input| input.pointer.hover_pos());
+    let geometry = ctx.data(|data| {
+        data.get_temp::<(egui::Rect, egui::Vec2, f32, f32, f32, f32, f32)>(egui::Id::new((
+            "text_result_tooltip_geometry_probe",
+            response.id,
+        )))
+    });
+    let areas = ctx.memory(|memory| {
+        memory
+            .layer_ids()
+            .map(|layer| {
+                (
+                    layer,
+                    egui::AreaState::load(ctx, layer.id).map(|area| area.rect()),
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+    format!("probe={probe} screen={:?} font={} theme={:?} response={response:?} clip={:?} transform={:?} pointer={pos:?} layer={:?} geometry={geometry:?} areas={areas:?}", ctx.screen_rect(), app.font_size, ctx.theme(), recorded_clip(app, probe), ctx.layer_transform_to_global(response.layer_id), pos.and_then(|pos|ctx.layer_id_at(pos)))
+}
+
 fn result_style_tooltip_paint(
     app: &CedarApp,
     output: &egui::FullOutput,
@@ -4328,7 +4352,8 @@ fn result_style_tooltip_paint(
     );
     assert!(
         overlap.width() <= 0.0 || overlap.height() <= 0.0,
-        "{probe}: first and settled tooltip cannot cover its origin: {area:?} / {origin:?}"
+        "{probe}: first and settled tooltip cannot cover its origin: {area:?} / {origin:?}; {}",
+        result_style_tooltip_diagnostic(app, probe)
     );
     let (_, inner, content) = result_style_tooltip_scroll(app, response.id);
     assert!(inner.is_positive() && area.contains_rect(inner));
@@ -4435,7 +4460,10 @@ fn result_style_delayed_tooltip(
             return output;
         }
     }
-    panic!("{probe}: delayed native tooltip never painted");
+    panic!(
+        "{probe}: delayed native tooltip never painted; {}",
+        result_style_tooltip_diagnostic(app, probe)
+    );
 }
 
 #[test]
