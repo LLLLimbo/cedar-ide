@@ -58,7 +58,22 @@ impl Accounting {
 
 impl Prepared {
     pub(super) fn prepare(query: &str, case_sensitive: bool, rows: &[SearchMatch]) -> Self {
-        Self::with_nfa_limit(query, case_sensitive, rows, 8 * 1024 * 1024)
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let prepared = Self::with_nfa_limit(query, case_sensitive, rows, 8 * 1024 * 1024);
+        #[cfg(test)]
+        TEST_OBSERVATIONS.with(|observations| {
+            let mut value = observations.get();
+            value.prepares += 1;
+            value.builds += prepared.accounting.builds;
+            value.scan_calls += prepared.accounting.calls;
+            value.scanned_bytes += prepared.accounting.scanned;
+            let nanos = started.elapsed().as_nanos();
+            value.prepare_ns += nanos;
+            value.max_prepare_ns = value.max_prepare_ns.max(nanos);
+            observations.set(value);
+        });
+        prepared
     }
 
     fn with_nfa_limit(
@@ -206,6 +221,8 @@ pub(crate) fn rectangles(
     trim_start: usize,
     ranges: &[Range<usize>],
 ) -> Vec<egui::Rect> {
+    #[cfg(test)]
+    let _observation = MapObservation(std::time::Instant::now());
     let mut result = Vec::new();
     let text = galley.job.text.as_str();
     if ranges.is_empty()
@@ -298,6 +315,45 @@ pub(crate) fn rectangles(
         result.push(rect);
     }
     result
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TestObservations {
+    pub prepares: usize,
+    pub builds: usize,
+    pub scan_calls: usize,
+    pub scanned_bytes: usize,
+    pub map_calls: usize,
+    pub prepare_ns: u128,
+    pub map_ns: u128,
+    pub max_prepare_ns: u128,
+    pub max_map_ns: u128,
+}
+#[cfg(test)]
+thread_local! {
+    static TEST_OBSERVATIONS: std::cell::Cell<TestObservations> = const { std::cell::Cell::new(TestObservations {
+        prepares:0,builds:0,scan_calls:0,scanned_bytes:0,map_calls:0,prepare_ns:0,map_ns:0,max_prepare_ns:0,max_map_ns:0,
+    }) };
+}
+#[cfg(test)]
+pub(crate) fn test_observations() -> TestObservations {
+    TEST_OBSERVATIONS.with(std::cell::Cell::get)
+}
+#[cfg(test)]
+struct MapObservation(std::time::Instant);
+#[cfg(test)]
+impl Drop for MapObservation {
+    fn drop(&mut self) {
+        TEST_OBSERVATIONS.with(|observations| {
+            let mut value = observations.get();
+            let nanos = self.0.elapsed().as_nanos();
+            value.map_calls += 1;
+            value.map_ns += nanos;
+            value.max_map_ns = value.max_map_ns.max(nanos);
+            observations.set(value);
+        });
+    }
 }
 
 #[cfg(test)]

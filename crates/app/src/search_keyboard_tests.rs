@@ -4946,6 +4946,7 @@ fn snippet_highlight_first_painted_matches(browse: bool) {
         recorded_clip(&app, probe),
         recorded_rect(&app, probe),
     );
+    eprintln!("HIGHLIGHT_GEOMETRY browse={browse} ranges={:?} counts={:?} galley={:?} row={:?} final={:?} mapper={:?} origin={:?} clip={:?}",app.search_highlight_ranges(0),app.search_highlight_accounting(),draw.galley.rect,draw.galley.rows[0].rect,draw.galley.rows[0].glyphs.last(),crate::search_keyboard::highlights::rectangles(&draw.galley,2,app.search_highlight_ranges(0)),draw.pos,recorded_clip(&app,probe));
     assert_eq!(painted,expected,"both full accepted-query matches must have actual background shapes; original Galley is retained");
     assert_eq!(app.search_results[0].text.as_bytes(), original.as_bytes());
     assert!(
