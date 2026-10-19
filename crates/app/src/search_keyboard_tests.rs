@@ -3639,12 +3639,7 @@ fn result_style_click(app: &mut CedarApp, size: egui::Vec2, probe: &str) -> egui
         enabled,
         "{probe}: native press ownership"
     );
-    if enabled {
-        assert!(
-            down.has_focus(),
-            "{probe}: the native press must focus its control"
-        );
-    } else {
+    if !enabled {
         assert_ne!(
             focused(app),
             Some(id),
@@ -3655,6 +3650,21 @@ fn result_style_click(app: &mut CedarApp, size: egui::Vec2, probe: &str) -> egui
     let released = recorded_response(app, probe);
     assert_eq!(released.id, id);
     assert_eq!(released.clicked(), enabled, "{probe}: native release click");
+    // Browse deliberately requests row focus from the genuine release click.
+    // A press owns the pointer gesture before that native focus transition.
+    if enabled {
+        assert_eq!(
+            focused(app),
+            Some(id),
+            "{probe}: native click must focus its control"
+        );
+    } else {
+        assert_ne!(
+            focused(app),
+            Some(id),
+            "{probe}: disabled release cannot gain focus"
+        );
+    }
     output
 }
 
