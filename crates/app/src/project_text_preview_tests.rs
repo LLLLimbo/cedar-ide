@@ -1432,13 +1432,10 @@ fn continuous_preview_modal_hide_keeps_physical_flight_and_rejects_late_reply() 
     }
 }
 
-// APPEND-ONLY TEST DRAFT. Append this block to
-// crates/app/src/project_text_preview_tests.rs in a disposable baseline test
-// checkout first. No production change is needed to collect the witnesses.
-//
-// The four desired-behavior tests intentionally FAIL on the current combined,
-// unpadded Label renderer. Preserve their PREVIEW_GUTTER_WITNESS output as the
-// original evidence, then run these same tests against a candidate renderer.
+// These append-only desired-behavior tests first ran against the unchanged
+// baseline combined, unpadded Label renderer: all four failed at code-column
+// equality. Their original PREVIEW_GUTTER_WITNESS output is retained separately.
+// The same assertions now guard the shared split-column renderer.
 // Matching a unique code suffix deliberately accepts either the old combined
 // Galley or a future independent code Galley. Formatter/model checks remain
 // separate and retain the existing exact, bounded text contract.

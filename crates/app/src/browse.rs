@@ -5378,10 +5378,20 @@ mod preview_gutter_tests {
     }
 
     fn draw(app: &CedarApp, context: &ProjectTextContext, legacy: bool) -> egui::FullOutput {
+        draw_events(app, context, legacy, Vec::new())
+    }
+
+    fn draw_events(
+        app: &CedarApp,
+        context: &ProjectTextContext,
+        legacy: bool,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
         let ctx = &app.editor_ctx;
         begin(ctx);
         ctx.run(
             egui::RawInput {
+                events,
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
                     egui::vec2(780.0, 540.0),
@@ -5446,24 +5456,52 @@ mod preview_gutter_tests {
                 assert_eq!(before.rect.height(), after.rect.height());
             }
             if screen_reader {
-                recorded_response(&candidate, "project_text_context_row:2").request_focus();
-                let output = draw(&candidate, &context, false);
-                let infos = output
-                    .platform_output
-                    .events
-                    .iter()
-                    .filter_map(|event| {
-                        if let egui::output::OutputEvent::FocusGained(info) = event {
-                            Some(info)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                assert_eq!(infos.len(), 1);
-                assert_eq!(infos[0].typ, egui::WidgetType::Label);
-                assert_eq!(infos[0].label.as_deref(), Some("▶ 2 | "));
-                assert!(recorded_response(&candidate, "project_text_context_row:2").has_focus());
+                for line in 1..=3 {
+                    let event = |pressed| egui::Event::Key {
+                        key: egui::Key::Tab,
+                        physical_key: Some(egui::Key::Tab),
+                        pressed,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    };
+                    let old_output = draw_events(&legacy, &context, true, vec![event(true)]);
+                    let output = draw_events(&candidate, &context, false, vec![event(true)]);
+                    assert_eq!(
+                        output.platform_output.events,
+                        old_output.platform_output.events
+                    );
+                    let infos = output
+                        .platform_output
+                        .events
+                        .iter()
+                        .filter_map(|event| {
+                            if let egui::output::OutputEvent::FocusGained(info) = event {
+                                Some(info)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(infos.len(), 1, "native Tab focus event for line {line}");
+                    assert_eq!(infos[0].typ, egui::WidgetType::Label);
+                    assert_eq!(
+                        infos[0].label.as_deref(),
+                        context.text.lines().nth(line - 1)
+                    );
+                    let probe = format!("project_text_context_row:{line}");
+                    assert!(recorded_response(&candidate, &probe).has_focus());
+                    assert_eq!(
+                        legacy.editor_ctx.memory(|m| m.focused()),
+                        candidate.editor_ctx.memory(|m| m.focused())
+                    );
+                    let old_release = draw_events(&legacy, &context, true, vec![event(false)]);
+                    let release = draw_events(&candidate, &context, false, vec![event(false)]);
+                    assert_eq!(
+                        release.platform_output.events,
+                        old_release.platform_output.events
+                    );
+                    assert!(release.platform_output.events.is_empty());
+                }
             }
         }
     }
