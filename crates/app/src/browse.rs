@@ -295,6 +295,7 @@ enum Target {
     Scope,
     TextScope,
     Masks,
+    MatchCase,
     Files,
     Text,
     Submit,
@@ -575,6 +576,7 @@ impl Browse {
                     | Target::Scope
                     | Target::TextScope
                     | Target::Masks
+                    | Target::MatchCase
                     | Target::Files
                     | Target::Text
                     | Target::Submit
@@ -838,8 +840,7 @@ impl CedarApp {
                 } else {
                     self.browse.message = self.search_filter_explanation().or_else(|| {
                         Some(
-                            "Enter a case-sensitive literal query, then press Enter to search."
-                                .into(),
+                            format!("Enter a {} literal query, then press Enter to search.", search_keyboard::case_mode(self.search_match_case).to_lowercase()),
                         )
                     });
                     self.restore_browse_text();
@@ -862,6 +863,7 @@ impl CedarApp {
                         | Target::Scope
                         | Target::TextScope
                         | Target::Masks
+                        | Target::MatchCase
                         | Target::Files
                         | Target::Text
                         | Target::Submit
@@ -1633,8 +1635,13 @@ impl CedarApp {
         if !self.ready() && !self.documents.iter().any(|doc| doc.path == row.path()) {
             return;
         }
-        // Ordinary Open alone owns draft reuse, text-hit navigation and history.
-        self.open(row.path().to_owned(), row.line());
+        // Ordinary Open owns reuse and history; text hits retain the accepted
+        // specification through a pending Read rather than losing its authority.
+        if let Row::Text(hit) = &row {
+            self.open_search_result(hit.index());
+        } else {
+            self.open(row.path().to_owned(), row.line());
+        }
     }
     pub(super) fn browse_dismiss(&mut self) {
         let restore = self
@@ -2353,6 +2360,7 @@ impl CedarApp {
                 Target::Scope => "browse_scope".into(),
                 Target::TextScope => "browse_text_scope".into(),
                 Target::Masks => "browse_masks".into(),
+                Target::MatchCase => "browse_match_case".into(),
                 Target::Files => "browse_files".into(),
                 Target::Text => "browse_text".into(),
                 Target::Submit => "browse_submit".into(),
@@ -2634,9 +2642,7 @@ impl CedarApp {
             })
             .inner;
         let response = if target == Target::Text {
-            response.on_hover_text(
-                "Project Text: explicitly submitted, case-sensitive literal disk search",
-            )
+            response.on_hover_text(format!("Project Text: explicitly submitted, {} literal disk search", search_keyboard::case_mode(self.search_match_case).to_lowercase()))
         } else {
             response
         };
@@ -2702,7 +2708,7 @@ impl CedarApp {
             text_rect,
             Target::Text,
             "Find in Files",
-            self.backend_supports("search") || self.backend_scoped_search_supported(),
+            self.backend_supports("search") || self.backend_scoped_search_supported() || self.backend_case_search_supported(),
         ) {
             actions.switch = Some(Provider::ProjectText);
         }
@@ -2720,10 +2726,18 @@ impl CedarApp {
             egui::pos2(query_band.right() - find_width, query_band.top()),
             query_band.max,
         );
+        // Reserve measured horizontal space without stealing an extra row
+        // from results or preview. Creation order below controls native Tab.
+        let case_size = search_keyboard::match_case_size(ui);
+        let case_rect = egui::Rect::from_min_size(
+            egui::pos2(find_rect.left() - gap - case_size.x,
+                query_band.center().y - case_size.y * 0.5),
+            case_size,
+        );
         let query_rect = egui::Rect::from_min_max(
             query_band.min,
             egui::pos2(
-                (find_rect.left() - gap).max(query_band.left()),
+                (case_rect.left() - gap).max(query_band.left()),
                 query_band.bottom(),
             ),
         );
@@ -2765,7 +2779,17 @@ impl CedarApp {
         }
         self.browse_response(&filters_ui, Target::TextScope, &scope);
         self.browse_response(&filters_ui, Target::Masks, &masks);
-        // Native creation order remains query → directory → masks → submit.
+        let mut match_case = search_keyboard::match_case_response(ui, case_rect, self.browse.id(&Target::MatchCase));
+        if self.browse_response(ui, Target::MatchCase, &match_case) {
+            self.search_match_case = !self.search_match_case;
+            self.browse_query_changed();
+            match_case.mark_changed();
+            actions.case_changed = true;
+            ui.ctx().request_repaint();
+        }
+        search_keyboard::paint_match_case(ui, &match_case, self.search_match_case);
+        match_case.on_hover_text_at_pointer(search_keyboard::MATCH_CASE_HINT);
+        // Native creation order remains query → directory → masks → Match case → submit.
         actions.submit = self.text_action(
             ui,
             find_rect,
@@ -2796,8 +2820,8 @@ impl CedarApp {
                 .truncate(),
             )
             .on_hover_text(format!(
-                "Project Text · case-sensitive literal disk search. Workspace: {}",
-                self.root
+                "Project Text · {} literal disk search. Workspace: {}",
+                search_keyboard::case_mode(self.search_state.accepted.as_ref().map_or(self.search_match_case, |source| source.specification.case_sensitive)).to_lowercase(), self.root
             ));
         } else {
             let workspace = self
@@ -2837,7 +2861,7 @@ impl CedarApp {
                 .clone()
                 .unwrap_or_else(|| "Enter literal text, then press Enter or Find".into())
         } else {
-            "Case-sensitive · Literal · Disk search".to_owned()
+            format!("{} · Literal · Disk search", search_keyboard::case_mode(self.search_match_case))
         };
         // Keep the current conclusion outside the scrolling details. A wheel
         // gesture may still have smooth input after a query/reply changes; its
@@ -2890,6 +2914,7 @@ impl CedarApp {
             &self.browse.query,
             &self.search_scope,
             &self.search_masks,
+            self.search_match_case,
             &self.root,
             self.generation,
             self.search_state
@@ -2929,7 +2954,7 @@ impl CedarApp {
                 #[cfg(test)] crate::workspace_access_tests::record(ui, "browse_history", &label);
                 #[cfg(not(test))] let _ = label;
             } else {
-                ui.label(RichText::new("Case-sensitive · Literal · Disk search").color(chrome::MUTED));
+                ui.label(RichText::new(format!("{} · Literal · Disk search", search_keyboard::case_mode(self.search_match_case))).color(chrome::MUTED));
             }
             // Long actionable details remain readable in the bounded scrolling
             // region; tooltips are supplementary, never the only error surface.
@@ -3280,7 +3305,7 @@ impl CedarApp {
             text_rect,
             Target::Text,
             "Project Text",
-            self.backend_supports("search") || self.backend_scoped_search_supported(),
+            self.backend_supports("search") || self.backend_scoped_search_supported() || self.backend_case_search_supported(),
         ) {
             actions.switch = Some(Provider::ProjectText);
         }
@@ -3781,6 +3806,15 @@ impl CedarApp {
                 close |= actions.close;
                 switch = actions.switch.or(switch);
                 toggle_group = actions.toggle_group.or(toggle_group);
+                // Case changes never share an activation frame with submission
+                // or a result action. Preserve ordinary text-edit + Enter behavior.
+                if actions.case_changed {
+                    submit = false;
+                    select = None;
+                    preview = false;
+                    open = false;
+                    toggle_group = None;
+                }
             });
         self.finish_files_composition();
         // Same modal quarantine as the legacy chooser: entry/exit events cannot
@@ -3843,6 +3877,7 @@ impl CedarApp {
 #[derive(Default)]
 struct TextActions {
     edited: bool,
+    case_changed: bool,
     submit: bool,
     select: Option<usize>,
     toggle_group: Option<usize>,

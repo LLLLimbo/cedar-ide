@@ -168,26 +168,18 @@ fn id(app: &CedarApp, index: usize) -> egui::Id {
     row_id(app.search_state.accepted.as_ref().unwrap(), index)
 }
 
-fn tab_from_search_submit_through_filters(app: &mut CedarApp) {
-    assert_eq!(
-        focused(app),
-        Some(recorded_response(app, "search_submit").id)
-    );
-    // The shared filter editors are real native Tab stops before results.
-    for probe in ["search_scope", "search_masks"] {
+fn tab_from_search_query_to_submit(app: &mut CedarApp) {
+    assert_eq!(focused(app), Some(recorded_response(app, "search_query").id));
+    for probe in ["search_scope", "search_masks", "search_match_case", "search_submit"] {
         let response = recorded_response(app, probe);
         assert!(response.enabled() && response.sense.is_focusable());
         frame(app, key(egui::Key::Tab));
-        assert_eq!(
-            focused(app),
-            Some(response.id),
-            "native Tab must visit {probe}"
-        );
+        assert_eq!(focused(app), Some(response.id), "native Tab must visit {probe}");
     }
 }
 
 fn tab_from_search_submit_to_first_row(app: &mut CedarApp) {
-    tab_from_search_submit_through_filters(app);
+    assert_eq!(focused(app), Some(recorded_response(app, "search_submit").id));
     let area_id = recorded_scroll_id(app).with("area");
     if app
         .editor_ctx
@@ -347,7 +339,8 @@ fn search_keyboard_exact_space_companion_and_mixed_batch_veto() {
 #[test]
 fn search_keyboard_native_tab_and_explicit_query_enter_remain_available() {
     let (mut app, commands) = app(8);
-    focus(&mut app, "search_submit");
+    focus(&mut app, "search_query");
+    tab_from_search_query_to_submit(&mut app);
     tab_from_search_submit_to_first_row(&mut app);
     frame(&mut app, key(egui::Key::Tab));
     assert_eq!(focused(&app), Some(id(&app, 1)));
@@ -371,8 +364,8 @@ fn search_keyboard_native_tab_and_explicit_query_enter_remain_available() {
 #[test]
 fn search_keyboard_native_tab_overflow_visits_actual_scroll_area_then_rows() {
     let (mut app, commands) = app(160);
-    focus(&mut app, "search_submit");
-    tab_from_search_submit_through_filters(&mut app);
+    focus(&mut app, "search_query");
+    tab_from_search_query_to_submit(&mut app);
     let area_id = recorded_scroll_id(&app).with("area");
     let area = app.editor_ctx.read_response(area_id).unwrap();
     assert!(area.sense.is_focusable() && area.sense.senses_drag());
@@ -1341,11 +1334,7 @@ fn scrolled_pointer_app() -> (CedarApp, Receiver<Command>) {
     frame(&mut app, vec![]);
 
     click_control(&mut app, "search_query");
-    frame(&mut app, key(egui::Key::Tab));
-    assert_eq!(
-        focused(&app),
-        Some(recorded_response(&app, "search_submit").id)
-    );
+    tab_from_search_query_to_submit(&mut app);
     tab_from_search_submit_to_first_row(&mut app);
     frame(&mut app, key(egui::Key::End));
     assert_eq!(focused(&app), Some(id(&app, SCROLLED_COUNT - 1)));
@@ -2195,11 +2184,7 @@ fn assert_companion_quiet(
 
 fn tab_to_first_search_row(app: &mut CedarApp) {
     click_control(app, "search_query");
-    frame(app, key(egui::Key::Tab));
-    assert_eq!(
-        focused(app),
-        Some(recorded_response(app, "search_submit").id)
-    );
+    tab_from_search_query_to_submit(app);
     tab_from_search_submit_to_first_row(app);
 }
 
@@ -2850,7 +2835,7 @@ fn search_keyboard_row_continuity_same_row_double_opens_once_across_passes() {
         }
         let open = commands.try_recv().unwrap();
         assert!(matches!(&open.op, Operation::Read { path } if path == "file-2.txt"));
-        assert!(matches!(app.pending.get(&open.id), Some(Job::Open { .. })));
+        assert!(matches!(app.pending.get(&open.id), Some(Job::SearchOpen { .. })));
         assert!(commands.try_recv().is_err());
         reply(
             &mut app,

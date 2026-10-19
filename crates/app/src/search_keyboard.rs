@@ -2,7 +2,7 @@
 //! A row is historical evidence from one workspace/session/request/index. Its
 //! line is an ordinary Open hint, never a claim about current disk or draft text.
 use crate::{CedarApp, Tool, WorkspaceKey, AMBER, GREEN, MUTED};
-use cedar_protocol::{Payload, ScopedSearchIncompleteReason, ScopedSearchRequest, SearchMatch};
+use cedar_protocol::{CaseSearchRequest, Payload, ScopedSearchIncompleteReason, ScopedSearchRequest, SearchMatch};
 use eframe::egui::{self, RichText};
 use std::collections::HashSet;
 
@@ -11,11 +11,49 @@ pub(super) const MAX_TEXT_BYTES: usize = 512 * 1024;
 
 pub(super) const SCOPED_UNAVAILABLE: &str = "Directory and file masks require scoped search support from this agent. Clear both filters for a workspace search, or upgrade the agent.";
 
+pub(super) const CASE_UNAVAILABLE: &str = "Case-insensitive search is not available from this agent. Turn on Match case to use its existing search, or upgrade the agent.";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Route { Legacy, ScopedV1, CaseV1 }
+
+pub(super) const MATCH_CASE_HINT: &str = "Match letter case in file contents. Turn off for Unicode simple-fold literal search. Directory paths and file masks remain case-sensitive. Changing this option does not run a search.";
+
+pub(super) fn match_case_size(ui: &egui::Ui) -> egui::Vec2 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let text = ui.fonts(|fonts| fonts.layout_no_wrap("Match case".into(), font, MUTED).size());
+    egui::vec2(text.x + ui.spacing().icon_width + ui.spacing().icon_spacing,
+        text.y.max(ui.spacing().icon_width).max(ui.spacing().interact_size.y))
+}
+
+// Preserve native focus/accessibility, but mutate only after original-input admission.
+pub(super) fn match_case_response(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id) -> egui::Response {
+    ui.interact(rect, id, egui::Sense::click())
+}
+
+pub(super) fn paint_match_case(ui: &egui::Ui, response: &egui::Response, checked: bool) {
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), checked, "Match case"));
+    if !ui.is_rect_visible(response.rect) { return; }
+    let visuals = ui.style().interact(response);
+    let (small, big) = ui.spacing().icon_rectangles(response.rect);
+    ui.painter().rect(big.expand(visuals.expansion), visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+    if checked {
+        ui.painter().add(egui::Shape::line(vec![egui::pos2(small.left(), small.center().y),
+            egui::pos2(small.center().x, small.bottom()), egui::pos2(small.right(), small.top())], visuals.fg_stroke));
+    }
+    let galley = ui.fonts(|fonts| fonts.layout_no_wrap("Match case".into(), egui::TextStyle::Button.resolve(ui.style()), visuals.text_color()));
+    let pos = egui::pos2(response.rect.left() + ui.spacing().icon_width + ui.spacing().icon_spacing, response.rect.center().y - galley.size().y * 0.5);
+    ui.painter().galley(pos, galley, visuals.text_color());
+}
+
+pub(super) fn case_mode(sensitive: bool) -> &'static str {
+    if sensitive { "Case-sensitive" } else { "Case-insensitive" }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Specification {
     pub request: ScopedSearchRequest,
-    // None deliberately preserves the legacy operation for root/no-mask search.
-    pub version: Option<u32>,
+    pub route: Route,
+    pub case_sensitive: bool,
 }
 impl Specification {
     pub(super) fn legacy(query: String) -> Self {
@@ -26,7 +64,15 @@ impl Specification {
                 masks: Vec::new(),
                 limit: MAX_ROWS,
             },
-            version: None,
+            route: Route::Legacy,
+            case_sensitive: true,
+        }
+    }
+    pub(super) fn case_request(&self) -> CaseSearchRequest {
+        CaseSearchRequest {
+            query: self.request.query.clone(), scope: self.request.scope.clone(),
+            masks: self.request.masks.clone(), limit: self.request.limit,
+            case_sensitive: self.case_sensitive,
         }
     }
     pub(super) fn description(&self) -> String {
@@ -41,8 +87,8 @@ impl Specification {
             format!("masks {}", self.request.masks.join(";"))
         };
         format!(
-            "{:?} · {directory} · {masks} · limit {}",
-            self.request.query, self.request.limit
+            "{:?} · {directory} · {masks} · {} · limit {}",
+            self.request.query, case_mode(self.case_sensitive), self.request.limit
         )
     }
 }
@@ -481,7 +527,7 @@ impl CedarApp {
 
     pub(super) fn search_specification(&self) -> Result<Specification, String> {
         let masks = parse_masks(&self.search_masks)?;
-        if self.search_scope.is_empty() && masks.is_empty() {
+        if self.search_match_case && self.search_scope.is_empty() && masks.is_empty() {
             return Ok(Specification::legacy(self.search_query.clone()));
         }
         let request = ScopedSearchRequest {
@@ -491,13 +537,14 @@ impl CedarApp {
             limit: MAX_ROWS,
         };
         request.validate().map_err(|error| error.to_string())?;
-        if !self.backend_scoped_search_supported() {
-            return Err(SCOPED_UNAVAILABLE.into());
-        }
-        Ok(Specification {
-            request,
-            version: self.scoped_search.map(|descriptor| descriptor.version),
-        })
+        let route = if !self.search_match_case {
+            if !self.backend_case_search_supported() { return Err(CASE_UNAVAILABLE.into()); }
+            Route::CaseV1
+        } else {
+            if !self.backend_scoped_search_supported() { return Err(SCOPED_UNAVAILABLE.into()); }
+            Route::ScopedV1
+        };
+        Ok(Specification { request, route, case_sensitive: self.search_match_case })
     }
 
     pub(super) fn search_filters_changed(&mut self) {
@@ -506,6 +553,7 @@ impl CedarApp {
     }
 
     pub(super) fn search_submission_supported(&self) -> bool {
+        if !self.search_match_case { return self.backend_case_search_supported(); }
         if self.search_scope.is_empty() && self.search_masks.is_empty() {
             self.backend_supports("search")
         } else {
@@ -609,10 +657,11 @@ impl CedarApp {
     }
 
     pub(super) fn search_filter_explanation(&self) -> Option<String> {
-        if self.search_scope.is_empty() && self.search_masks.is_empty() {
-            return None;
+        if !self.search_match_case && !self.backend_case_search_supported() {
+            return Some(CASE_UNAVAILABLE.into());
         }
-        if !self.backend_scoped_search_supported() {
+        if self.search_scope.is_empty() && self.search_masks.is_empty() { return None; }
+        if self.search_match_case && !self.backend_scoped_search_supported() {
             return Some(SCOPED_UNAVAILABLE.into());
         }
         // A placeholder query validates filters before a query has been entered.
@@ -780,10 +829,10 @@ impl CedarApp {
         self.search_state.submission = None;
         self.search_state.invalidate();
         let (matches, truncated, status) = match result {
-            Ok(Payload::Matches { matches, truncated }) if specification.version.is_none() => {
+            Ok(Payload::Matches { matches, truncated }) if specification.route == Route::Legacy => {
                 (matches, truncated, None)
             }
-            Ok(Payload::ScopedMatches { result }) if specification.version.is_some() => {
+            Ok(Payload::ScopedMatches { result }) if specification.route == Route::ScopedV1 => {
                 if let Err(error) = result.validate_for(&specification.request) {
                     self.error = Some(error.to_string());
                     return;
@@ -794,6 +843,17 @@ impl CedarApp {
                     read_bytes: result.read_bytes,
                 };
                 (result.matches, result.incomplete, Some(status))
+            }
+            Ok(Payload::CaseMatches { result }) if specification.route == Route::CaseV1 => {
+                if let Err(error) = result.validate_for(&specification.case_request()) {
+                    self.error = Some(error.to_string());
+                    return;
+                }
+                let status = ScanStatus {
+                    reasons: result.reasons, examined_entries: result.examined_entries,
+                    read_bytes: result.read_bytes,
+                };
+                (result.matches.into_iter().map(Into::into).collect(), result.incomplete, Some(status))
             }
             Ok(_) => {
                 self.error = Some("Unexpected search response; no results were accepted".into());

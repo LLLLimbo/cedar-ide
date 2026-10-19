@@ -463,6 +463,7 @@ pub struct CedarApp {
     agent_info: Option<AgentInfo>,
     file_discovery: Option<cedar_protocol::FileDiscoveryDescriptor>,
     scoped_search: Option<cedar_protocol::ScopedSearchDescriptor>,
+    case_search: Option<cedar_protocol::CaseSearchDescriptor>,
     root: String,
     generation: u64,
     next_request: u64,
@@ -504,6 +505,7 @@ pub struct CedarApp {
     search_query: String,
     search_scope: String,
     search_masks: String,
+    search_match_case: bool,
     search_results: Vec<SearchMatch>,
     search_truncated: bool,
     search_request: u64,
@@ -591,6 +593,7 @@ impl CedarApp {
             agent_info: None,
             file_discovery: None,
             scoped_search: None,
+            case_search: None,
             root: String::new(),
             generation: 0,
             next_request: 1,
@@ -631,6 +634,7 @@ impl CedarApp {
             search_query: String::new(),
             search_scope: String::new(),
             search_masks: String::new(),
+            search_match_case: true,
             search_results: Vec::new(),
             search_truncated: false,
             search_request: 0,
@@ -755,6 +759,7 @@ impl CedarApp {
         self.agent_info = None;
         self.file_discovery = None;
         self.scoped_search = None;
+        self.case_search = None;
         self.state = ConnectionState::Connecting;
         self.notice = format!("Connecting to {}...", form.label());
         self.error = None;
@@ -788,6 +793,7 @@ impl CedarApp {
         self.agent_info = None;
         self.file_discovery = None;
         self.scoped_search = None;
+        self.case_search = None;
         self.search_state.retire();
         self.reset_recent_files();
         self.retire_ui_generation();
@@ -854,6 +860,7 @@ impl CedarApp {
         self.agent_info = None;
         self.file_discovery = None;
         self.scoped_search = None;
+        self.case_search = None;
         self.language.disconnected();
         self.retire_current_worker();
         self.pending.clear();
@@ -1214,8 +1221,6 @@ impl CedarApp {
                             return;
                         }
                     }
-                    // Stage 1 validates metadata, but exposes no case option
-                    // and retains no case-search authority in the application.
                     if let Some(descriptor) = &case_search {
                         if let Err(error) = descriptor.validate() {
                             self.disconnected(error.to_string());
@@ -1285,6 +1290,7 @@ impl CedarApp {
                     self.agent_info = agent;
                     self.file_discovery = file_discovery;
                     self.scoped_search = scoped_search;
+                    self.case_search = case_search;
                     self.state = ConnectionState::Ready;
                     self.recent_connected();
                     self.error = None;
@@ -1976,15 +1982,17 @@ impl CedarApp {
             self.error = Some("Search cannot submit: the request identity counter is exhausted. Reopen Cedar to start a new session.".into());
             return;
         }
-        let operation = if specification.version.is_some() {
-            Operation::SearchIn {
-                request: specification.request.clone(),
-            }
-        } else {
-            Operation::Search {
+        let operation = match specification.route {
+            search_keyboard::Route::Legacy => Operation::Search {
                 query: specification.request.query.clone(),
                 limit: specification.request.limit,
-            }
+            },
+            search_keyboard::Route::ScopedV1 => Operation::SearchIn {
+                request: specification.request.clone(),
+            },
+            search_keyboard::Route::CaseV1 => Operation::SearchCase {
+                request: specification.case_request(),
+            },
         };
         self.search_request = self.request(
             operation,

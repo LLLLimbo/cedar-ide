@@ -3266,7 +3266,7 @@ fn browse_retained_native_tab_and_geometry_at_standard_and_narrow_sizes() {
                 focused(&app),
                 Some(recorded_response(&app, "browse_query").id)
             );
-            for probe in ["browse_text_scope", "browse_masks", "browse_submit"] {
+            for probe in ["browse_text_scope", "browse_masks", "browse_match_case", "browse_submit"] {
                 let response = recorded_response(&app, probe);
                 assert!(response.enabled() && response.sense.is_focusable());
                 frame_at_size(&mut app, size, key(egui::Key::Tab));
@@ -6511,7 +6511,7 @@ fn browse_normal_agent_find_recent_project_reveal_continuous_preview_and_exact_r
     assert!(commands.try_recv().is_err());
     let stale_epoch = app.navigation_epoch;
     assert!(matches!(app.pending.get(&stale_command.id),
-        Some(Job::Open { path, line: Some(2), navigation })
+        Some(Job::SearchOpen { path, line: Some(2), navigation, .. })
         if path == NORMAL_TARGET && *navigation == stale_epoch));
     assert!(app.location_history.pending.is_some());
     let client = proof.client.as_mut().unwrap();
@@ -6784,7 +6784,7 @@ fn stale_open_diagnostic_text_request(app: &mut CedarApp, commands: &Receiver<Co
         .expect("Project Text Open must dispatch one ordinary Read");
     assert!(matches!(&read.op, Operation::Read { path } if path == "b.txt"));
     assert!(
-        matches!(app.pending.get(&read.id), Some(Job::Open { line: Some(2), navigation, .. })
+        matches!(app.pending.get(&read.id), Some(Job::SearchOpen { line: Some(2), navigation, .. })
         if *navigation == app.navigation_epoch)
     );
     assert!(commands.try_recv().is_err());

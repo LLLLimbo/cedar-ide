@@ -114,6 +114,7 @@ impl CedarApp {
             self.agent_info = None;
             self.file_discovery = None;
             self.scoped_search = None;
+            self.case_search = None;
             self.state = if self.workspace_key.is_some() {
                 ConnectionState::Disconnected
             } else {

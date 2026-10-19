@@ -120,7 +120,7 @@ impl Origin {
             project_epoch: app.explorer.epoch,
             directory_request: app.directory_request,
             search_request: app.search_request,
-            query: egui::Id::new((&app.search_query, &app.search_scope, &app.search_masks)),
+            query: egui::Id::new((&app.search_query, &app.search_scope, &app.search_masks, app.search_match_case)),
         }
     }
 

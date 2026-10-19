@@ -12,36 +12,36 @@ type SelectionKey = (usize, bool, usize, bool);
 type HistorySnapshot = [Vec<(SelectionKey, String)>; 2];
 
 #[derive(Clone, Copy, Debug)]
-enum Surface {
+pub(super) enum Surface {
     Browse,
     Bottom,
 }
 impl Surface {
-    fn query(self) -> &'static str {
+    pub(super) fn query(self) -> &'static str {
         match self {
             Self::Browse => "browse_query",
             Self::Bottom => "search_query",
         }
     }
-    fn scope(self) -> &'static str {
+    pub(super) fn scope(self) -> &'static str {
         match self {
             Self::Browse => "browse_text_scope",
             Self::Bottom => "search_scope",
         }
     }
-    fn masks(self) -> &'static str {
+    pub(super) fn masks(self) -> &'static str {
         match self {
             Self::Browse => "browse_masks",
             Self::Bottom => "search_masks",
         }
     }
-    fn submit(self) -> &'static str {
+    pub(super) fn submit(self) -> &'static str {
         match self {
             Self::Browse => "browse_submit",
             Self::Bottom => "search_submit",
         }
     }
-    fn row(self, index: usize) -> String {
+    pub(super) fn row(self, index: usize) -> String {
         format!(
             "{}:{index}",
             match self {
@@ -50,7 +50,7 @@ impl Surface {
             }
         )
     }
-    fn group(self, index: usize) -> String {
+    pub(super) fn group(self, index: usize) -> String {
         format!(
             "{}:{index}",
             match self {
@@ -91,10 +91,10 @@ pub(super) fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
         },
     ]
 }
-fn frame_at(app: &mut CedarApp, size: egui::Vec2, events: Vec<egui::Event>) -> egui::FullOutput {
+pub(super) fn frame_at(app: &mut CedarApp, size: egui::Vec2, events: Vec<egui::Event>) -> egui::FullOutput {
     captured_frame(app, size, events, |_| {})
 }
-fn captured_frame(
+pub(super) fn captured_frame(
     app: &mut CedarApp,
     size: egui::Vec2,
     events: Vec<egui::Event>,
@@ -118,15 +118,15 @@ fn captured_frame(
         .all(|shape| shape.clip_rect.is_finite()));
     output
 }
-fn frame(app: &mut CedarApp, events: Vec<egui::Event>) -> egui::FullOutput {
+pub(super) fn frame(app: &mut CedarApp, events: Vec<egui::Event>) -> egui::FullOutput {
     frame_at(app, SIZE, events)
 }
-fn settle(app: &mut CedarApp) {
+pub(super) fn settle(app: &mut CedarApp) {
     for _ in 0..3 {
         frame(app, vec![]);
     }
 }
-fn focus(app: &mut CedarApp, probe: &str) {
+pub(super) fn focus(app: &mut CedarApp, probe: &str) {
     recorded_response(app, probe).request_focus();
     frame(app, vec![]);
     assert_eq!(
@@ -134,10 +134,10 @@ fn focus(app: &mut CedarApp, probe: &str) {
         Some(recorded_response(app, probe).id)
     );
 }
-fn click(app: &mut CedarApp, probe: &str) {
+pub(super) fn click(app: &mut CedarApp, probe: &str) {
     click_at_size(app, SIZE, probe);
 }
-fn click_at_size(app: &mut CedarApp, size: egui::Vec2, probe: &str) {
+pub(super) fn click_at_size(app: &mut CedarApp, size: egui::Vec2, probe: &str) {
     let rect = recorded_rect(app, probe).intersect(recorded_clip(app, probe));
     assert!(
         rect.is_finite() && rect.is_positive(),
@@ -156,7 +156,7 @@ fn click_at_size(app: &mut CedarApp, size: egui::Vec2, probe: &str) {
         "{probe} missed native click"
     );
 }
-fn replace(app: &mut CedarApp, probe: &str, value: &str) {
+pub(super) fn replace(app: &mut CedarApp, probe: &str, value: &str) {
     focus(app, probe);
     frame(app, key(egui::Key::A, command_modifiers()));
     frame(app, key(egui::Key::Backspace, egui::Modifiers::NONE));
@@ -165,7 +165,7 @@ fn replace(app: &mut CedarApp, probe: &str, value: &str) {
     }
     settle(app);
 }
-fn enter(app: &mut CedarApp, surface: Surface) {
+pub(super) fn enter(app: &mut CedarApp, surface: Surface) {
     match surface {
         Surface::Browse => {
             frame(
@@ -187,7 +187,7 @@ fn enter(app: &mut CedarApp, surface: Surface) {
     }
     settle(app);
 }
-fn reply(app: &mut CedarApp, id: u64, result: Result<Payload, String>) {
+pub(super) fn reply(app: &mut CedarApp, id: u64, result: Result<Payload, String>) {
     app.apply_event(Event {
         generation: app.generation,
         id,
@@ -195,7 +195,7 @@ fn reply(app: &mut CedarApp, id: u64, result: Result<Payload, String>) {
         result,
     });
 }
-fn fixture() -> (CedarApp, Receiver<Command>) {
+pub(super) fn fixture() -> (CedarApp, Receiver<Command>) {
     let mut app = CedarApp::empty();
     // Match the production startup fonts and metrics before the first native frame.
     // Optional CJK fallback must not replace a default-font Latin layout mid-gesture.
@@ -247,7 +247,7 @@ fn fixture() -> (CedarApp, Receiver<Command>) {
     assert!(commands.try_recv().is_err());
     (app, commands)
 }
-fn request(query: &str, scope: &str, masks: &[&str]) -> ScopedSearchRequest {
+pub(super) fn request(query: &str, scope: &str, masks: &[&str]) -> ScopedSearchRequest {
     ScopedSearchRequest {
         query: query.into(),
         scope: scope.into(),
@@ -255,7 +255,7 @@ fn request(query: &str, scope: &str, masks: &[&str]) -> ScopedSearchRequest {
         limit: 500,
     }
 }
-fn rows() -> Vec<SearchMatch> {
+pub(super) fn rows() -> Vec<SearchMatch> {
     [
         ("src/origin.rs", 2),
         ("src/origin.rs", 3),
@@ -269,7 +269,7 @@ fn rows() -> Vec<SearchMatch> {
     })
     .collect()
 }
-fn payload(request: ScopedSearchRequest, matches: Vec<SearchMatch>) -> Payload {
+pub(super) fn payload(request: ScopedSearchRequest, matches: Vec<SearchMatch>) -> Payload {
     Payload::ScopedMatches {
         result: ScopedSearchResult {
             request,
@@ -281,7 +281,7 @@ fn payload(request: ScopedSearchRequest, matches: Vec<SearchMatch>) -> Payload {
         },
     }
 }
-fn submit(app: &mut CedarApp, commands: &Receiver<Command>, surface: Surface) -> Command {
+pub(super) fn submit(app: &mut CedarApp, commands: &Receiver<Command>, surface: Surface) -> Command {
     click(app, surface.submit());
     let command = commands
         .try_recv()
@@ -289,7 +289,7 @@ fn submit(app: &mut CedarApp, commands: &Receiver<Command>, surface: Surface) ->
     assert!(commands.try_recv().is_err());
     command
 }
-fn scoped(app: &mut CedarApp, commands: &Receiver<Command>, surface: Surface) -> Command {
+pub(super) fn scoped(app: &mut CedarApp, commands: &Receiver<Command>, surface: Surface) -> Command {
     replace(app, surface.query(), "needle");
     replace(app, surface.scope(), "src");
     replace(app, surface.masks(), "*.rs");
@@ -300,7 +300,7 @@ fn scoped(app: &mut CedarApp, commands: &Receiver<Command>, surface: Surface) ->
     );
     command
 }
-fn accepted(app: &mut CedarApp, commands: &Receiver<Command>, surface: Surface) {
+pub(super) fn accepted(app: &mut CedarApp, commands: &Receiver<Command>, surface: Surface) {
     let command = scoped(app, commands, surface);
     reply(
         app,
@@ -322,7 +322,7 @@ pub(super) fn has_text(output: &egui::FullOutput, expected: &str) -> bool {
 }
 // Status details are reachable through the real bounded native ScrollArea.
 // Do not call has_text on clipped-away galleys or remove the old exact counters.
-fn browse_status_scroll(app: &mut CedarApp, size: egui::Vec2, to_end: bool) -> egui::FullOutput {
+pub(super) fn browse_status_scroll(app: &mut CedarApp, size: egui::Vec2, to_end: bool) -> egui::FullOutput {
     let (id, rect, content): (egui::Id, egui::Rect, egui::Vec2) = app
         .editor_ctx
         .data(|data| data.get_temp(egui::Id::new("text_status_scroll_probe")))
@@ -365,7 +365,7 @@ fn browse_status_scroll(app: &mut CedarApp, size: egui::Vec2, to_end: bool) -> e
 // exact field is fully readable during
 // real scrolling, rather than accepting a clipped galley or requiring the tail
 // frame to contain all rows. One-point wheel steps cannot skip a complete row.
-fn browse_assert_status_fields_reachable(
+pub(super) fn browse_assert_status_fields_reachable(
     app: &mut CedarApp,
     size: egui::Vec2,
     expected: &[&str],
@@ -1514,15 +1514,16 @@ fn scoped_find_complete_specification_is_required_for_retained_authority() {
     enter(&mut app, Surface::Bottom);
     accepted(&mut app, &commands, Surface::Bottom);
     let source = app.search_state.accepted.clone().unwrap();
-    for part in 0..6 {
+    for part in 0..7 {
         let mut changed = source.clone();
         match part {
             0 => changed.specification.request.query.push('x'),
             1 => changed.specification.request.scope.push('x'),
             2 => changed.specification.request.masks.push("*.md".into()),
             3 => changed.specification.request.limit -= 1,
-            4 => changed.specification.version = Some(2),
-            _ => changed.specification.version = None,
+            4 => changed.specification.route = search_keyboard::Route::CaseV1,
+            5 => changed.specification.route = search_keyboard::Route::Legacy,
+            _ => changed.specification.case_sensitive = false,
         }
         assert_ne!(changed, source);
         app.search_state.accepted = Some(changed);
