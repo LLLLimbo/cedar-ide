@@ -3180,6 +3180,7 @@ fn result_style_fixture(
     size: egui::Vec2,
     font: f32,
     matches: Vec<SearchMatch>,
+    mut first_visible: impl FnMut(&CedarApp, &egui::FullOutput),
 ) -> (CedarApp, Receiver<Command>, egui::FullOutput, impl FnOnce()) {
     let (mut app, commands) = app(0);
     app.editor_ctx.set_fonts(system_fonts::base_fonts());
@@ -3188,6 +3189,14 @@ fn result_style_fixture(
     let (fonts, hold_font_probe) = system_fonts::SystemFonts::pending_failure_for_test();
     app.system_fonts = fonts;
     app.font_size = font;
+    // Retain a real dirty open buffer and its native Undo state while rendering.
+    app.documents[0].path = matches[0].path.clone();
+    editor_state::commit(
+        &app.editor_ctx,
+        &mut app.documents[0],
+        "dirty Ω😀\r\nsecond retained\nthree\nfour\nfive\nsix\nsecond at seven\n".into(),
+        8,
+    );
     app.editor_ctx.style_mut(|style| {
         for text in [egui::TextStyle::Body, egui::TextStyle::Button] {
             style.text_styles.insert(text, FontId::proportional(font));
@@ -3226,6 +3235,7 @@ fn result_style_fixture(
     let search = commands.try_recv().expect("explicit fixture search");
     assert!(matches!(search.op, Operation::Search { .. }));
     assert!(commands.try_recv().is_err(), "one explicit Search only");
+    let first_snippet = matches[0].text.trim().to_owned();
     reply(
         &mut app,
         search.id,
@@ -3235,6 +3245,26 @@ fn result_style_fixture(
         }),
         true,
     );
+    let mut observed_first = false;
+    for _ in 0..4 {
+        let output = result_style_frame(&mut app, size, vec![]);
+        // Browse stages the response at the end of its receiving frame. The
+        // first subsequent visible paint must already have the complete style.
+        // Checking contains also observes a regressed combined-label renderer.
+        if result_style_texts(&output).iter().any(|(draw, clip)| {
+            draw.galley.job.text.contains(&first_snippet)
+                && clip.intersects(draw.galley.rect.translate(draw.pos.to_vec2()))
+        }) {
+            assert!(
+                app.search_rows_active(),
+                "first accepted paint must be current"
+            );
+            first_visible(&app, &output);
+            observed_first = true;
+            break;
+        }
+    }
+    assert!(observed_first, "accepted rows must actually paint");
     for _ in 0..3 {
         result_style_frame(&mut app, size, vec![]);
     }
@@ -3331,6 +3361,7 @@ fn result_style_baseline(browse: bool) {
             line: 42,
             text: snippet.into(),
         }],
+        |_, _| {},
     );
     let prefix = if browse { "browse" } else { "search" };
     let row = format!("{prefix}_row:0");
@@ -3388,4 +3419,402 @@ fn search_result_style_browse_painted_baseline_positive_control() {
 #[test]
 fn search_result_style_bottom_painted_baseline_matches_browse() {
     result_style_baseline(false);
+}
+
+fn result_style_close(actual: f32, expected: f32, description: &str) {
+    assert!(
+        (actual - expected).abs() <= 1.0,
+        "{description}: {actual} != {expected}"
+    );
+}
+
+fn result_style_decorations(
+    app: &CedarApp,
+    output: &egui::FullOutput,
+    probe: &str,
+    expanded: bool,
+) {
+    fn visit<'a>(shape: &'a egui::epaint::Shape, paths: &mut Vec<&'a egui::epaint::PathShape>) {
+        match shape {
+            egui::epaint::Shape::Path(path) => paths.push(path),
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    visit(shape, paths);
+                }
+            }
+            _ => {}
+        }
+    }
+    let group = recorded_rect(app, probe);
+    let clip = recorded_clip(app, probe);
+    let mut paths = Vec::new();
+    for shape in &output.shapes {
+        if shape.clip_rect.intersects(group.intersect(clip)) {
+            visit(&shape.shape, &mut paths);
+        }
+    }
+    let arrow = egui::Rect::from_center_size(
+        egui::pos2(group.left() + 12.0, group.center().y),
+        egui::vec2(8.0, 8.0),
+    );
+    assert!(clip.contains_rect(arrow));
+    let triangle = paths
+        .iter()
+        .find(|path| {
+            path.closed
+                && path.points.len() == 3
+                && path.points.iter().all(|point| arrow.contains(*point))
+                && path.fill == chrome::MUTED
+        })
+        .expect("group disclosure must be a painted triangle, not a text glyph");
+    if expanded {
+        assert_eq!(triangle.points[0].y, triangle.points[1].y);
+        assert!(triangle.points[2].y > triangle.points[0].y);
+    } else {
+        assert_eq!(triangle.points[0].x, triangle.points[2].x);
+        assert!(triangle.points[1].x > triangle.points[0].x);
+    }
+    let icon = egui::Rect::from_center_size(
+        egui::pos2(group.left() + 32.0, group.center().y),
+        egui::vec2(16.0, 16.0),
+    );
+    assert!(clip.contains_rect(icon));
+    assert_eq!(
+        paths
+            .iter()
+            .filter(|path| {
+                !path.closed
+                    && path.points.len() == 3
+                    && path.stroke.width > 0.0
+                    && path.points.iter().all(|point| icon.contains(*point))
+            })
+            .count(),
+        2,
+        "the .rs file must paint its two code-icon strokes"
+    );
+}
+
+// Only row-local geometry is compared across surfaces: their native panels
+// intentionally have different widths and screen origins.
+fn result_style_panel(
+    app: &CedarApp,
+    output: &egui::FullOutput,
+    browse: bool,
+    font: f32,
+    expected: &[SearchMatch],
+) -> [f32; 6] {
+    let prefix = if browse { "browse" } else { "search" };
+    let mut geometry = None;
+    let mut ids = std::collections::HashSet::new();
+    for (index, hit) in expected.iter().enumerate() {
+        let group_probe = format!("{prefix}_group:{index}");
+        let row_probe = format!("{prefix}_row:{index}");
+        let group = recorded_rect(app, &group_probe);
+        let row = recorded_rect(app, &row_probe);
+        for probe in [&group_probe, &row_probe] {
+            let response = recorded_response(app, probe);
+            assert!(response.enabled() && response.sense.is_focusable());
+            assert!(
+                ids.insert(response.id),
+                "one distinct native ID per group/hit"
+            );
+        }
+        if !browse {
+            assert_eq!(recorded_response(app, &row_probe).id, id(app, index));
+        }
+        let (parent, basename) = hit.path.rsplit_once('/').unwrap();
+        let name = result_style_draw(
+            app,
+            output,
+            &group_probe,
+            basename,
+            FontId::proportional(font),
+            chrome::TEXT,
+        );
+        let parent = result_style_draw(
+            app,
+            output,
+            &group_probe,
+            parent,
+            FontId::proportional(font),
+            chrome::MUTED,
+        );
+        let count = result_style_draw(
+            app,
+            output,
+            &group_probe,
+            "1",
+            FontId::proportional(font),
+            chrome::MUTED,
+        );
+        let number = result_style_draw(
+            app,
+            output,
+            &row_probe,
+            &hit.line.to_string(),
+            FontId::monospace(font),
+            chrome::MUTED,
+        );
+        let snippet = result_style_draw(
+            app,
+            output,
+            &row_probe,
+            hit.text.trim(),
+            FontId::monospace(font),
+            chrome::TEXT,
+        );
+        assert!(
+            name.galley.elided && parent.galley.elided && snippet.galley.elided,
+            "the long-byte fixture must exercise all three native elisions"
+        );
+        result_style_close(name.pos.x - group.left(), 46.0, "basename inset");
+        result_style_close(
+            parent.pos.x - name.pos.x - name.galley.size().x,
+            12.0,
+            "basename/parent separation",
+        );
+        result_style_close(
+            group.right() - count.pos.x - count.galley.size().x,
+            6.0,
+            "count inset",
+        );
+        result_style_close(
+            snippet.pos.x - number.pos.x - number.galley.size().x,
+            12.0,
+            "line/snippet separation",
+        );
+        result_style_decorations(app, output, &group_probe, true);
+        let local = [
+            group.height(),
+            row.height(),
+            name.pos.x - group.left(),
+            group.right() - count.pos.x - count.galley.size().x,
+            number.pos.x + number.galley.size().x - row.left(),
+            snippet.pos.x - row.left(),
+        ];
+        if let Some(previous) = geometry {
+            for (actual, expected) in local.into_iter().zip(previous) {
+                result_style_close(actual, expected, "shared line gutter/row geometry");
+            }
+        } else {
+            geometry = Some(local);
+        }
+    }
+    geometry.unwrap()
+}
+
+fn result_style_click(app: &mut CedarApp, size: egui::Vec2, probe: &str) -> egui::FullOutput {
+    let pos = recorded_rect(app, probe)
+        .intersect(recorded_clip(app, probe))
+        .center();
+    result_style_frame(app, size, vec![egui::Event::PointerMoved(pos)]);
+    result_style_frame(app, size, pointer(pos, true));
+    result_style_frame(app, size, pointer(pos, false))
+}
+
+fn result_style_editor(app: &CedarApp) -> serde_json::Value {
+    let state = crate::browse_tests::normal_shell_snapshot(app);
+    serde_json::json!({
+        "active_document": state["active_document"], "documents": state["documents"],
+        "back": state["back"], "forward": state["forward"],
+        "navigation_pending": state["navigation_pending"], "navigation_epoch": app.navigation_epoch,
+    })
+}
+
+#[test]
+fn search_result_style_actual_paint_matrix_and_narrow_lifecycle() {
+    for size in [egui::vec2(1180.0, 812.0), egui::vec2(780.0, 540.0)] {
+        for font in [13.0, 18.0] {
+            let basename = format!("duplicate-{}.rs", "中文😀K-e\u{301}-".repeat(24));
+            let expected = ["first-parent", "second-parent"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, directory)| SearchMatch {
+                    path: format!(
+                        "{directory}-{}/{basename}",
+                        "中文😀K/long-parent-".repeat(24)
+                    ),
+                    line: if index == 0 { 7 } else { 123456 },
+                    text: format!(
+                        "  second {index} {}  ",
+                        "K 中文😀 e\u{301} raw  ".repeat(40)
+                    ),
+                })
+                .collect::<Vec<_>>();
+            let originals = expected
+                .iter()
+                .map(|hit| (hit.path.clone(), hit.line, hit.text.clone()))
+                .collect::<Vec<_>>();
+            let mut across_surfaces = None;
+            for browse in [true, false] {
+                let mut first_geometry = None;
+                let mut first_ids = Vec::new();
+                let (mut app, commands, output, _hold_font_probe) =
+                    result_style_fixture(browse, size, font, expected.clone(), |app, output| {
+                        first_geometry =
+                            Some(result_style_panel(app, output, browse, font, &expected));
+                        let prefix = if browse { "browse" } else { "search" };
+                        first_ids = ["group:0", "row:0", "group:1", "row:1"]
+                            .map(|suffix| recorded_response(app, &format!("{prefix}_{suffix}")).id)
+                            .to_vec();
+                    });
+                let geometry = result_style_panel(&app, &output, browse, font, &expected);
+                assert_eq!(
+                    Some(geometry),
+                    first_geometry,
+                    "first visible and settled row geometry"
+                );
+                if let Some(previous) = across_surfaces {
+                    for (actual, expected) in geometry.into_iter().zip(previous) {
+                        result_style_close(actual, expected, "Browse/Bottom shared geometry");
+                    }
+                } else {
+                    across_surfaces = Some(geometry);
+                }
+                let prefix = if browse { "browse" } else { "search" };
+                let settled_ids = ["group:0", "row:0", "group:1", "row:1"]
+                    .map(|suffix| recorded_response(&app, &format!("{prefix}_{suffix}")).id)
+                    .to_vec();
+                assert_eq!(
+                    settled_ids, first_ids,
+                    "first visible IDs survive settlement"
+                );
+                let row = format!("{prefix}_row:0");
+                let other_group = format!("{prefix}_group:1");
+                let group = format!("{prefix}_group:0");
+                let query = format!("{prefix}_query");
+                let source = app.search_state.accepted.clone();
+                let row_id = recorded_response(&app, &row).id;
+                let group_id = recorded_response(&app, &other_group).id;
+                let editor = result_style_editor(&app);
+                assert!(app.documents[0].dirty());
+                result_style_frame(&mut app, size, vec![]);
+                assert_eq!(
+                    result_style_editor(&app),
+                    editor,
+                    "idle paint preserves exact Undo/editor state"
+                );
+                assert_eq!(app.search_state.accepted, source);
+                assert!(commands.try_recv().is_err());
+
+                result_style_click(&mut app, size, &row);
+                assert!(recorded_response(&app, &row).clicked());
+                assert_eq!(app.search_state.selected_index(), Some(0));
+                assert_eq!(recorded_response(&app, &row).id, row_id);
+                assert_eq!(result_style_editor(&app), editor);
+                assert!(commands.try_recv().is_err(), "selection is not Search/Read");
+                // A small genuine keyboard journey verifies the changed rows
+                // retain Space review/Escape focus at every size/font setting.
+                result_style_frame(&mut app, size, key(egui::Key::Space));
+                for _ in 0..3 {
+                    result_style_frame(&mut app, size, vec![]);
+                }
+                let preview = if browse {
+                    app.browse_preview_text()
+                } else {
+                    app.search_preview_text()
+                };
+                assert!(
+                    preview.is_some_and(|text| text.contains("second retained")),
+                    "Space reviews the dirty open buffer"
+                );
+                assert_eq!(result_style_editor(&app), editor);
+                assert!(
+                    commands.try_recv().is_err(),
+                    "dirty preview never rereads disk"
+                );
+                result_style_frame(&mut app, size, key(egui::Key::Escape));
+                for _ in 0..3 {
+                    result_style_frame(&mut app, size, vec![]);
+                }
+                assert_eq!(focused(&app), Some(row_id));
+
+                result_style_click(&mut app, size, &other_group);
+                assert!(!app.search_state.group_expanded(1));
+                let collapsed = result_style_frame(&mut app, size, vec![]);
+                result_style_decorations(&app, &collapsed, &other_group, false);
+                let snippet = result_style_draw(
+                    &app,
+                    &collapsed,
+                    &row,
+                    expected[0].text.trim(),
+                    FontId::monospace(font),
+                    chrome::TEXT,
+                );
+                result_style_close(
+                    snippet.pos.x - recorded_rect(&app, &row).left(),
+                    geometry[5],
+                    "collapsing the maximum-line group cannot shrink the gutter",
+                );
+                result_style_click(&mut app, size, &other_group);
+                result_style_frame(&mut app, size, vec![]);
+                assert!(app.search_state.group_expanded(1));
+                assert_eq!(recorded_response(&app, &other_group).id, group_id);
+                assert_eq!(recorded_response(&app, &row).id, row_id);
+                assert_eq!(
+                    ["group:0", "row:0", "group:1", "row:1"]
+                        .map(|suffix| recorded_response(&app, &format!("{prefix}_{suffix}")).id)
+                        .to_vec(),
+                    first_ids
+                );
+
+                result_style_click(&mut app, size, &query);
+                result_style_frame(
+                    &mut app,
+                    size,
+                    modified_key(
+                        egui::Key::A,
+                        egui::Modifiers {
+                            ctrl: true,
+                            command: true,
+                            ..egui::Modifiers::NONE
+                        },
+                    ),
+                );
+                result_style_frame(
+                    &mut app,
+                    size,
+                    vec![egui::Event::Text("retired second".into())],
+                );
+                for _ in 0..3 {
+                    result_style_frame(&mut app, size, vec![]);
+                }
+                let disabled = result_style_frame(&mut app, size, vec![]);
+                assert_eq!(app.search_query, "retired second");
+                assert!(!app.search_rows_active());
+                for probe in [&row, &group] {
+                    assert!(!recorded_response(&app, probe).enabled());
+                }
+                let (parent, name) = expected[0].path.rsplit_once('/').unwrap();
+                for (probe, original, font_id) in [
+                    (&row, expected[0].text.trim(), FontId::monospace(font)),
+                    (&row, "7", FontId::monospace(font)),
+                    (&group, name, FontId::proportional(font)),
+                    (&group, parent, FontId::proportional(font)),
+                    (&group, "1", FontId::proportional(font)),
+                ] {
+                    result_style_draw(&app, &disabled, probe, original, font_id, chrome::MUTED);
+                }
+                let selected = app.search_state.selected_index();
+                result_style_click(&mut app, size, &row);
+                assert!(!recorded_response(&app, &row).clicked());
+                assert_eq!(app.search_state.selected_index(), selected);
+                assert_eq!(app.search_state.accepted, source);
+                assert_eq!(
+                    app.search_results
+                        .iter()
+                        .map(|hit| (hit.path.clone(), hit.line, hit.text.clone()))
+                        .collect::<Vec<_>>(),
+                    originals
+                );
+                assert_eq!(result_style_editor(&app), editor);
+                assert_eq!(app.system_fonts.probe_state_for_test(), "loading");
+                assert!(
+                    commands.try_recv().is_err(),
+                    "paint/collapse/query edit/inactive click perform no I/O"
+                );
+                eprintln!("RESULT_STYLE_MATRIX browse={browse} size={size:?} font={font} geometry={geometry:?} first_visible=true disabled=true");
+            }
+        }
+    }
 }
