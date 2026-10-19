@@ -2195,7 +2195,7 @@ fn gutter_loaded_frames(
     let reply_paint = gutter_frame(app, metrics, 0.01, vec![]);
     assert!(!app.project_text_review_pending());
     assert!(app.project_text_preview_context().is_some());
-    assert!(gutter_shapes(&reply_paint).iter().any(|(shape, _)| matches!(shape, egui::epaint::Shape::Text(draw) if draw.galley.text().contains("Historical requested line"))));
+    assert!(gutter_shapes(&reply_paint).iter().any(|(shape, _)| matches!(shape, egui::epaint::Shape::Text(draw) if draw.galley.text().contains("Historical requested line"))), "bottom={bottom} metrics={metrics:?} context={:?} paint={:?}", app.project_text_preview_context(), gutter_shapes(&reply_paint).iter().filter_map(|(shape, clip)| if let egui::epaint::Shape::Text(draw) = shape { Some((draw.galley.text(), draw.pos, clip)) } else {None}).collect::<Vec<_>>());
     let reply_paint = gutter_capture(app, bottom, reply_paint);
     let reveal_paint = gutter_frame(app, metrics, 0.01, vec![]);
     let reveal_paint = gutter_capture(app, bottom, reveal_paint);
