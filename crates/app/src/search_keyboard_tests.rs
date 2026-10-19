@@ -3160,3 +3160,208 @@ pub(super) fn case_row_continuity_frame(
         .find(|row| row.index == 2 && !row.sizing && row.clicked)
         .map(|row| (row.double, row.triple))
 }
+
+// These witnesses inspect actual production paint output, not accessibility
+// labels or a parallel renderer. Both surfaces keep the original accepted bytes.
+fn result_style_frame(
+    app: &mut CedarApp,
+    size: egui::Vec2,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    let ctx = app.editor_ctx.clone();
+    let mut input = raw(app, events);
+    input.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+    eframe::App::raw_input_hook(app, &ctx, &mut input);
+    render(app, input)
+}
+
+fn result_style_fixture(
+    browse: bool,
+    size: egui::Vec2,
+    font: f32,
+    matches: Vec<SearchMatch>,
+) -> (CedarApp, Receiver<Command>, egui::FullOutput) {
+    let (mut app, commands) = app(0);
+    app.editor_ctx.set_fonts(system_fonts::base_fonts());
+    app.editor_ctx.style_mut(|style| {
+        for text in [egui::TextStyle::Body, egui::TextStyle::Button] {
+            style.text_styles.insert(text, FontId::proportional(font));
+        }
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, FontId::monospace(font + 1.0));
+    });
+    app.search();
+    let search = commands.try_recv().expect("explicit fixture search");
+    assert!(matches!(search.op, Operation::Search { .. }));
+    reply(
+        &mut app,
+        search.id,
+        Ok(Payload::Matches {
+            matches,
+            truncated: false,
+        }),
+        true,
+    );
+    if browse {
+        result_style_frame(
+            &mut app,
+            size,
+            modified_key(
+                egui::Key::F,
+                egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    shift: true,
+                    ..egui::Modifiers::NONE
+                },
+            ),
+        );
+    }
+    for _ in 0..3 {
+        result_style_frame(&mut app, size, vec![]);
+    }
+    let output = result_style_frame(&mut app, size, vec![]);
+    assert!(app.search_rows_active());
+    assert!(app.system_fonts.needs_probe(), "no optional font I/O");
+    assert!(
+        commands.try_recv().is_err(),
+        "painting must not Search or Read"
+    );
+    (app, commands, output)
+}
+
+fn result_style_texts(output: &egui::FullOutput) -> Vec<(&egui::epaint::TextShape, egui::Rect)> {
+    fn visit<'a>(
+        shape: &'a egui::epaint::Shape,
+        clip: egui::Rect,
+        texts: &mut Vec<(&'a egui::epaint::TextShape, egui::Rect)>,
+    ) {
+        match shape {
+            egui::epaint::Shape::Text(draw) => texts.push((draw, clip)),
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    visit(shape, clip, texts);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut texts = Vec::new();
+    for shape in &output.shapes {
+        visit(&shape.shape, shape.clip_rect, &mut texts);
+    }
+    texts
+}
+
+fn result_style_draw<'a>(
+    app: &CedarApp,
+    output: &'a egui::FullOutput,
+    probe: &str,
+    original: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+) -> &'a egui::epaint::TextShape {
+    let row = recorded_rect(app, probe);
+    let row_clip = row.intersect(recorded_clip(app, probe));
+    assert!(
+        row_clip.is_positive(),
+        "{probe}: visible production row required"
+    );
+    let (draw, clip) = result_style_texts(output)
+        .into_iter()
+        .find(|(draw, clip)| {
+            draw.galley.job.text.as_bytes() == original.as_bytes()
+                && row_clip.intersects(draw.galley.rect.translate(draw.pos.to_vec2()))
+                && clip.intersects(row_clip)
+        })
+        .unwrap_or_else(|| panic!("{probe}: missing independent painted galley for {original:?}"));
+    let painted = draw.galley.rect.translate(draw.pos.to_vec2());
+    assert_eq!(draw.galley.rows.len(), 1, "{probe}: one painted line");
+    assert!(painted.height() > 0.0 && painted.width() > 0.0);
+    assert!(painted.top() >= row_clip.top() - 1.0);
+    assert!(painted.bottom() <= row_clip.bottom() + 1.0);
+    assert!(painted.left() >= row_clip.left() - 1.0);
+    assert!(painted.right() <= row_clip.right() + 1.0);
+    assert!(
+        clip.contains_rect(row_clip),
+        "{probe}: paint must retain row clipping"
+    );
+    assert!(!draw.galley.job.sections.is_empty());
+    for section in &draw.galley.job.sections {
+        assert_eq!(section.format.font_id, font, "{probe}: {original:?}");
+        assert_eq!(section.format.color, color, "{probe}: {original:?}");
+    }
+    draw
+}
+
+fn result_style_baseline(browse: bool) {
+    let path = "first-parent/duplicate.rs";
+    let snippet = "  second 中文😀K raw  ";
+    let (app, commands, output) = result_style_fixture(
+        browse,
+        egui::vec2(1180.0, 812.0),
+        13.0,
+        vec![SearchMatch {
+            path: path.into(),
+            line: 42,
+            text: snippet.into(),
+        }],
+    );
+    let prefix = if browse { "browse" } else { "search" };
+    let row = format!("{prefix}_row:0");
+    let group = format!("{prefix}_group:0");
+    result_style_draw(
+        &app,
+        &output,
+        &row,
+        snippet.trim(),
+        FontId::monospace(14.0),
+        chrome::TEXT,
+    );
+    result_style_draw(
+        &app,
+        &output,
+        &row,
+        "42",
+        FontId::monospace(14.0),
+        chrome::MUTED,
+    );
+    result_style_draw(
+        &app,
+        &output,
+        &group,
+        "duplicate.rs",
+        FontId::proportional(13.0),
+        chrome::TEXT,
+    );
+    result_style_draw(
+        &app,
+        &output,
+        &group,
+        "first-parent",
+        FontId::proportional(13.0),
+        chrome::MUTED,
+    );
+    result_style_draw(
+        &app,
+        &output,
+        &group,
+        "1",
+        FontId::proportional(13.0),
+        chrome::MUTED,
+    );
+    assert_eq!(app.search_results[0].path.as_bytes(), path.as_bytes());
+    assert_eq!(app.search_results[0].text.as_bytes(), snippet.as_bytes());
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn search_result_style_browse_painted_baseline_positive_control() {
+    result_style_baseline(true);
+}
+
+#[test]
+fn search_result_style_bottom_painted_baseline_matches_browse() {
+    result_style_baseline(false);
+}
