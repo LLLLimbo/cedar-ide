@@ -118,6 +118,8 @@ mod save_close_tests;
 #[cfg(test)]
 mod scoped_search_process_tests;
 #[cfg(test)]
+mod case_search_process_tests;
+#[cfg(test)]
 mod scoped_search_tests;
 mod search_keyboard;
 #[cfg(test)]

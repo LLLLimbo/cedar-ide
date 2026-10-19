@@ -39,6 +39,7 @@ jobs:
       - run: python -B scripts/test_search_navigation_acceptance.py
       - run: python -B scripts/test_browse_acceptance.py
       - run: python -B scripts/test_scoped_search_acceptance.py
+      - run: python -B scripts/test_case_search_acceptance.py
       - run: python scripts/test_copy_draft_acceptance.py
       - run: python scripts/test_save_close_acceptance.py
       - run: python scripts/test_linux_java_acceptance.py
@@ -72,6 +73,11 @@ jobs:
         # 420s. Native proof keeps shared 340s active / 30s cleanup / 390s watchdog.
         timeout-minutes: 10
         run: python -B scripts/scoped_search_acceptance.py
+      - name: Match case candidate proof (normal agent, both platforms)
+        # Independent 12-operation proof; the old 10-operation scoped proof stays intact.
+        # Compile 120s, runtime observation 420s; shared proof budgets remain 340/30/390s.
+        timeout-minutes: 10
+        run: python -B scripts/case_search_acceptance.py
       - name: Selected-block indentation stays local (Unix, normal agent)
         timeout-minutes: 3
         if: runner.os != 'Windows'
