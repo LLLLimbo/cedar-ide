@@ -721,20 +721,11 @@ impl Harness {
         let command = self.next()?;
         match (&command.op, route) {
             (Operation::Search { query, limit: 500 }, Route::Legacy)
-                if query == QUERY && scope.is_empty() && masks.is_empty() =>
-            {
-                ()
-            }
+                if query == QUERY && scope.is_empty() && masks.is_empty() => {}
             (Operation::SearchIn { request }, Route::ScopedV1)
-                if request == &spec(scope, masks) =>
-            {
-                ()
-            }
+                if request == &spec(scope, masks) => {}
             (Operation::SearchCase { request }, Route::CaseV1)
-                if request == &case_spec(scope, masks) =>
-            {
-                ()
-            }
+                if request == &case_spec(scope, masks) => {}
             _ => return Err("explicit route or exact captured search request differed"),
         }
         let event = self.exchange(command)?;
