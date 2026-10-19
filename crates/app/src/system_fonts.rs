@@ -372,6 +372,118 @@ mod tests {
         }
     }
 
+    #[test]
+    fn kelvin_glyph_uses_embedded_inter_after_existing_monospace_fallbacks() {
+        let base = base_fonts();
+        let mono = &base.families[&egui::FontFamily::Monospace];
+        let mut previous = vec![CODE_FONT_NAME.to_owned()];
+        previous.extend(
+            egui::FontDefinitions::default().families[&egui::FontFamily::Monospace].clone(),
+        );
+        // This is the exact pre-fix chain, not a host-dependent missing-font fixture.
+        for name in &previous {
+            let data = &base.font_data[name];
+            let face = ttf_parser::Face::parse(&data.font, data.index).unwrap();
+            assert!(
+                face.glyph_index('K').is_none(),
+                "{name} unexpectedly covers Kelvin"
+            );
+        }
+        let inter = ttf_parser::Face::parse(UI_FONT, 0).unwrap();
+        assert!(inter.glyph_index('K').is_some());
+        assert_ne!(inter.glyph_index('K'), inter.glyph_index('K'));
+        assert_eq!(
+            mono,
+            &previous
+                .into_iter()
+                .chain([UI_FONT_NAME.to_owned()])
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !contains_cjk("K K k Ω café 😀"),
+            "Kelvin must not rely on an OS font probe"
+        );
+    }
+
+    fn assert_kelvin_layout(ctx: &egui::Context, supported: bool) {
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            for size in [13.0, 14.0, 18.0] {
+                let font = egui::FontId::monospace(size);
+                ctx.fonts(|fonts| {
+                    assert_eq!(fonts.has_glyph(&font, 'K'), supported);
+                    assert!(!fonts.has_glyph(&font, '\u{10ffff}'));
+                    let text = "K K k Ω café 😀";
+                    let galley =
+                        fonts.layout_no_wrap(text.into(), font.clone(), egui::Color32::WHITE);
+                    assert_eq!(galley.job.text, text);
+                    let glyph = galley.rows[0]
+                        .glyphs
+                        .iter()
+                        .find(|glyph| glyph.chr == 'K')
+                        .unwrap();
+                    assert!(!glyph.uv_rect.is_nothing());
+                    assert!(
+                        glyph.uv_rect.size.is_finite()
+                            && glyph.uv_rect.size.x > 0.0
+                            && glyph.uv_rect.size.y > 0.0
+                    );
+                    let missing =
+                        fonts.layout_no_wrap("\u{10ffff}".into(), font, egui::Color32::WHITE);
+                    assert_eq!(
+                        glyph.uv_rect == missing.rows[0].glyphs[0].uv_rect,
+                        !supported
+                    );
+                    if supported {
+                        // Same atlas, same existing Inter bytes, genuine U+212A glyph.
+                        let reference = fonts.layout_no_wrap(
+                            "K".into(),
+                            egui::FontId::proportional(size),
+                            egui::Color32::WHITE,
+                        );
+                        assert_eq!(glyph.uv_rect, reference.rows[0].glyphs[0].uv_rect);
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn kelvin_layout_is_real_before_and_after_late_fallback_at_multiple_scales() {
+        for scale in [1.0, 1.5, 2.0] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(scale);
+            let mut previous = base_fonts();
+            previous
+                .families
+                .get_mut(&egui::FontFamily::Monospace)
+                .unwrap()
+                .retain(|name| name != UI_FONT_NAME);
+            ctx.set_fonts(previous);
+            assert_kelvin_layout(&ctx, false);
+            ctx.set_fonts(base_fonts());
+            assert_kelvin_layout(&ctx, true);
+            for _ in 0..2 {
+                install(&ctx, test_fallback());
+                assert_kelvin_layout(&ctx, true);
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_missing_glyph_fallback_preserves_existing_text_metrics() {
+        let ctx = egui::Context::default();
+        let mut previous = base_fonts();
+        previous
+            .families
+            .get_mut(&egui::FontFamily::Monospace)
+            .unwrap()
+            .retain(|name| name != UI_FONT_NAME);
+        ctx.set_fonts(previous);
+        let before = latin_metrics(&ctx);
+        ctx.set_fonts(base_fonts());
+        assert_eq!(latin_metrics(&ctx), before);
+    }
+
     fn test_fallback() -> LoadedFont {
         // This fixture exercises replacement ordering without depending on any
         // installed OS font. Actual CJK coverage is a separate optional test.
