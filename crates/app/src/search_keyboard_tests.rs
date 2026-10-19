@@ -6246,7 +6246,7 @@ fn snippet_highlight_actual_app_cost_observations() {
                                 "prepare_ns": observed.after.prepare_ns - observed.before.prepare_ns,
                                 "map_ns": observed.after.map_ns - observed.before.map_ns,
                                 "frame_elapsed_ns": observed.frame_elapsed_ns,
-                                "accepted_to_first_visible_sequence_ns": observed.sequence_elapsed_ns,
+                                "queued_response_to_first_visible_sequence_ns": observed.sequence_elapsed_ns,
                                 "frame_count": observed.frame_count,
                                 "timing_scope": "queued response through first current native snippet paint; preparation/map deltas cover the same interval"
                             });
@@ -6358,7 +6358,8 @@ fn snippet_highlight_legacy_admission_fallback_keeps_rows_enabled_without_buildi
             let row = recorded_response(&app, &probe);
             assert!(
                 row.enabled() && row.sense.is_focusable(),
-                "fallback is decoration-only, never navigation rejection"
+                "fallback is decoration-only, never navigation rejection: case={name} browse={browse} frame_count={} enabled={} sense={:?} rect={:?} clip={:?} active={} browse_query={:?} search_query={:?}",
+                observed.frame_count, row.enabled(), row.sense, row.rect, recorded_clip(&app, &probe), app.search_rows_active(), app.browse.query(), app.search_query
             );
             result_style_draw(
                 &app,
