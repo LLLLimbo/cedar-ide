@@ -621,16 +621,7 @@ impl Harness {
         )
     }
     fn read(&mut self, path: &str) -> Check<()> {
-        let command = self.next()?;
-        require(
-            matches!(&command.op, Operation::Read { path: actual } if actual == path),
-            "ordinary Read target differed",
-        )?;
-        let event = self.exchange(command)?;
-        require(
-            matches!(&event.result, Ok(Payload::File { path: actual, .. }) if actual == path),
-            "ordinary Read reply differed",
-        )?;
+        let event = self.read_reply(path)?;
         self.app.apply_event(event);
         self.settle()
     }
@@ -713,7 +704,7 @@ impl Harness {
             .ok_or("unknown fixture Read")?
             .1;
         require(
-            matches!(&event.result,Ok(Payload::File {path:actual,text,..}) if actual==path && text==&expected),
+            matches!(&event.result,Ok(Payload::File {path:actual,text,revision}) if actual==path && text==&expected && revision==&format!("{:x}",Sha256::digest(expected.as_bytes()))),
             "Read reply exact target or original bytes differed",
         )?;
         Ok(event)
@@ -1178,6 +1169,12 @@ fn normal_agent_case_search_is_explicit_local_and_source_bound() -> Check<()> {
             && cached.text == text("target", "target")
             && cached.saved_text == cached.text
             && !cached.dirty()
+            && cached.revision.as_deref()
+                == Some(
+                    format!("{:x}", Sha256::digest(text("target", "target").as_bytes())).as_str(),
+                )
+            && cached.edit_version == 0
+            && !cached.undo_initialized
             && cached.cursor == (1, 1)
             && cached.jump_to.is_none()
             && cached.scroll_to.is_none()
