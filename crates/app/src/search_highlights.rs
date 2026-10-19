@@ -400,13 +400,17 @@ mod tests {
     fn literal_simple_fold_keeps_original_utf8_ranges() {
         for (query, text, expected) in [
             ("k", "😀KkK", vec![4..7, 7..8, 8..9]),
-            ("K", "k", vec![0..1]),
+            ("K", "k", std::iter::once(0..1).collect::<Vec<_>>()),
             ("s", "ſS", vec![0..2, 2..3]),
             ("Σ", "σςΣ", vec![0..2, 2..4, 4..6]),
             ("ß", "ẞßSS", vec![0..3, 3..5]),
             ("i", "Iİıi", vec![0..1, 5..6]),
-            ("é", "e\u{301}é", vec![3..5]),
-            (".*[x](?i)", "a.*[x](?i)b", vec![1..10]),
+            ("é", "e\u{301}é", std::iter::once(3..5).collect::<Vec<_>>()),
+            (
+                ".*[x](?i)",
+                "a.*[x](?i)b",
+                std::iter::once(1..10).collect::<Vec<_>>(),
+            ),
         ] {
             let prepared = Prepared::prepare(query, false, &rows(&[text]));
             assert_eq!(prepared.row(0), expected, "{query:?}/{text:?}");
@@ -419,17 +423,17 @@ mod tests {
     #[test]
     fn crop_markers_trim_and_scalar_matches_are_conservative() {
         let prepared = Prepared::prepare("…", true, &rows(&["…a…b…", " … ", "…"]));
-        assert_eq!(prepared.row(0), [4..7]);
-        assert_eq!(prepared.row(1), [1..4]);
+        assert_eq!(prepared.row(0), std::slice::from_ref(&(4..7)));
+        assert_eq!(prepared.row(1), std::slice::from_ref(&(1..4)));
         assert!(prepared.row(2).is_empty());
 
         assert_eq!(
             Prepared::prepare(" a", true, &rows(&[" a a "])).row(0),
-            [2..4]
+            std::slice::from_ref(&(2..4))
         );
         assert_eq!(
             Prepared::prepare("\u{301}", true, &rows(&["e\u{301}"])).row(0),
-            [1..3]
+            std::slice::from_ref(&(1..3))
         );
         assert_eq!(
             Prepared::prepare("aa", true, &rows(&["aaaaa"])).row(0),
@@ -453,7 +457,7 @@ mod tests {
         let large = "x".repeat(SNIPPET_BYTES + 1);
         let p = Prepared::prepare("x", true, &rows(&[&large, "x"]));
         assert!(p.row(0).is_empty());
-        assert_eq!(p.row(1), [0..1]);
+        assert_eq!(p.row(1), std::slice::from_ref(&(0..1)));
         assert_eq!(p.accounting.scanned, 1);
         let p = Prepared::prepare("sKΣéẞ".repeat(6).as_str(), false, &rows(&["sKΣéẞ"]));
         assert_eq!(p.accounting.builds, 1);
@@ -468,7 +472,7 @@ mod tests {
         let p = Prepared::prepare("a", true, &rows(&[&a64, &a65, "a"]));
         assert_eq!(p.row(0).len(), 64);
         assert!(p.row(1).is_empty());
-        assert_eq!(p.row(2), [0..1]);
+        assert_eq!(p.row(2), std::slice::from_ref(&(0..1)));
         let text = vec![a64.as_str(); 17];
         let p = Prepared::prepare("a", true, &rows(&text));
         assert_eq!(p.ranges.len(), 1024);
@@ -614,7 +618,7 @@ mod tests {
     fn synthetic_overflow_equal_to_next_original_ellipsis_is_never_decorated() {
         let original = "aa…zzzzzzzzzzzzzzzzzzzz";
         let prepared = Prepared::prepare("…", true, &rows(&[original]));
-        assert_eq!(prepared.row(0), [2..5]);
+        assert_eq!(prepared.row(0), std::slice::from_ref(&(2..5)));
         // Find an actual native truncation where the synthetic overflow scalar
         // happens to equal the next original scalar. Glyph.chr alone is ambiguous.
         let clipped = (1..100)

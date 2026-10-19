@@ -5415,7 +5415,7 @@ fn snippet_highlight_native_two_surface_unicode_literal_ellipsis_truncation_matr
             "…",
             true,
             "…a…b…".to_owned(),
-            vec![4..7],
+            std::iter::once(4..7).collect::<Vec<_>>(),
             false,
         ),
         (
@@ -5431,7 +5431,7 @@ fn snippet_highlight_native_two_surface_unicode_literal_ellipsis_truncation_matr
             " second",
             true,
             " second second ".to_owned(),
-            vec![7..14],
+            std::iter::once(7..14).collect::<Vec<_>>(),
             false,
         ),
         (
@@ -5585,7 +5585,11 @@ fn snippet_highlight_cache_reused_across_hover_resize_grouping_and_surfaces() {
             text: "third xx second".into(),
         },
     ];
-    let spans = [vec![0..6], vec![7..13, 14..20], vec![9..15]];
+    let spans = [
+        std::iter::once(0..6).collect::<Vec<_>>(),
+        vec![7..13, 14..20],
+        std::iter::once(9..15).collect::<Vec<_>>(),
+    ];
     let (mut app, commands, _, _hold) =
         result_style_fixture(false, size, 13.0, hits.clone(), |_, _| {});
     let source = app.search_state.accepted.clone();
@@ -5919,7 +5923,15 @@ fn snippet_highlight_same_workspace_reconnect_and_old_generation_cannot_revive()
             app.search_state.accepted.as_ref().unwrap().generation,
             app.generation
         );
-        snippet_highlight_assert_row(&app, &output, browse, 13.0, 0, &hit.text, &[0..6]);
+        snippet_highlight_assert_row(
+            &app,
+            &output,
+            browse,
+            13.0,
+            0,
+            &hit.text,
+            std::slice::from_ref(&(0..6)),
+        );
         assert_eq!(result_style_editor(&app), reentered);
     }
 }
@@ -6347,7 +6359,7 @@ fn snippet_highlight_legacy_admission_fallback_keeps_rows_enabled_without_buildi
                 text: snippet.clone(),
             };
             assert!(
-                validate(&[hit.clone()]).is_ok(),
+                validate(std::slice::from_ref(&hit)).is_ok(),
                 "{name}: preexisting whole-batch admission"
             );
             let command = snippet_highlight_submit(&mut app, &commands, browse, size);
@@ -6465,7 +6477,7 @@ fn snippet_highlight_exact_512_kib_snippet_plus_path_remains_rejected_before_pre
             text: "x".repeat(MAX_TEXT_BYTES),
         };
         assert!(
-            validate(&[hit.clone()]).is_err(),
+            validate(std::slice::from_ref(&hit)).is_err(),
             "unchanged aggregate path+snippet admission cap"
         );
         let command = snippet_highlight_submit(&mut app, &commands, browse, size);
