@@ -809,9 +809,7 @@ class MaterialReviewContractTests(unittest.TestCase):
             changed = copy.deepcopy(origin)
             changed[field] = value
             with self.subTest(field=field), self.assertRaises(materials.MaterialError):
-                materials.validate_review({**review, 'materials': [{
-                    'path': 'third-party-licenses/fixture/LICENSE', 'bytes': 5,
-                    'sha256': materials.digest(b'exact'), 'origins': [changed]}]})
+                materials.validate_origin(changed, {'example@1.0.0'})
 
     def test_json_duplicates_noncanonical_and_oversized_inputs_fail_closed(self):
         materials, _, raw, _, _ = self.review_fixture()
